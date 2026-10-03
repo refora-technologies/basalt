@@ -68,6 +68,11 @@ android {
         }
         getByName("release") {
             signingConfigs.findByName("release")?.let { signingConfig = it }
+            // The Google Play build (BASALT_CHANNEL=play) leaves out the
+            // permission the GitHub build installs its own updates with.
+            if (System.getenv("BASALT_CHANNEL") == "play") {
+                sourceSets.getByName("release").manifest.srcFile("src/play/AndroidManifest.xml")
+            }
             // 64-bit ARM, which is every phone of the last several years. The
             // player's libraries come for four kinds of processor, and the
             // others would only make the download larger for nobody.

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Laid over the release manifest for the Google Play build only (see
+  BASALT_CHANNEL in build.gradle.kts). Play updates the app itself, and an app
+  from Play may not install packages: the permission the GitHub build uses to
+  install its own updates is taken out here.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES"
+        tools:node="remove" />
+</manifest>

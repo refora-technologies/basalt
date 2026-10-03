@@ -3,6 +3,7 @@ import { isAndroid } from '@/lib/platform'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertCircle, ArrowUpCircle, Check, ExternalLink, Github, Loader2 } from 'lucide-react'
 import { api, inTauri, type Release } from '@/lib/api'
+import { PLAY_STORE } from '@/lib/channel'
 import { parseNotes } from '@/lib/notes'
 import {
   checkForUpdate,
@@ -50,13 +51,17 @@ export function About({ product }: { product: string }): React.JSX.Element {
           </div>
         </div>
 
-        <button
-          onClick={() => void check(false)}
-          disabled={state.kind === 'checking' || state.kind === 'downloading'}
-          className="shrink-0 rounded-md border border-line bg-ink2 px-3 py-1.5 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text disabled:opacity-40"
-        >
-          {state.kind === 'checking' ? 'Checking…' : 'Check for updates'}
-        </button>
+        {PLAY_STORE ? (
+          <span className="shrink-0 text-[11.5px] text-textFaint">Updates come from Google Play</span>
+        ) : (
+          <button
+            onClick={() => void check(false)}
+            disabled={state.kind === 'checking' || state.kind === 'downloading'}
+            className="shrink-0 rounded-md border border-line bg-ink2 px-3 py-1.5 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text disabled:opacity-40"
+          >
+            {state.kind === 'checking' ? 'Checking…' : 'Check for updates'}
+          </button>
+        )}
       </div>
 
       <AnimatePresence mode="wait">

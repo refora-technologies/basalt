@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react'
 import { android } from '@/lib/android'
 import { api, inTauri, type Release } from '@/lib/api'
 import { isAndroid } from '@/lib/platform'
+import { PLAY_STORE } from '@/lib/channel'
 
 /**
  * Whether there is a newer Basalt, shared by everything that shows it.
@@ -59,6 +60,8 @@ export function offered(s: UpdateState): s is Extract<UpdateState, { release: Re
  * matters. A download under way or finished is never replaced by a check.
  */
 export async function checkForUpdate(quiet: boolean): Promise<void> {
+  // From Google Play, Play does the updating.
+  if (PLAY_STORE) return
   if (state.kind === 'downloading' || state.kind === 'ready' || state.kind === 'checking') return
   const before = state
   if (!quiet) set({ kind: 'checking' })
@@ -75,7 +78,7 @@ let started = false
 
 /** Checks now, and again every twelve hours or on returning after as long. */
 export function startUpdateChecks(): void {
-  if (started) return
+  if (started || PLAY_STORE) return
   started = true
   void checkForUpdate(true)
   setInterval(() => void checkForUpdate(true), EVERY)
