@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-play-update-check"
+description = "Enables the play_update_check command without any pre-configured scope."
+commands.allow = ["play_update_check"]
+
+[[permission]]
+identifier = "deny-play-update-check"
+description = "Denies the play_update_check command without any pre-configured scope."
+commands.deny = ["play_update_check"]

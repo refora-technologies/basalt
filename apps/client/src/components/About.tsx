@@ -1,245 +1,289 @@
 import { useEffect, useState } from 'react'
-import { isAndroid } from '@/lib/platform'
-import { AnimatePresence, motion } from 'framer-motion'
-import { AlertCircle, ArrowUpCircle, Check, ExternalLink, Github, Loader2 } from 'lucide-react'
-import { api, inTauri, type Release } from '@/lib/api'
-import { PLAY_STORE } from '@/lib/channel'
-import { parseNotes } from '@/lib/notes'
 import {
-  checkForUpdate,
-  downloadUpdate,
-  installUpdate,
-  offered,
-  useUpdate,
-  type UpdateState,
-} from '@/lib/updates'
-import { cn, formatBytes } from '@/lib/utils'
+  AlertCircle,
+  ArrowUpCircle,
+  Bug,
+  Check,
+  ChevronRight,
+  Download,
+  Github,
+  Globe,
+  Loader2,
+  Mail,
+  Send,
+  Star,
+} from 'lucide-react'
+import { api } from '@/lib/api'
+import { android } from '@/lib/android'
+import { PLAY_STORE } from '@/lib/channel'
+import {
+  FEEDBACK_EMAIL,
+  HOST_DOWNLOAD,
+  PLAY_LISTING,
+  REPO,
+  WEBSITE,
+  openExternal,
+} from '@/lib/links'
+import { isAndroid } from '@/lib/platform'
+import { checkForUpdate, offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
+import { cn } from '@/lib/utils'
 
-export const WEBSITE = 'https://basalt.reforatech.com'
-export const REPO = 'https://github.com/refora-technologies/basalt'
-export const ISSUES = `${REPO}/issues/new`
+const ISSUES = `${REPO}/issues/new`
+
+/** The installed version, and what it runs on: for the card, and for feedback. */
+interface Installed {
+  version: string
+  device: string
+}
 
 /**
- * Who made this, which version it is, and whether there is a newer one.
+ * Which version this is, whether there is a newer one, how to get Basalt Host
+ * onto a computer, and how to reach the people who make it.
  *
- * The check itself lives in `lib/updates`, shared with the sidebar and the
- * phone's banner, and runs on its own when the app opens; this is where the
- * whole offer is, release notes and all, and where to check by hand.
+ * The version is Android's own on the phone: the Play build is labelled with
+ * Play's version, not the one the code was written as, and the label is what
+ * people compare with the store.
  *
- * Downloading and installing are separate presses. The download is verified
- * against the checksum published beside it, and only then is there anything
- * to install; running an installer is the last thing this app does before it
- * closes, so it should never happen as a side effect of a check.
+ * An update is only announced here; its notes and its buttons are in the
+ * "What's new" popup, the same one the banner and the sidebar open.
+ *
+ * The Play build has no "Report a problem" on GitHub: people who came from the
+ * store are not expected to have an account there. Feedback goes by email
+ * instead, which reaches the same people.
  */
 export function About({ product }: { product: string }): React.JSX.Element {
-  const [version, setVersion] = useState('')
+  const [installed, setInstalled] = useState<Installed | null>(null)
+  const [noMailApp, setNoMailApp] = useState(false)
   const state = useUpdate()
+  const phone = isAndroid()
 
   useEffect(() => {
-    void api.appVersion().then(setVersion).catch(() => {})
-  }, [])
+    void (async () => {
+      const fromAndroid = await android.appVersion().catch(() => null)
+      if (fromAndroid?.name) {
+        setInstalled({
+          version: fromAndroid.name,
+          device: `${fromAndroid.device}, Android ${fromAndroid.android}`,
+        })
+        return
+      }
+      const version = await api.appVersion().catch(() => '')
+      setInstalled({ version, device: phone ? 'Android' : 'Windows' })
+    })()
+  }, [phone])
 
-  const check = (quiet: boolean): Promise<void> => checkForUpdate(quiet)
+  const feedback = async (): Promise<void> => {
+    const subject = 'Basalt feedback'
+    const body = [
+      '',
+      '',
+      '',
+      '--',
+      `Basalt ${installed?.version ?? ''}${PLAY_STORE ? ' (Google Play)' : ''}`,
+      installed?.device ?? '',
+    ].join('\n')
+    if (phone) {
+      setNoMailApp(!(await android.composeEmail(FEEDBACK_EMAIL, subject, body)))
+      return
+    }
+    await openExternal(
+      `mailto:${FEEDBACK_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
+    )
+  }
 
   return (
-    <div className="px-4 py-3.5">
-      <div className="flex items-center justify-between gap-4">
+    <div className="px-4 py-4">
+      <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <div className="text-[13px] font-semibold text-text">{product}</div>
+          <div className="text-[15px] font-semibold text-text">{product}</div>
           <div className="tnum mt-0.5 font-mono text-[11px] text-textFaint">
-            {version ? `v${version}` : '—'}
+            {installed?.version ? `v${installed.version}` : '—'}
+            {PLAY_STORE && ' · Google Play'}
           </div>
         </div>
-
-        {PLAY_STORE ? (
-          <span className="shrink-0 text-[11.5px] text-textFaint">Updates come from Google Play</span>
-        ) : (
-          <button
-            onClick={() => void check(false)}
-            disabled={state.kind === 'checking' || state.kind === 'downloading'}
-            className="shrink-0 rounded-md border border-line bg-ink2 px-3 py-1.5 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text disabled:opacity-40"
-          >
-            {state.kind === 'checking' ? 'Checking…' : 'Check for updates'}
-          </button>
-        )}
-      </div>
-
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={state.kind}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.14 }}
+        <button
+          onClick={() => void checkForUpdate(false)}
+          disabled={state.kind === 'checking' || state.kind === 'downloading'}
+          className="shrink-0 rounded-md border border-line bg-ink2 px-3 py-1.5 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text disabled:opacity-40"
         >
-          {state.kind === 'current' && (
-            <Line icon={<Check size={12} className="text-textFaint" />}>
-              You’re on the latest version.
-            </Line>
-          )}
-
-          {state.kind === 'failed' && (
-            <Line icon={<AlertCircle size={12} className="text-danger" />} danger>
-              {state.why}
-            </Line>
-          )}
-
-          {offered(state) && (
-            <Offer
-              release={state.release}
-              state={state}
-              onDownload={() => void downloadUpdate()}
-              onInstall={() => void installUpdate()}
-            />
-          )}
-        </motion.div>
-      </AnimatePresence>
-
-      <div className="mt-3.5 border-t border-line pt-3">
-        <div className="flex flex-wrap gap-2">
-          <Link href={WEBSITE} icon={<ExternalLink size={11} />}>
-            Website
-          </Link>
-          <Link href={REPO} icon={<Github size={11} />}>
-            Source code
-          </Link>
-          <Link href={ISSUES} icon={<AlertCircle size={11} />}>
-            Report a problem
-          </Link>
-        </div>
-
-        <p className="mt-3 font-mono text-[10px] text-textFaint">
-          {isAndroid() ? 'Android' : 'Windows'} · GPLv3 · Refora Technologies
-        </p>
-        <p className="mt-1 font-mono text-[10px] text-textFaint">
-          © 2026 Refora Technologies
-        </p>
+          {state.kind === 'checking' ? 'Checking…' : 'Check for updates'}
+        </button>
       </div>
+
+      <Status state={state} />
+
+      <HostBlock phone={phone} />
+
+      <div className="mt-3 overflow-hidden rounded-lg border border-line">
+        {PLAY_STORE && (
+          <Row icon={<Star size={15} />} onClick={() => void openExternal(PLAY_LISTING)}>
+            Rate Basalt on Google Play
+          </Row>
+        )}
+        <Row icon={<Mail size={15} />} onClick={() => void feedback()}>
+          Send feedback
+        </Row>
+        {!PLAY_STORE && (
+          <Row icon={<Bug size={15} />} onClick={() => void openExternal(ISSUES)}>
+            Report a problem on GitHub
+          </Row>
+        )}
+        <Row icon={<Github size={15} />} onClick={() => void openExternal(REPO)}>
+          {PLAY_STORE ? 'Source code and licences' : 'Source code'}
+        </Row>
+      </div>
+      {noMailApp && (
+        <p className="mt-2 text-[11.5px] text-textFaint">
+          No mail app opened. Write to {FEEDBACK_EMAIL} from any mail app.
+        </p>
+      )}
+
+      <p className="mt-4 font-mono text-[10px] text-textFaint">
+        {phone ? 'Android' : 'Windows'} · GPLv3 · Refora Technologies
+      </p>
+      <p className="mt-1 font-mono text-[10px] text-textFaint">© 2026 Refora Technologies</p>
     </div>
   )
 }
 
-type State = UpdateState
-
-/** The offer itself: what is new, and what to do about it. */
-function Offer({
-  release,
-  state,
-  onDownload,
-  onInstall,
-}: {
-  release: Release
-  state: State
-  onDownload: () => void
-  onInstall: () => void
-}): React.JSX.Element {
-  const busy = state.kind === 'downloading'
-  const done = state.kind === 'ready'
-  const percent =
-    state.kind === 'downloading' && state.total > 0
-      ? Math.round((state.had / state.total) * 100)
-      : 0
-
-  return (
-    <div className="mt-3 rounded-md border border-basalt/25 bg-basalt/[0.06] p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-[12.5px] text-text">
-            <ArrowUpCircle size={13} className="shrink-0 text-basalt" />
-            Version {release.version} is available
-          </div>
-          <div className="tnum mt-0.5 font-mono text-[10px] text-textFaint">
-            {formatBytes(release.installerBytes)}
-          </div>
-        </div>
-
-        {done ? (
-          <button
-            onClick={onInstall}
-            className="shrink-0 rounded-md border border-basalt/40 bg-basalt/15 px-3 py-1.5 text-[11.5px] text-text transition-colors hover:bg-basalt/25"
-          >
-            Install and restart
-          </button>
+/** One line on where updates stand; an offered one opens "What's new". */
+function Status({ state }: { state: UpdateState }): React.JSX.Element | null {
+  if (offered(state)) {
+    const { version } = state.release
+    const label =
+      state.kind === 'ready'
+        ? `Version ${version} is ready to install`
+        : state.kind === 'downloading'
+          ? `Downloading version ${version}${
+              state.total > 0 ? ` · ${Math.round((state.had / state.total) * 100)}%` : ''
+            }`
+          : `Version ${version} is available`
+    return (
+      <button
+        onClick={openWhatsNew}
+        className="mt-3 flex w-full items-center gap-2.5 rounded-lg border border-basalt/25 bg-basalt/[0.07] px-3 py-2.5 text-left transition-colors hover:bg-basalt/[0.12]"
+      >
+        {state.kind === 'downloading' ? (
+          <Loader2 size={15} className="shrink-0 animate-spin text-basalt" />
         ) : (
-          <button
-            onClick={onDownload}
-            disabled={busy}
-            className="flex shrink-0 items-center gap-1.5 rounded-md border border-line bg-ink2 px-3 py-1.5 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text disabled:opacity-60"
-          >
-            {busy && <Loader2 size={11} className="animate-spin" />}
-            {busy ? `${percent}%` : 'Download'}
-          </button>
+          <ArrowUpCircle size={15} className="shrink-0 text-basalt" />
         )}
-      </div>
-
-      {busy && (
-        <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-white/10">
-          <div
-            className="h-full rounded-full bg-basalt transition-[width] duration-200"
-            style={{ width: `${percent}%` }}
-          />
-        </div>
-      )}
-
-      {/* What changed, straight from the release. Shown here rather than
-          behind a link, because "there is an update" without "and here is
-          what it does" is not enough to decide on. */}
-      {release.notes && (
-        <div className="mt-3 max-h-[180px] overflow-y-auto border-t border-white/[0.07] pt-2.5">
-          <Notes notes={release.notes} />
-        </div>
-      )}
-    </div>
-  )
+        <span className="tnum min-w-0 flex-1 text-[12.5px] text-text">{label}</span>
+        <span className="flex shrink-0 items-center gap-0.5 text-[11.5px] text-textDim">
+          What’s new
+          <ChevronRight size={13} />
+        </span>
+      </button>
+    )
+  }
+  if (state.kind === 'current') {
+    return (
+      <Line icon={<Check size={12} className="text-textFaint" />}>You’re on the latest version.</Line>
+    )
+  }
+  if (state.kind === 'failed') {
+    return (
+      <Line icon={<AlertCircle size={12} className="text-danger" />} danger>
+        {state.why}
+      </Line>
+    )
+  }
+  return null
 }
 
 /**
- * The release notes as written on GitHub, rendered rather than shown raw.
- *
- * Headings, bullets and bold are all release notes use, and all this draws.
- * See `lib/notes` for why there is no Markdown dependency behind this.
+ * Basalt Host, where the files are: the one thing every new person needs and
+ * the phone cannot install. From a phone the link goes to the computer by whatever
+ * the person uses to send themselves things; on Windows it downloads.
  */
-function Notes({ notes }: { notes: string }): React.JSX.Element {
+function HostBlock({ phone }: { phone: boolean }): React.JSX.Element {
   return (
-    <div className="space-y-1.5 text-[11.5px] leading-relaxed text-textDim">
-      {parseNotes(notes).map((block, at) => {
-        const runs = block.spans.map((span, i) => (
-          <span
-            key={i}
-            className={cn(
-              span.bold && 'font-semibold text-text',
-              span.code && 'rounded bg-white/[0.07] px-1 font-mono text-[10.5px]',
-            )}
+    <div className="mt-4 rounded-xl border border-white/[0.08] bg-white/[0.03] p-4">
+      <div className="flex items-center gap-2 text-[13.5px] font-semibold text-text">
+        <Download size={15} className="text-basalt" />
+        Get Basalt Host for your computer
+      </div>
+      <p className="mt-1.5 text-[12px] leading-relaxed text-textDim">
+        The host runs on the computer that has your files and shares them with your devices. It is
+        free, like this app.
+      </p>
+      {phone ? (
+        <div className="mt-3.5 flex flex-col gap-2">
+          <Big
+            primary
+            icon={<Send size={15} />}
+            onClick={() =>
+              void android.shareText(
+                `Basalt Host. Open this on your computer to download it: ${HOST_DOWNLOAD}`,
+                'Basalt Host for your computer',
+              )
+            }
           >
-            {span.text}
-          </span>
-        ))
-
-        if (block.kind === 'heading') {
-          return (
-            <div
-              key={at}
-              className="pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-textFaint first:pt-0"
-            >
-              {runs}
-            </div>
-          )
-        }
-        if (block.kind === 'bullet') {
-          return (
-            <div key={at} className="flex gap-1.5">
-              <span className="shrink-0 text-textFaint">·</span>
-              <span className="min-w-0">{runs}</span>
-            </div>
-          )
-        }
-        return (
-          <p key={at} className="break-words">
-            {runs}
-          </p>
-        )
-      })}
+            Send the link to my computer
+          </Big>
+          <Big icon={<Globe size={15} />} onClick={() => void openExternal(`${WEBSITE}/#download`)}>
+            Open the download page
+          </Big>
+        </div>
+      ) : (
+        <div className="mt-3.5 flex gap-2">
+          <Big primary icon={<Download size={15} />} onClick={() => void openExternal(HOST_DOWNLOAD)}>
+            Download Basalt Host
+          </Big>
+          <Big icon={<Globe size={15} />} onClick={() => void openExternal(WEBSITE)}>
+            Website
+          </Big>
+        </div>
+      )}
     </div>
+  )
+}
+
+function Big({
+  primary,
+  icon,
+  onClick,
+  children,
+}: {
+  primary?: boolean
+  icon: React.ReactNode
+  onClick: () => void
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-3 text-[13px] font-semibold transition-colors',
+        primary
+          ? 'bg-white text-black hover:bg-white/90'
+          : 'border border-line bg-ink2 text-textDim hover:border-lineBright hover:text-text',
+      )}
+    >
+      {icon}
+      {children}
+    </button>
+  )
+}
+
+function Row({
+  icon,
+  onClick,
+  children,
+}: {
+  icon: React.ReactNode
+  onClick: () => void
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      className="flex w-full items-center gap-3 border-b border-line px-3.5 py-3 text-left text-[12.5px] text-textDim transition-colors last:border-b-0 hover:bg-white/[0.03] hover:text-text"
+    >
+      <span className="shrink-0 text-textFaint">{icon}</span>
+      <span className="min-w-0 flex-1">{children}</span>
+      <ChevronRight size={14} className="shrink-0 text-textFaint" />
+    </button>
   )
 }
 
@@ -263,40 +307,4 @@ function Line({
       <span className="min-w-0">{children}</span>
     </div>
   )
-}
-
-function Link({
-  href,
-  icon,
-  children,
-}: {
-  href: string
-  icon: React.ReactNode
-  children: React.ReactNode
-}): React.JSX.Element {
-  return (
-    <button
-      onClick={() => void openExternal(href)}
-      className="flex items-center gap-1.5 rounded-md border border-line bg-ink2 px-2.5 py-1.5 text-[11px] text-textDim transition-colors hover:border-lineBright hover:text-text"
-    >
-      {icon}
-      {children}
-    </button>
-  )
-}
-
-/**
- * Opens a link in the default browser.
- *
- * Only the addresses listed in the app's capability file may be opened: the
- * opener plugin's `allow-open-url` allows none by itself, which is how these
- * buttons came to do nothing at all. A link added here needs adding there.
- */
-async function openExternal(url: string): Promise<void> {
-  if (!inTauri()) {
-    window.open(url, '_blank')
-    return
-  }
-  const { openUrl } = await import('@tauri-apps/plugin-opener')
-  await openUrl(url)
 }

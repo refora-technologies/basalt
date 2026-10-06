@@ -91,6 +91,23 @@ export const android = {
   canInstallApks: async () => (await plugin<{ can: boolean }>('can_install_apks'))?.can ?? false,
   openInstallSettings: () => plugin<void>('open_install_settings'),
   installApk: (path: string) => plugin<void>('install_apk', { path }),
+
+  /** The version Android installed: the name people see and Play's number. */
+  appVersion: () =>
+    plugin<{ name: string; code: number; device: string; android: string }>('app_version'),
+  /** Text handed to any app that takes it: a link sent to WhatsApp, an email, a PC. */
+  shareText: (text: string, title?: string) => plugin<void>('share_text', { text, title }),
+  /** A new email in the person's mail app, filled in and not sent. Whether it opened. */
+  composeEmail: async (to: string, subject: string, body: string) =>
+    (await plugin<{ opened: boolean }>('compose_email', { to, subject, body }))?.opened ?? false,
+
+  /** Google Play's update and rating services: in the Play build only. */
+  playUpdateCheck: () =>
+    plugin<{ available: boolean; versionCode?: number; status?: string; error?: string }>('play_update_check'),
+  playUpdateStart: () => plugin<{ started: boolean; error?: string }>('play_update_start'),
+  playUpdateState: () => plugin<{ status: string; bytes: number; total: number }>('play_update_state'),
+  playUpdateComplete: () => plugin<void>('play_update_complete'),
+  playReview: async () => (await plugin<{ asked: boolean }>('play_review'))?.asked ?? false,
 }
 
 /** Applies the system bars' sizes as CSS variables, now and on every change. */

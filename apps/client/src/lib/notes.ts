@@ -31,6 +31,12 @@ export type Block =
  * Blank lines separate paragraphs and are not themselves blocks: a run of
  * them collapses, so notes written with generous spacing do not open a hole
  * in the middle of the panel.
+ *
+ * Only what a release brings is kept. The title (`### Basalt v1.4.5`) is
+ * already the window's own heading, and everything from `## Installation`
+ * on (which file to download, a table, checksums, the footer) is for the
+ * download page: inside the app it is already installed, and the table came
+ * out as lines of `|` characters.
  */
 export function parseNotes(notes: string): Block[] {
   const blocks: Block[] = []
@@ -54,7 +60,10 @@ export function parseNotes(notes: string): Block[] {
     const heading = /^#{1,6}\s+(.*)$/.exec(line)
     if (heading) {
       flush()
-      blocks.push({ kind: 'heading', spans: parseSpans(heading[1] ?? '') })
+      const text = (heading[1] ?? '').trim()
+      if (/^installation\b/i.test(text)) break
+      if (blocks.length === 0 && /^basalt v?\d/i.test(text)) continue
+      blocks.push({ kind: 'heading', spans: parseSpans(text) })
       continue
     }
 

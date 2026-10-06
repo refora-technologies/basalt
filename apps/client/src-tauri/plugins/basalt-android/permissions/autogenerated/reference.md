@@ -25,6 +25,15 @@ What the Basalt interface may ask of Android directly. Opening files and creatin
 - `allow-set-volume`
 - `allow-notify-update`
 - `allow-take-action`
+- `allow-app-version`
+- `allow-share-text`
+- `allow-compose-email`
+- `allow-play-available`
+- `allow-play-update-check`
+- `allow-play-update-start`
+- `allow-play-update-state`
+- `allow-play-update-complete`
+- `allow-play-review`
 - `allow-request-notifications`
 - `allow-insets`
 - `allow-register-listener`
@@ -48,6 +57,32 @@ What the Basalt interface may ask of Android directly. Opening files and creatin
 <tr>
 <td>
 
+`basalt-android:allow-app-version`
+
+</td>
+<td>
+
+Enables the app_version command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-app-version`
+
+</td>
+<td>
+
+Denies the app_version command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `basalt-android:allow-can-install-apks`
 
 </td>
@@ -67,6 +102,32 @@ Enables the can_install_apks command without any pre-configured scope.
 <td>
 
 Denies the can_install_apks command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-compose-email`
+
+</td>
+<td>
+
+Enables the compose_email command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-compose-email`
+
+</td>
+<td>
+
+Denies the compose_email command without any pre-configured scope.
 
 </td>
 </tr>
@@ -672,6 +733,162 @@ Denies the pick_folder command without any pre-configured scope.
 <tr>
 <td>
 
+`basalt-android:allow-play-available`
+
+</td>
+<td>
+
+Enables the play_available command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-play-available`
+
+</td>
+<td>
+
+Denies the play_available command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-play-review`
+
+</td>
+<td>
+
+Enables the play_review command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-play-review`
+
+</td>
+<td>
+
+Denies the play_review command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-play-update-check`
+
+</td>
+<td>
+
+Enables the play_update_check command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-play-update-check`
+
+</td>
+<td>
+
+Denies the play_update_check command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-play-update-complete`
+
+</td>
+<td>
+
+Enables the play_update_complete command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-play-update-complete`
+
+</td>
+<td>
+
+Denies the play_update_complete command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-play-update-start`
+
+</td>
+<td>
+
+Enables the play_update_start command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-play-update-start`
+
+</td>
+<td>
+
+Denies the play_update_start command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-play-update-state`
+
+</td>
+<td>
+
+Enables the play_update_state command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-play-update-state`
+
+</td>
+<td>
+
+Denies the play_update_state command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `basalt-android:allow-player-levels`
 
 </td>
@@ -899,6 +1116,32 @@ Enables the share_download command without any pre-configured scope.
 <td>
 
 Denies the share_download command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-share-text`
+
+</td>
+<td>
+
+Enables the share_text command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-share-text`
+
+</td>
+<td>
+
+Denies the share_text command without any pre-configured scope.
 
 </td>
 </tr>

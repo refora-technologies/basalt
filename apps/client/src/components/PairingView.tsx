@@ -36,6 +36,7 @@ export function PairingView({
   notice,
   onBack,
   currentHostId,
+  onHowItWorks,
 }: {
   onPaired: (status: Status) => void
   /** Said above the list: why the app is back here, such as a host removing it. */
@@ -47,6 +48,8 @@ export function PairingView({
   onBack?: () => void
   /** The drive in use, marked as such when changing drives. */
   currentHostId?: string | null
+  /** Shows the introduction again: what Basalt is, and how to get the host. */
+  onHowItWorks?: () => void
 }): React.JSX.Element {
   const [hosts, setHosts] = useState<DiscoveredHost[] | null>(null)
   const [scanning, setScanning] = useState(false)
@@ -217,6 +220,15 @@ export function PairingView({
               onChoose={(host) => void choose(host)}
               onRescan={() => void scan()}
             />
+            {onHowItWorks && (
+              <button
+                onClick={onHowItWorks}
+                className="mt-1 flex w-full items-center justify-center gap-1.5 py-2 text-[11px] text-textFaint transition-colors hover:text-textDim"
+              >
+                New to Basalt? See how it works
+                <ArrowRight size={11} />
+              </button>
+            )}
             {onBack && (
               <button
                 onClick={onBack}

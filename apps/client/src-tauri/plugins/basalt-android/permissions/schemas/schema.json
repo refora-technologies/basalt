@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the app_version command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-app-version",
+          "markdownDescription": "Enables the app_version command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the app_version command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-app-version",
+          "markdownDescription": "Denies the app_version command without any pre-configured scope."
+        },
+        {
           "description": "Enables the can_install_apks command without any pre-configured scope.",
           "type": "string",
           "const": "allow-can-install-apks",
@@ -305,6 +317,18 @@
           "type": "string",
           "const": "deny-can-install-apks",
           "markdownDescription": "Denies the can_install_apks command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the compose_email command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-compose-email",
+          "markdownDescription": "Enables the compose_email command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the compose_email command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-compose-email",
+          "markdownDescription": "Denies the compose_email command without any pre-configured scope."
         },
         {
           "description": "Enables the create_download command without any pre-configured scope.",
@@ -583,6 +607,78 @@
           "markdownDescription": "Denies the pick_folder command without any pre-configured scope."
         },
         {
+          "description": "Enables the play_available command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-play-available",
+          "markdownDescription": "Enables the play_available command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the play_available command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-play-available",
+          "markdownDescription": "Denies the play_available command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the play_review command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-play-review",
+          "markdownDescription": "Enables the play_review command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the play_review command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-play-review",
+          "markdownDescription": "Denies the play_review command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the play_update_check command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-play-update-check",
+          "markdownDescription": "Enables the play_update_check command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the play_update_check command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-play-update-check",
+          "markdownDescription": "Denies the play_update_check command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the play_update_complete command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-play-update-complete",
+          "markdownDescription": "Enables the play_update_complete command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the play_update_complete command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-play-update-complete",
+          "markdownDescription": "Denies the play_update_complete command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the play_update_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-play-update-start",
+          "markdownDescription": "Enables the play_update_start command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the play_update_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-play-update-start",
+          "markdownDescription": "Denies the play_update_start command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the play_update_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-play-update-state",
+          "markdownDescription": "Enables the play_update_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the play_update_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-play-update-state",
+          "markdownDescription": "Denies the play_update_state command without any pre-configured scope."
+        },
+        {
           "description": "Enables the player_levels command without any pre-configured scope.",
           "type": "string",
           "const": "allow-player-levels",
@@ -691,6 +787,18 @@
           "markdownDescription": "Denies the share_download command without any pre-configured scope."
         },
         {
+          "description": "Enables the share_text command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-share-text",
+          "markdownDescription": "Enables the share_text command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the share_text command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-share-text",
+          "markdownDescription": "Denies the share_text command without any pre-configured scope."
+        },
+        {
           "description": "Enables the take_action command without any pre-configured scope.",
           "type": "string",
           "const": "allow-take-action",
@@ -715,10 +823,10 @@
           "markdownDescription": "Denies the take_shared command without any pre-configured scope."
         },
         {
-          "description": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`",
+          "description": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`"
+          "markdownDescription": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`"
         }
       ]
     }

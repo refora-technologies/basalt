@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { api, onBytes, onTransfer, type TransferEvent } from './api'
+import { api, isCancelled, onBytes, onTransfer, type TransferEvent } from './api'
 import { recordWindow } from './throughput'
 import { useAsyncSubscription } from './useAsyncSubscription'
 
@@ -37,7 +37,8 @@ export interface Transfers {
   /** Combined rate of everything in flight, in MB/s. */
   totalRate: number
   start: (transfer: Omit<Transfer, 'transferred' | 'rate' | 'etaRate' | 'status'>) => void
-  finish: (id: string, error?: string) => void
+  /** Done, or failed with a message or what was thrown; a cancel stays a cancel. */
+  finish: (id: string, error?: unknown) => void
   cancel: (id: string) => void
   clearDone: () => void
 }
@@ -97,19 +98,33 @@ export function useTransfers(): Transfers {
     [],
   )
 
-  const finish = useCallback((id: string, error?: string) => {
+  /**
+   * The end of a transfer: done, or failed with what went wrong. `error` is
+   * the message, or what was thrown. A transfer the person cancelled stays
+   * cancelled, though the call it ended still comes back as an error.
+   */
+  const finish = useCallback((id: string, error?: unknown) => {
     seen.current.delete(id)
+    const stopped = isCancelled(error)
+    const message =
+      error === undefined || error === null || stopped
+        ? undefined
+        : error instanceof Error
+          ? error.message
+          : String(error)
     setTransfers((prev) => {
       const updated = prev.map((t) =>
-        t.id === id
-          ? {
-              ...t,
-              status: error ? ('failed' as const) : ('done' as const),
-              error,
-              rate: 0,
-              transferred: error ? t.transferred : t.total,
-            }
-          : t,
+        t.id !== id
+          ? t
+          : stopped || t.status === 'cancelled'
+            ? { ...t, status: 'cancelled' as const, error: undefined, rate: 0 }
+            : {
+                ...t,
+                status: message ? ('failed' as const) : ('done' as const),
+                error: message,
+                rate: 0,
+                transferred: message ? t.transferred : t.total,
+              },
       )
       // Old completed rows are dropped rather than accumulating forever; the
       // queue is a view of what is happening, not a log.

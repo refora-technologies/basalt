@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { VList } from 'virtua'
-import { Folder } from 'lucide-react'
+import { Folder, Star } from 'lucide-react'
 import type { Entry, RowHandlers } from './FileList'
 import { DRAG_MIME, draggedPaths, iconFor } from './FileList'
 import { cn, formatBytes } from '@/lib/utils'
@@ -57,12 +57,15 @@ const Tile = memo(function Tile({
   entry,
   selected,
   cut,
+  starred,
   dropHighlight,
   handlers,
 }: {
   entry: Entry
   selected: boolean
   cut: boolean
+  /** Marked with a star, as on the phone. */
+  starred: boolean
   /** True while files dragged in from outside are hovering this folder. */
   dropHighlight: boolean
   handlers: RowHandlers
@@ -114,7 +117,7 @@ const Tile = memo(function Tile({
       data-entry=""
       style={{ width: TILE_WIDTH, height: TILE_HEIGHT }}
       className={cn(
-        'row-contain flex flex-col items-center justify-center gap-2 rounded-md px-2 text-center transition-colors',
+        'row-contain relative flex flex-col items-center justify-center gap-2 rounded-md px-2 text-center transition-colors',
         selected
           ? 'bg-basalt/[0.09] ring-1 ring-inset ring-basalt/20'
           : 'hover:bg-white/[0.035]',
@@ -122,6 +125,9 @@ const Tile = memo(function Tile({
         dropHighlight && 'bg-basalt/[0.14] ring-1 ring-inset ring-basalt/45',
       )}
     >
+      {starred && (
+        <Star size={11} className="absolute right-2 top-2 fill-basalt text-basalt" aria-label="Starred" />
+      )}
       <Icon
         size={30}
         strokeWidth={1.3}
@@ -149,6 +155,7 @@ export function TileView({
   entries,
   selected,
   cutPaths,
+  starredPaths,
   dropHighlight,
   handlers,
   onBackgroundContextMenu,
@@ -157,6 +164,8 @@ export function TileView({
   entries: Entry[]
   selected: Set<string>
   cutPaths?: Set<string>
+  /** Starred paths, marked with a star. */
+  starredPaths?: Set<string>
   /** Vault path of the folder an external drag is hovering, if any. */
   dropHighlight?: string | null
   handlers: RowHandlers
@@ -195,6 +204,7 @@ export function TileView({
               entry={entry}
               selected={selected.has(entry.id)}
               cut={cutPaths?.has(entry.id) ?? false}
+              starred={starredPaths?.has(entry.id) ?? false}
               dropHighlight={dropHighlight === entry.id}
               handlers={handlers}
             />
@@ -202,7 +212,7 @@ export function TileView({
         </div>
       )
     },
-    [entries, perRow, selected, cutPaths, handlers],
+    [entries, perRow, selected, cutPaths, starredPaths, handlers],
   )
 
   return (
@@ -242,12 +252,15 @@ const ListCell = memo(function ListCell({
   entry,
   selected,
   cut,
+  starred,
   dropHighlight,
   handlers,
 }: {
   entry: Entry
   selected: boolean
   cut: boolean
+  /** Marked with a star, as on the phone. */
+  starred: boolean
   /** True while files dragged in from outside are hovering this folder. */
   dropHighlight: boolean
   handlers: RowHandlers
@@ -316,6 +329,7 @@ const ListCell = memo(function ListCell({
         )}
       />
       <span className="truncate">{entry.name}</span>
+      {starred && <Star size={10} className="shrink-0 fill-basalt text-basalt" aria-label="Starred" />}
     </button>
   )
 })
@@ -324,6 +338,7 @@ export function ListView({
   entries,
   selected,
   cutPaths,
+  starredPaths,
   dropHighlight,
   handlers,
   onBackgroundContextMenu,
@@ -332,6 +347,8 @@ export function ListView({
   entries: Entry[]
   selected: Set<string>
   cutPaths?: Set<string>
+  /** Starred paths, marked with a star. */
+  starredPaths?: Set<string>
   /** Vault path of the folder an external drag is hovering, if any. */
   dropHighlight?: string | null
   handlers: RowHandlers
@@ -370,6 +387,7 @@ export function ListView({
               entry={entry}
               selected={selected.has(entry.id)}
               cut={cutPaths?.has(entry.id) ?? false}
+              starred={starredPaths?.has(entry.id) ?? false}
               dropHighlight={dropHighlight === entry.id}
               handlers={handlers}
             />
@@ -377,7 +395,7 @@ export function ListView({
         </div>
       )
     },
-    [entries, perRow, selected, cutPaths, handlers],
+    [entries, perRow, selected, cutPaths, starredPaths, handlers],
   )
 
   return (

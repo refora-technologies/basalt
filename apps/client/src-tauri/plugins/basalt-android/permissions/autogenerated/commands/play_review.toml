@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-play-review"
+description = "Enables the play_review command without any pre-configured scope."
+commands.allow = ["play_review"]
+
+[[permission]]
+identifier = "deny-play-review"
+description = "Denies the play_review command without any pre-configured scope."
+commands.deny = ["play_review"]

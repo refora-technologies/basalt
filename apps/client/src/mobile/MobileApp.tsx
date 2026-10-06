@@ -4,6 +4,7 @@ import {
   ArrowUpCircle,
   ArrowLeft,
   CheckSquare,
+  ChevronRight,
   Clock,
   Copy,
   Download,
@@ -22,6 +23,7 @@ import {
   Star,
   Trash2,
   Tv,
+  Unlink,
   Upload,
   Video,
   X,
@@ -32,6 +34,7 @@ import { setShowHidden, useShowHidden } from '@/lib/showHidden'
 import { musicItem, type AppModel } from '@/App'
 import { HexMark } from '@/components/HexMark'
 import { PairingView } from '@/components/PairingView'
+import { Onboarding, markOnboarded, onboarded } from '@/components/Onboarding'
 import { ProfileGate } from '@/components/ProfileGate'
 import { LibraryView } from '@/components/LibraryView'
 import { MusicList, PhotoGrid, VideoGrid } from '@/components/MediaViews'
@@ -40,6 +43,7 @@ import { ImageViewer } from '@/components/ImageViewer'
 import { PromptDialog } from '@/components/ui/PromptDialog'
 import { PropertiesDetails } from '@/components/PropertiesPanel'
 import { About } from '@/components/About'
+import { WhatsNew } from '@/components/WhatsNew'
 import type { NavKey } from '@/components/Sidebar'
 import type { Entry } from '@/components/FileList'
 import { api, isFinished, parentOf } from '@/lib/api'
@@ -50,19 +54,25 @@ import { cn, formatBytes } from '@/lib/utils'
 import { FilesScreen } from './FilesScreen'
 import { Rise } from './presence'
 import { isAndroid } from '@/lib/platform'
-import { offered, useUpdate, type UpdateState } from '@/lib/updates'
+import { offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
 import { ActionSheet, Sheet } from './Sheet'
 import { useBack } from './useBack'
+import { SectionPager, SectionTabs, useSectionLink, type Section } from './SectionPager'
 
 type Tab = 'files' | 'library' | 'recent' | 'more'
 type LibrarySection = 'movies' | 'series' | 'videos' | 'music' | 'photos'
 
-const SECTIONS: Array<{ key: LibrarySection; label: string; icon: typeof Film }> = [
+const SECTIONS: Array<Section & { key: LibrarySection }> = [
   { key: 'movies', label: 'Movies', icon: Film },
   { key: 'series', label: 'TV Series', icon: Tv },
   { key: 'videos', label: 'Videos', icon: Video },
   { key: 'music', label: 'Music', icon: Music },
   { key: 'photos', label: 'Photos', icon: Images },
+]
+
+const RECENT_MODES: Section[] = [
+  { key: 'recent', label: 'Recent', icon: Clock },
+  { key: 'starred', label: 'Starred', icon: Star },
 ]
 
 /**
@@ -92,19 +102,44 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
   const { vault, identity, connected } = model
   // Choosing another drive from More: the drive list, with a way back.
   const [changingDrive, setChangingDrive] = useState(false)
+  const [introducing, setIntroducing] = useState(() => !onboarded())
   useBack(changingDrive, () => {
     setChangingDrive(false)
     return true
   })
 
+  // Someone who has used Basalt already knows what it is: forgetting a drive
+  // later goes straight back to the drive list, not to the introduction.
+  const everPaired = vault.status?.hasPaired === true
+  useEffect(() => {
+    if (!everPaired) return
+    markOnboarded()
+    setIntroducing(false)
+  }, [everPaired])
+
   if (!vault.status) return <Splash />
 
   // The drive list: on first use, when the host has removed this device, and
   // when changing drives.
+  // Someone who has never paired: what Basalt is, first. See `Onboarding`.
+  if (!connected && !vault.status.hasPaired && !vault.removed && !changingDrive && introducing) {
+    return (
+      <Safe>
+        <Onboarding
+          onDone={() => {
+            markOnboarded()
+            setIntroducing(false)
+          }}
+        />
+      </Safe>
+    )
+  }
+
   if ((!connected && !vault.status.hasPaired) || vault.removed || changingDrive) {
     return (
       <Safe>
         <PairingView
+          onHowItWorks={changingDrive ? undefined : () => setIntroducing(true)}
           notice={vault.removed}
           onBack={changingDrive ? () => setChangingDrive(false) : undefined}
           currentHostId={changingDrive ? vault.status.hostId : null}
@@ -211,6 +246,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   const [adding, setAdding] = useState(false)
   const [transfersOpen, setTransfersOpen] = useState(false)
   const [shared, setShared] = useState<PhoneFile[]>([])
+  const sectionLink = useSectionLink()
 
   const visibleSections = SECTIONS.filter((s) => !hiddenSections.has(s.key))
   const librarySection = visibleSections.some((s) => s.key === section)
@@ -308,21 +344,12 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
 
   // A newer Basalt: a dot on More, a banner over the other tabs until it is
   // dismissed for that version, and a notification outside the app, once.
-  // Each leads to More, where the offer is with its notes.
+  // The banner and the notification open "What's new"; the dot leads to
+  // More, where the card says what is waiting and opens it too.
   const update = useUpdate()
   const [bannerGone, setBannerGone] = useState<string | null>(() => remembered(BANNER_DISMISSED))
-  const showUpdate = useCallback(() => {
-    setSelected(new Set())
-    setSearching(false)
-    setQuery('')
-    setTab('more')
-    setTimeout(
-      () => document.getElementById('basalt-update')?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
-      350,
-    )
-  }, [setSelected])
   useUpdateNotification(update)
-  useNotificationTaps(showUpdate)
+  useNotificationTaps(openWhatsNew)
 
   const active = transfers.active
 
@@ -372,20 +399,19 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
 
         {tab === 'files' && !selecting && !searching && <Crumbs model={model} />}
         {tab === 'library' && !selecting && visibleSections.length > 1 && (
-          <Chips
-            items={visibleSections.map((s) => ({ key: s.key, label: s.label }))}
+          <SectionTabs
+            items={visibleSections}
             active={librarySection}
             onChoose={(key) => setSection(key as LibrarySection)}
+            link={sectionLink}
           />
         )}
         {tab === 'recent' && !selecting && (
-          <Chips
-            items={[
-              { key: 'recent', label: 'Recent' },
-              { key: 'starred', label: 'Starred' },
-            ]}
+          <SectionTabs
+            items={RECENT_MODES}
             active={recentMode}
             onChoose={(key) => setRecentMode(key as 'recent' | 'starred')}
+            link={sectionLink}
           />
         )}
 
@@ -409,21 +435,39 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
             />
           )}
           {tab === 'recent' && (
-            <FilesScreen
-              model={model}
-              entries={entries}
-              selecting={selecting}
-              onActions={setMenuFor}
-              scrollKey={model.listKey}
-              showPath
-              emptyLabel={
-                recentMode === 'starred'
-                  ? 'Nothing starred yet. Use a file’s ⋮ menu to star it.'
-                  : 'Nothing here yet'
-              }
-            />
+            <SectionPager
+              items={RECENT_MODES}
+              active={recentMode}
+              onChoose={(key) => setRecentMode(key as 'recent' | 'starred')}
+              link={sectionLink}
+              disabled={selecting}
+            >
+              <FilesScreen
+                model={model}
+                entries={entries}
+                selecting={selecting}
+                onActions={setMenuFor}
+                scrollKey={model.listKey}
+                showPath
+                emptyLabel={
+                  recentMode === 'starred'
+                    ? 'Nothing starred yet. Use a file’s ⋮ menu to star it.'
+                    : 'Nothing here yet'
+                }
+              />
+            </SectionPager>
           )}
-          {tab === 'library' && <LibraryScreen model={model} section={librarySection} wide={wide} />}
+          {tab === 'library' && (
+            <SectionPager
+              items={visibleSections}
+              active={librarySection}
+              onChoose={(key) => setSection(key as LibrarySection)}
+              link={sectionLink}
+              disabled={selecting || visibleSections.length < 2}
+            >
+              <LibraryScreen model={model} section={librarySection} wide={wide} />
+            </SectionPager>
+          )}
           {tab === 'more' && (
             <MoreScreen model={model} onTransfers={() => setTransfersOpen(true)} onChangeDrive={onChangeDrive} />
           )}
@@ -455,7 +499,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
           {offered(update) && (
             <UpdateStrip
               update={update}
-              onOpen={showUpdate}
+              onOpen={openWhatsNew}
               onDismiss={() => {
                 remember(BANNER_DISMISSED, update.release.version)
                 setBannerGone(update.release.version)
@@ -470,6 +514,8 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
         {!wide && <BottomNav tab={tab} onTab={goTo} activeTransfers={active.length} attention={offered(update)} />}
         {wide && <div style={{ height: 'var(--inset-bottom, 0px)' }} className="shrink-0" />}
       </div>
+
+      <WhatsNew />
 
       <Rise
         show={notice !== null}
@@ -833,41 +879,6 @@ function Crumbs({ model }: { model: AppModel }): React.JSX.Element | null {
   )
 }
 
-function Chips({
-  items,
-  active,
-  onChoose,
-}: {
-  items: Array<{ key: string; label: string }>
-  active: string
-  onChoose: (key: string) => void
-}): React.JSX.Element {
-  return (
-    <div className="flex h-12 shrink-0 items-center gap-2 overflow-x-auto px-4 [scrollbar-width:none]">
-      {items.map((item) => {
-        const on = item.key === active
-        return (
-          <button
-            key={item.key}
-            onClick={() => {
-              void android.haptic('tap')
-              onChoose(item.key)
-            }}
-            className={cn(
-              'shrink-0 rounded-full border px-4 py-1.5 text-[13.5px] transition-colors duration-150',
-              on
-                ? 'border-transparent bg-basalt font-medium text-ink'
-                : 'border-white/[0.12] text-textDim active:bg-white/[0.06]',
-            )}
-          >
-            {item.label}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
 /** Lost the host, or the drive: said plainly, above the list. */
 function ConnectionLine({ model }: { model: AppModel }): React.JSX.Element | null {
   const kind = model.vault.error?.kind
@@ -1211,7 +1222,7 @@ function TransfersSheet({
                     {t.status === 'failed'
                       ? (t.error ?? 'Did not finish')
                       : t.status === 'cancelled'
-                        ? 'Stopped'
+                        ? 'Cancelled'
                         : saved
                           ? `Saved to ${saved.shownAs}`
                           : 'Done'}
@@ -1512,19 +1523,33 @@ function MoreScreen({
           </div>
         </Card>
 
-        <div id="basalt-update" className="scroll-mt-4 rounded-2xl border border-white/[0.07] bg-[#141416] p-4">
+        <div id="basalt-update" className="scroll-mt-4 rounded-2xl border border-white/[0.07] bg-[#141416] p-1">
           <About product="Basalt" />
         </div>
 
-        <button
-          onClick={() => void model.forgetVault()}
-          className="w-full rounded-2xl border border-danger/25 px-4 py-3.5 text-left text-[14.5px] text-danger active:bg-danger/10"
-        >
-          Forget this drive
-          <div className="mt-0.5 text-[12px] text-textFaint">
-            This phone will have to pair again. Nothing on the drive is touched.
+        {/* Last, and apart: the one thing on this screen that cannot be undone
+            from here. Said in full before it happens, by the confirmation. */}
+        <div className="pt-3">
+          <div className="px-1 pb-2 font-mono text-[10.5px] uppercase tracking-[0.18em] text-textFaint">
+            Pairing
           </div>
-        </button>
+          <button
+            onClick={() => void model.forgetVault()}
+            className="flex w-full items-center gap-3.5 rounded-2xl border border-white/[0.07] bg-[#141416] px-4 py-3.5 text-left transition-colors active:bg-danger/[0.08]"
+          >
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-danger/[0.12] text-danger">
+              <Unlink size={18} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[15px] text-danger">Forget this drive</span>
+              <span className="mt-0.5 block text-[12.5px] leading-snug text-textFaint">
+                Unpairs this phone from {vault.status?.hostName ?? 'the host'}. Nothing on the drive is
+                touched.
+              </span>
+            </span>
+            <ChevronRight size={16} className="shrink-0 text-textFaint" />
+          </button>
+        </div>
       </div>
     </div>
   )

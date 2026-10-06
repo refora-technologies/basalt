@@ -34,8 +34,8 @@ describe('parseNotes', () => {
 
   it('keeps the heading text and drops the hashes, at any level', () => {
     for (const hashes of ['#', '##', '###', '######']) {
-      const [block] = parseNotes(`${hashes} Basalt v1.0.0`)
-      expect(block).toEqual({ kind: 'heading', spans: [{ text: 'Basalt v1.0.0' }] })
+      const [block] = parseNotes(`${hashes} What's new`)
+      expect(block).toEqual({ kind: 'heading', spans: [{ text: "What's new" }] })
     }
   })
 
@@ -125,5 +125,36 @@ describe('parseSpans', () => {
 
   it('leaves a line with no markup as one plain run', () => {
     expect(parseSpans('nothing special here')).toEqual([{ text: 'nothing special here' }])
+  })
+})
+
+// The window that shows them already says which version this is, and the
+// app is already installed: the title and the download section are left out.
+describe('what a release brings', () => {
+  const notes = [
+    '### Basalt v1.4.5',
+    '',
+    'A short summary.',
+    '',
+    "## What's new",
+    '* **One thing.** Explained.',
+    '## Installation',
+    '| File | Install on |',
+    '|---|---|',
+    'A `.sha256` checksum is published beside each file.',
+  ].join('\n')
+
+  it('leaves out the title the window already shows', () => {
+    expect(text(parseNotes(notes)[0])).toBe('A short summary.')
+  })
+
+  it('stops at Installation', () => {
+    const shown = parseNotes(notes).map(text)
+    expect(shown).toEqual(['A short summary.', "What's new", 'One thing. Explained.'])
+  })
+
+  it('keeps a heading that only mentions Basalt further down', () => {
+    const blocks = parseNotes('Intro.\n### Basalt v2 on Linux\n* item')
+    expect(blocks.map(text)).toContain('Basalt v2 on Linux')
   })
 })

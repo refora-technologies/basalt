@@ -12,6 +12,7 @@ import {
   Image as ImageIcon,
   MoreHorizontal,
   Music,
+  Star,
   Video,
 } from 'lucide-react'
 import { cn, formatBytes, formatDate } from '@/lib/utils'
@@ -102,6 +103,7 @@ const Row = memo(function Row({
   entry,
   selected,
   cut,
+  starred,
   dropTarget,
   handlers,
 }: {
@@ -109,6 +111,8 @@ const Row = memo(function Row({
   selected: boolean
   /** Dimmed because it is on the clipboard waiting to be moved. */
   cut: boolean
+  /** Marked with a star after its name, as on the phone. */
+  starred: boolean
   dropTarget: boolean
   handlers: RowHandlers
 }): React.JSX.Element {
@@ -189,7 +193,10 @@ const Row = memo(function Row({
         )}
       />
 
-      <span className="pointer-events-none min-w-0 flex-1 truncate">{entry.name}</span>
+      <span className="pointer-events-none flex min-w-0 flex-1 items-center gap-1.5">
+        <span className="truncate">{entry.name}</span>
+        {starred && <Star size={11} className="shrink-0 fill-basalt text-basalt" aria-label="Starred" />}
+      </span>
 
       {/*
         Quick actions appear on hover, in the space the metadata occupies. CSS
@@ -251,6 +258,7 @@ export function FileList({
   entries,
   selected,
   cutPaths,
+  starredPaths,
   dropHighlight,
   handlers,
   onBackgroundContextMenu,
@@ -260,6 +268,8 @@ export function FileList({
   selected: Set<string>
   /** Paths on the clipboard awaiting a move, drawn dimmed. */
   cutPaths?: Set<string>
+  /** Starred paths, marked with a star. */
+  starredPaths?: Set<string>
   /** Vault path of the folder an external drag is hovering, if any. */
   dropHighlight?: string | null
   handlers: RowHandlers
@@ -294,13 +304,14 @@ export function FileList({
             entry={entry}
             selected={selected.has(entry.id)}
             cut={cutPaths?.has(entry.id) ?? false}
+            starred={starredPaths?.has(entry.id) ?? false}
             dropTarget={dropTarget === entry.id || dropHighlight === entry.id}
             handlers={handlers}
           />
         </div>
       )
     },
-    [entries, selected, cutPaths, dropTarget, dropHighlight, handlers],
+    [entries, selected, cutPaths, starredPaths, dropTarget, dropHighlight, handlers],
   )
 
   const marquee = useMarquee({

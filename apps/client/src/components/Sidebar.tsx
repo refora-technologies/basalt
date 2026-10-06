@@ -115,7 +115,7 @@ export function Sidebar({
       <div className="min-h-4 flex-1" />
       </div>
 
-      <UpdateCard onWhatsNew={() => onNavigate('settings')} />
+      <UpdateCard />
 
       {who && <WhoChip {...who} />}
 

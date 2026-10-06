@@ -55,22 +55,62 @@ export function offered(s: UpdateState): s is Extract<UpdateState, { release: Re
 }
 
 /**
- * Asks GitHub. `quiet` is the automatic check: a failure there is not news,
- * and saying so on every launch would train people to ignore the one time it
- * matters. A download under way or finished is never replaced by a check.
+ * Asks GitHub, or in the Play build, Google Play. `quiet` is the automatic
+ * check: a failure there is not news, and saying so on every launch would
+ * train people to ignore the one time it matters. A download under way or
+ * finished is never replaced by a check.
  */
 export async function checkForUpdate(quiet: boolean): Promise<void> {
-  // From Google Play, Play does the updating.
-  if (PLAY_STORE) return
   if (state.kind === 'downloading' || state.kind === 'ready' || state.kind === 'checking') return
   const before = state
   if (!quiet) set({ kind: 'checking' })
   try {
-    const release = await api.checkUpdate()
+    const release = PLAY_STORE ? await checkPlay() : await api.checkUpdate()
     lastChecked = Date.now()
-    set(release ? { kind: 'available', release } : { kind: 'current' })
+    if (release && PLAY_STORE && playDownloaded) set({ kind: 'ready', release, path: '' })
+    else set(release ? { kind: 'available', release } : { kind: 'current' })
   } catch (e) {
     set(quiet ? before : { kind: 'failed', why: String(e) })
+  }
+}
+
+/** Play's version code back to the version people read: 1004005 is 1.4.5. */
+export function versionFromCode(code: number): string {
+  const major = Math.floor(code / 1_000_000)
+  const minor = Math.floor(code / 1_000) % 1_000
+  const patch = code % 1_000
+  return `${major}.${minor}.${patch}`
+}
+
+/** Whether Play has already finished downloading the update it offers. */
+let playDownloaded = false
+
+/**
+ * Google Play's answer, as an offer like GitHub's.
+ *
+ * Play says which version is available but carries no release notes, so they
+ * are read from the GitHub release of the same version. A version that only
+ * ever existed on Play (a test step) has none, and the popup says so plainly.
+ */
+async function checkPlay(): Promise<Release | null> {
+  // The browser preview has no Play to ask: its usual made-up release.
+  if (!inTauri()) return api.checkUpdate()
+  if (!isAndroid()) return null
+  const answer = await android.playUpdateCheck()
+  if (!answer) return null
+  if (answer.error && !answer.available) throw new Error(answer.error)
+  if (!answer.available || !answer.versionCode) return null
+  playDownloaded = answer.status === 'downloaded'
+  const version = versionFromCode(answer.versionCode)
+  const notes = await api.releaseNotes(version).catch(() => null)
+  return {
+    version,
+    notes: notes ?? '',
+    pageUrl: '',
+    installerName: '',
+    installerUrl: '',
+    installerBytes: 0,
+    checksumUrl: null,
   }
 }
 
@@ -78,7 +118,7 @@ let started = false
 
 /** Checks now, and again every twelve hours or on returning after as long. */
 export function startUpdateChecks(): void {
-  if (started || PLAY_STORE) return
+  if (started) return
   started = true
   void checkForUpdate(true)
   setInterval(() => void checkForUpdate(true), EVERY)
@@ -117,6 +157,7 @@ function listenForProgress(): Promise<void> {
 /** Downloads the offered release, verified against its published checksum. */
 export async function downloadUpdate(): Promise<void> {
   if (state.kind !== 'available') return
+  if (PLAY_STORE) return downloadFromPlay(state.release)
   const release = state.release
   await listenForProgress()
   set({ kind: 'downloading', release, had: 0, total: release.installerBytes })
@@ -138,6 +179,10 @@ export async function downloadUpdate(): Promise<void> {
  */
 export async function installUpdate(): Promise<void> {
   if (state.kind !== 'ready') return
+  if (PLAY_STORE) {
+    await android.playUpdateComplete().catch(() => {})
+    return
+  }
   const { path } = state
   if (isAndroid()) {
     if (!(await android.canInstallApks())) {
@@ -148,4 +193,69 @@ export async function installUpdate(): Promise<void> {
     return
   }
   await api.installUpdate(path).catch(() => {})
+}
+
+/**
+ * Play downloads the update while Basalt stays open; this follows it.
+ *
+ * Play first shows its own confirmation. If that is dismissed, nothing ever
+ * starts, and Play does not say so: after a while with nothing downloaded,
+ * the offer simply goes back to how it was.
+ */
+async function downloadFromPlay(release: Release): Promise<void> {
+  const answer = await android.playUpdateStart().catch(() => null)
+  if (!answer?.started) {
+    set({ kind: 'failed', why: answer?.error ?? 'Google Play could not start the update' })
+    return
+  }
+  set({ kind: 'downloading', release, had: 0, total: 0 })
+  const since = Date.now()
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    if (state.kind !== 'downloading') return
+    const now = await android.playUpdateState().catch(() => null)
+    if (!now) continue
+    if (now.status === 'downloaded' || now.status === 'installed') {
+      playDownloaded = true
+      set({ kind: 'ready', release, path: '' })
+      return
+    }
+    if (now.status === 'failed') {
+      set({ kind: 'failed', why: 'Google Play could not download the update. Try again in a moment.' })
+      return
+    }
+    if (now.status === 'canceled' || (now.bytes === 0 && Date.now() - since > 45_000)) {
+      set({ kind: 'available', release })
+      return
+    }
+    set({ kind: 'downloading', release, had: now.bytes, total: now.total })
+  }
+}
+
+/**
+ * Whether the "What's new" popup is open. One popup for the whole app,
+ * opened from wherever the update is announced: the phone's banner, the
+ * sidebar card, the line in Settings, the notification.
+ */
+let whatsNewOpen = false
+const whatsNewListeners = new Set<() => void>()
+
+export function openWhatsNew(): void {
+  whatsNewOpen = true
+  for (const listener of whatsNewListeners) listener()
+}
+
+export function closeWhatsNew(): void {
+  whatsNewOpen = false
+  for (const listener of whatsNewListeners) listener()
+}
+
+export function useWhatsNewOpen(): boolean {
+  return useSyncExternalStore(
+    (listener) => {
+      whatsNewListeners.add(listener)
+      return () => whatsNewListeners.delete(listener)
+    },
+    () => whatsNewOpen,
+  )
 }

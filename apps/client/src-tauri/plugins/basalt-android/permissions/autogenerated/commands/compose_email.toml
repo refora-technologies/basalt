@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-compose-email"
+description = "Enables the compose_email command without any pre-configured scope."
+commands.allow = ["compose_email"]
+
+[[permission]]
+identifier = "deny-compose-email"
+description = "Denies the compose_email command without any pre-configured scope."
+commands.deny = ["compose_email"]

@@ -285,6 +285,10 @@ export function inProgress(watched: Watched): boolean {
 
 export type ErrorKind =
   | 'offline'
+  /** No player on this computer that can stream, or the chosen one is gone. */
+  | 'noplayer'
+  /** Stopped by the person: not a failure, and never shown as one. */
+  | 'cancelled'
   | 'notfound'
   /** The host is there, but the drive it shares is not connected. */
   | 'unavailable'
@@ -301,6 +305,19 @@ export type ErrorKind =
   | 'signedout'
   | 'unsupported'
   | 'error'
+
+/** Whether something ended because the person cancelled it. */
+export function isCancelled(e: unknown): boolean {
+  return e instanceof ApiError && e.kind === 'cancelled'
+}
+
+/** A player on this computer that can stream. */
+export interface ExternalPlayer {
+  name: string
+  path: string
+  /** Whether Windows opens this kind of file with it. */
+  isDefault: boolean
+}
 
 export class ApiError extends Error {
   constructor(
@@ -363,6 +380,8 @@ export interface Release {
 export const api = {
   /** Which version this is, as the release tags spell it. */
   appVersion: (): Promise<string> => call<string>('app_version'),
+  /** The release notes of one version as published on GitHub, or null when it has none. */
+  releaseNotes: (version: string): Promise<string | null> => call<string | null>('release_notes', { version }),
   /** A newer release, or null when this is the newest. */
   checkUpdate: (): Promise<Release | null> => call<Release | null>('check_update'),
   /** Fetches and verifies an installer, returning where it landed. */
@@ -458,14 +477,20 @@ export const api = {
   downloadToPhone: (remote: string, id: string) =>
     call<{ uri: string; shownAs: string }>('download_to_phone', { remote, id }),
   /**
-   * Hands a file to a player that can decode it — streamed over a local URL
-   * where possible, copied out only when nothing streaming-capable is
-   * installed.
+   * Hands a file to a player that can decode it, streamed over a local URL:
+   * `player` if given (a program's path), else the one Windows opens this
+   * kind of file with when it can stream, else the first that can. Fails as
+   * `noplayer` when there is none. `copy` downloads it and opens the copy
+   * instead, and only ever when the person asked for that.
    */
-  openExternally: (remote: string, id: string) =>
-    call<OpenResult>('open_externally', { remote, id }),
+  openExternally: (remote: string, id: string, player?: string, copy?: boolean) =>
+    call<OpenResult>('open_externally', { remote, id, player: player ?? null, copy: copy ?? null }),
   /** The name of an installed player that can stream, if there is one. */
   externalPlayer: () => call<string | null>('external_player'),
+  /** Every player on this computer that can stream, Windows' default for `name`'s type first. */
+  externalPlayers: (name: string) => call<ExternalPlayer[]>('external_players', { name }),
+  /** What a program the person picked is called, or null when it is not a program. */
+  playerName: (path: string) => call<string | null>('player_name', { path }),
 }
 
 /** Subscribes to transfer progress. Returns an unsubscribe function. */
@@ -763,6 +788,9 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
   switch (cmd) {
     case 'app_version':
       return MOCK_VERSION as T
+    case 'release_notes':
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      return MOCK_RELEASE.notes as T
     case 'check_update':
       // Slow on purpose, like `discover`: the panel has a "Checking…" state
       // and an instant answer would hide it.
@@ -802,7 +830,8 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       // of about a second, and a list that appears instantly in the preview
       // would hide whatever the waiting state looks like.
       await new Promise((resolve) => setTimeout(resolve, 900))
-      return MOCK_HOSTS as T
+      // `?nohosts`: a network with no host on it, as a newcomer's is.
+      return (previewFlag('nohosts') ? [] : MOCK_HOSTS) as T
     case 'begin_pairing':
       return MOCK_HOSTS.some(
         (host) => host.address === args?.address && host.requiresPin,
@@ -876,6 +905,13 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return { player: 'VLC', streamed: true } as T
     case 'external_player':
       return 'VLC' as T
+    case 'external_players':
+      return [
+        { name: 'PotPlayer', path: String.raw`C:\Apps\PotPlayer\PotPlayerMini64.exe`, isDefault: true },
+        { name: 'VLC', path: String.raw`C:\Program Files\VideoLAN\VLC\vlc.exe`, isDefault: false },
+      ] as T
+    case 'player_name':
+      return 'Player' as T
     case 'media_url':
       // Something to open, so the player goes ahead; the preview's player
       // shows the showcase's footage for it. See `useMpv`.

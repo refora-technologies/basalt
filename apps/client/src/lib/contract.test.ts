@@ -252,30 +252,39 @@ describe('plugin permissions', () => {
 
 // `opener:allow-open-url` by itself allows no address at all: every link in
 // About was refused, silently, until each app listed the ones it opens. A link
-// added to About without adding it here would do nothing again.
+// added to `lib/links` without adding it here would do nothing again.
 describe('links the app opens', () => {
-  const about = read('../components/About.tsx')
+  const source = read('./links.ts')
   const constant = (name: string): string => {
-    const m = new RegExp(`export const ${name} = '([^']+)'`).exec(about)
-    if (!m?.[1]) throw new Error(`${name} not found in About.tsx`)
+    const m = new RegExp(`export const ${name} = '([^']+)'`).exec(source)
+    if (!m?.[1]) throw new Error(`${name} not found in links.ts`)
     return m[1]
   }
+  const website = constant('WEBSITE')
   const repo = constant('REPO')
-  const links = [constant('WEBSITE'), repo, `${repo}/issues/new`]
+  const both = [website, `${website}/#download`, `${website}/download/host`, repo, `${repo}/issues/new`]
+  const links = {
+    desktop: [...both, `mailto:${constant('FEEDBACK_EMAIL')}?subject=Basalt%20feedback&body=x`],
+    mobile: [...both, constant('PLAY_LISTING')],
+  }
   // The plugin's own matching: a glob over the whole address, `*` crossing `/`.
   const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const matches = (pattern: string, url: string): boolean =>
     new RegExp(`^${pattern.split('*').map(escape).join('.*')}$`).test(url)
 
+  it("HOST_DOWNLOAD is the website's download route", () => {
+    expect(source).toContain('export const HOST_DOWNLOAD = `${WEBSITE}/download/host`')
+  })
+
   it.each([
     ['desktop', '../../src-tauri/capabilities/default.json'],
     ['mobile', '../../src-tauri/capabilities/mobile.json'],
-  ])('the %s capability allows every one of them', (_, file) => {
+  ] as const)('the %s capability allows every one of them', (which, file) => {
     const scope = capabilityAt(file)
       .filter((p): p is Exclude<Permission, string> => typeof p !== 'string' && p.identifier === 'opener:allow-open-url')
       .flatMap((p) => p.allow ?? [])
       .map((a) => a.url ?? '')
-    for (const url of links) {
+    for (const url of links[which]) {
       expect(scope.some((pattern) => matches(pattern, url)), url).toBe(true)
     }
     expect(scope.some((pattern) => matches(pattern, 'https://example.com/'))).toBe(false)

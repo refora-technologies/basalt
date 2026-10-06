@@ -61,6 +61,7 @@ import { cn } from '@/lib/utils'
 import { android } from '@/lib/android'
 import { getProperty } from '@/lib/mpvBackend'
 import { isMobileShell } from '@/lib/platform'
+import { noteFilmFinished } from '@/lib/review'
 import { useBack } from '@/mobile/useBack'
 
 /**
@@ -345,6 +346,7 @@ export function PlayerOverlay({
     const { duration } = latest.current
     if (duration > 0) report.current?.(item.id, duration, duration)
     const { nextUp: next, onPlayNext: play } = advance.current
+    noteFilmFinished(Boolean(next && play))
     if (next && play) play(next.path)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item])

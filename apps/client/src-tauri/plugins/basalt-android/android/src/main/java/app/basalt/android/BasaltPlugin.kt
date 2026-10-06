@@ -134,6 +134,19 @@ class NotifyUpdateArgs {
 }
 
 @InvokeArg
+class ShareTextArgs {
+  lateinit var text: String
+  var title: String? = null
+}
+
+@InvokeArg
+class EmailArgs {
+  lateinit var to: String
+  var subject: String? = null
+  var body: String? = null
+}
+
+@InvokeArg
 class LevelArgs {
   /** 0 to 1; for brightness, below 0 hands the screen back to the system. */
   var level: Double = -1.0
@@ -988,6 +1001,91 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   private fun mimeOf(name: String): String {
     val ext = name.substringAfterLast('.', "").lowercase()
     return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+  }
+
+  /**
+   * The version Android installed, as Play and the system know it. Not the
+   * number compiled into the Rust side: a Play test build can carry its own
+   * label (1.4.0 while the code is 1.4.4), and the version shown, and
+   * compared for updates, must be the one actually installed.
+   */
+  @Command
+  fun appVersion(invoke: Invoke) {
+    val info = activity.packageManager.getPackageInfo(activity.packageName, 0)
+    val code = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+    invoke.resolve(
+      JSObject()
+        .put("name", info.versionName ?: "")
+        .put("code", code)
+        .put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
+        .put("android", Build.VERSION.RELEASE)
+    )
+  }
+
+  /** Text handed to any app that takes it: a link sent to WhatsApp, an email, a PC. */
+  @Command
+  fun shareText(invoke: Invoke) {
+    val args = invoke.parseArgs(ShareTextArgs::class.java)
+    val send = Intent(Intent.ACTION_SEND).apply {
+      type = "text/plain"
+      putExtra(Intent.EXTRA_TEXT, args.text)
+      args.title?.let { putExtra(Intent.EXTRA_SUBJECT, it) }
+    }
+    activity.runOnUiThread {
+      runCatching { activity.startActivity(Intent.createChooser(send, args.title)) }
+      invoke.resolve()
+    }
+  }
+
+  /** A new email in the person's mail app, addressed and filled in, not sent. */
+  @Command
+  fun composeEmail(invoke: Invoke) {
+    val args = invoke.parseArgs(EmailArgs::class.java)
+    val mail = Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:")).apply {
+      putExtra(Intent.EXTRA_EMAIL, arrayOf(args.to))
+      args.subject?.let { putExtra(Intent.EXTRA_SUBJECT, it) }
+      args.body?.let { putExtra(Intent.EXTRA_TEXT, it) }
+    }
+    activity.runOnUiThread {
+      val opened = runCatching { activity.startActivity(mail) }.isSuccess
+      invoke.resolve(JSObject().put("opened", opened))
+    }
+  }
+
+  /** Whether this copy came from Google Play's build, with its services. */
+  @Command
+  fun playAvailable(invoke: Invoke) {
+    invoke.resolve(JSObject().put("available", PlayServices.AVAILABLE))
+  }
+
+  @Command
+  fun playUpdateCheck(invoke: Invoke) {
+    activity.runOnUiThread { PlayServices.checkUpdate(activity) { invoke.resolve(it) } }
+  }
+
+  @Command
+  fun playUpdateStart(invoke: Invoke) {
+    activity.runOnUiThread { PlayServices.startUpdate(activity) { invoke.resolve(it) } }
+  }
+
+  @Command
+  fun playUpdateState(invoke: Invoke) {
+    invoke.resolve(PlayServices.updateState())
+  }
+
+  @Command
+  fun playUpdateComplete(invoke: Invoke) {
+    activity.runOnUiThread {
+      PlayServices.completeUpdate(activity)
+      invoke.resolve()
+    }
+  }
+
+  @Command
+  fun playReview(invoke: Invoke) {
+    activity.runOnUiThread {
+      PlayServices.requestReview(activity) { asked -> invoke.resolve(JSObject().put("asked", asked)) }
+    }
   }
 
   companion object {

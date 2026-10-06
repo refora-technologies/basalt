@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   AlertTriangle,
+  AppWindow,
   ClipboardPaste,
   Copy,
   Download,
@@ -46,13 +47,19 @@ import { PlayerOverlay } from '@/components/PlayerOverlay'
 import { ImageViewer } from '@/components/ImageViewer'
 import { CommandPalette } from '@/components/CommandPalette'
 import { PairingView } from '@/components/PairingView'
+import { Onboarding, markOnboarded, onboarded } from '@/components/Onboarding'
 import { HexMark } from '@/components/HexMark'
 import { PropertiesPanel } from '@/components/PropertiesPanel'
 import { useContextMenu, type MenuAction } from '@/components/ui/ContextMenu'
 import { PromptDialog, type PromptRequest } from '@/components/ui/PromptDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
+import { WhatsNew } from '@/components/WhatsNew'
+import { OpenWithDialog, type OpenWithRequest } from '@/components/OpenWithDialog'
+import { preferPlayer, preferredPlayer, type PlayerChoice } from '@/lib/playerChoice'
 import {
   api,
+  ApiError,
+  isCancelled,
   isFinished,
   joinPath,
   parentOf,
@@ -131,6 +138,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc')
   const [notice, setNotice] = useState<string | null>(null)
   const [prompt, setPrompt] = useState<PromptRequest | null>(null)
+  const [openWith, setOpenWith] = useState<OpenWithRequest | null>(null)
   const [properties, setProperties] = useState<Entry | null>(null)
   const [dropActive, setDropActive] = useState(false)
   /** The folder an external drag is hovering, or null for the one that is open. */
@@ -501,7 +509,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
           transfers.finish(id)
           if (files.length === 1) setNotice(`Saved to ${saved.shownAs}`)
         } catch (e) {
-          transfers.finish(id, e instanceof Error ? e.message : String(e))
+          transfers.finish(id, e)
         }
       }
       if (files.length > 1) setNotice(`${files.length} files saved to Download/Basalt`)
@@ -531,7 +539,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         await api.download(entry.id, destination, id)
         transfers.finish(id)
       } catch (e) {
-        transfers.finish(id, e instanceof Error ? e.message : String(e))
+        transfers.finish(id, e)
       }
     },
     [downloadToPhone, mobile, transfers],
@@ -573,7 +581,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
           await api.download(entry.id, localJoin(folder, entry.name), id)
           transfers.finish(id)
         } catch (e) {
-          transfers.finish(id, e instanceof Error ? e.message : String(e))
+          transfers.finish(id, e)
         }
       }
     },
@@ -620,7 +628,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
           const failure = uploadFailure(outcome?.failed ?? [], outcome?.files ?? 0)
           transfers.finish(id, failure ?? undefined)
         } catch (e) {
-          transfers.finish(id, e instanceof Error ? e.message : String(e))
+          transfers.finish(id, e)
         } finally {
           inFlight.current.delete(`${local}->${into}`)
         }
@@ -651,7 +659,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         const failure = uploadFailure(outcome?.failed ?? [], outcome?.files ?? 0)
         transfers.finish(id, failure ?? undefined)
       } catch (e) {
-        transfers.finish(id, e instanceof Error ? e.message : String(e))
+        transfers.finish(id, e)
       }
       vault.refresh()
     },
@@ -695,13 +703,15 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
   /**
    * Hands a file to a player that can decode it.
    *
-   * Streamed over a local URL when VLC, mpv or similar is installed, so a 3 GB
-   * episode starts at once and nothing lands on this disk. A transfer row is
-   * only opened for the fallback, where the file really is being copied — a
-   * progress bar for something that is streaming would be a lie.
+   * Always streamed over a local URL, so a 3 GB episode starts at once and
+   * nothing lands on this disk. On Windows the player is the one the person
+   * chose, else the one Windows opens the file with when it can stream, else
+   * any that can; with none, or with `choose`, the app asks which. Copying
+   * the film out is only ever done when the person picks it in that question
+   * (`copyOut` below).
    */
   const openExternally = useCallback(
-    async (path: string) => {
+    async (path: string, choose = false) => {
       // On a phone: the stream, handed to whichever player the phone has —
       // VLC, MX Player — which reads it from this app's media proxy. The app
       // stays running while it does; the proxy is inside it.
@@ -716,20 +726,63 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         }
         return
       }
-      const id = transferId()
+      if (choose) {
+        setOpenWith({ path, name: nameOf(path) })
+        return
+      }
+      const preferred = preferredPlayer()
       try {
-        const result = await api.openExternally(path, id)
-        if (result.streamed) {
-          setNotice(`Streaming to ${result.player}. Nothing is being downloaded.`)
-        } else {
-          transfers.finish(id)
-        }
+        const result = await api.openExternally(path, transferId(), preferred?.path)
+        setNotice(`Streaming to ${result.player}. Nothing is being downloaded.`)
       } catch (e) {
-        transfers.finish(id, e instanceof Error ? e.message : String(e))
+        if (e instanceof ApiError && e.kind === 'noplayer') {
+          // The chosen one is gone, or there never was one: ask.
+          if (preferred) preferPlayer(null)
+          setOpenWith({
+            path,
+            name: nameOf(path),
+            reason: preferred
+              ? `${preferred.name} is not on this computer any more. Choose another player.`
+              : undefined,
+          })
+          return
+        }
         setNotice(e instanceof Error ? e.message : String(e))
       }
     },
-    [mobile, transfers],
+    [mobile],
+  )
+
+  /** A film played in the player picked in "Open with", and remembered if asked. */
+  const playWith = useCallback(async (path: string, player: PlayerChoice, always: boolean) => {
+    setOpenWith(null)
+    if (always) preferPlayer(player)
+    try {
+      const result = await api.openExternally(path, transferId(), player.path)
+      setNotice(`Streaming to ${result.player}. Nothing is being downloaded.`)
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
+  /** The one way a film is copied to this computer to be played: asked for by name. */
+  const copyOut = useCallback(
+    async (path: string) => {
+      setOpenWith(null)
+      setTransfersOpen(true)
+      const id = transferId()
+      const name = nameOf(path)
+      const size = entries.find((e) => e.id === path)?.size ?? 0
+      transfers.start({ id, kind: 'download', name, path, total: size })
+      try {
+        await api.openExternally(path, id, undefined, true)
+        transfers.finish(id)
+      } catch (e) {
+        transfers.finish(id, e)
+        if (!isCancelled(e)) setNotice(e instanceof Error ? e.message : String(e))
+      }
+    },
+    [entries, transfers],
   )
 
   const openEntry = useCallback(
@@ -897,6 +950,14 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
           icon: ExternalLink,
           run: () => void openExternally(entry.id),
         })
+        if (!mobile) {
+          items.push({
+            id: 'open-with',
+            label: 'Open with…',
+            icon: AppWindow,
+            run: () => void openExternally(entry.id, true),
+          })
+        }
       }
 
       items.push({
@@ -988,6 +1049,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     [
       targetsFor,
       writable,
+      mobile,
       openEntry,
       openExternally,
       downloadMany,
@@ -1213,9 +1275,10 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     // nothing at all, silently.
     try {
       const ok = await confirm({
-        title: 'Forget this vault?',
-        message:
-          'This device will have to pair again with a new PIN. Nothing on the drive is affected.',
+        title: 'Forget this drive?',
+        message: `This ${mobile ? 'phone' : 'computer'} will have to pair with ${
+          vault.status?.hostName ?? 'the host'
+        } again before it can open the drive. Nothing on the drive is touched.`,
         confirmLabel: 'Forget it',
         danger: true,
       })
@@ -1227,7 +1290,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     } catch (e) {
       setNotice(e instanceof Error ? e.message : String(e))
     }
-  }, [vault, confirm])
+  }, [vault, confirm, mobile])
 
   const selectedSize = useMemo(() => {
     if (selected.size === 0) return 0
@@ -1271,6 +1334,10 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     setNotice,
     prompt,
     setPrompt,
+    openWith,
+    setOpenWith,
+    playWith,
+    copyOut,
     properties,
     setProperties,
     dropActive,
@@ -1351,6 +1418,7 @@ export function App(): React.JSX.Element {
 function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
   // Choosing another drive while connected: the drive list, with a way back.
   const [changingDrive, setChangingDrive] = useState(false)
+  const [introducing, setIntroducing] = useState(() => !onboarded())
   const {
     vault,
     transfers,
@@ -1380,6 +1448,10 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
     setNotice,
     prompt,
     setPrompt,
+    openWith,
+    setOpenWith,
+    playWith,
+    copyOut,
     properties,
     setProperties,
     dropActive,
@@ -1424,12 +1496,39 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
     selectedSize,
   } = model
 
+  // Someone who has used Basalt already knows what it is: forgetting a drive
+  // later goes straight back to the drive list, not to the introduction.
+  const everPaired = vault.status?.hasPaired === true
+  useEffect(() => {
+    if (!everPaired) return
+    markOnboarded()
+    setIntroducing(false)
+  }, [everPaired])
+
   // --- screens -------------------------------------------------------------
 
   if (!vault.status) return <Splash failed={vault.startupFailed} />
 
   // The drive list: on first use, when the host has removed this device, and
   // when changing drives from the sidebar or Settings.
+  // Someone who has never paired: what Basalt is, first. See `Onboarding`.
+  if (!connected && !vault.status.hasPaired && !vault.removed && !changingDrive && introducing) {
+    return (
+      <div className="relative flex h-full flex-col">
+        <div className="backdrop" />
+        <TitleBar vaultName="Basalt" connected={false} />
+        <div className="min-h-0 flex-1">
+          <Onboarding
+            onDone={() => {
+              markOnboarded()
+              setIntroducing(false)
+            }}
+          />
+        </div>
+      </div>
+    )
+  }
+
   if ((!connected && !vault.status.hasPaired) || vault.removed || changingDrive) {
     return (
       <div className="relative flex h-full flex-col">
@@ -1437,6 +1536,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
         <TitleBar vaultName="Basalt" connected={false} />
         <div className="min-h-0 flex-1">
           <PairingView
+            onHowItWorks={changingDrive ? undefined : () => setIntroducing(true)}
             notice={vault.removed}
             onBack={changingDrive ? () => setChangingDrive(false) : undefined}
             currentHostId={changingDrive ? vault.status.hostId : null}
@@ -1496,6 +1596,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
     scrollKey: listKey,
     selected,
     cutPaths,
+    starredPaths: stars.paths,
     dropHighlight: dropInto,
     handlers,
     onBackgroundContextMenu: (event: { clientX: number; clientY: number }) => {
@@ -1861,7 +1962,14 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
       />
 
       <PromptDialog request={prompt} onClose={() => setPrompt(null)} />
+      <OpenWithDialog
+        request={openWith}
+        onClose={() => setOpenWith(null)}
+        onPlay={(path, player, always) => void playWith(path, player, always)}
+        onCopy={(path) => void copyOut(path)}
+      />
       {confirmDialog}
+      <WhatsNew />
       {menu.node}
     </div>
   )

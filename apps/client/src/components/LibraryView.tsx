@@ -383,6 +383,8 @@ function SeriesSheet({
       // through behind the list read as clutter, and a phone on its side is
       // as wide as a small window, which is how it slipped through before.
       className={cn('fixed inset-0 z-50 bg-ink', !TOUCH && 'sm:bg-ink/95')}
+      // Its own seasons scroll sideways; a swipe here is not a change of section.
+      data-no-swipe
       onMouseDown={onClose}
     >
       <motion.div

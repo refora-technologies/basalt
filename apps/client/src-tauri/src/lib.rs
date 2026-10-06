@@ -772,10 +772,7 @@ async fn upload_from_phone(
         });
         state.transfers.lock().expect("transfers lock").remove(&id);
         if cancel.is_cancelled() {
-            return Err(UiError {
-                kind: "error".into(),
-                message: "cancelled".into(),
-            });
+            return Err(basalt_client::ClientError::Cancelled.into());
         }
         Ok(outcome)
     }
@@ -875,35 +872,73 @@ struct UploadOutcome {
 /// playing at once instead of after two minutes of copying, and nothing is
 /// written to this machine's disk.
 ///
-/// Falls back to downloading only when no streaming-capable player is
-/// installed, and says which of the two happened so the interface can explain
-/// the wait.
+/// `player` is a program the person chose; without one, the player Windows
+/// opens this kind of file with when it can stream, else the first that can.
+/// With none at all this fails as `noplayer`, and the app asks: it never
+/// copies a film out on its own any more. `copy` is that question's other
+/// answer, asked for by name: download it, then open it with whatever Windows
+/// opens it with.
 #[tauri::command]
 async fn open_externally(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     remote: String,
     id: String,
+    player: Option<String>,
+    copy: Option<bool>,
 ) -> Answer<OpenResult> {
-    if let Some(player) = basalt_client::players::find() {
-        let url = state.proxy().await?.url_for(&remote);
-        state
-            .external
-            .lock()
-            .expect("external lock")
-            .insert(remote.clone());
-        basalt_client::players::launch(&player, &url).map_err(|e| UiError {
-            kind: "error".into(),
-            message: format!("could not start {}: {e}", player.name),
-        })?;
-        return Ok(OpenResult {
-            player: player.name.to_string(),
-            streamed: true,
-        });
+    if copy == Some(true) {
+        return copy_and_open(app, state, remote, id).await;
     }
 
-    // Nothing installed that takes a URL. Copy it out and let Windows decide
-    // what opens it — slower, and honest about being slower.
+    let chosen = match player {
+        Some(path) => Some(
+            basalt_client::players::chosen(std::path::Path::new(&path)).ok_or_else(|| UiError {
+                kind: "noplayer".into(),
+                message: "That player is not on this computer any more.".into(),
+            })?,
+        ),
+        None => basalt_client::players::installed(extension_of(&remote))
+            .into_iter()
+            .next(),
+    };
+    let Some(player) = chosen else {
+        return Err(UiError {
+            kind: "noplayer".into(),
+            message: "No player that can stream was found on this computer.".into(),
+        });
+    };
+
+    let url = state.proxy().await?.url_for(&remote);
+    state
+        .external
+        .lock()
+        .expect("external lock")
+        .insert(remote.clone());
+    basalt_client::players::launch(&player, &url).map_err(|e| UiError {
+        kind: "error".into(),
+        message: format!("could not start {}: {e}", player.name),
+    })?;
+    Ok(OpenResult {
+        player: player.name,
+        streamed: true,
+    })
+}
+
+/// The file's extension, with its dot, for asking Windows what opens it.
+fn extension_of(remote: &str) -> &str {
+    let name = remote.rsplit('/').next().unwrap_or(remote);
+    name.rfind('.').map_or("", |at| &name[at..])
+}
+
+/// Copies a file out and lets Windows decide what opens it: slower, and only
+/// when asked for.
+async fn copy_and_open(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    remote: String,
+    id: String,
+) -> Answer<OpenResult> {
     use tauri_plugin_opener::OpenerExt;
 
     let name = remote.rsplit('/').next().unwrap_or(&remote).to_string();
@@ -975,7 +1010,37 @@ fn platform() -> &'static str {
 /// Whether a player that can stream a URL is installed.
 #[tauri::command]
 fn external_player() -> Option<String> {
-    basalt_client::players::find().map(|p| p.name.to_string())
+    basalt_client::players::find().map(|p| p.name)
+}
+
+/// A player on this computer, for the "Open with" list.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlayerInfo {
+    name: String,
+    path: String,
+    is_default: bool,
+}
+
+/// Every player on this computer that can stream, Windows' default for this
+/// kind of file first.
+#[tauri::command]
+fn external_players(name: String) -> Vec<PlayerInfo> {
+    basalt_client::players::installed(extension_of(&name))
+        .into_iter()
+        .map(|p| PlayerInfo {
+            name: p.name,
+            path: p.path.display().to_string(),
+            is_default: p.is_default,
+        })
+        .collect()
+}
+
+/// What a program the person picked is called, or `None` when it is not a
+/// program that exists.
+#[tauri::command]
+fn player_name(path: String) -> Option<String> {
+    basalt_client::players::chosen(std::path::Path::new(&path)).map(|p| p.name)
 }
 
 #[tauri::command]
@@ -1013,6 +1078,19 @@ async fn app_version() -> String {
 #[tauri::command]
 async fn check_update() -> Answer<Option<basalt_update::Release>> {
     basalt_update::check(PRODUCT, env!("CARGO_PKG_VERSION"))
+        .await
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: e.to_string(),
+        })
+}
+
+/// The release notes of one version, as published on GitHub, or `None` when
+/// that version has no release there. The Play build reads the notes of the
+/// version Play offers through this.
+#[tauri::command]
+async fn release_notes(version: String) -> Answer<Option<String>> {
+    basalt_update::notes_for(&version)
         .await
         .map_err(|e| UiError {
             kind: "error".into(),
@@ -1199,6 +1277,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_version,
             check_update,
+            release_notes,
             download_update,
             install_update,
             status,
@@ -1238,6 +1317,8 @@ pub fn run() {
             upload,
             open_externally,
             external_player,
+            external_players,
+            player_name,
             cancel_transfer,
             upload_from_phone,
             download_to_phone,

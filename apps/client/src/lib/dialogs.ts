@@ -40,6 +40,18 @@ export async function pickSubtitleFile(): Promise<string | null> {
   return typeof chosen === 'string' ? chosen : null
 }
 
+/** A program to play films with, picked by the person. */
+export async function pickProgram(): Promise<string | null> {
+  if (!inTauri()) return null
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  const chosen = await open({
+    multiple: false,
+    title: 'Choose a player',
+    filters: [{ name: 'Programs', extensions: ['exe'] }],
+  })
+  return typeof chosen === 'string' ? chosen : null
+}
+
 /** Files to upload. */
 export async function pickFiles(): Promise<string[]> {
   if (!inTauri()) return []

@@ -35,9 +35,8 @@ export function TransfersPanel({
 }): React.JSX.Element {
   const active = transfers.filter((t) => t.status === 'active')
   const done = transfers.filter((t) => t.status === 'done')
-  const failed = transfers.filter(
-    (t) => t.status === 'failed' || t.status === 'cancelled',
-  )
+  const failed = transfers.filter((t) => t.status === 'failed')
+  const cancelled = transfers.filter((t) => t.status === 'cancelled')
 
   // The speed as it is now — the same window the title bar measures, so the
   // two agree — while the time left is planned on a steadier rate, so it does
@@ -75,8 +74,9 @@ export function TransfersPanel({
         </button>
 
         {done.length > 0 && <Pill label={`${done.length} done`} muted />}
+        {cancelled.length > 0 && <Pill label={`${cancelled.length} cancelled`} muted />}
         {failed.length > 0 && <Pill label={`${failed.length} failed`} />}
-        {(done.length > 0 || failed.length > 0) && (
+        {(done.length > 0 || failed.length > 0 || cancelled.length > 0) && (
           <button
             onClick={onClearDone}
             className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] text-textFaint transition-colors hover:bg-white/[0.05] hover:text-textDim"
@@ -148,18 +148,21 @@ function TransferRow({
     transfer.total > 0 ? (transfer.transferred / transfer.total) * 100 : 0
   const isActive = transfer.status === 'active'
   const isDone = transfer.status === 'done'
-  const isBad = transfer.status === 'failed' || transfer.status === 'cancelled'
+  const isBad = transfer.status === 'failed'
+  const isCancelled = transfer.status === 'cancelled'
 
   return (
     <div className="group flex items-center gap-3 rounded-md px-2 py-2 transition-colors hover:bg-white/[0.03]">
       <span
         className={cn(
           'flex h-6 w-6 shrink-0 items-center justify-center rounded',
-          isBad ? 'text-danger' : isDone ? 'text-textFaint' : 'text-textDim',
+          isBad ? 'text-danger' : isDone || isCancelled ? 'text-textFaint' : 'text-textDim',
         )}
       >
         {isBad ? (
           <AlertCircle size={13} />
+        ) : isCancelled ? (
+          <X size={13} />
         ) : isDone ? (
           <Check size={13} />
         ) : transfer.kind === 'download' ? (
@@ -174,7 +177,7 @@ function TransferRow({
           <span
             className={cn(
               'truncate text-[13px]',
-              isDone || isBad ? 'text-textFaint' : 'text-text',
+              isDone || isBad || isCancelled ? 'text-textFaint' : 'text-text',
             )}
             title={transfer.path}
           >
@@ -206,7 +209,13 @@ function TransferRow({
       </div>
 
       <span className="tnum w-[70px] shrink-0 text-right font-mono text-[10px] text-textFaint">
-        {isActive ? `${(transfer.rate / 1e6).toFixed(1)} MB/s` : transfer.status}
+        {isActive
+          ? `${(transfer.rate / 1e6).toFixed(1)} MB/s`
+          : isCancelled
+            ? 'Cancelled'
+            : isDone
+              ? 'Done'
+              : 'Failed'}
       </span>
 
       {/* Row controls, revealed on hover like the file list. */}

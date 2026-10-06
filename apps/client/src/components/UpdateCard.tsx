@@ -1,16 +1,16 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowUpCircle, Loader2 } from 'lucide-react'
-import { downloadUpdate, installUpdate, offered, useUpdate } from '@/lib/updates'
+import { downloadUpdate, installUpdate, offered, openWhatsNew, useUpdate } from '@/lib/updates'
 import { formatBytes } from '@/lib/utils'
 
 /**
  * A newer Basalt, where it is seen: in the sidebar, above the drive.
  *
  * Only there while an update is on offer, and the whole of it can be done from
- * here: download, watch it come in, restart into it. "What's new" goes to
- * Settings, where the release notes are.
+ * here: download, watch it come in, restart into it. "What's new" opens the
+ * release notes over the app.
  */
-export function UpdateCard({ onWhatsNew }: { onWhatsNew: () => void }): React.JSX.Element {
+export function UpdateCard(): React.JSX.Element {
   const state = useUpdate()
 
   return (
@@ -64,7 +64,7 @@ export function UpdateCard({ onWhatsNew }: { onWhatsNew: () => void }): React.JS
                 </button>
               )}
               <button
-                onClick={onWhatsNew}
+                onClick={openWhatsNew}
                 className="shrink-0 rounded-md px-2 py-1.5 text-[11px] text-textFaint transition-colors hover:text-text"
               >
                 What’s new

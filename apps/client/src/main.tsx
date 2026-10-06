@@ -3,6 +3,7 @@ import { MotionConfig } from 'framer-motion'
 import ReactDOM from 'react-dom/client'
 import { App } from './App'
 import { suppressNativeContextMenu } from './lib/nativeMenu'
+import { noteLaunch } from './lib/review'
 import { startUpdateChecks } from './lib/updates'
 import './styles.css'
 
@@ -14,6 +15,9 @@ suppressNativeContextMenu()
 // is waiting in the sidebar, or on a phone in a banner and a notification,
 // without anyone going to Settings to ask.
 startUpdateChecks()
+
+// The Play build asks for a rating once, a week after this first opening.
+noteLaunch()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
