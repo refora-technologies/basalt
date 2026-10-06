@@ -7,6 +7,7 @@ import { android } from '@/lib/android'
 import { HOST_DOWNLOAD, WEBSITE, openExternal } from '@/lib/links'
 import { isMobileShell } from '@/lib/platform'
 import { cn } from '@/lib/utils'
+import { useBack } from '@/mobile/useBack'
 
 const KEY = 'basalt.onboarded'
 
@@ -54,7 +55,14 @@ const RESCAN_MS = 4000
  * looking, so the person can install the host and watch their computer
  * arrive.
  */
-export function Onboarding({ onDone }: { onDone: () => void }): React.JSX.Element {
+export function Onboarding({
+  onDone,
+  onLeave,
+}: {
+  onDone: () => void
+  /** Back from the first page, when it was opened from the drive list to see again. */
+  onLeave?: () => void
+}): React.JSX.Element {
   const phone = isMobileShell()
   const [step, setStep] = useState(0)
   const [hosts, setHosts] = useState<DiscoveredHost[] | null>(null)
@@ -97,6 +105,14 @@ export function Onboarding({ onDone }: { onDone: () => void }): React.JSX.Elemen
     setStep(Math.max(0, Math.min(LAST, next)))
     void android.haptic('tap')
   }, [])
+
+  // Back goes a page back; from the first, back to the drive list if that is
+  // where it was opened from, and otherwise out of the app as usual.
+  useBack(step > 0 || onLeave !== undefined, () => {
+    if (step > 0) go(step - 1)
+    else onLeave?.()
+    return true
+  })
 
   // On a phone the pages turn with a swipe too.
   const touch = useRef<{ x: number; y: number } | null>(null)

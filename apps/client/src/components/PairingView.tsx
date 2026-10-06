@@ -11,6 +11,7 @@ import {
 import { HexMark } from './HexMark'
 import { ApiError, api, type DiscoveredHost, type Status } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { useBack } from '@/mobile/useBack'
 
 const PIN_LENGTH = 6
 
@@ -173,6 +174,13 @@ export function PairingView({
   }, [])
 
   const picking = !chosen
+
+  // On a phone, back from the PIN goes back to the list, as the button
+  // below does; it used to put the whole app away.
+  useBack(!picking, () => {
+    back()
+    return true
+  })
 
   return (
     <div className="relative flex h-full flex-col items-center justify-center px-8">

@@ -6,6 +6,7 @@ import { folderOf, formatOf, stemOf } from '@/lib/mediaInfo'
 import { GRID_THUMB, VIEW_THUMB, fileUrl, isDisplayable, thumbUrl } from '@/lib/thumbs'
 import { cn, formatBytes } from '@/lib/utils'
 import { isMobileShell } from '@/lib/platform'
+import { Sheet } from '@/mobile/Sheet'
 
 /** Fingers rather than a pointer; see `Stage` for the gestures. */
 const TOUCH = isMobileShell()
@@ -134,10 +135,24 @@ export function ImageViewer({
               <NavArrow side="right" onClick={() => go(1)} />
             )}
 
-            <AnimatePresence initial={false}>
-              {info && <Details photo={photo} />}
-            </AnimatePresence>
+            {/* Beside the photo with a mouse. On a touch screen it was laid
+                over the top bar, hiding the very button that put it away, and
+                back closed the whole viewer: it is the app's own sheet there,
+                which a swipe down, a tap above it or back puts away. */}
+            {!TOUCH && (
+              <AnimatePresence initial={false}>
+                {info && <Details photo={photo} />}
+              </AnimatePresence>
+            )}
           </div>
+
+          {TOUCH && (
+            <Sheet open={info} onClose={() => setInfo(false)} title="Details">
+              <div className="px-5 pb-4 pt-1">
+                <DetailRows photo={photo} />
+              </div>
+            </Sheet>
+          )}
 
           {/* A phone's screen is the photo's; a tablet has room for the strip. */}
           {!narrow && (
@@ -522,7 +537,8 @@ function fitted(photo: MediaFile): React.CSSProperties {
   return photo.width && photo.height ? { aspectRatio: `${photo.width} / ${photo.height}` } : {}
 }
 
-function Details({ photo }: { photo: MediaFile }): React.JSX.Element {
+/** What is known about a photo, as a list. */
+function DetailRows({ photo }: { photo: MediaFile }): React.JSX.Element {
   const rows: Array<[string, string]> = [
     ['Name', photo.path.split('/').pop() ?? photo.path],
     ['Folder', folderOf(photo.path) || 'Top of the drive'],
@@ -538,25 +554,33 @@ function Details({ photo }: { photo: MediaFile }): React.JSX.Element {
     ],
   ]
   return (
+    <dl className="space-y-3.5">
+      {rows.map(([label, value]) => (
+        <div key={label}>
+          <dt className={cn('text-textFaint', TOUCH ? 'text-[12px]' : 'text-[10.5px]')}>{label}</dt>
+          <dd className={cn('mt-0.5 break-words text-text', TOUCH ? 'text-[14.5px]' : 'text-[12.5px]')}>
+            {value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+/** The panel beside the photo, with a mouse. */
+function Details({ photo }: { photo: MediaFile }): React.JSX.Element {
+  return (
     <motion.aside
       initial={{ opacity: 0, x: 16 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 16 }}
       transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-      className={cn(
-        'w-[272px] shrink-0 overflow-y-auto border-l border-white/[0.06] bg-[#0b0b0d] px-5 py-5',
-        TOUCH && 'absolute inset-y-0 right-0 z-30 max-w-[85%] pt-20',
-      )}
+      className="w-[272px] shrink-0 overflow-y-auto border-l border-white/[0.06] bg-[#0b0b0d] px-5 py-5"
     >
       <div className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-textFaint">Details</div>
-      <dl className="mt-4 space-y-3.5">
-        {rows.map(([label, value]) => (
-          <div key={label}>
-            <dt className="text-[10.5px] text-textFaint">{label}</dt>
-            <dd className="mt-0.5 break-words text-[12.5px] text-text">{value}</dd>
-          </div>
-        ))}
-      </dl>
+      <div className="mt-4">
+        <DetailRows photo={photo} />
+      </div>
     </motion.aside>
   )
 }

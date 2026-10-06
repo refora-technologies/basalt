@@ -1523,6 +1523,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
               markOnboarded()
               setIntroducing(false)
             }}
+            onLeave={onboarded() ? () => setIntroducing(false) : undefined}
           />
         </div>
       </div>
