@@ -177,6 +177,29 @@ mod tests {
         init_crypto();
     }
 
+    // The website and the privacy policy say every connection uses TLS 1.3.
+    // Both ends are always these two configs, so this is what is negotiated.
+    #[tokio::test]
+    async fn the_host_and_a_device_agree_on_tls_1_3() {
+        let id = HostIdentity::generate("laptop-b").unwrap();
+        let acceptor = server_config(&id).unwrap();
+        let (connector, _) = client_config(Trust::FirstContact);
+        let (near, far) = tokio::io::duplex(64 * 1024);
+
+        let server = tokio::spawn(async move { acceptor.accept(far).await.unwrap() });
+        let client = connector.connect(sni_name(), near).await.unwrap();
+        let server = server.await.unwrap();
+
+        assert_eq!(
+            client.get_ref().1.protocol_version(),
+            Some(rustls::ProtocolVersion::TLSv1_3)
+        );
+        assert_eq!(
+            server.get_ref().1.protocol_version(),
+            Some(rustls::ProtocolVersion::TLSv1_3)
+        );
+    }
+
     #[test]
     fn a_server_config_builds_from_a_generated_identity() {
         let id = HostIdentity::generate("laptop-b").unwrap();
