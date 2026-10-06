@@ -191,6 +191,39 @@ pub async fn check(product: Product, current: &str) -> Result<Option<Release>> {
     Ok(newer_than(release, product, current))
 }
 
+/// The release notes of one published version, or `None` when GitHub has no
+/// release of that version.
+///
+/// For the Play build, where Play says which version is available and its
+/// notes are read from the GitHub release of the same number. A version Play
+/// carries that was never released on GitHub (a test step) simply has none.
+pub async fn notes_for(version: &str) -> Result<Option<String>> {
+    let tag = format!("v{}", version.trim_start_matches('v'));
+    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/releases/tags/{tag}");
+    let response = client()?
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| UpdateError::Network(e.to_string()))?;
+
+    if response.status().as_u16() == 404 {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(UpdateError::Status(response.status().as_u16()));
+    }
+    let release: GhRelease = response
+        .json()
+        .await
+        .map_err(|e| UpdateError::Malformed(e.to_string()))?;
+    if release.draft || release.prerelease {
+        return Ok(None);
+    }
+    Ok(Some(release.body.trim().to_string()).filter(|body| !body.is_empty()))
+}
+
 /// Turns a release into an offer, or nothing when there is nothing to offer.
 ///
 /// Separated from the request so the decision is testable without a network:

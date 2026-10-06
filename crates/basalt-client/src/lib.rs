@@ -43,6 +43,10 @@ pub enum ClientError {
     #[error("protocol: {0}")]
     Protocol(String),
 
+    /// The person stopped it. Not a failure, and said as plainly as one.
+    #[error("Cancelled")]
+    Cancelled,
+
     /// The key presented did not match the pinned one. Either the host was
     /// reset, or something is pretending to be it.
     #[error(
@@ -108,6 +112,7 @@ impl ClientError {
             ClientError::PairingClosed | ClientError::BadPin(_) => "pairing",
             ClientError::PinRequired => "pinrequired",
             ClientError::Removed { .. } => "removed",
+            ClientError::Cancelled => "cancelled",
             ClientError::Net(e) => match e.code() {
                 Some(E::NotFound) => "notfound",
                 Some(E::Denied) => "denied",

@@ -1177,7 +1177,7 @@ impl Basalt {
                     requested += want;
                 }
                 if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
-                    return Err(ClientError::Protocol("cancelled".into()));
+                    return Err(ClientError::Cancelled);
                 }
 
                 let expected = asked.pop_front().expect("a range is always in flight here");
@@ -1345,7 +1345,7 @@ impl Basalt {
             while confirmed < total {
                 while unconfirmed.len() < IN_FLIGHT && sent < total {
                     if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
-                        return Err(ClientError::Protocol("cancelled".into()));
+                        return Err(ClientError::Cancelled);
                     }
                     let want = (CHUNK_BYTES.min(total - sent)) as usize;
                     let n = read_full(&mut file, &mut buf[..want]).await?;
@@ -1391,7 +1391,7 @@ impl Basalt {
             // upload. Anything else — the link dropping — leaves the partial
             // file on the host, so trying again carries on rather than
             // starting over.
-            let deliberate = matches!(&e, ClientError::Protocol(_));
+            let deliberate = matches!(&e, ClientError::Protocol(_) | ClientError::Cancelled);
             if deliberate && let Ok(mut other) = pool.acquire().await {
                 let _ = other.write_abort(&begin.upload).await;
             }
@@ -1565,7 +1565,7 @@ impl Basalt {
         let mut done = 0u64;
         for (rel, path, size) in &tree.files {
             if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
-                return Err(ClientError::Protocol("cancelled".into()));
+                return Err(ClientError::Cancelled);
             }
             let target = join(rel);
             // Each file's progress, placed after everything before it — and

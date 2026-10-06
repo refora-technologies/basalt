@@ -171,9 +171,18 @@ paired with {} ({})",
             }
         }
 
-        Command::Player => match basalt_client::players::find() {
-            Some(player) => println!("{} at {}", player.name, player.path.display()),
-            None => println!(
+        Command::Player => match basalt_client::players::installed(".mkv") {
+            players if !players.is_empty() => {
+                for player in players {
+                    let default = if player.is_default {
+                        "  (default for .mkv)"
+                    } else {
+                        ""
+                    };
+                    println!("{} at {}{default}", player.name, player.path.display());
+                }
+            }
+            _ => println!(
                 "none found. Install VLC or mpv to stream files the window                      cannot decode."
             ),
         },
