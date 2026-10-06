@@ -52,8 +52,12 @@ export function SectionTabs({
     0,
     items.findIndex((item) => item.key === active),
   )
-  // Up to three share the width evenly; more scroll, each as wide as it says.
+  // Up to three share the width evenly, each with its name. More would not
+  // fit a phone with their names, and scrolled with the last cut off at the
+  // edge: so then only the chosen one shows its name, the others their icon,
+  // and all of them fit. The name opens as a section is chosen.
   const even = items.length <= 3
+  const compact = !even
 
   const place = useCallback(
     (at: number, animate: boolean) => {
@@ -85,12 +89,21 @@ export function SectionTabs({
   )
 
   useLayoutEffect(() => {
-    place(index, true)
-    const button = buttons.current[index]
-    if (!even && button && track.current) {
-      button.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
+    if (!compact) {
+      place(index, true)
+      return undefined
     }
-  }, [index, place, even])
+    // The names open and close over NAME_MS, moving every button as they do:
+    // the highlight is placed again on each frame, so it stays on its button.
+    let frame = 0
+    const until = performance.now() + NAME_MS + 40
+    const follow = (): void => {
+      place(index, false)
+      if (performance.now() < until) frame = requestAnimationFrame(follow)
+    }
+    follow()
+    return () => cancelAnimationFrame(frame)
+  }, [index, place, compact])
 
   // The first placement without a slide in from nowhere.
   useLayoutEffect(() => {
@@ -113,10 +126,7 @@ export function SectionTabs({
       <div
         ref={track}
         role="tablist"
-        className={cn(
-          'relative flex rounded-full border border-white/[0.07] bg-white/[0.04] p-1',
-          !even && 'overflow-x-auto [scrollbar-width:none]',
-        )}
+        className="relative flex overflow-hidden rounded-full border border-white/[0.07] bg-white/[0.04] p-1"
       >
         {items.map((item, i) => {
           const on = i === index
@@ -128,14 +138,15 @@ export function SectionTabs({
               }}
               role="tab"
               aria-selected={on}
+              aria-label={item.label}
               onClick={() => {
                 if (on) return
                 void android.haptic('tap')
                 onChoose(item.key)
               }}
-              className={cn(LABEL, even ? 'flex-1' : 'shrink-0', 'text-textDim active:text-text')}
+              className={cn(LABEL, even ? 'flex-1' : 'flex-auto', 'text-textDim active:text-text')}
             >
-              <Label item={item} />
+              <Label item={item} named={!compact || on} />
             </button>
           )
         })}
@@ -145,9 +156,9 @@ export function SectionTabs({
           className="pointer-events-none absolute bottom-1 left-0 top-1 overflow-hidden rounded-full bg-white shadow-[0_2px_10px_rgba(0,0,0,0.35)]"
         >
           <div ref={inked} className="absolute -top-1 left-0 flex p-1 text-black">
-            {items.map((item) => (
-              <span key={item.key} className={cn(LABEL, even ? 'flex-1' : 'shrink-0')}>
-                <Label item={item} />
+            {items.map((item, i) => (
+              <span key={item.key} className={cn(LABEL, even ? 'flex-1' : 'flex-auto')}>
+                <Label item={item} named={!compact || i === index} />
               </span>
             ))}
           </div>
@@ -161,12 +172,25 @@ export function SectionTabs({
 const LABEL =
   'relative flex h-9 items-center justify-center gap-1.5 rounded-full px-3.5 text-[13.5px] font-medium'
 
-function Label({ item }: { item: Section }): React.JSX.Element {
+/** How long a section's name takes to open or close, in the compact control. */
+const NAME_MS = 300
+
+function Label({ item, named }: { item: Section; named: boolean }): React.JSX.Element {
   const Icon = item.icon
   return (
     <>
       {Icon && <Icon size={15} className="shrink-0" />}
-      <span className="whitespace-nowrap">{item.label}</span>
+      <span
+        className="overflow-hidden whitespace-nowrap"
+        style={{
+          maxWidth: named ? 120 : 0,
+          opacity: named ? 1 : 0,
+          marginLeft: named || !Icon ? 0 : -6,
+          transition: `max-width ${NAME_MS}ms ${EASE}, opacity ${NAME_MS - 80}ms ease-out, margin ${NAME_MS}ms ${EASE}`,
+        }}
+      >
+        {item.label}
+      </span>
     </>
   )
 }

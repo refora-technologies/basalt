@@ -130,6 +130,7 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
             markOnboarded()
             setIntroducing(false)
           }}
+          onLeave={onboarded() ? () => setIntroducing(false) : undefined}
         />
       </Safe>
     )
