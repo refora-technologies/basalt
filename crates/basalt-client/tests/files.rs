@@ -337,7 +337,11 @@ async fn ten_thousand_files_in_one_folder_list_whole_and_quickly() {
     let listed = client.list("many").await.expect("the folder lists");
     let took = started.elapsed();
     assert_eq!(listed.len(), 10_000, "every file, none dropped");
-    assert!(took < Duration::from_secs(5), "listing took {took:?}");
+    // What this guards against is a listing that falls apart at this size: a
+    // request per file, or pages that stop early, which take minutes. Not a
+    // stopwatch: an antivirus scanning ten thousand new files took the same
+    // listing from about two seconds to eight, and failed commits for it.
+    assert!(took < Duration::from_secs(30), "listing took {took:?}");
 }
 
 #[tokio::test]
