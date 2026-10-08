@@ -26,8 +26,8 @@ export default {
         basaltDeep: '#B6B6BC',
         basaltDim: '#74747A',
         text: '#F4F4F5',
-        textDim: '#9A9AA1',
-        textFaint: '#5E5E64',
+        textDim: '#A8A8AF',
+        textFaint: '#86868D',
         // The only colour in the system, reserved for destructive actions.
         danger: '#E08368',
         dangerBg: '#1E1614',

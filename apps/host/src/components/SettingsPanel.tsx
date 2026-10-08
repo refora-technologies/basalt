@@ -360,7 +360,7 @@ function Artwork({
                   }
                   if (e.key === 'Escape') setOpen(false)
                 }}
-                className="min-w-0 flex-1 rounded-sm border border-line bg-panel px-2 py-1.5 font-mono text-[11.5px] text-text outline-none transition-colors placeholder:text-textFaint/60 focus:border-lineBright"
+                className="min-w-0 flex-1 rounded-sm border border-line bg-panel px-2 py-1.5 font-mono text-[11.5px] text-text outline-none transition-colors placeholder:text-textFaint focus:border-lineBright"
               />
               <button
                 onClick={() => {
