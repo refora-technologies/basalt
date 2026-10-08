@@ -579,6 +579,25 @@ async fn download_update(app: tauri::AppHandle, release: basalt_update::Release)
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// How an update goes in on this computer: `restart`, where the app puts the
+/// new version in and starts it (Windows, and an AppImage on Linux); or
+/// `package`, where the system's own software installer takes the package
+/// and asks for the password itself (a `.deb` or `.rpm` on Linux).
+#[tauri::command]
+fn update_style() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        match basalt_update::LinuxPackage::here() {
+            basalt_update::LinuxPackage::AppImage => "restart",
+            _ => "package",
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "restart"
+    }
+}
+
 /// Starts the installer and stands aside.
 ///
 /// The app has to go: an installer cannot replace files that are open, and
@@ -586,6 +605,16 @@ async fn download_update(app: tauri::AppHandle, release: basalt_update::Release)
 /// exactly how somebody ends up "updating" and finding the same version.
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
+    #[cfg(target_os = "linux")]
+    {
+        return install_update_linux(app, path).await;
+    }
+    #[cfg(not(target_os = "linux"))]
+    install_update_windows(app, path).await
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn install_update_windows(app: tauri::AppHandle, path: String) -> Answer<()> {
     // As an update, not a first install: /UPDATE goes over the installed copy
     // without uninstalling it or asking anything, and keeps the user's
     // shortcuts as they are; /P shows only a progress bar, closing this app if
@@ -606,6 +635,50 @@ async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
         app.exit(0);
     });
     Ok(())
+}
+
+/// Puts a downloaded update in on Linux.
+///
+/// An AppImage is one file: the new one is written beside it, made runnable,
+/// and moved over it in one step, so a failure part-way leaves the old copy
+/// as it was; then it is started and this one leaves. A `.deb` or `.rpm`
+/// belongs to the system: it is opened in the software installer, which asks
+/// for the password and puts it in, and the new version starts next time.
+#[cfg(target_os = "linux")]
+async fn install_update_linux(app: tauri::AppHandle, path: String) -> Answer<()> {
+    let failed = |message: String| UiError {
+        kind: "error".into(),
+        message,
+    };
+    match basalt_update::LinuxPackage::here() {
+        basalt_update::LinuxPackage::AppImage => {
+            use std::os::unix::fs::PermissionsExt;
+            let current = std::env::var_os("APPIMAGE")
+                .map(std::path::PathBuf::from)
+                .ok_or_else(|| failed("this copy is not an AppImage".into()))?;
+            let incoming = current.with_extension("new");
+            std::fs::copy(&path, &incoming)
+                .map_err(|e| failed(format!("could not put the update in place: {e}")))?;
+            std::fs::set_permissions(&incoming, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| failed(format!("could not make the update runnable: {e}")))?;
+            std::fs::rename(&incoming, &current)
+                .map_err(|e| failed(format!("could not replace the old version: {e}")))?;
+            std::process::Command::new(&current)
+                .spawn()
+                .map_err(|e| failed(format!("could not start the new version: {e}")))?;
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                app.exit(0);
+            });
+            Ok(())
+        }
+        _ => {
+            use tauri_plugin_opener::OpenerExt;
+            app.opener()
+                .open_path(&path, None::<&str>)
+                .map_err(|e| failed(format!("could not open the software installer: {e}")))
+        }
+    }
 }
 
 pub fn run() {
@@ -745,6 +818,7 @@ pub fn run() {
             check_update,
             download_update,
             install_update,
+            update_style,
             status,
             list_drives,
             choose_vault,
