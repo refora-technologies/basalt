@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Check, Laptop, Loader2, Lock, Plus } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, Laptop, Loader2, Lock, Plus } from 'lucide-react'
 import { api, ApiError, inTauri, type ProfileRules, type ProfileView } from '@/lib/api'
 import { PROFILE_COLORS, profileColor, validPin } from '@/lib/useIdentity'
 import { EASE_OUT } from '@/lib/motion'
@@ -192,9 +192,10 @@ export function ProfileGate({
                       {deviceName} · history and stars stay on this device
                     </span>
                   </span>
-                  <span className="shrink-0 text-textFaint transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-textDim">
-                    →
-                  </span>
+                  <ChevronRight
+                    size={16}
+                    className="shrink-0 text-textFaint transition-[transform,color] duration-200 group-hover:translate-x-0.5 group-hover:text-textDim"
+                  />
                 </button>
                 <Checkbox
                   checked={always}
