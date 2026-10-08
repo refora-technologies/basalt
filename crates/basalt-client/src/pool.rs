@@ -52,6 +52,9 @@ struct Inner {
     /// Statements the host handed over while a connection was being told
     /// its profile, for the client to keep: see [`Pool::take_statements`].
     statements: Mutex<Vec<basalt_proto::msg::SignedStatement>>,
+    /// A new connection signed in with the key and was told the token is
+    /// retired: see [`Pool::take_token_retired`].
+    token_retired: std::sync::atomic::AtomicBool,
 }
 
 /// Which profile every connection in the pool should act for.
@@ -88,6 +91,7 @@ impl Pool {
                 profile: Mutex::new(ProfileChoice::default()),
                 changes: tokio::sync::watch::Sender::new(0),
                 statements: Mutex::new(Vec::new()),
+                token_retired: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -140,6 +144,14 @@ impl Pool {
                 // too: an app left open for weeks would otherwise let it lapse.
                 if let Some(key) = &credentials.key {
                     session.answer_endorsement(key).await;
+                }
+                if session.signed_in.by_key
+                    && session.signed_in.retire_token
+                    && !credentials.token.is_empty()
+                {
+                    self.inner
+                        .token_retired
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
                 }
                 // The host may have handed over a statement as this one signed
                 // in, and counts it as given: kept for the client.
@@ -209,6 +221,14 @@ impl Pool {
     /// What new connections sign in with.
     pub fn credentials(&self) -> Credentials {
         self.inner.credentials.clone()
+    }
+
+    /// Whether a connection was told the token is retired since this was
+    /// last asked.
+    pub fn take_token_retired(&self) -> bool {
+        self.inner
+            .token_retired
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The statements handed over since this was last asked.

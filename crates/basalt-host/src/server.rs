@@ -2794,6 +2794,23 @@ where
             continue;
         }
 
+        // Signed in with a token that has since been retired: the device signs
+        // in with its key now, and a copy of the token is worth nothing, even
+        // on a connection opened before. Asked to connect again, which the
+        // device itself does with its key; a copy cannot.
+        if !op.allowed_unauthenticated()
+            && !session.by_key
+            && session.device.as_ref().is_some_and(|d| d.token_retired)
+        {
+            write_err(
+                &mut stream,
+                ErrorCode::Unavailable,
+                "this device signs in with its key now; connect again",
+            )
+            .await?;
+            continue;
+        }
+
         // A drive kept private: a device acting as itself may still pick and
         // sign in to a profile, and nothing else. Answered as signed out, the
         // answer every app already takes as "ask who is using this device".

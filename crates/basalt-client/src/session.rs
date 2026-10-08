@@ -65,6 +65,10 @@ pub struct Credentials {
     /// (a chip that is busy). Said as the reason a device with nothing else
     /// to sign in with cannot, rather than taken for a key that is gone.
     pub key_problem: Option<String>,
+    /// The host has a key on record for this device, whether or not it is
+    /// the one this device holds now. Then the host may well have retired the
+    /// token, and a refused token is no news about the pairing.
+    pub key_expected: bool,
 }
 
 impl std::fmt::Debug for Credentials {
@@ -75,6 +79,7 @@ impl std::fmt::Debug for Credentials {
             .field("key", &self.key)
             .field("key_on_host", &self.key_on_host)
             .field("key_problem", &self.key_problem)
+            .field("key_expected", &self.key_expected)
             .finish()
     }
 }
@@ -300,7 +305,7 @@ impl Session {
                 None => ClientError::KeyGone,
             });
         }
-        let auth: AuthResponse = call_json(
+        let answer: Result<AuthResponse> = call_json(
             &mut stream,
             Op::Auth,
             &AuthRequest {
@@ -308,8 +313,26 @@ impl Session {
                 ..AuthRequest::default()
             },
         )
-        .await?;
-        Ok(Self::signed_in(stream, presented, hello, auth, addr, false))
+        .await
+        .map_err(Into::into);
+        match answer {
+            Ok(auth) => Ok(Self::signed_in(stream, presented, hello, auth, addr, false)),
+            // The token refused. That is "removed" only when the key could not
+            // have been the reason: when the host knows no key for this device,
+            // or refused the key as unknown too. Otherwise the host retired the
+            // token for the key, and what went wrong is the key's.
+            Err(refused) if refused.kind() == "unpaired" => Err(match key_error {
+                Some(key_error) if key_error.kind() != "unpaired" => key_error,
+                Some(_) => refused,
+                None if !credentials.key_expected => refused,
+                None => match &credentials.key_problem {
+                    Some(problem) => ClientError::Key(problem.clone()),
+                    // A key, and not the one the host knows: it was reset.
+                    None => ClientError::KeyGone,
+                },
+            }),
+            Err(other) => Err(other),
+        }
     }
 
     /// Signs in with the key in memory, vouched for by the device's key; or,

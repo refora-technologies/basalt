@@ -286,6 +286,7 @@ impl Basalt {
             key,
             key_on_host,
             key_problem,
+            key_expected: !known.key.is_empty(),
         }
     }
 
@@ -483,6 +484,7 @@ impl Basalt {
             key: key.filter(|_| keyed),
             key_on_host: keyed,
             key_problem: None,
+            key_expected: keyed,
         };
         let pool = Pool::with_session(addr, &info.host_id, credentials, &self.me, session);
         *self.pool.write().await = Some(pool);
@@ -652,10 +654,11 @@ impl Basalt {
         // it is an optimisation, and the client works without it.
         let _ = self.save_store();
 
-        let pool = Pool::with_session(addr, &known.host_id, credentials, &self.me, session);
-        if let Some(proven) = proven {
-            pool.give(proven);
-        }
+        // Moved to the key just now: the token connection is let go, since
+        // the host no longer serves a connection signed in with a retired
+        // token, and the one that proved the key goes into the pool instead.
+        let first = proven.unwrap_or(session);
+        let pool = Pool::with_session(addr, &known.host_id, credentials, &self.me, first);
         // The same host again, after a dropped connection or the host
         // restarting: whoever was using the device still is. It used to start
         // over from what was saved, so somebody who had chosen "this device"
@@ -751,6 +754,12 @@ impl Basalt {
     /// Keeps the statements a pool's connections were handed. Asked often,
     /// and before a pool is let go: the host counts them as given.
     fn keep_pool_statements(&self, pool: &Pool) {
+        // A background connection was told the token is retired: let it go
+        // here as well, so it is never offered again.
+        if pool.take_token_retired() {
+            let mut credentials = pool.credentials();
+            self.forget_token(pool.host_id(), &mut credentials);
+        }
         let Some(key) = pool.credentials().key else {
             return;
         };

@@ -406,8 +406,6 @@ fn software_create() -> Result<DeviceKey, KeyError> {
 }
 
 fn software_load(stored: &StoredKey) -> Result<DeviceKey, KeyError> {
-    // One that will not open was sealed for another person or computer:
-    // the store was copied. The key is as good as gone here.
     // One that will not open is not taken for lost: Windows can fail to open
     // a sealed secret for a moment (early at sign-in, say), and making a new
     // key would cost every pairing that knows only this one. A store copied

@@ -497,6 +497,53 @@ async fn a_key_store_that_is_busy_for_a_moment_never_costs_the_pairing() {
     assert!(client.list("").await.is_ok());
 }
 
+// The third review's first finding: a busy key store, and a token the host
+// has retired still kept here, read as the device having been removed.
+#[tokio::test]
+async fn a_busy_key_store_with_a_retired_token_still_kept_never_reads_as_removed() {
+    let fixture = start_host().await;
+    let store = fixture.store("phone");
+    let phone = Arc::new(FlakyPhone::default());
+    let open = |phone: &Arc<FlakyPhone>| {
+        Basalt::open_as_this_device_with_keys(
+            store.clone(),
+            None,
+            Some(Arc::clone(phone) as Arc<dyn basalt_client::keys::PhoneKeys>),
+        )
+        .unwrap()
+    };
+    // Paired before keys, then moved across.
+    let old = Basalt::open_without_keys(store.clone()).unwrap();
+    fixture.pair(&old).await;
+    drop(old);
+    let token = read_store(&store)["hosts"][0]["token"].clone();
+    let client = open(&phone);
+    client.connect_saved().await.unwrap();
+    assert!(fixture.device().token_retired);
+    drop(client);
+
+    // The token is still here (as if a crash came before it was let go), and
+    // the key store is busy.
+    let mut kept = read_store(&store);
+    kept["hosts"][0]["token"] = token;
+    write_store(&store, &kept);
+    phone
+        .failing
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let client = open(&phone);
+    let refused = client.connect_saved().await.unwrap_err();
+    assert_ne!(refused.kind(), "removed", "{refused}");
+    assert_eq!(client.known_hosts().len(), 1, "the pairing is kept");
+    drop(client);
+
+    phone
+        .failing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let client = open(&phone);
+    client.connect_saved().await.unwrap();
+    assert!(client.list("").await.is_ok());
+}
+
 #[tokio::test]
 async fn an_older_app_pairing_again_on_an_owners_device_takes_its_vouching_with_it() {
     let fixture = start_host().await;
@@ -1160,4 +1207,74 @@ async fn a_token_sign_in_after_a_key_one_is_a_token_sign_in() {
     let devices = fixture.host.devices();
     let b_row = devices.iter().find(|d| d.device_id == ID_B).unwrap();
     assert_eq!(b_row.public_key, b.public_key().to_hex());
+}
+
+// A connection signed in with a token before it was retired goes no further
+// once it is: a copy of the token in use stops working at once.
+#[tokio::test]
+async fn a_connection_on_a_token_that_is_retired_is_stopped_at_its_next_request() {
+    let fixture = start_host().await;
+    let token = raw_pair(&fixture, None, ID_A).await;
+    let with_token = AuthRequest {
+        token,
+        ..AuthRequest::default()
+    };
+    let (mut copy, host_id) = raw(fixture.addr, ID_A).await;
+    auth(&mut copy, &with_token).await.unwrap();
+    let listed: std::result::Result<ListResponse, _> = call_json(
+        &mut copy,
+        Op::List,
+        &ListRequest {
+            path: String::new(),
+        },
+    )
+    .await;
+    assert!(listed.is_ok());
+
+    // The real device gives its key and uses it.
+    let key = SoftwareKey::generate().unwrap();
+    let (mut real, _) = raw(fixture.addr, ID_A).await;
+    auth(&mut real, &with_token).await.unwrap();
+    let enrol = EnrolRequest {
+        key: key.public_key().to_hex(),
+        signature: key
+            .sign(&bound(&real, Purpose::Enrol, &host_id))
+            .unwrap()
+            .to_hex(),
+        key_kind: None,
+    };
+    call_unit(&mut real, Op::Enrol, &enrol).await.unwrap();
+    let (mut keyed, _) = raw(fixture.addr, ID_A).await;
+    let request = by_key(
+        &key,
+        key.sign(&bound(&keyed, Purpose::Auth, &host_id)).unwrap(),
+    );
+    auth(&mut keyed, &request).await.unwrap();
+
+    // The copy, still connected, is stopped; the key's connection goes on.
+    let listed: std::result::Result<ListResponse, _> = call_json(
+        &mut copy,
+        Op::List,
+        &ListRequest {
+            path: String::new(),
+        },
+    )
+    .await;
+    assert_eq!(listed.unwrap_err().code(), Some(ErrorCode::Unavailable));
+    let listed: std::result::Result<ListResponse, _> = call_json(
+        &mut keyed,
+        Op::List,
+        &ListRequest {
+            path: String::new(),
+        },
+    )
+    .await;
+    assert!(listed.is_ok());
+
+    // And a copy cannot put its own key in now.
+    let (mut copy2, _) = raw(fixture.addr, ID_A).await;
+    assert_eq!(
+        code(auth(&mut copy2, &with_token).await),
+        Some(ErrorCode::Unauthenticated)
+    );
 }

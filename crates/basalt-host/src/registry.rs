@@ -485,9 +485,9 @@ impl Registry {
     ///
     /// Returns whether anything changed, so the caller knows to save.
     pub fn observe(&mut self, token_hash: &str, device_id: &str, device_name: &str) -> bool {
-        let Some(device) = self.devices.iter_mut().find(|d| d.token_hash == token_hash) else {
+        if !self.devices.iter().any(|d| d.token_hash == token_hash) {
             return false;
-        };
+        }
         let mut changed = false;
 
         let device_id = sanitise_device_id(device_id);
@@ -500,7 +500,17 @@ impl Registry {
         // Not for a device with a key: its id was settled when it gave the
         // key, and a device that could rename itself to another's id would be
         // filed as that other device.
-        if !device_id.is_empty() && device.device_id != device_id && !device.keyed() {
+        // Nor an id another device here already has: taking it would file
+        // this device as that one, sign-ins and all.
+        let taken = !device_id.is_empty()
+            && self
+                .devices
+                .iter()
+                .any(|d| d.token_hash != token_hash && d.device_id == device_id);
+        let Some(device) = self.devices.iter_mut().find(|d| d.token_hash == token_hash) else {
+            return false;
+        };
+        if !device_id.is_empty() && device.device_id != device_id && !device.keyed() && !taken {
             device.device_id = device_id;
             changed = true;
         }
@@ -590,10 +600,19 @@ impl Registry {
             device.key_kind = kind;
             return Ok(false);
         }
+        // Once the host has a key for a device, a token cannot swap it for
+        // another. Otherwise a copy of the token could put its own key in, use
+        // it, retire the token, and lock the real device out; a copied token
+        // reaches the drive, as it always did, and no further. A device that
+        // has lost a key it never used carries on with its token, and pairing
+        // again gives it a new one.
+        if device.keyed() {
+            return Err(HostError::Denied(
+                "this device already has a key here; pair again to give it a new one".into(),
+            ));
+        }
         device.public_key = hex;
         device.key_kind = kind;
-        // Ownership vouched with the old key; a new one has not been given it.
-        device.owner = false;
         Ok(true)
     }
 
@@ -1504,16 +1523,41 @@ mod tests {
         assert!(registry.set_owner(&token, false).unwrap());
     }
 
+    // What a copied token could do with Enrol: put its own key in over the
+    // device's, use it, and lock the real device out.
     #[test]
-    fn a_new_key_drops_ownership_and_pairing_with_a_token_drops_the_key() {
+    fn a_token_cannot_swap_a_devices_key_for_another() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let token = pair_as(&mut registry, now, "Laptop", DEVICE_A);
+        let id = hash_token(&token);
+        let real = key();
+        registry.enrol(&id, &real, None).unwrap();
+        registry.set_owner(&id, true).unwrap();
+        assert!(registry.enrol(&id, &key(), None).is_err());
+        let device = registry.device(&id).unwrap();
+        assert_eq!(device.public_key, real.to_hex());
+        assert!(device.owner, "nothing changed");
+    }
+
+    #[test]
+    fn a_device_cannot_take_an_id_another_device_has() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        pair_as(&mut registry, now, "A", DEVICE_A);
+        let b = hash_token(&pair_as(&mut registry, now, "B", DEVICE_B));
+        assert!(!registry.observe(&b, DEVICE_A, "B"));
+        assert_eq!(registry.device(&b).unwrap().device_id, DEVICE_B);
+    }
+
+    #[test]
+    fn pairing_again_with_a_token_drops_the_key_and_ownership() {
         let mut registry = with_pin();
         let now = Instant::now();
         let token = pair_as(&mut registry, now, "Laptop", DEVICE_A);
         let id = hash_token(&token);
         registry.enrol(&id, &key(), None).unwrap();
         registry.set_owner(&id, true).unwrap();
-        registry.enrol(&id, &key(), None).unwrap();
-        assert!(!registry.device(&id).unwrap().owner);
 
         // An older app on the same device pairs again with a token.
         let token = pair_as(&mut registry, now, "Laptop", DEVICE_A);
