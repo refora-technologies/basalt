@@ -219,7 +219,7 @@ function Rate({ icon, value }: { icon: React.ReactNode; value: number }): React.
     <span
       className={cn(
         'flex items-center gap-1 transition-colors',
-        idle ? 'text-textFaint/40' : 'text-textDim',
+        idle ? 'text-textFaint/70' : 'text-textDim',
       )}
     >
       {icon}

@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowUpCircle, Loader2 } from 'lucide-react'
+import { ArrowUpCircle, Loader2, RotateCw } from 'lucide-react'
 import { downloadUpdate, installUpdate, offered, openWhatsNew, useUpdate } from '@/lib/updates'
 import { formatBytes } from '@/lib/utils'
 
@@ -47,9 +47,11 @@ export function UpdateCard(): React.JSX.Element {
               {state.kind === 'ready' ? (
                 <button
                   onClick={() => void installUpdate()}
-                  className="flex-1 rounded-md border border-basalt/40 bg-basalt/15 px-2 py-1.5 text-[11px] text-text transition-colors hover:bg-basalt/25"
+                  title="Restart Basalt into the new version"
+                  className="flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-basalt/40 bg-basalt/15 px-2 py-1.5 text-[11px] text-text transition-colors hover:bg-basalt/25"
                 >
-                  Restart to update
+                  <RotateCw size={11} className="shrink-0" />
+                  Restart
                 </button>
               ) : (
                 <button
@@ -65,7 +67,7 @@ export function UpdateCard(): React.JSX.Element {
               )}
               <button
                 onClick={openWhatsNew}
-                className="shrink-0 rounded-md px-2 py-1.5 text-[11px] text-textFaint transition-colors hover:text-text"
+                className="shrink-0 whitespace-nowrap rounded-md px-2 py-1.5 text-[11px] text-textDim transition-colors hover:text-text"
               >
                 What’s new
               </button>
