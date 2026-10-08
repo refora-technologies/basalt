@@ -866,6 +866,7 @@ impl Notices {
             let said = match notice {
                 basalt_client::WatchNotice::Removed(e) => format!("removed: {e}"),
                 basalt_client::WatchNotice::AccessChanged => "access".to_string(),
+                basalt_client::WatchNotice::ProfilesChanged => "profiles".to_string(),
             };
             inner.lock().expect("notices lock").push(said);
         }
@@ -1538,4 +1539,143 @@ async fn a_seek_replaces_the_devices_own_conversion() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     eprintln!("freed after {:?}", started.elapsed());
+}
+
+// The host owner's rules about profiles
+// ---------------------------------------------------------------------------
+
+impl Notices {
+    fn count(&self, said: &str) -> usize {
+        self.0
+            .lock()
+            .expect("notices lock")
+            .iter()
+            .filter(|n| *n == said)
+            .count()
+    }
+
+    /// Waits for one more of `said` than there were, and says how long it took.
+    async fn next(&self, said: &str, before: usize) -> Option<Duration> {
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(10) {
+            if self.count(said) > before {
+                return Some(started.elapsed());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        None
+    }
+}
+
+// What was reported: the owner made the drive private, and a device went on
+// offering what it no longer could until it next looked, half a minute later.
+#[tokio::test]
+async fn every_change_to_the_profiles_or_their_rules_is_told_at_once() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+
+    let notices = Notices::default();
+    let _watch = client.watch_with(|_| {}, notices.record());
+    settle().await;
+
+    let host = &fixture.host;
+    let changes = [
+        "a profile added",
+        "a profile required",
+        "profiles kept to the host",
+        "the rule lifted",
+    ];
+    for what in changes {
+        let before = notices.count("profiles");
+        match what {
+            "a profile added" => host.add_profile("Maya", 2).unwrap(),
+            "a profile required" => host.set_require_profile(true).unwrap(),
+            "profiles kept to the host" => host.set_owner_adds_profiles(true).unwrap(),
+            _ => host.set_require_profile(false).unwrap(),
+        }
+        let took = notices
+            .next("profiles", before)
+            .await
+            .unwrap_or_else(|| panic!("{what}: the device must be told"));
+        assert!(took < Duration::from_secs(2), "{what}: told after {took:?}");
+    }
+
+    // And what it is told to ask again for is already the new answer.
+    let identity = client.identity().await;
+    assert!(identity.rules.owner_adds_profiles && !identity.rules.require_profile);
+}
+
+#[tokio::test]
+async fn a_private_drive_tells_a_device_acting_as_itself_only_that_the_profiles_changed() {
+    let fixture = start_host().await;
+    fixture.host.add_profile("Maya", 2).unwrap();
+    fixture.host.set_require_profile(true).unwrap();
+
+    let client = fixture.paired_client().await;
+    client.continue_as_device(false).await.unwrap();
+
+    let seen = Seen::default();
+    let notices = Notices::default();
+    let _watch = client.watch_with(seen.record(), notices.record());
+    settle().await;
+
+    // Not signed in: nothing of the drive, not even a file's name.
+    std::fs::write(fixture.vault_path("films/hidden.mkv"), b"x").unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        !seen.all().iter().any(appeared("films/hidden.mkv")),
+        "a device that has not signed in must not hear of the drive; saw {:?}",
+        seen.all()
+    );
+
+    // But the owner's changes, yes.
+    let before = notices.count("profiles");
+    fixture.host.add_profile("Sam", 4).unwrap();
+    assert!(notices.next("profiles", before).await.is_some());
+
+    // Signed in, the watch follows the profile and the drive is heard again.
+    let maya = client
+        .profiles()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|p| p.name == "Maya")
+        .unwrap();
+    client
+        .sign_in_profile(&maya.id, "2468", false)
+        .await
+        .unwrap();
+    settle().await;
+    std::fs::write(fixture.vault_path("films/seen.mkv"), b"x").unwrap();
+    assert!(
+        seen.wait_for(appeared("films/seen.mkv")).await,
+        "signed in, changes must arrive; saw {:?}",
+        seen.all()
+    );
+}
+
+#[tokio::test]
+async fn a_sign_in_ended_on_the_host_is_told_to_the_device_at_once() {
+    let fixture = start_host().await;
+    fixture.host.add_profile("Maya", 2).unwrap();
+    fixture.host.set_require_profile(true).unwrap();
+
+    let client = fixture.paired_client().await;
+    let maya = client.profiles().await.unwrap().remove(0);
+    client
+        .sign_in_profile(&maya.id, "2468", true)
+        .await
+        .unwrap();
+
+    let notices = Notices::default();
+    let _watch = client.watch_with(|_| {}, notices.record());
+    settle().await;
+
+    let before = notices.count("profiles");
+    assert!(fixture.host.reset_profile_pin(&maya.id).unwrap());
+    assert!(notices.next("profiles", before).await.is_some());
+
+    let identity = client.identity().await;
+    assert!(identity.choose, "the device asks who is using it again");
+    assert!(identity.profile.is_none());
 }

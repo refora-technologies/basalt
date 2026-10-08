@@ -45,6 +45,9 @@ struct Inner {
     me: Me,
     idle: Mutex<Vec<Idle>>,
     profile: Mutex<ProfileChoice>,
+    /// The choice's generation, for a watch to follow: see
+    /// [`Pool::profile_changes`].
+    changes: tokio::sync::watch::Sender<u64>,
 }
 
 /// Which profile every connection in the pool should act for.
@@ -79,6 +82,7 @@ impl Pool {
                 me: me.clone(),
                 idle: Mutex::new(Vec::new()),
                 profile: Mutex::new(ProfileChoice::default()),
+                changes: tokio::sync::watch::Sender::new(0),
             }),
         }
     }
@@ -157,6 +161,7 @@ impl Pool {
                         }
                         current.generation
                     };
+                    self.inner.changes.send_replace(generation);
                     session.profile_use(None).await?;
                     session.profile_gen = generation;
                 }
@@ -173,10 +178,27 @@ impl Pool {
 
     /// Acts for a profile from now on, or for the device itself with None.
     pub fn set_profile(&self, token: Option<String>) {
-        let mut choice = self.inner.profile.lock().expect("profile lock");
-        choice.generation += 1;
-        choice.token = token;
-        choice.ended = false;
+        let generation = {
+            let mut choice = self.inner.profile.lock().expect("profile lock");
+            choice.generation += 1;
+            choice.token = token;
+            choice.ended = false;
+            choice.generation
+        };
+        self.inner.changes.send_replace(generation);
+    }
+
+    /// The profile chosen now, with the generation it was chosen in.
+    pub fn profile_choice(&self) -> (u64, Option<String>) {
+        let choice = self.inner.profile.lock().expect("profile lock");
+        (choice.generation, choice.token.clone())
+    }
+
+    /// Changes whenever the profile chosen does. A watch holds its connection
+    /// open for good, so it is never handed the new choice the way a pooled
+    /// connection is; it follows this instead.
+    pub fn profile_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.changes.subscribe()
     }
 
     /// The profile token in use, if any.
@@ -191,12 +213,17 @@ impl Pool {
 
     /// The host said the sign-in has ended: carry on as the device.
     pub fn profile_ended(&self) {
-        let mut choice = self.inner.profile.lock().expect("profile lock");
-        if choice.token.is_some() {
+        let generation = {
+            let mut choice = self.inner.profile.lock().expect("profile lock");
+            if choice.token.is_none() {
+                return;
+            }
             choice.generation += 1;
             choice.token = None;
             choice.ended = true;
-        }
+            choice.generation
+        };
+        self.inner.changes.send_replace(generation);
     }
 
     /// Whether the host ended the sign-in since the last time this was asked.

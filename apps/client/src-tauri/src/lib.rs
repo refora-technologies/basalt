@@ -219,13 +219,20 @@ fn start_watching(client: &Arc<Basalt>, app: &tauri::AppHandle) {
         move |change| {
             let _ = emitter.emit("basalt://change", change);
         },
-        move |notice| {
-            if let basalt_client::WatchNotice::Removed(removed) = notice {
-                let _ = told.emit("basalt://removed", removed.to_string());
+        move |notice| match notice {
+            // The owner changed the profiles or the rules about them: the
+            // window asks again who is using this device, at once.
+            basalt_client::WatchNotice::ProfilesChanged => {
+                let _ = told.emit("basalt://profiles", ());
             }
-            // Removed or made read-only: either way the window's status is
-            // out of date, and with it which buttons it shows.
-            let _ = told.emit("basalt://status", status_of(&watched));
+            notice => {
+                if let basalt_client::WatchNotice::Removed(removed) = notice {
+                    let _ = told.emit("basalt://removed", removed.to_string());
+                }
+                // Removed or made read-only: either way the window's status
+                // is out of date, and with it which buttons it shows.
+                let _ = told.emit("basalt://status", status_of(&watched));
+            }
         },
     );
     if let Some(state) = app.try_state::<AppState>() {

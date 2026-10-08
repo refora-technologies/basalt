@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, type IdentityState, type ProfileView } from './api'
+import { api, onProfilesChanged, type IdentityState, type ProfileView } from './api'
 
 /**
  * Who is using this device: a profile, or the device on its own.
  *
- * Asked after connecting, and again every so often, so a profile removed or
- * signed out on the host is noticed without anybody having to do anything.
+ * Asked after connecting, and again the moment the host says its profiles or
+ * its owner's rules changed, so a drive made private, or a profile removed or
+ * signed out on the host, shows here at once rather than on the next click.
+ * Nothing polls: the host tells the device, over the connection it already
+ * keeps open for changes to the drive, and asks again when that reconnects.
  *
  * A host from before profiles cannot list any, and then there is nothing to
  * choose: the device simply carries on as itself, as it always did.
@@ -21,8 +24,6 @@ export interface Identity {
   /** Loads the host's list again, for the chooser. */
   reloadProfiles: () => Promise<void>
 }
-
-const RECHECK_MS = 30_000
 
 /** `host` is the id of the host connected to, or null: see `useMediaLibrary`. */
 export function useIdentity(host: string | null): Identity {
@@ -79,10 +80,27 @@ export function useIdentity(host: string | null): Identity {
     void Promise.all([refresh(), reloadProfiles()]).then(() => {
       if (!cancelled) setLoaded(true)
     })
-    const timer = setInterval(() => void refresh(), RECHECK_MS)
     return () => {
       cancelled = true
-      clearInterval(timer)
+    }
+  }, [host, refresh, reloadProfiles])
+
+  // Told by the host, or by a request it refused: the list and the rules are
+  // both read again, since either may be what changed.
+  useEffect(() => {
+    if (!host) return undefined
+    let stop: (() => void) | undefined
+    let cancelled = false
+    void onProfilesChanged(() => {
+      void refresh()
+      void reloadProfiles()
+    }).then((fn) => {
+      if (cancelled) fn()
+      else stop = fn
+    })
+    return () => {
+      cancelled = true
+      stop?.()
     }
   }, [host, refresh, reloadProfiles])
 

@@ -530,7 +530,7 @@ impl Session {
         write_request(
             &mut self.stream,
             Op::Watch,
-            &serde_json::to_vec(&WatchRequest {})
+            &serde_json::to_vec(&WatchRequest { profiles: true })
                 .map_err(|e| ClientError::Protocol(e.to_string()))?,
         )
         .await?;

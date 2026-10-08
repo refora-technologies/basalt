@@ -923,6 +923,11 @@ impl Basalt {
     /// again says what the access now is. Removed, the pairing is dropped
     /// here, as [`Basalt::connect`] does, and the watch ends: retrying would
     /// only be refused again.
+    ///
+    /// It acts for the profile signed in to, as every other connection does,
+    /// and connects again when that changes: a drive that asks everyone to
+    /// sign in tells a device acting as itself nothing but that the profiles
+    /// changed.
     pub fn watch_with<F, N>(self: &Arc<Self>, on_change: F, on_notice: N) -> WatchHandle
     where
         F: Fn(Change) + Send + Sync + 'static,
@@ -946,12 +951,22 @@ impl Basalt {
             loop {
                 if reconnecting {
                     on_change(Change::Resynchronise);
+                    // The profiles may have changed while it was away too.
+                    on_notice(WatchNotice::ProfilesChanged);
                 }
 
                 let started = std::time::Instant::now();
                 match client.watch_once(&on_change, &on_notice, &signal).await {
                     // The caller asked it to stop.
-                    Ok(()) => return,
+                    Ok(WatchEnd::Stopped) => return,
+                    // Signed in, out, or to someone else: straight back, as
+                    // whoever it is now. What happened in the moment between
+                    // is read again.
+                    Ok(WatchEnd::ProfileChanged) => {
+                        on_change(Change::Resynchronise);
+                        backoff = FIRST_RETRY;
+                        continue;
+                    }
                     Err(e) if e.kind() == "unpaired" => {
                         if let Some(host_id) = client.status().map(|i| i.host_id)
                             && let Some(removed) = client.drop_removed(&host_id).await
@@ -990,12 +1005,12 @@ impl Basalt {
         on_change: &F,
         on_notice: &N,
         stop: &tokio::sync::Notify,
-    ) -> Result<()>
+    ) -> Result<WatchEnd>
     where
         F: Fn(Change) + Send + Sync,
         N: Fn(WatchNotice) + Send + Sync,
     {
-        let (addr, host_id, token) = {
+        let (pool, host_id, token) = {
             let pool = self.pool().await?;
             let known = self
                 .store
@@ -1004,10 +1019,27 @@ impl Basalt {
                 .find(pool.host_id())
                 .cloned()
                 .ok_or(ClientError::NotConnected)?;
-            (pool.address(), known.host_id, known.token)
+            (pool, known.host_id, known.token)
         };
+        // Subscribed before the choice is read, so a change in between is
+        // still seen.
+        let mut profile_changes = pool.profile_changes();
+        let (_, profile) = pool.profile_choice();
 
-        let mut session = Session::connect(addr, &host_id, &token, &self.me).await?;
+        let mut session = Session::connect(pool.address(), &host_id, &token, &self.me).await?;
+        if let Some(profile) = profile.as_deref() {
+            match session.profile_use(Some(profile)).await {
+                Ok(_) => {}
+                // Ended on the host: the device carries on as itself, as the
+                // pool does, and the app is told.
+                Err(e) if e.kind() == "signedout" => {
+                    pool.profile_ended();
+                    on_notice(WatchNotice::ProfilesChanged);
+                    return Ok(WatchEnd::ProfileChanged);
+                }
+                Err(e) => return Err(e),
+            }
+        }
         // What the host says about access now, which is newer than what the
         // rest of the app was told when it connected.
         let writable = session.info().writable;
@@ -1028,8 +1060,12 @@ impl Basalt {
 
         loop {
             tokio::select! {
-                _ = stop.notified() => return Ok(()),
-                change = session.watch_next() => on_change(change?),
+                _ = stop.notified() => return Ok(WatchEnd::Stopped),
+                _ = profile_changes.changed() => return Ok(WatchEnd::ProfileChanged),
+                change = session.watch_next() => match change? {
+                    Change::ProfilesChanged => on_notice(WatchNotice::ProfilesChanged),
+                    change => on_change(change),
+                },
             }
         }
     }
@@ -1683,6 +1719,17 @@ pub enum WatchNotice {
     Removed(ClientError),
     /// The host changed what this device may do; [`Basalt::status`] has it.
     AccessChanged,
+    /// The profiles, or the owner's rules about them, changed on the host:
+    /// [`Basalt::identity`] says who may use this device now.
+    ProfilesChanged,
+}
+
+/// Why one watch connection ended without failing.
+enum WatchEnd {
+    /// The caller asked it to stop.
+    Stopped,
+    /// The profile it acts for changed; it connects again as the new one.
+    ProfileChanged,
 }
 
 /// Keeps a watch running. Dropping it stops the watch.
