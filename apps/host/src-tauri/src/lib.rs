@@ -278,6 +278,28 @@ async fn remove_profile(state: State<'_, AppState>, id: String) -> Answer<HostSt
     status(state).await
 }
 
+/// A profile made here: a name and a colour. Its person chooses the PIN.
+#[tauri::command]
+async fn add_profile(state: State<'_, AppState>, name: String, color: u8) -> Answer<HostStatus> {
+    state.host.add_profile(&name, color)?;
+    status(state).await
+}
+
+#[tauri::command]
+async fn set_require_profile(state: State<'_, AppState>, require: bool) -> Answer<HostStatus> {
+    state.host.set_require_profile(require)?;
+    status(state).await
+}
+
+#[tauri::command]
+async fn set_owner_adds_profiles(
+    state: State<'_, AppState>,
+    owner_only: bool,
+) -> Answer<HostStatus> {
+    state.host.set_owner_adds_profiles(owner_only)?;
+    status(state).await
+}
+
 #[tauri::command]
 async fn set_tmdb_key(state: State<'_, AppState>, key: String) -> Answer<HostStatus> {
     state.host.set_tmdb_key(&key).await?;
@@ -737,6 +759,9 @@ pub fn run() {
             set_tmdb_key,
             reset_profile_pin,
             remove_profile,
+            add_profile,
+            set_require_profile,
+            set_owner_adds_profiles,
             set_sections,
             build_info,
             open_log_folder,

@@ -191,6 +191,22 @@ impl Op {
             Op::Ping | Op::Hello | Op::PairBegin | Op::PairFinish | Op::Auth
         )
     }
+
+    /// What a paired device may still do on a drive that requires a profile
+    /// while it acts as itself: pick a profile and sign in to it, sign out,
+    /// or leave. Everything that reads or changes the drive is not on it.
+    pub fn open_without_profile(self) -> bool {
+        self.allowed_unauthenticated()
+            || matches!(
+                self,
+                Op::Unpair
+                    | Op::Profiles
+                    | Op::ProfileCreate
+                    | Op::ProfileSignIn
+                    | Op::ProfileUse
+                    | Op::ProfileSignOut
+            )
+    }
 }
 
 pub const STATUS_OK: u8 = 0;

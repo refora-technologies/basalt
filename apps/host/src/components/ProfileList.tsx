@@ -62,10 +62,15 @@ function initialOf(name: string): string {
 
 export function ProfileList({
   profiles,
+  ownerAdds,
+  onAdd,
   onResetPin,
   onRemove,
 }: {
   profiles: ProfileSummary[]
+  /** Only this host adds profiles: the empty list says how. */
+  ownerAdds: boolean
+  onAdd: () => void
   onResetPin: (profile: ProfileSummary) => void
   onRemove: (profile: ProfileSummary) => void
 }): React.JSX.Element {
@@ -75,13 +80,20 @@ export function ProfileList({
         <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/[0.04] text-textFaint">
           <UserRound size={18} />
         </span>
-        <div>
+        <div className="min-w-0 flex-1">
           <p className="text-[13px] text-textDim">No profiles yet.</p>
           <p className="mt-1 max-w-[460px] text-[11.5px] leading-relaxed text-textFaint">
-            Anyone on a paired device can make one when they open Basalt. A profile keeps its
-            own watch history and stars, and takes them from one device to the next.
+            {ownerAdds
+              ? 'Add one here for each person. A profile keeps its own watch history and stars, and takes them from one device to the next.'
+              : 'Add one here, or anyone on a paired device can make one when they open Basalt. A profile keeps its own watch history and stars, and takes them from one device to the next.'}
           </p>
         </div>
+        <button
+          onClick={onAdd}
+          className="shrink-0 rounded-md border border-line bg-panel2 px-3 py-1.5 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text"
+        >
+          Add profile
+        </button>
       </div>
     )
   }
@@ -153,7 +165,9 @@ function ProfileCard({
       {!profile.hasPin && (
         <div className="mt-3 flex items-center gap-2 rounded-md bg-white/[0.04] px-2.5 py-1.5 text-[11px] text-textDim">
           <KeyRound size={12} className="shrink-0 text-textFaint" />
-          PIN cleared. The next sign-in chooses a new one.
+          {profile.lastUsed === 0
+            ? `Waiting for ${profile.name} to sign in and choose a PIN.`
+            : 'PIN cleared. The next sign-in chooses a new one.'}
         </div>
       )}
 

@@ -57,6 +57,8 @@ pub struct HostStatus {
     pub library: LibraryStatus,
     /// The household's profiles, with the devices signed in to each.
     pub profiles: Vec<ProfileSummary>,
+    /// The owner's rules about profiles. See `basalt_proto::msg::ProfileRules`.
+    pub profile_rules: basalt_proto::msg::ProfileRules,
     /// Which library sections devices show.
     pub sections: basalt_proto::msg::Sections,
     /// Whether the serving loop is actually accepting connections.
@@ -344,6 +346,7 @@ mod tests {
                 photos: 0,
             },
             profiles: Vec::new(),
+            profile_rules: basalt_proto::msg::ProfileRules::default(),
             sections: basalt_proto::msg::Sections::default(),
             serving: true,
             problem: None,
@@ -369,6 +372,7 @@ mod tests {
                 "library",
                 "port",
                 "problem",
+                "profileRules",
                 "profiles",
                 "requirePin",
                 "sections",
