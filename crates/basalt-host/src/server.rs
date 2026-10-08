@@ -2088,6 +2088,7 @@ impl Host {
             problem: None,
             conversion: self.conversion_status(),
             endorsement: self.endorsement_view(),
+            platform: crate::ui::platform(),
         }
     }
 

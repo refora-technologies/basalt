@@ -73,6 +73,22 @@ pub struct HostStatus {
     pub conversion: ConversionStatus,
     /// The owner's device vouching for this host's key, and until when.
     pub endorsement: Option<EndorsementView>,
+    /// The system the host runs on, so the window can use its words:
+    /// `windows`, `linux`, `macos`, or `other`.
+    pub platform: &'static str,
+}
+
+/// The system this host was built for.
+pub fn platform() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "other"
+    }
 }
 
 /// Which owner's device last vouched for the host, and until when.
@@ -383,6 +399,7 @@ mod tests {
                 active: Vec::new(),
             },
             endorsement: None,
+            platform: "windows",
         };
         assert_eq!(
             keys(&status),
@@ -394,6 +411,7 @@ mod tests {
                 "hostId",
                 "hostName",
                 "library",
+                "platform",
                 "port",
                 "problem",
                 "profileRules",

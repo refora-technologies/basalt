@@ -110,6 +110,8 @@ export interface HostStatus {
   conversion: ConversionStatus
   /** The owner's device vouching for this computer, when one has. */
   endorsement: EndorsementView | null
+  /** The system the host runs on, for the window to use its words. */
+  platform: 'windows' | 'linux' | 'macos' | 'other'
 }
 
 /** What a machine was measured to manage. */
@@ -253,6 +255,9 @@ export const api = {
     call('download_update', { release }),
   /** Runs the installer and closes this app so it can be replaced. */
   installUpdate: (path: string): Promise<void> => call('install_update', { path }),
+  /** `restart`: the app puts the update in and restarts; `package`: the
+   *  system's software installer takes it (a .deb or .rpm on Linux). */
+  updateStyle: (): Promise<'restart' | 'package'> => call('update_style'),
 
   status: (): Promise<HostStatus> => call('status'),
   listDrives: (): Promise<DriveView[]> => call('list_drives'),
@@ -406,6 +411,11 @@ const sample: {
     serving: true,
     problem: null,
     endorsement: { by: "Maya's laptop", until: Math.floor(Date.now() / 1000) + 86_400 * 26 },
+    // `?linux` shows the window as it is on Linux.
+    platform:
+      typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('linux')
+        ? 'linux'
+        : 'windows',
   },
   devices: [
     {
@@ -686,6 +696,8 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return previewFlag('update') ? MOCK_RELEASE : null
       case 'install_update':
         return undefined
+      case 'update_style':
+        return previewFlag('package') ? 'package' : 'restart'
       case 'open_log_folder':
         return undefined
       case 'open_vault_folder':
