@@ -458,6 +458,7 @@ impl Basalt {
                 used_at: unix_now(),
                 identity: Default::default(),
                 key: key_hex,
+                members: Vec::new(),
             });
             store.device_name = Some(self.me.name.clone());
         }
@@ -609,6 +610,15 @@ impl Basalt {
         let proven = self
             .settle_key(host_id, addr, &mut session, &mut credentials)
             .await;
+        let members: Vec<_> = std::iter::once(&session)
+            .chain(proven.as_ref())
+            .filter_map(|s| s.signed_in.member.clone())
+            .collect();
+        for member in members {
+            if let Some(key) = &credentials.key {
+                self.keep_member(host_id, member, key);
+            }
+        }
 
         {
             let mut store = self.store.lock().expect("store lock");
@@ -664,6 +674,68 @@ impl Basalt {
         *self.pool.write().await = Some(pool);
         *self.info.lock().expect("info lock") = Some(info.clone());
         Ok(info)
+    }
+
+    /// Keeps a member statement a host gave this device, once it checks out:
+    /// about this device's key, at this host, in date. One from the household
+    /// and one per profile, the newest; expired ones go. Nothing at home relies
+    /// on them yet, so one that does not check out is noted and dropped.
+    fn keep_member(
+        &self,
+        host_id: &str,
+        member: basalt_proto::msg::SignedStatement,
+        key: &KeyRing,
+    ) {
+        let now = unix_now();
+        let opened = basalt_trust::Statement {
+            payload: member.payload.clone(),
+            signature: member.signature.clone(),
+        };
+        let payload = match basalt_trust::statement::verify(
+            &opened,
+            basalt_trust::statement::Expect {
+                kind: basalt_trust::Kind::Member,
+                issuer: None,
+                subject: Some(key.public_key()),
+                host: Some(host_id),
+                now,
+            },
+        ) {
+            Ok(payload) => payload,
+            Err(e) => {
+                tracing::warn!("a member statement from the host did not check out: {e}");
+                return;
+            }
+        };
+        {
+            let mut store = self.store.lock().expect("store lock");
+            let Some(known) = store.find_mut(host_id) else {
+                return;
+            };
+            known.members.retain(|kept| {
+                basalt_trust::statement::read_offer(&kept.payload)
+                    .is_ok_and(|p| p.profile != payload.profile && p.exp > now)
+            });
+            known.members.push(member);
+        }
+        if let Err(e) = self.save_store() {
+            tracing::warn!("could not keep a member statement: {e}");
+        }
+    }
+
+    /// Lets go of a profile's statement, on signing out of it.
+    fn drop_member(&self, host_id: &str, profile: &str) {
+        {
+            let mut store = self.store.lock().expect("store lock");
+            let Some(known) = store.find_mut(host_id) else {
+                return;
+            };
+            known.members.retain(|kept| {
+                basalt_trust::statement::read_offer(&kept.payload)
+                    .is_ok_and(|p| p.profile != profile)
+            });
+        }
+        let _ = self.save_store();
     }
 
     /// Moves this device from its token to its key at a host, once.
@@ -806,7 +878,16 @@ impl Basalt {
                 && let Ok(mut lease) = pool.acquire().await
             {
                 let result = lease.profile_use(Some(&token)).await;
-                let _ = lease.check(result);
+                if let Ok(answer) = lease.check(result)
+                    && let (Some(member), Some(key)) = (answer.member, pool.credentials().key)
+                {
+                    self.keep_member(pool.host_id(), member, &key);
+                }
+            }
+            if let Some(key) = pool.credentials().key {
+                for member in pool.take_statements() {
+                    self.keep_member(pool.host_id(), member, &key);
+                }
             }
             if let Ok(mut lease) = pool.acquire().await {
                 let result = lease.profiles().await;
@@ -898,6 +979,9 @@ impl Basalt {
         session: basalt_proto::msg::ProfileSession,
         remember: bool,
     ) -> Result<ProfileView> {
+        if let (Some(member), Some(key)) = (session.member.clone(), pool.credentials().key) {
+            self.keep_member(pool.host_id(), member, &key);
+        }
         pool.set_profile(Some(session.token.clone()));
         let profile = session.profile;
         *self.identity.lock().expect("identity lock") = Current {
@@ -932,6 +1016,16 @@ impl Basalt {
             let result = lease.profile_sign_out(&token).await;
             // Best effort: signed out here whatever the host said.
             let _ = lease.check(result);
+        }
+        let signed_out = self
+            .identity
+            .lock()
+            .expect("identity lock")
+            .profile
+            .as_ref()
+            .map(|p| p.id.clone());
+        if let Some(profile) = signed_out {
+            self.drop_member(pool.host_id(), &profile);
         }
         pool.set_profile(None);
         *self.identity.lock().expect("identity lock") = Current::default();

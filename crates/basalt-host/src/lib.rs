@@ -15,6 +15,7 @@
 //! shapes that window receives — here rather than in the Tauri shell, which no
 //! test ever runs.
 
+pub mod authority;
 pub mod autostart;
 pub mod config;
 pub mod convert;
@@ -24,6 +25,7 @@ pub mod media;
 pub mod profiles;
 pub mod rates;
 pub mod registry;
+pub mod sealed;
 pub mod server;
 pub mod space;
 pub mod traffic;

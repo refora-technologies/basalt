@@ -254,6 +254,106 @@ async fn many_connections_at_once_all_sign_in() {
     }
 }
 
+#[tokio::test]
+async fn a_device_keeps_the_statements_made_about_it_and_they_are_taken_back_in_time() {
+    let fixture = start_host().await;
+    let store = fixture.store("phone");
+    let client = Basalt::open(store.clone()).unwrap();
+    fixture.pair(&client).await;
+    drop(client);
+
+    let client = Basalt::open(store.clone()).unwrap();
+    client.connect_saved().await.unwrap();
+    client.identity().await;
+    let key = read_store(&store)["hosts"][0]["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let members = |path: &PathBuf| -> Vec<Payload> {
+        read_store(path)["hosts"][0]["members"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|m| basalt_trust::statement::read_offer(m["payload"].as_str().unwrap()).unwrap())
+            .collect()
+    };
+
+    // The household's, about this device's key, signed by the household.
+    let kept = members(&store);
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let household = &kept[0];
+    assert_eq!(household.profile, "");
+    assert_eq!(household.subject, key);
+    assert_eq!(Some(household.issuer.clone()), fixture.host.household_key());
+
+    // Signing in to a profile adds the profile's.
+    let maya = client
+        .create_profile("Maya", "4821", 2, true)
+        .await
+        .unwrap();
+    let kept = members(&store);
+    assert_eq!(kept.len(), 2);
+    let from_maya = kept.iter().find(|p| p.profile == maya.id).unwrap().clone();
+    assert_ne!(
+        from_maya.issuer, household.issuer,
+        "Maya speaks with her own key"
+    );
+
+    // Signing out drops it here and takes it back at the host.
+    client.sign_out_profile().await.unwrap();
+    let kept = members(&store);
+    assert_eq!(kept.len(), 1);
+    assert!(
+        fixture
+            .host
+            .revoked_statements()
+            .contains(&from_maya.serial)
+    );
+    assert!(
+        !fixture
+            .host
+            .revoked_statements()
+            .contains(&household.serial)
+    );
+
+    // Removing the device takes back the household's.
+    let device = fixture.device();
+    fixture.host.revoke(&device.token_hash).unwrap();
+    assert!(
+        fixture
+            .host
+            .revoked_statements()
+            .contains(&household.serial)
+    );
+}
+
+#[tokio::test]
+async fn a_statement_handed_over_on_a_background_connection_is_still_kept() {
+    let fixture = start_host().await;
+    let store = fixture.store("phone");
+    let client = Basalt::open(store.clone()).unwrap();
+    fixture.pair(&client).await;
+    // The pairing connection signed in without a statement; the next ones the
+    // pool opens are the first to sign in with the key.
+    let client = Arc::new(client);
+    let mut lists = Vec::new();
+    for _ in 0..3 {
+        let client = Arc::clone(&client);
+        lists.push(tokio::spawn(async move { client.list("").await }));
+    }
+    for list in lists {
+        list.await.unwrap().unwrap();
+    }
+    client.identity().await;
+    let members = read_store(&store)["hosts"][0]["members"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(members.len(), 1, "the household's statement was kept");
+}
+
 // ---------------------------------------------------------------------------
 // Underneath the client
 // ---------------------------------------------------------------------------

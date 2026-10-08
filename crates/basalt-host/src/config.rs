@@ -25,7 +25,7 @@ fn default_true() -> bool {
 pub struct HostConfig {
     /// Hex DER of the certificate and its private key.
     pub cert_der: String,
-    pub key_der: String,
+    pub key_der: crate::sealed::Secret,
 
     /// The drive or folder being served. `None` until one is chosen.
     pub vault_path: Option<PathBuf>,
@@ -112,6 +112,17 @@ pub struct HostConfig {
 
     #[serde(default)]
     pub devices: Vec<Device>,
+
+    /// The household's key, PKCS#8 hex: what speaks for devices using the
+    /// drive as themselves. Sealed when written down.
+    #[serde(default, skip_serializing_if = "crate::sealed::Secret::is_empty")]
+    pub household_key: crate::sealed::Secret,
+    /// Member statements made and not yet expired: see `crate::authority`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issued: Vec<crate::authority::Issued>,
+    /// Statements taken back before their time.
+    #[serde(default)]
+    pub revoked: basalt_trust::revocation::RevocationList,
 }
 
 impl HostConfig {
@@ -121,7 +132,7 @@ impl HostConfig {
             .map_err(|e| HostError::BadRequest(format!("could not create an identity: {e}")))?;
         Ok(Self {
             cert_der: hex::encode(&identity.cert_der),
-            key_der: hex::encode(&identity.key_der),
+            key_der: crate::sealed::Secret(hex::encode(&identity.key_der)),
             vault_path: None,
             vault_name: "Vault".to_string(),
             host_name: host_name.to_string(),
@@ -141,12 +152,15 @@ impl HostConfig {
             convert_at_once: None,
             convert_measured: None,
             devices: Vec::new(),
+            household_key: Default::default(),
+            issued: Vec::new(),
+            revoked: Default::default(),
         })
     }
 
     pub fn identity(&self) -> Result<HostIdentity> {
         let cert = hex::decode(&self.cert_der)?;
-        let key = hex::decode(&self.key_der)?;
+        let key = hex::decode(&self.key_der.0)?;
         HostIdentity::from_der(cert, key)
             .map_err(|e| HostError::BadRequest(format!("stored identity is unusable: {e}")))
     }
@@ -154,17 +168,19 @@ impl HostConfig {
     /// Loads the config, creating one if this is the first run.
     pub fn load_or_create(path: &Path, host_name: &str) -> Result<Self> {
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-                // Never silently replace a config that failed to parse: the
-                // identity inside it is the only thing tying paired devices to
-                // this machine, and overwriting it would quietly unpair them
-                // all. Better to stop and say so.
-                HostError::BadRequest(format!(
-                    "{} did not parse ({e}). Move it aside to start fresh, \
-                     but every paired device will have to pair again.",
-                    path.display()
-                ))
-            }),
+            Ok(bytes) => serde_json::from_slice::<Self>(&bytes)
+                .map_err(|e| {
+                    // Never silently replace a config that failed to parse: the
+                    // identity inside it is the only thing tying paired devices
+                    // to this machine, and overwriting it would quietly unpair
+                    // them all. Better to stop and say so.
+                    HostError::BadRequest(format!(
+                        "{} did not parse ({e}). Move it aside to start fresh, \
+                         but every paired device will have to pair again.",
+                        path.display()
+                    ))
+                })?
+                .revealed(path),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let config = Self::create(host_name)?;
                 config.save(path)?;
@@ -183,13 +199,58 @@ impl HostConfig {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_vec_pretty(self)
+        let json = serde_json::to_vec_pretty(&self.sealed())
             .map_err(|e| HostError::BadRequest(format!("could not encode the config: {e}")))?;
 
         let temp = path.with_extension("tmp");
         std::fs::write(&temp, &json)?;
         std::fs::rename(&temp, path)?;
         Ok(())
+    }
+}
+
+impl HostConfig {
+    /// A copy with every secret sealed, as it is written down. See
+    /// [`crate::sealed`].
+    fn sealed(&self) -> Self {
+        let mut config = self.clone();
+        config.key_der.0 = crate::sealed::seal(&config.key_der.0);
+        config.household_key.0 = crate::sealed::seal(&config.household_key.0);
+        for profile in &mut config.profiles {
+            profile.person_key.0 = crate::sealed::seal(&profile.person_key.0);
+        }
+        config
+    }
+
+    /// Every secret opened, as the host uses them.
+    ///
+    /// The host's own key that will not open stops the host with the reason:
+    /// its identity is the one thing that cannot be made again without every
+    /// device pairing again, so it is never replaced behind anyone's back.
+    /// People's keys that will not open are let go and made again; nothing
+    /// relies on them yet.
+    fn revealed(mut self, path: &Path) -> Result<Self> {
+        self.key_der.0 = crate::sealed::open(&self.key_der.0).map_err(|_| {
+            HostError::BadRequest(format!(
+                "{} holds this host's key sealed by another installation of Windows, \
+                 and it cannot be opened here. Move the file aside to start fresh, \
+                 but every paired device will have to pair again.",
+                path.display()
+            ))
+        })?;
+        let open_or_drop = |secret: &mut crate::sealed::Secret| match crate::sealed::open(&secret.0)
+        {
+            Ok(opened) => secret.0 = opened,
+            Err(_) => {
+                tracing::warn!("a person's key did not open here; it will be made again");
+                secret.0.clear();
+            }
+        };
+        open_or_drop(&mut self.household_key);
+        for profile in &mut self.profiles {
+            open_or_drop(&mut profile.person_key);
+        }
+        Ok(self)
     }
 }
 
@@ -360,5 +421,112 @@ mod tests {
     #[test]
     fn the_machine_always_has_some_name() {
         assert!(!machine_name().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Sealed secrets
+    // -----------------------------------------------------------------------
+
+    fn raw(path: &Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_hosts_key_is_sealed_on_disk_and_opens_to_the_same_identity() {
+        let dir = temp_dir();
+        let path = dir.0.join("host.json");
+        let mut config = HostConfig::create("laptop-b").unwrap();
+        config.household_key = crate::sealed::Secret("abcd".into());
+        let id = config.identity().unwrap().host_id;
+        config.save(&path).unwrap();
+
+        let written = raw(&path);
+        let key = written["key_der"].as_str().unwrap();
+        #[cfg(windows)]
+        {
+            assert!(crate::sealed::is_sealed(key), "sealed on disk");
+            assert!(!key.contains(&config.key_der.0[..40]));
+            assert!(crate::sealed::is_sealed(
+                written["household_key"].as_str().unwrap()
+            ));
+        }
+        let _ = key;
+
+        let back = HostConfig::load_or_create(&path, "ignored").unwrap();
+        assert_eq!(back.identity().unwrap().host_id, id);
+        assert_eq!(back.key_der, config.key_der, "open in memory");
+        assert_eq!(back.household_key.0, "abcd");
+    }
+
+    #[test]
+    fn a_config_written_before_sealing_loads_and_is_sealed_when_next_saved() {
+        let dir = temp_dir();
+        let path = dir.0.join("host.json");
+        let config = HostConfig::create("laptop-b").unwrap();
+        // Written the way 1.4.6 wrote it: the key as plain hex.
+        std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+        assert!(!crate::sealed::is_sealed(
+            raw(&path)["key_der"].as_str().unwrap()
+        ));
+
+        let loaded = HostConfig::load_or_create(&path, "ignored").unwrap();
+        assert_eq!(
+            loaded.identity().unwrap().host_id,
+            config.identity().unwrap().host_id
+        );
+        loaded.save(&path).unwrap();
+        #[cfg(windows)]
+        assert!(crate::sealed::is_sealed(
+            raw(&path)["key_der"].as_str().unwrap()
+        ));
+        let again = HostConfig::load_or_create(&path, "ignored").unwrap();
+        assert_eq!(again.key_der, config.key_der);
+    }
+
+    #[test]
+    fn a_key_that_will_not_open_stops_the_host_and_leaves_the_file_alone() {
+        let dir = temp_dir();
+        let path = dir.0.join("host.json");
+        let config = HostConfig::create("laptop-b").unwrap();
+        config.save(&path).unwrap();
+        let mut written = raw(&path);
+        written["key_der"] = serde_json::json!("sealed:00ff00ff");
+        std::fs::write(&path, serde_json::to_vec_pretty(&written).unwrap()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let refused = HostConfig::load_or_create(&path, "ignored").unwrap_err();
+        assert!(
+            refused.to_string().contains("cannot be opened here"),
+            "{refused}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before, "never replaced");
+    }
+
+    #[test]
+    fn peoples_keys_that_will_not_open_are_let_go_to_be_made_again() {
+        let dir = temp_dir();
+        let path = dir.0.join("host.json");
+        let config = HostConfig::create("laptop-b").unwrap();
+        config.save(&path).unwrap();
+        let mut written = raw(&path);
+        written["household_key"] = serde_json::json!("sealed:00ff");
+        std::fs::write(&path, serde_json::to_vec_pretty(&written).unwrap()).unwrap();
+
+        let loaded = HostConfig::load_or_create(&path, "ignored").unwrap();
+        assert!(loaded.household_key.is_empty());
+        assert!(loaded.identity().is_ok(), "the host's own key is untouched");
+    }
+
+    #[test]
+    fn a_config_shown_in_a_log_never_shows_a_persons_key() {
+        let mut config = HostConfig::create("laptop-b").unwrap();
+        config.household_key = crate::sealed::Secret("deadbeefcafe".into());
+        let shown = format!("{config:?}");
+        assert!(!shown.contains("deadbeefcafe"));
+        assert!(
+            !shown.contains(&config.key_der.0[..40]),
+            "nor the host's own"
+        );
+        assert!(shown.contains("Secret(…)"));
     }
 }

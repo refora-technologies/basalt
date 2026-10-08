@@ -51,6 +51,8 @@ pub struct Host {
     /// Sent whenever the profiles or the owner's rules about them change, so
     /// every device watching asks again at once: see [`stream_changes`].
     profile_changes: tokio::sync::broadcast::Sender<()>,
+    /// The household's key, and the member statements made and taken back.
+    authority: std::sync::Mutex<crate::authority::Authority>,
     /// Whether the chosen drive was missing the last time anyone looked.
     drive_lost: std::sync::atomic::AtomicBool,
     /// Bumped whenever the drive served is replaced or let go, always while
@@ -175,6 +177,14 @@ impl Host {
             .map(|d| (d.token_hash.clone(), d.key().to_string()))
             .collect();
         profiles.rebind_devices(&device_keys);
+        let made_person_keys = profiles.ensure_person_keys();
+        let mut authority = crate::authority::Authority::new(
+            &config.household_key.0,
+            config.issued.clone(),
+            config.revoked.clone(),
+        );
+        let made_household = authority.ensure_household();
+        let pruned = authority.prune(unix_now());
         let stars = match &config.vault_path {
             Some(root) => load_stars(&stars_path(&config_dir, root)),
             None => Default::default(),
@@ -220,6 +230,7 @@ impl Host {
             watch_generation: tokio::sync::watch::Sender::new(0),
             access_changes: tokio::sync::broadcast::Sender::new(16),
             profile_changes: tokio::sync::broadcast::Sender::new(16),
+            authority: std::sync::Mutex::new(authority),
             drive_lost: std::sync::atomic::AtomicBool::new(drive_lost),
             drive_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             state_root: std::sync::Mutex::new(state_root),
@@ -245,6 +256,10 @@ impl Host {
         });
         if abandoned > 0 {
             tracing::info!("let go of {abandoned} devices that never came back");
+        }
+        // Keys made now are written now: a statement made with a key that was
+        // never saved would speak for nobody after a restart.
+        if abandoned > 0 || made_person_keys || made_household || pruned {
             host.persist()?;
         }
         Ok(host)
@@ -789,6 +804,76 @@ impl Host {
             .map_err(|e| HostError::Denied(e.to_string()))
     }
 
+    /// A new household statement for a device signed in with its key, when
+    /// one is due. Never fails a sign-in: a statement not made is made later.
+    fn household_member(&self, device: &Device) -> Option<SignedStatement> {
+        let subject = basalt_trust::PublicKey::from_hex(&device.public_key).ok()?;
+        let now = unix_now();
+        let made = {
+            let mut authority = self.authority.lock().expect("authority lock");
+            if !authority.due(device.key(), &device.public_key, "", now) {
+                return None;
+            }
+            authority.issue_household(device.key(), &subject, self.host_id(), now)
+        };
+        if made.is_some()
+            && let Err(e) = self.persist()
+        {
+            tracing::warn!("could not save a member statement: {e}");
+        }
+        made
+    }
+
+    /// A statement from a profile for a device signed in to it with its key:
+    /// always on signing in (`fresh`), and otherwise when one is due.
+    fn profile_member(
+        &self,
+        device: &Device,
+        profile: &str,
+        fresh: bool,
+    ) -> Option<SignedStatement> {
+        let subject = basalt_trust::PublicKey::from_hex(&device.public_key).ok()?;
+        let issuer = self
+            .profiles
+            .lock()
+            .expect("profiles lock")
+            .person(profile)?;
+        let now = unix_now();
+        let made = {
+            let mut authority = self.authority.lock().expect("authority lock");
+            if !fresh && !authority.due(device.key(), &device.public_key, profile, now) {
+                return None;
+            }
+            authority.issue_profile(
+                &issuer,
+                device.key(),
+                &subject,
+                self.host_id(),
+                profile,
+                now,
+            )
+        };
+        if made.is_some()
+            && let Err(e) = self.persist()
+        {
+            tracing::warn!("could not save a member statement: {e}");
+        }
+        made
+    }
+
+    /// Takes back a device's statements about any key but the one it holds
+    /// now, after it pairs again or gives a new key.
+    fn forget_old_keys(&self, device: &Device) {
+        let changed = self
+            .authority
+            .lock()
+            .expect("authority lock")
+            .revoke_other_keys(device.key(), &device.public_key);
+        if changed && let Err(e) = self.persist() {
+            tracing::warn!("could not save statements taken back: {e}");
+        }
+    }
+
     /// Signs a connection in with a device's key: the signature checked, the
     /// device found by its key, and its token retired now that the key has
     /// been used. Returns the device and whether anything needs saving.
@@ -852,7 +937,18 @@ impl Host {
     }
 
     fn sign_out_profile(&self, token: &str) -> Result<bool> {
-        let ended = self.profiles.lock().expect("profiles lock").sign_out(token);
+        let ended = {
+            let mut book = self.profiles.lock().expect("profiles lock");
+            let owner = book.token_owner(token);
+            let ended = book.sign_out(token);
+            if let (true, Some((profile, device))) = (ended, owner) {
+                self.authority
+                    .lock()
+                    .expect("authority lock")
+                    .revoke_sign_in(&device, &profile);
+            }
+            ended
+        };
         if ended {
             self.persist()?;
             self.profiles_changed();
@@ -865,6 +961,10 @@ impl Host {
     pub fn reset_profile_pin(&self, id: &str) -> Result<bool> {
         let done = self.profiles.lock().expect("profiles lock").reset_pin(id);
         if done {
+            self.authority
+                .lock()
+                .expect("authority lock")
+                .revoke_profile(id);
             self.persist()?;
             self.profiles_changed();
         }
@@ -879,6 +979,10 @@ impl Host {
             (removed, book.profiles().is_empty())
         };
         if removed {
+            self.authority
+                .lock()
+                .expect("authority lock")
+                .revoke_profile(id);
             // The last profile gone: requiring one would lock the household
             // out of its own drive, so devices may use it as themselves again.
             if none_left {
@@ -2070,6 +2174,28 @@ impl Host {
         Ok(changed)
     }
 
+    /// The household's public key, hex: what its member statements are
+    /// signed with.
+    pub fn household_key(&self) -> Option<String> {
+        self.authority
+            .lock()
+            .expect("authority lock")
+            .household_key()
+            .map(|k| k.to_hex())
+    }
+
+    /// The serials of statements taken back and not yet expired.
+    pub fn revoked_statements(&self) -> Vec<String> {
+        self.authority
+            .lock()
+            .expect("authority lock")
+            .revoked()
+            .entries()
+            .iter()
+            .map(|r| r.serial.clone())
+            .collect()
+    }
+
     pub fn devices(&self) -> Vec<Device> {
         self.registry
             .lock()
@@ -2105,6 +2231,10 @@ impl Host {
                     .lock()
                     .expect("profiles lock")
                     .forget_device(&key);
+                self.authority
+                    .lock()
+                    .expect("authority lock")
+                    .revoke_device(&key);
             }
             removed
         };
@@ -2130,10 +2260,21 @@ impl Host {
                 let book = self.profiles.lock().expect("profiles lock");
                 (book.profiles().to_vec(), book.tokens().to_vec())
             };
+            let (household, issued, revoked) = {
+                let authority = self.authority.lock().expect("authority lock");
+                (
+                    authority.household_pkcs8(),
+                    authority.issued().to_vec(),
+                    authority.revoked().clone(),
+                )
+            };
             let mut config = self.config.lock().expect("config lock");
             config.devices = devices;
             config.profiles = profiles;
             config.profile_tokens = tokens;
+            config.household_key = crate::sealed::Secret(household);
+            config.issued = issued;
+            config.revoked = revoked;
             config.clone()
         };
         snapshot.save(&self.config_path)
@@ -2630,6 +2771,7 @@ where
                     )?
                 };
                 host.persist()?;
+                host.forget_old_keys(&device);
                 session.device = Some(device);
                 session.by_key = true;
                 reply(
@@ -2686,6 +2828,7 @@ where
                 if changed {
                     host.persist()?;
                 }
+                let member = host.household_member(&device);
                 let response = AuthResponse {
                     vault: host.vault_name(),
                     device_name: device.name.clone(),
@@ -2693,7 +2836,7 @@ where
                     // Said every time: a device that missed it last time,
                     // crashing before it saved, forgets its token now.
                     retire_token: true,
-                    member: None,
+                    member,
                     owner: device.owner,
                     endorse: None,
                 };
@@ -2772,6 +2915,9 @@ where
                 .expect("registry lock")
                 .device(&device.token_hash)
                 .cloned();
+            if let Some(device) = &session.device {
+                host.forget_old_keys(device);
+            }
             write_ok(stream, &[]).await?;
         }
 
@@ -2995,12 +3141,16 @@ where
                 host.sign_in_profile(decode(payload)?, &device_key)?
             };
             session.profile = Some((profile.id.clone(), crate::profiles::hash_token(&token)));
+            let member = match (&session.device, session.by_key) {
+                (Some(device), true) => host.profile_member(device, &profile.id, true),
+                _ => None,
+            };
             reply(
                 stream,
                 &ProfileSession {
                     profile,
                     token,
-                    member: None,
+                    member,
                 },
             )
             .await?;
@@ -3024,14 +3174,13 @@ where
                 ),
             };
             session.profile = profile.as_ref().zip(hash).map(|(p, h)| (p.id.clone(), h));
-            reply(
-                stream,
-                &ProfileUseResponse {
-                    profile,
-                    member: None,
-                },
-            )
-            .await?;
+            let member = match (&session.device, session.by_key, &profile) {
+                (Some(device), true, Some(profile)) => {
+                    host.profile_member(device, &profile.id, false)
+                }
+                _ => None,
+            };
+            reply(stream, &ProfileUseResponse { profile, member }).await?;
         }
 
         Op::ProfileSignOut => {

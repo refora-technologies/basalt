@@ -50,6 +50,9 @@ struct Inner {
     /// The choice's generation, for a watch to follow: see
     /// [`Pool::profile_changes`].
     changes: tokio::sync::watch::Sender<u64>,
+    /// Statements the host handed over while a connection was being told
+    /// its profile, for the client to keep: see [`Pool::take_statements`].
+    statements: Mutex<Vec<basalt_proto::msg::SignedStatement>>,
 }
 
 /// Which profile every connection in the pool should act for.
@@ -85,6 +88,7 @@ impl Pool {
                 idle: Mutex::new(Vec::new()),
                 profile: Mutex::new(ProfileChoice::default()),
                 changes: tokio::sync::watch::Sender::new(0),
+                statements: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -126,13 +130,23 @@ impl Pool {
             let pooled = self.inner.idle.lock().expect("idle lock").pop();
             let Some(Idle { mut session, since }) = pooled else {
                 let credentials = self.credentials();
-                break Session::connect(
+                let mut session = Session::connect(
                     self.inner.addr,
                     &self.inner.host_id,
                     &credentials,
                     &self.inner.me,
                 )
                 .await?;
+                // The host may have handed over a statement as this one signed
+                // in, and counts it as given: kept for the client.
+                if let Some(member) = session.signed_in.member.take() {
+                    self.inner
+                        .statements
+                        .lock()
+                        .expect("statements lock")
+                        .push(member);
+                }
+                break session;
             };
             if since.elapsed() < CHECK_AFTER {
                 break session;
@@ -150,7 +164,16 @@ impl Pool {
         let choice = self.inner.profile.lock().expect("profile lock").clone();
         if session.profile_gen != choice.generation {
             match session.profile_use(choice.token.as_deref()).await {
-                Ok(_) => session.profile_gen = choice.generation,
+                Ok(answer) => {
+                    session.profile_gen = choice.generation;
+                    if let Some(member) = answer.member {
+                        self.inner
+                            .statements
+                            .lock()
+                            .expect("statements lock")
+                            .push(member);
+                    }
+                }
                 // The sign-in ended on the host. The device carries on as
                 // itself rather than failing everything it does, and the
                 // app is told so it can ask who is watching.
@@ -192,6 +215,11 @@ impl Pool {
     /// stay as they are: they have signed in.
     pub fn set_credentials(&self, credentials: Credentials) {
         *self.inner.credentials.lock().expect("credentials lock") = credentials;
+    }
+
+    /// The statements handed over since this was last asked.
+    pub fn take_statements(&self) -> Vec<basalt_proto::msg::SignedStatement> {
+        std::mem::take(&mut *self.inner.statements.lock().expect("statements lock"))
     }
 
     /// Keeps a connection opened elsewhere for later use.

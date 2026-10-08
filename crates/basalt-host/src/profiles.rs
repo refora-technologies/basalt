@@ -57,6 +57,10 @@ pub struct Profile {
     pub created_at: i64,
     #[serde(default)]
     pub last_used: i64,
+    /// The person's key, PKCS#8 hex: what speaks for them in statements.
+    /// Kept on the host only, and sealed when written down.
+    #[serde(default, skip_serializing_if = "crate::sealed::Secret::is_empty")]
+    pub person_key: crate::sealed::Secret,
 }
 
 impl Profile {
@@ -98,6 +102,23 @@ pub struct ProfileBook {
     profiles: Vec<Profile>,
     tokens: Vec<ProfileToken>,
     failures: HashMap<String, Failures>,
+}
+
+/// A new person's key, PKCS#8 hex; empty if none could be made, which only
+/// means no statements speak for them until one is.
+fn new_person_key() -> crate::sealed::Secret {
+    match basalt_trust::SoftwareKey::generate() {
+        Ok(key) => crate::sealed::Secret(hex::encode(key.pkcs8())),
+        Err(e) => {
+            tracing::warn!("could not make a person's key: {e}");
+            crate::sealed::Secret::default()
+        }
+    }
+}
+
+fn person_signer(key: &crate::sealed::Secret) -> Option<basalt_trust::SoftwareKey> {
+    let pkcs8 = hex::decode(&key.0).ok()?;
+    basalt_trust::SoftwareKey::from_pkcs8(&pkcs8).ok()
 }
 
 pub fn hash_token(token: &str) -> String {
@@ -238,6 +259,7 @@ impl ProfileBook {
             pin_hash,
             created_at: now,
             last_used: now,
+            person_key: new_person_key(),
         };
         self.profiles.push(profile.clone());
         Ok(profile)
@@ -346,6 +368,33 @@ impl ProfileBook {
         let profile = self.profiles.iter_mut().find(|p| p.id == id)?;
         profile.last_used = now;
         Some(profile.clone())
+    }
+
+    /// Gives every profile without a key one. Returns whether any were made.
+    pub fn ensure_person_keys(&mut self) -> bool {
+        let mut made = false;
+        for profile in &mut self.profiles {
+            if profile.person_key.is_empty() || person_signer(&profile.person_key).is_none() {
+                profile.person_key = new_person_key();
+                made |= !profile.person_key.is_empty();
+            }
+        }
+        made
+    }
+
+    /// The key that speaks for a profile.
+    pub fn person(&self, id: &str) -> Option<basalt_trust::SoftwareKey> {
+        person_signer(&self.find(id)?.person_key)
+    }
+
+    /// The profile a sign-in token stands for, and the device it was given
+    /// to, without noting a use.
+    pub fn token_owner(&self, token: &str) -> Option<(String, String)> {
+        let hash = hash_token(token);
+        self.tokens
+            .iter()
+            .find(|t| t.token_hash == hash)
+            .map(|t| (t.profile_id.clone(), t.device_key.clone()))
     }
 
     /// Files sign-ins under the key each device goes by now.
