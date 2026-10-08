@@ -195,11 +195,16 @@ impl Op {
     /// What a paired device may still do on a drive that requires a profile
     /// while it acts as itself: pick a profile and sign in to it, sign out,
     /// or leave. Everything that reads or changes the drive is not on it.
+    ///
+    /// Watching is: it is how the host tells the device at once that its
+    /// rules changed. The host keeps the drive's own changes off a watch
+    /// until the device signs in.
     pub fn open_without_profile(self) -> bool {
         self.allowed_unauthenticated()
             || matches!(
                 self,
                 Op::Unpair
+                    | Op::Watch
                     | Op::Profiles
                     | Op::ProfileCreate
                     | Op::ProfileSignIn

@@ -367,12 +367,16 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     return (await invoke(cmd, args)) as T
   } catch (raw: unknown) {
     const e = raw as { kind?: string; message?: string }
-    throw new ApiError(
-      (e?.kind as ErrorKind) ?? 'error',
-      e?.message ?? String(raw),
-    )
+    const error = new ApiError((e?.kind as ErrorKind) ?? 'error', e?.message ?? String(raw))
+    // Refused for want of a profile: whatever asked shows its error, and the
+    // window asks who is using this device without waiting to be told.
+    if (error.kind === 'signedout') window.dispatchEvent(new Event(SIGNED_OUT_EVENT))
+    throw error
   }
 }
+
+/** Raised on the window by any request the host refused as signed out. */
+const SIGNED_OUT_EVENT = 'basalt:signedout'
 
 // ---------------------------------------------------------------------------
 // Connecting
@@ -585,6 +589,23 @@ export async function onRemoved(handler: (message: string) => void): Promise<() 
   if (!inTauri()) return () => {}
   const { listen } = await import('@tauri-apps/api/event')
   return listen<string>('basalt://removed', (e) => handler(e.payload))
+}
+
+/**
+ * Told the moment the host's owner changes the profiles or the rules about
+ * them, and when a request finds this device's sign-in no longer stands.
+ * Either way: ask again who is using this device.
+ */
+export async function onProfilesChanged(handler: () => void): Promise<() => void> {
+  const local = (): void => handler()
+  window.addEventListener(SIGNED_OUT_EVENT, local)
+  if (!inTauri()) return () => window.removeEventListener(SIGNED_OUT_EVENT, local)
+  const { listen } = await import('@tauri-apps/api/event')
+  const stop = await listen('basalt://profiles', () => handler())
+  return () => {
+    window.removeEventListener(SIGNED_OUT_EVENT, local)
+    stop()
+  }
 }
 
 // ---------------------------------------------------------------------------

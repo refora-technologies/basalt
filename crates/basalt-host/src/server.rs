@@ -48,6 +48,9 @@ pub struct Host {
     /// so a connection it holds open waiting for changes is ended: see
     /// [`stream_changes`].
     access_changes: tokio::sync::broadcast::Sender<String>,
+    /// Sent whenever the profiles or the owner's rules about them change, so
+    /// every device watching asks again at once: see [`stream_changes`].
+    profile_changes: tokio::sync::broadcast::Sender<()>,
     /// Whether the chosen drive was missing the last time anyone looked.
     drive_lost: std::sync::atomic::AtomicBool,
     /// Bumped whenever the drive served is replaced or let go, always while
@@ -207,6 +210,7 @@ impl Host {
             watch: tokio::sync::RwLock::new(watch),
             watch_generation: tokio::sync::watch::Sender::new(0),
             access_changes: tokio::sync::broadcast::Sender::new(16),
+            profile_changes: tokio::sync::broadcast::Sender::new(16),
             drive_lost: std::sync::atomic::AtomicBool::new(drive_lost),
             drive_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             state_root: std::sync::Mutex::new(state_root),
@@ -613,6 +617,21 @@ impl Host {
         self.profiles.lock().expect("profiles lock").views()
     }
 
+    /// Tells every device watching that the profiles or the rules changed.
+    /// Nobody listening is not an error.
+    fn profiles_changed(&self) {
+        let _ = self.profile_changes.send(());
+    }
+
+    /// Whether this connection is a device acting as itself on a drive that
+    /// asks everyone to sign in, or one whose sign-in has since ended.
+    fn kept_out(&self, session: &mut Session) -> bool {
+        if session.device.is_none() || !self.profile_rules().require_profile {
+            return false;
+        }
+        session.profile.is_none() || self.check_profile(session).is_err()
+    }
+
     /// Every profile with the devices signed in to it, for the host's window.
     pub fn profiles_overview(&self) -> Vec<crate::ui::ProfileSummary> {
         let devices = self.devices();
@@ -662,6 +681,7 @@ impl Host {
             unix_now(),
         )?;
         self.persist()?;
+        self.profiles_changed();
         Ok((profile.view(), token))
     }
 
@@ -678,6 +698,8 @@ impl Host {
             unix_now(),
         )?;
         self.persist()?;
+        // A first sign-in chooses the PIN: other devices stop offering to.
+        self.profiles_changed();
         Ok((profile.view(), token))
     }
 
@@ -716,6 +738,7 @@ impl Host {
         let ended = self.profiles.lock().expect("profiles lock").sign_out(token);
         if ended {
             self.persist()?;
+            self.profiles_changed();
         }
         Ok(ended)
     }
@@ -726,6 +749,7 @@ impl Host {
         let done = self.profiles.lock().expect("profiles lock").reset_pin(id);
         if done {
             self.persist()?;
+            self.profiles_changed();
         }
         Ok(done)
     }
@@ -744,6 +768,7 @@ impl Host {
                 self.config.lock().expect("config lock").require_profile = false;
             }
             self.persist()?;
+            self.profiles_changed();
             if self
                 .progress
                 .lock()
@@ -1858,13 +1883,17 @@ impl Host {
             ));
         }
         self.config.lock().expect("config lock").require_profile = require;
-        self.persist()
+        self.persist()?;
+        self.profiles_changed();
+        Ok(())
     }
 
     /// Lets only the host's owner add profiles, or anyone using the drive.
     pub fn set_owner_adds_profiles(&self, owner_only: bool) -> Result<()> {
         self.config.lock().expect("config lock").owner_adds_profiles = owner_only;
-        self.persist()
+        self.persist()?;
+        self.profiles_changed();
+        Ok(())
     }
 
     /// A profile made from the host's window: a name and a colour, no PIN.
@@ -1874,7 +1903,9 @@ impl Host {
             .lock()
             .expect("profiles lock")
             .create_without_pin(name, color, unix_now())?;
-        self.persist()
+        self.persist()?;
+        self.profiles_changed();
+        Ok(())
     }
 
     /// Turns the PIN requirement on or off.
@@ -2142,7 +2173,8 @@ impl Batch {
             Change::Created { .. }
             | Change::Removed { .. }
             | Change::Modified { .. }
-            | Change::LibraryChanged => {}
+            | Change::LibraryChanged
+            | Change::ProfilesChanged => {}
         }
     }
 }
@@ -2357,24 +2389,14 @@ where
         // A drive kept private: a device acting as itself may still pick and
         // sign in to a profile, and nothing else. Answered as signed out, the
         // answer every app already takes as "ask who is using this device".
-        if session.device.is_some()
-            && !op.open_without_profile()
-            && host.profile_rules().require_profile
-        {
-            let refused = if session.profile.is_none() {
-                true
-            } else {
-                host.check_profile(&mut session).is_err()
-            };
-            if refused {
-                write_err(
-                    &mut stream,
-                    ErrorCode::SignedOut,
-                    "this drive asks everyone to sign in to a profile",
-                )
-                .await?;
-                continue;
-            }
+        if !op.open_without_profile() && host.kept_out(&mut session) {
+            write_err(
+                &mut stream,
+                ErrorCode::SignedOut,
+                "this drive asks everyone to sign in to a profile",
+            )
+            .await?;
+            continue;
         }
 
         if let Err(e) = dispatch(&mut stream, &host, &mut session, op, &payload).await {
@@ -2686,8 +2708,8 @@ where
         // The one op that does not answer once. This borrows the connection
         // for as long as the client wants it and writes a response per change.
         Op::Watch => {
-            let _: WatchRequest = decode(payload).unwrap_or_default();
-            stream_changes(stream, host, session.device_key()).await?;
+            let request: WatchRequest = decode(payload).unwrap_or_default();
+            stream_changes(stream, host, session, request.profiles).await?;
         }
 
         Op::Library => {
@@ -2901,11 +2923,22 @@ where
 /// connects again, which is where it learns its access: that is how the
 /// interface hides or shows its buttons without waiting for a restart. Both
 /// work with clients older than this, which reconnect after any failure.
-async fn stream_changes<S>(stream: &mut S, host: &Arc<Host>, device: Option<String>) -> Result<()>
+///
+/// Also the host's line to the device: with `profiles`, a change to the
+/// profiles or the rules about them is told at once, and on a drive that asks
+/// everyone to sign in, a device that has not is told nothing else.
+async fn stream_changes<S>(
+    stream: &mut S,
+    host: &Arc<Host>,
+    session: &mut Session,
+    profiles: bool,
+) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let device = session.device_key();
     let mut access_changes = host.access_changes.subscribe();
+    let mut profile_changes = host.profile_changes.subscribe();
     let mut events = match host.watch().await {
         Some(watch) => watch.subscribe(),
         None => {
@@ -2938,6 +2971,18 @@ where
                 let _ = write_err(stream, code, message).await;
                 return Ok(());
             }
+            changed = profile_changes.recv(), if profiles => {
+                if let Err(tokio::sync::broadcast::error::RecvError::Closed) = changed {
+                    return Ok(());
+                }
+                // Missed notices are still one notice: the device asks again
+                // and gets everything as it is now.
+                let told = WatchEvent { change: basalt_proto::msg::Change::ProfilesChanged };
+                if reply(stream, &told).await.is_err() {
+                    return Ok(());
+                }
+                continue;
+            }
             event = events.recv() => event,
         };
         let change = match event {
@@ -2951,6 +2996,12 @@ where
                 return Ok(());
             }
         };
+
+        // Asked again for every change rather than once: the owner may make
+        // the drive private, or end this sign-in, while the watch is open.
+        if host.kept_out(session) {
+            continue;
+        }
 
         // A write failure here is the client hanging up, which is how a watch
         // is meant to end.

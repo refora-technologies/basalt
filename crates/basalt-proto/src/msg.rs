@@ -351,6 +351,10 @@ pub enum Change {
     Resynchronise,
     /// The media index finished changing.
     LibraryChanged,
+    /// The profiles, or the owner's rules about them, changed on the host:
+    /// ask again who may use this device and as whom. Only sent to a watch
+    /// that asked for it.
+    ProfilesChanged,
 }
 
 impl Change {
@@ -373,14 +377,20 @@ impl Change {
                 let (a, b) = (parent(from), parent(to));
                 if a == b { vec![a] } else { vec![a, b] }
             }
-            Change::Resynchronise | Change::LibraryChanged => Vec::new(),
+            Change::Resynchronise | Change::LibraryChanged | Change::ProfilesChanged => Vec::new(),
         }
     }
 }
 
-/// Sent once to open a watch. Empty today; here so the shape can grow.
+/// Sent once to open a watch.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct WatchRequest {}
+pub struct WatchRequest {
+    /// Also tell this device when the profiles or the owner's rules about
+    /// them change, as [`Change::ProfilesChanged`]. Asked for rather than
+    /// always sent, because a device from before it would not understand it.
+    #[serde(default)]
+    pub profiles: bool,
+}
 
 /// One streamed frame on a watch connection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
