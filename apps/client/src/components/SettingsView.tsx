@@ -4,7 +4,7 @@ import {
   FolderOpen, HardDrive, Info, Laptop, Shield, Volume2, Wifi, Zap } from 'lucide-react'
 import { Switch } from './Switch'
 import { setShowHidden, useShowHidden } from '@/lib/showHidden'
-import type { Status } from '@/lib/api'
+import type { KeyKind, Status } from '@/lib/api'
 import {
   audioDevices,
   savedAudioDevice,
@@ -165,15 +165,43 @@ export function SettingsView({
             value={status?.hostId ? formatIdentity(status.hostId) : '—'}
             mono
           />
+          <Row label="This device's key" value={keyPlace(status?.key ?? null)} />
+          <Row
+            label="Signs in with"
+            value={
+              !status?.connected
+                ? '—'
+                : status.signsInWithKey
+                  ? 'its key'
+                  : 'its pairing code'
+            }
+          />
+          {status?.owner && <Row label="Owner" value="vouches for this host every week" />}
           <Note>
             The host&rsquo;s public key, pinned when you paired. Every connection
             since has had to present exactly this key — a different machine at
-            the same address is refused rather than trusted.
+            the same address is refused rather than trusted. This device proves
+            itself the same way, by signing with a key of its own that never
+            leaves it, so nothing sent over the network can be used again.
           </Note>
         </Section>
       </div>
     </div>
   )
+}
+
+/** Where the device's key is kept, in words. */
+function keyPlace(key: KeyKind | null): string {
+  switch (key) {
+    case 'chip':
+      return "in this computer's security chip"
+    case 'system':
+      return 'sealed by Windows for you'
+    case 'file':
+      return 'in a file only Basalt reads'
+    default:
+      return 'made the first time it is needed'
+  }
 }
 
 /** Groups a long hex identity so a person can compare it against a screen. */

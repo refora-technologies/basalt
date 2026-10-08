@@ -108,6 +108,8 @@ pub struct Basalt {
     /// This device's key, once loaded or made. Behind an async lock so two
     /// connections starting at once cannot each make one.
     device_key: tokio::sync::Mutex<Option<Arc<KeyRing>>>,
+    /// Where that key is kept, for the window to say without waiting.
+    key_kind: std::sync::Mutex<Option<basalt_proto::msg::KeyKind>>,
 }
 
 /// Counts one connection attempt for as long as it lasts, however it ends.
@@ -207,6 +209,7 @@ impl Basalt {
             connecting: std::sync::atomic::AtomicUsize::new(0),
             keys: Policy::Software,
             device_key: tokio::sync::Mutex::new(None),
+            key_kind: std::sync::Mutex::new(None),
         })
     }
 
@@ -245,13 +248,14 @@ impl Basalt {
             self.save_store()?;
         }
         let key = Arc::new(KeyRing::new(key).map_err(|e| ClientError::Key(e.to_string()))?);
+        *self.key_kind.lock().expect("key kind lock") = Some(key.kind());
         *slot = Some(Arc::clone(&key));
         Ok(key)
     }
 
     /// Where this device's key is kept, once it has one.
-    pub async fn key_kind(&self) -> Option<basalt_proto::msg::KeyKind> {
-        self.device_key.lock().await.as_ref().map(|k| k.kind())
+    pub fn key_kind(&self) -> Option<basalt_proto::msg::KeyKind> {
+        *self.key_kind.lock().expect("key kind lock")
     }
 
     /// What to sign in to a known host with.

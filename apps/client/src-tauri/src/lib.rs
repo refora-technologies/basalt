@@ -197,7 +197,9 @@ fn status_of(client: &Arc<Basalt>) -> Status {
         .and_then(|info| saved.iter().find(|host| host.host_id == info.host_id))
         .or(waiting.as_ref());
 
-    Status::new(live.clone(), paired, client.device_name()).connecting(client.is_connecting())
+    Status::new(live.clone(), paired, client.device_name())
+        .connecting(client.is_connecting())
+        .key(client.key_kind())
 }
 
 // ---------------------------------------------------------------------------

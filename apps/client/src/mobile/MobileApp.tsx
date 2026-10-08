@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ArrowLeftRight,
+  KeyRound,
   ArrowUpCircle,
   ArrowLeft,
   CheckSquare,
@@ -1484,6 +1485,17 @@ function MoreScreen({
                 {formatBytes(total - used)} free of {formatBytes(total)}
               </div>
             </>
+          )}
+          {model.connected && (
+            <div className="mt-2.5 flex items-center gap-1.5 text-[12px] text-textFaint">
+              <KeyRound size={12} className="shrink-0" />
+              {vault.status?.signsInWithKey
+                ? vault.status.key === 'chip'
+                  ? "Signs in with a key in this phone's security chip"
+                  : 'Signs in with a key of its own'
+                : 'Signs in with its pairing code'}
+              {vault.status?.owner && ' · owner'}
+            </div>
           )}
           <button
             onClick={onChangeDrive}

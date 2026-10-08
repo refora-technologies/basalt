@@ -35,6 +35,10 @@ pub struct SessionInfo {
     pub vault: String,
     pub writable: bool,
     pub address: SocketAddr,
+    /// Signed in with this device's key, rather than a pairing token.
+    pub by_key: bool,
+    /// The host's owner made this device an owner.
+    pub owner: bool,
 }
 
 pub struct Session {
@@ -385,6 +389,8 @@ impl Session {
                 vault: auth.vault,
                 writable: auth.writable,
                 address,
+                by_key,
+                owner: auth.owner,
             },
         }
     }
@@ -512,6 +518,8 @@ impl Session {
                     // Replaced by what the host says once pairing completes.
                     writable: true,
                     address: addr,
+                    by_key: false,
+                    owner: false,
                 },
             },
             challenge,
@@ -584,6 +592,7 @@ impl Session {
         self.info.vault = finish.vault;
         if key.is_some() {
             self.signed_in.by_key = true;
+            self.info.by_key = true;
             // Paired with a key: there never was a token to keep.
             return Ok(String::new());
         }

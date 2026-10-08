@@ -40,7 +40,16 @@ export interface Status {
   deviceName: string
   /** A connection is being attempted right now, as at every startup. */
   connecting?: boolean
+  /** Where this device's key is kept, once it has one. */
+  key?: KeyKind | null
+  /** This connection signed in with the key, rather than a pairing code. */
+  signsInWithKey?: boolean
+  /** The drive's owner made this device an owner: it vouches for the host. */
+  owner?: boolean
 }
+
+/** Where a device keeps its key: a security chip, sealed by its system, or a file. */
+export type KeyKind = 'chip' | 'system' | 'file'
 
 /**
  * A host found on the network.
@@ -663,6 +672,9 @@ const MOCK_STATUS: Status = {
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('mobile')
       ? "Maya's phone"
       : "Maya's laptop",
+  key: 'chip',
+  signsInWithKey: true,
+  owner: typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('owner'),
 }
 
 /**
