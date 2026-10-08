@@ -168,6 +168,16 @@ impl Basalt {
         })
     }
 
+    /// A client that never makes a key: how a device from before keys
+    /// behaves, for the tests that move one across.
+    #[doc(hidden)]
+    pub fn open_without_keys(store_path: PathBuf) -> Result<Self> {
+        Ok(Self {
+            keys: Policy::Off,
+            ..Self::open(store_path)?
+        })
+    }
+
     pub fn open(store_path: PathBuf) -> Result<Self> {
         let mut store = ClientStore::load(&store_path)?;
         let device_name = store

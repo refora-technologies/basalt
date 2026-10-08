@@ -69,6 +69,9 @@ pub enum Policy {
     /// The best this device offers: the phone's store when given one, the
     /// TPM on Windows, and a sealed software key otherwise.
     Platform(Option<Arc<dyn PhoneKeys>>),
+    /// No key at all: a device from before keys. Only for tests.
+    #[doc(hidden)]
+    Off,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +118,9 @@ impl DeviceKey {
     /// fails to make one, or makes one that does not sign properly, is passed
     /// over for the next place down. Blocks: call off the async runtime.
     pub fn create(policy: &Policy) -> Result<Self, KeyError> {
+        if let Policy::Off = policy {
+            return Err(KeyError::Unavailable("this client makes no keys".into()));
+        }
         if let Policy::Platform(phone) = policy {
             if let Some(phone) = phone {
                 match phone_create(phone) {
