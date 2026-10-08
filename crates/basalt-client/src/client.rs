@@ -149,6 +149,17 @@ impl Basalt {
         hint: Option<&str>,
         phone: Option<Arc<dyn PhoneKeys>>,
     ) -> Result<Self> {
+        Self::open_as_this_device_with_policy(store_path, hint, Policy::Platform(phone))
+    }
+
+    /// [`Basalt::open_as_this_device`] with the device's lasting id and the
+    /// key policy given: tests ask for [`Policy::Software`], so that running
+    /// them leaves nothing in this computer's TPM.
+    pub fn open_as_this_device_with_policy(
+        store_path: PathBuf,
+        hint: Option<&str>,
+        keys: Policy,
+    ) -> Result<Self> {
         let client = Self::open(store_path)?;
         let me = match crate::store::lasting_device_id(hint) {
             Some(id) => {
@@ -163,11 +174,7 @@ impl Basalt {
             }
             None => client.me.clone(),
         };
-        Ok(Self {
-            me,
-            keys: Policy::Platform(phone),
-            ..client
-        })
+        Ok(Self { me, keys, ..client })
     }
 
     /// A client that never makes a key: how a device from before keys
@@ -687,7 +694,9 @@ impl Basalt {
         };
         current.host = Some(host_id.to_string());
         *self.identity.lock().expect("identity lock") = current;
-        *self.pool.write().await = Some(pool);
+        if let Some(old) = self.pool.write().await.replace(pool) {
+            self.keep_pool_statements(&old);
+        }
         *self.info.lock().expect("info lock") = Some(info.clone());
         Ok(info)
     }
@@ -736,6 +745,17 @@ impl Basalt {
         }
         if let Err(e) = self.save_store() {
             tracing::warn!("could not keep a member statement: {e}");
+        }
+    }
+
+    /// Keeps the statements a pool's connections were handed. Asked often,
+    /// and before a pool is let go: the host counts them as given.
+    fn keep_pool_statements(&self, pool: &Pool) {
+        let Some(key) = pool.credentials().key else {
+            return;
+        };
+        for member in pool.take_statements() {
+            self.keep_member(pool.host_id(), member, &key);
         }
     }
 
@@ -843,6 +863,7 @@ impl Basalt {
     /// unless remembered: only a connection that dropped carries them over.
     pub async fn disconnect(&self) {
         if let Some(pool) = self.pool.write().await.take() {
+            self.keep_pool_statements(&pool);
             pool.clear();
         }
         *self.info.lock().expect("info lock") = None;
@@ -900,11 +921,7 @@ impl Basalt {
                     self.keep_member(pool.host_id(), member, &key);
                 }
             }
-            if let Some(key) = pool.credentials().key {
-                for member in pool.take_statements() {
-                    self.keep_member(pool.host_id(), member, &key);
-                }
-            }
+            self.keep_pool_statements(&pool);
             if let Ok(mut lease) = pool.acquire().await {
                 let result = lease.profiles().await;
                 if let Ok(response) = lease.check(result) {

@@ -205,9 +205,10 @@ async fn a_device_whose_key_was_reset_is_asked_to_pair_again_and_says_why() {
     fixture.pair(&client).await;
     drop(client);
 
-    // The key no longer opens: a chip reset, or files from another computer.
+    // The key kept is no longer the one recorded: what a chip reset leaves.
     let mut kept = read_store(&store);
-    kept["device_key"]["sealed"] = serde_json::json!("dpapi:00");
+    let other = SoftwareKey::generate().unwrap();
+    kept["device_key"]["public"] = serde_json::json!(other.public_key().to_hex());
     write_store(&store, &kept);
 
     let client = Basalt::open(store).unwrap();

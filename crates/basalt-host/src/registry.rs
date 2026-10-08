@@ -439,7 +439,10 @@ impl Registry {
         if !device.named_by_host {
             device.name = request.device_name;
         }
-        if !request.device_id.is_empty() {
+        // Settled once: anything kept for the device (its sign-ins, what was
+        // said about it) is filed under it, and a device recognised by its key
+        // keeps the id it had whatever it says now.
+        if device.device_id.is_empty() && !request.device_id.is_empty() {
             device.device_id = request.device_id;
         }
         match credential {
@@ -1542,6 +1545,17 @@ mod tests {
         assert_eq!(again.token_hash, id, "the same row on the host");
         assert_eq!(registry.device_count(), 1);
         assert!(registry.authenticate_key(&k).is_some());
+    }
+
+    #[test]
+    fn a_device_recognised_by_its_key_keeps_its_id_whatever_it_says() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let k = key();
+        pair_with_key(&mut registry, now, "Phone", DEVICE_A, &k).unwrap();
+        let again = pair_with_key(&mut registry, now, "Phone", DEVICE_B, &k).unwrap();
+        assert_eq!(again.device_id, DEVICE_A);
+        assert_eq!(registry.device_count(), 1);
     }
 
     #[test]

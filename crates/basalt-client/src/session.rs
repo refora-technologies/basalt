@@ -462,6 +462,7 @@ impl Session {
             call_unit(&mut self.stream, Op::Endorse, &EndorseRequest { statement }).await
         {
             tracing::warn!("the host did not take this device's endorsement: {e}");
+            key.endorsement_not_delivered(&self.info.host_id);
         }
     }
 
@@ -564,19 +565,26 @@ impl Session {
         };
 
         let key = key.filter(|_| challenge.host_keys);
+        // A key that cannot sign just now does not cost the pairing: the
+        // device pairs with a token, and gives the host its key next time.
         let key_signature = match key {
-            Some(key) => Some(
-                signed_message(
-                    &self.stream,
-                    key,
-                    basalt_trust::message::Purpose::Pair,
-                    &challenge.host_id,
-                )
-                .await?
-                .to_hex(),
-            ),
+            Some(key) => match signed_message(
+                &self.stream,
+                key,
+                basalt_trust::message::Purpose::Pair,
+                &challenge.host_id,
+            )
+            .await
+            {
+                Ok(signature) => Some(signature.to_hex()),
+                Err(e) => {
+                    tracing::warn!("pairing with a token instead: {e}");
+                    None
+                }
+            },
             None => None,
         };
+        let key = key.filter(|_| key_signature.is_some());
 
         let finish: PairFinishResponse = call_json(
             &mut self.stream,

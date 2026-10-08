@@ -308,6 +308,12 @@ impl KeyRing {
         }))
     }
 
+    /// The endorsement just signed for `host_id` did not reach it: the next
+    /// offer is answered rather than let pass.
+    pub fn endorsement_not_delivered(&self, host_id: &str) {
+        self.endorsed.lock().expect("endorsed lock").remove(host_id);
+    }
+
     /// The statement for `host_id` while it has more than an hour left.
     pub fn pass(&self, host_id: &str, now: i64) -> Option<SignedStatement> {
         if self.refused.lock().expect("refused lock").contains(host_id) {
@@ -402,11 +408,21 @@ fn software_create() -> Result<DeviceKey, KeyError> {
 fn software_load(stored: &StoredKey) -> Result<DeviceKey, KeyError> {
     // One that will not open was sealed for another person or computer:
     // the store was copied. The key is as good as gone here.
+    // One that will not open is not taken for lost: Windows can fail to open
+    // a sealed secret for a moment (early at sign-in, say), and making a new
+    // key would cost every pairing that knows only this one. A store copied
+    // from another person or computer stays unopenable, and that device
+    // pairs again by hand.
     let opened = crate::store::secret::open(&stored.sealed);
+    if opened.is_empty() {
+        return Err(KeyError::Unavailable(
+            "Windows could not open this device's key just now".into(),
+        ));
+    }
     let pkcs8 = hex::decode(&opened)
         .ok()
         .filter(|b| !b.is_empty())
-        .ok_or_else(|| KeyError::Lost("the sealed key does not open here".into()))?;
+        .ok_or_else(|| KeyError::Lost("the kept key is unreadable".into()))?;
     let key = SoftwareKey::from_pkcs8(&pkcs8)
         .map_err(|e| KeyError::Lost(format!("the kept key is unreadable: {e}")))?;
     let kind = if crate::store::secret::is_sealed(&stored.sealed) {
@@ -569,10 +585,18 @@ pub(crate) mod tpm {
     fn provider() -> Result<Handle, Failure> {
         let mut handle = 0usize;
         // SAFETY: a valid out-pointer and a static provider name.
-        check(
-            unsafe { NCryptOpenStorageProvider(&mut handle, MS_PLATFORM_CRYPTO_PROVIDER, 0) },
-            "opening the TPM",
-        )?;
+        let result =
+            unsafe { NCryptOpenStorageProvider(&mut handle, MS_PLATFORM_CRYPTO_PROVIDER, 0) };
+        // Never "missing": the TPM itself not being there just now says
+        // nothing about whether the key is, and a missing key is what makes
+        // a new one.
+        check(result, "opening the TPM").map_err(|e| match e {
+            Failure::Missing => Failure::Other(format!(
+                "the TPM is not available (0x{:08x})",
+                result as u32
+            )),
+            other => other,
+        })?;
         Ok(Handle(handle))
     }
 
@@ -882,11 +906,12 @@ mod tests {
     fn a_stored_key_that_will_not_open_or_does_not_match_is_lost() {
         let key = DeviceKey::create(&Policy::Software).unwrap();
 
+        // One that will not open now is not taken for lost.
         let mut copied = key.stored().clone();
         copied.sealed = "dpapi:00ff".into();
         assert!(matches!(
             DeviceKey::load(&copied, &Policy::Software),
-            Err(KeyError::Lost(_))
+            Err(KeyError::Unavailable(_))
         ));
 
         let other = DeviceKey::create(&Policy::Software).unwrap();

@@ -975,7 +975,9 @@ impl Host {
             .lock()
             .expect("authority lock")
             .endorsement()
-            .cloned()?;
+            .cloned()
+            // Run out, and nobody has connected to renew it: not shown.
+            .filter(|e| e.exp > unix_now())?;
         let by = self
             .registry
             .lock()

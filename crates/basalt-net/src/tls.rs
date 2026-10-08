@@ -171,21 +171,19 @@ pub fn client_config(trust: Trust) -> (TlsConnector, Arc<PinVerifier>) {
 pub fn server_binding(
     connection: &rustls::ServerConnection,
 ) -> Option<[u8; basalt_trust::message::EXPORTER_BYTES]> {
-    if connection.protocol_version() != Some(rustls::ProtocolVersion::TLSv1_3) {
-        return None;
-    }
-    connection
-        .export_keying_material(
-            [0u8; basalt_trust::message::EXPORTER_BYTES],
-            basalt_trust::message::EXPORTER_LABEL,
-            None,
-        )
-        .ok()
+    binding(connection)
 }
 
 /// The device's side of [`server_binding`]: the same bytes, from its end.
 pub fn client_binding(
     connection: &rustls::ClientConnection,
+) -> Option<[u8; basalt_trust::message::EXPORTER_BYTES]> {
+    binding(connection)
+}
+
+/// The one place the exporter is asked for, so the two ends cannot drift.
+fn binding<Data>(
+    connection: &rustls::ConnectionCommon<Data>,
 ) -> Option<[u8; basalt_trust::message::EXPORTER_BYTES]> {
     if connection.protocol_version() != Some(rustls::ProtocolVersion::TLSv1_3) {
         return None;
