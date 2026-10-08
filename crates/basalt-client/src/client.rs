@@ -264,11 +264,11 @@ impl Basalt {
     /// error here: a host older than keys, or a chip that is busy, still
     /// lets a device with a token in.
     async fn credentials(&self, known: &KnownHost) -> Credentials {
-        let key = match self.device_key().await {
-            Ok(key) => Some(key),
+        let (key, key_problem) = match self.device_key().await {
+            Ok(key) => (Some(key), None),
             Err(e) => {
                 tracing::warn!("signing in without this device's key: {e}");
-                None
+                (None, Some(e.to_string()))
             }
         };
         let key_on_host = key
@@ -278,6 +278,7 @@ impl Basalt {
             token: known.token.clone(),
             key,
             key_on_host,
+            key_problem,
         }
     }
 
@@ -474,6 +475,7 @@ impl Basalt {
             token: token.clone(),
             key: key.filter(|_| keyed),
             key_on_host: keyed,
+            key_problem: None,
         };
         let pool = Pool::with_session(addr, &info.host_id, credentials, &self.me, session);
         *self.pool.write().await = Some(pool);
@@ -615,6 +617,9 @@ impl Basalt {
             .settle_key(host_id, addr, &mut session, &mut credentials)
             .await;
         let mut proven = proven;
+        // Moved to its key just now: what the window says is the proving
+        // connection's, signed in with the key, not the token session's.
+        let info = proven.as_ref().map(|p| p.info().clone()).unwrap_or(info);
         if let Some(key) = &credentials.key {
             session.answer_endorsement(key).await;
             if let Some(proven) = proven.as_mut() {

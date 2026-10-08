@@ -215,6 +215,10 @@ pub struct KeyRing {
     /// the rest let pass for an hour, so a burst of connections does not
     /// queue at the chip for a renewal that has weeks to spare.
     endorsed: Mutex<HashMap<String, i64>>,
+    /// Held while a session statement is made, so connections opening
+    /// together near the end of the last one wait for one signature rather
+    /// than each making their own.
+    making_pass: Mutex<()>,
 }
 
 impl std::fmt::Debug for KeyRing {
@@ -233,6 +237,7 @@ impl KeyRing {
             passes: Mutex::new(HashMap::new()),
             refused: Mutex::new(HashSet::new()),
             endorsed: Mutex::new(HashMap::new()),
+            making_pass: Mutex::new(()),
         })
     }
 
@@ -275,20 +280,28 @@ impl KeyRing {
             pinned_host,
             now,
         )?;
-        let recently = self
-            .endorsed
-            .lock()
-            .expect("endorsed lock")
-            .get(pinned_host)
-            .is_some_and(|at| (now - at).abs() < ENDORSE_QUIET);
-        if recently {
-            return Ok(None);
-        }
-        let signed = basalt_trust::statement::sign_offered(&*self.device.signer, offer)?;
-        self.endorsed
-            .lock()
-            .expect("endorsed lock")
-            .insert(pinned_host.to_string(), now);
+        // Claimed before signing, under the lock, so connections offered one
+        // together cannot all find the hour free; given back if signing fails.
+        let earlier = {
+            let mut endorsed = self.endorsed.lock().expect("endorsed lock");
+            let earlier = endorsed.get(pinned_host).copied();
+            if earlier.is_some_and(|at| (now - at).abs() < ENDORSE_QUIET) {
+                return Ok(None);
+            }
+            endorsed.insert(pinned_host.to_string(), now);
+            earlier
+        };
+        let signed = match basalt_trust::statement::sign_offered(&*self.device.signer, offer) {
+            Ok(signed) => signed,
+            Err(e) => {
+                let mut endorsed = self.endorsed.lock().expect("endorsed lock");
+                match earlier {
+                    Some(at) => endorsed.insert(pinned_host.to_string(), at),
+                    None => endorsed.remove(pinned_host),
+                };
+                return Err(e);
+            }
+        };
         Ok(Some(SignedStatement {
             payload: signed.payload,
             signature: signed.signature,
@@ -315,6 +328,11 @@ impl KeyRing {
     /// Makes a new statement for `host_id`, signed by the device's key, and
     /// keeps it. Blocks.
     pub fn make_pass(&self, host_id: &str, now: i64) -> Result<SignedStatement, TrustError> {
+        let _one_at_a_time = self.making_pass.lock().unwrap_or_else(|e| e.into_inner());
+        // Made by another connection while this one waited.
+        if let Some(pass) = self.pass(host_id, now) {
+            return Ok(pass);
+        }
         let payload = basalt_trust::Payload::new(
             basalt_trust::Kind::Session,
             self.device.public_key(),

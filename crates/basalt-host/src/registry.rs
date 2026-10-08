@@ -452,7 +452,12 @@ impl Registry {
             }
             Credential::Key(key, kind) => {
                 let same_key = device.public_key == key.to_hex();
-                device.token_hash = record_id(key);
+                // A row the host already has keeps its id: the window, the
+                // traffic and the device's open connections all know it by
+                // that. Only a new row is named after its key.
+                if device.token_hash.is_empty() {
+                    device.token_hash = record_id(key);
+                }
                 device.token_retired = true;
                 device.public_key = key.to_hex();
                 device.key_kind = kind;
@@ -1522,6 +1527,21 @@ mod tests {
         // And a token device is written without the new fields.
         let written = serde_json::to_string(&device).unwrap();
         assert!(!written.contains("public_key") && !written.contains("key_kind"));
+    }
+
+    #[test]
+    fn a_device_that_moved_to_a_key_keeps_its_row_when_it_pairs_again() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let id = hash_token(&pair_as(&mut registry, now, "Laptop", DEVICE_A));
+        let k = key();
+        registry.enrol(&id, &k, None).unwrap();
+        registry.retire_token(&id);
+
+        let again = pair_with_key(&mut registry, now, "Laptop", DEVICE_A, &k).unwrap();
+        assert_eq!(again.token_hash, id, "the same row on the host");
+        assert_eq!(registry.device_count(), 1);
+        assert!(registry.authenticate_key(&k).is_some());
     }
 
     #[test]

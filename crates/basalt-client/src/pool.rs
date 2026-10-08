@@ -41,9 +41,8 @@ struct Idle {
 struct Inner {
     addr: SocketAddr,
     host_id: String,
-    /// What a new connection signs in with. Changes when the device moves
-    /// from its token to its key.
-    credentials: Mutex<Credentials>,
+    /// What a new connection signs in with: settled before the pool is made.
+    credentials: Credentials,
     me: Me,
     idle: Mutex<Vec<Idle>>,
     profile: Mutex<ProfileChoice>,
@@ -83,7 +82,7 @@ impl Pool {
             inner: Arc::new(Inner {
                 addr,
                 host_id: host_id.to_string(),
-                credentials: Mutex::new(credentials),
+                credentials,
                 me: me.clone(),
                 idle: Mutex::new(Vec::new()),
                 profile: Mutex::new(ProfileChoice::default()),
@@ -209,17 +208,7 @@ impl Pool {
 
     /// What new connections sign in with.
     pub fn credentials(&self) -> Credentials {
-        self.inner
-            .credentials
-            .lock()
-            .expect("credentials lock")
-            .clone()
-    }
-
-    /// Changes what new connections sign in with. Connections already open
-    /// stay as they are: they have signed in.
-    pub fn set_credentials(&self, credentials: Credentials) {
-        *self.inner.credentials.lock().expect("credentials lock") = credentials;
+        self.inner.credentials.clone()
     }
 
     /// The statements handed over since this was last asked.

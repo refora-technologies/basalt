@@ -53,13 +53,26 @@ pub fn seal(plain: &str) -> String {
     if plain.is_empty() || is_sealed(plain) {
         return plain.to_string();
     }
+    // The same secret sealed before is written as it was then: the config is
+    // saved often, its secrets rarely change, and Windows takes a moment to
+    // seal and check each one.
+    if let Some(sealed) = sealed_before().lock().expect("seal cache lock").get(plain) {
+        return sealed.clone();
+    }
     match platform::protect(plain.as_bytes()) {
         Some(sealed) => {
             // Only once it is known to open again: a seal that does not round
             // trip would turn the host's key into something nobody can read.
             match platform::unprotect(&sealed) {
                 Some(back) if back == plain.as_bytes() => {
-                    format!("{PREFIX}{}", basalt_proto::hex::encode(&sealed))
+                    let written = format!("{PREFIX}{}", basalt_proto::hex::encode(&sealed));
+                    let mut cache = sealed_before().lock().expect("seal cache lock");
+                    // A handful of secrets at most; a bound all the same.
+                    if cache.len() >= 64 {
+                        cache.clear();
+                    }
+                    cache.insert(plain.to_string(), written.clone());
+                    written
                 }
                 _ => {
                     tracing::warn!("a sealed secret did not open again; keeping it unsealed");
@@ -69,6 +82,14 @@ pub fn seal(plain: &str) -> String {
         }
         None => plain.to_string(),
     }
+}
+
+/// Secrets sealed this run, and how they were written. Kept in memory only,
+/// where the secrets themselves already are.
+fn sealed_before() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
 }
 
 /// Opens a secret. One written before sealing reads as it is.

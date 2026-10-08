@@ -2939,6 +2939,13 @@ where
                 let mut registry = host.registry.lock().expect("registry lock");
                 registry.authenticate(&token)
             };
+            session.by_key = false;
+            // A device that had a key and pairs again with a token (an older
+            // app on it) no longer has one: what was said about the key, and
+            // any endorsement it made, go with it.
+            if let Some(device) = &session.device {
+                host.forget_old_keys(device);
+            }
 
             reply(
                 stream,
@@ -2981,7 +2988,7 @@ where
                 reply(stream, &response).await?;
                 return Ok(());
             }
-            let (device, changed) = {
+            let (device, changed, was) = {
                 let mut registry = host.registry.lock().expect("registry lock");
                 match registry.authenticate(&req.token) {
                     Some(device) => {
@@ -2996,14 +3003,23 @@ where
                             )
                         });
                         let current = registry.device(&device.token_hash).cloned();
-                        (current, changed)
+                        (current, changed, device.key().to_string())
                     }
-                    None => (None, false),
+                    None => (None, false, String::new()),
                 }
             };
             let Some(device) = device else {
                 return Err(HostError::Unauthenticated);
             };
+            // A device that has just said its id is filed under it now, and so
+            // are its profile sign-ins, which are checked against it.
+            if device.key() != was {
+                host.profiles
+                    .lock()
+                    .expect("profiles lock")
+                    .rebind_devices(&[(was, device.key().to_string())]);
+            }
+            session.by_key = false;
             if changed {
                 host.persist()?;
             }

@@ -152,6 +152,10 @@ async fn a_device_paired_before_keys_moves_to_its_key_and_its_old_token_stops_wo
 
     let device = fixture.device();
     assert!(device.keyed() && device.token_retired);
+    assert!(
+        updated.status().unwrap().by_key,
+        "the window says the device signs in with its key at once"
+    );
     let kept = read_store(&store);
     assert_eq!(kept["hosts"][0]["token"], "", "the token is let go");
     assert_eq!(kept["hosts"][0]["key"].as_str().unwrap(), device.public_key);
@@ -397,6 +401,139 @@ async fn a_device_still_on_a_token_cannot_be_made_an_owner() {
     fixture.pair(&old).await;
     let device = fixture.device();
     assert!(fixture.host.set_owner(&device.token_hash, true).is_err());
+}
+
+/// A phone's key store, played by software keys, that can be made to fail
+/// the way a busy one does.
+#[derive(Default)]
+struct FlakyPhone {
+    keys: std::sync::Mutex<std::collections::HashMap<String, SoftwareKey>>,
+    failing: std::sync::atomic::AtomicBool,
+}
+
+impl FlakyPhone {
+    fn check(&self) -> Result<(), String> {
+        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+            Err("the key store is busy".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl basalt_client::keys::PhoneKeys for FlakyPhone {
+    fn create(&self, alias: &str) -> Result<Vec<u8>, String> {
+        self.check()?;
+        let key = SoftwareKey::generate().map_err(|e| e.to_string())?;
+        let spki = key.public_key().spki().to_vec();
+        self.keys.lock().unwrap().insert(alias.into(), key);
+        Ok(spki)
+    }
+    fn public(&self, alias: &str) -> Result<Option<Vec<u8>>, String> {
+        self.check()?;
+        Ok(self
+            .keys
+            .lock()
+            .unwrap()
+            .get(alias)
+            .map(|k| k.public_key().spki().to_vec()))
+    }
+    fn sign(&self, alias: &str, message: &[u8]) -> Result<Vec<u8>, String> {
+        self.check()?;
+        let keys = self.keys.lock().unwrap();
+        let key = keys.get(alias).ok_or("missing")?;
+        let rng = ring::rand::SystemRandom::new();
+        let der = ring::signature::EcdsaKeyPair::from_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+            key.pkcs8(),
+            &rng,
+        )
+        .unwrap()
+        .sign(&rng, message)
+        .unwrap();
+        Ok(der.as_ref().to_vec())
+    }
+    fn delete(&self, alias: &str) -> Result<(), String> {
+        self.keys.lock().unwrap().remove(alias);
+        Ok(())
+    }
+}
+
+// The review's first finding: a busy key store was taken for a key that was
+// gone, and the pairing deleted.
+#[tokio::test]
+async fn a_key_store_that_is_busy_for_a_moment_never_costs_the_pairing() {
+    let fixture = start_host().await;
+    let store = fixture.store("phone");
+    let phone = Arc::new(FlakyPhone::default());
+    let open = |phone: &Arc<FlakyPhone>| {
+        Basalt::open_as_this_device_with_keys(
+            store.clone(),
+            None,
+            Some(Arc::clone(phone) as Arc<dyn basalt_client::keys::PhoneKeys>),
+        )
+        .unwrap()
+    };
+    let client = open(&phone);
+    fixture.pair(&client).await;
+    assert_eq!(client.key_kind(), Some(KeyKind::Chip));
+    drop(client);
+
+    phone
+        .failing
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let client = open(&phone);
+    let refused = client.connect_saved().await.unwrap_err();
+    assert_ne!(refused.kind(), "removed", "{refused}");
+    assert_eq!(client.known_hosts().len(), 1, "the pairing is kept");
+    drop(client);
+
+    phone
+        .failing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let client = open(&phone);
+    client.connect_saved().await.unwrap();
+    assert!(client.list("").await.is_ok());
+}
+
+#[tokio::test]
+async fn an_older_app_pairing_again_on_an_owners_device_takes_its_vouching_with_it() {
+    let fixture = start_host().await;
+    let store = fixture.store("laptop");
+    let client = Basalt::open(store.clone()).unwrap();
+    fixture.pair(&client).await;
+    let device = fixture.device();
+    fixture.host.set_owner(&device.token_hash, true).unwrap();
+    drop(client);
+    let client = Basalt::open(store.clone()).unwrap();
+    client.connect_saved().await.unwrap();
+    client.identity().await;
+    assert!(fixture.host.endorsement_view().is_some());
+    let household = read_store(&store)["hosts"][0]["members"][0]["payload"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let serial = basalt_trust::statement::read_offer(&household)
+        .unwrap()
+        .serial;
+    drop(client);
+
+    // The same device (its id), as an older app with no key, pairs again.
+    let older = fixture.store("older");
+    let mut kept = read_store(&store);
+    kept["hosts"] = serde_json::json!([]);
+    kept.as_object_mut().unwrap().remove("device_key");
+    write_store(&older, &kept);
+    let client = Basalt::open_without_keys(older).unwrap();
+    fixture.pair(&client).await;
+
+    let device = fixture.device();
+    assert!(!device.keyed() && !device.owner);
+    assert!(
+        fixture.host.endorsement_view().is_none(),
+        "no longer vouched for"
+    );
+    assert!(fixture.host.revoked_statements().contains(&serial));
 }
 
 // ---------------------------------------------------------------------------
@@ -985,4 +1122,41 @@ async fn read_offer_host_key(fixture: &Fixture) -> String {
         host_id: String::new(),
     };
     basalt_proto::hex::encode(&identity.spki().unwrap())
+}
+
+// A connection that signed in with a key and then with a token is the token's
+// device, signed in with a token, in every respect.
+#[tokio::test]
+async fn a_token_sign_in_after_a_key_one_is_a_token_sign_in() {
+    let fixture = start_host().await;
+    let a = SoftwareKey::generate().unwrap();
+    raw_pair(&fixture, Some(&a), ID_A).await;
+    let token = raw_pair(&fixture, None, ID_B).await;
+
+    let (mut stream, host_id) = raw(fixture.addr, ID_B).await;
+    let request = by_key(
+        &a,
+        a.sign(&bound(&stream, Purpose::Auth, &host_id)).unwrap(),
+    );
+    auth(&mut stream, &request).await.unwrap();
+    let with_token = AuthRequest {
+        token,
+        ..AuthRequest::default()
+    };
+    auth(&mut stream, &with_token).await.unwrap();
+
+    // So it may give B a key, which only a token connection may.
+    let b = SoftwareKey::generate().unwrap();
+    let enrol = EnrolRequest {
+        key: b.public_key().to_hex(),
+        signature: b
+            .sign(&bound(&stream, Purpose::Enrol, &host_id))
+            .unwrap()
+            .to_hex(),
+        key_kind: None,
+    };
+    call_unit(&mut stream, Op::Enrol, &enrol).await.unwrap();
+    let devices = fixture.host.devices();
+    let b_row = devices.iter().find(|d| d.device_id == ID_B).unwrap();
+    assert_eq!(b_row.public_key, b.public_key().to_hex());
 }

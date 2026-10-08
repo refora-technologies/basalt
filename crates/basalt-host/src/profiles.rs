@@ -403,8 +403,9 @@ impl ProfileBook {
     /// before devices had ids was its token hash, and became its id once it
     /// said what that was. Sign-ins made in between would be refused as
     /// another device's now that [`ProfileBook::resolve`] checks; this moves
-    /// them across once, at start. `devices` is each device's token hash and
-    /// key. Returns whether anything moved.
+    /// them across: at start, and when a device says its id while the host
+    /// runs. `devices` pairs each device's old key with its key now. Returns
+    /// whether anything moved.
     pub fn rebind_devices(&mut self, devices: &[(String, String)]) -> bool {
         let mut moved = false;
         for token in &mut self.tokens {

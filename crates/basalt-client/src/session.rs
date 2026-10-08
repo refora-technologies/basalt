@@ -61,6 +61,10 @@ pub struct Credentials {
     pub key: Option<Arc<KeyRing>>,
     /// Whether the host has this key on record, so it is tried first.
     pub key_on_host: bool,
+    /// Why there is no key just now, when it is there and could not be used
+    /// (a chip that is busy). Said as the reason a device with nothing else
+    /// to sign in with cannot, rather than taken for a key that is gone.
+    pub key_problem: Option<String>,
 }
 
 impl std::fmt::Debug for Credentials {
@@ -70,6 +74,7 @@ impl std::fmt::Debug for Credentials {
             .field("token", &(!self.token.is_empty()))
             .field("key", &self.key)
             .field("key_on_host", &self.key_on_host)
+            .field("key_problem", &self.key_problem)
             .finish()
     }
 }
@@ -283,6 +288,11 @@ impl Session {
         if credentials.token.is_empty() {
             return Err(match key_error {
                 Some(e) => e,
+                // The key is there and could not be used just now: tried
+                // again later, and never a reason to drop the pairing.
+                None if credentials.key.is_none() && credentials.key_problem.is_some() => {
+                    ClientError::Key(credentials.key_problem.clone().unwrap_or_default())
+                }
                 // The host has a key for this device that it no longer has,
                 // and there is nothing else to sign in with.
                 None if credentials.key.is_some() && hello.keys => ClientError::KeyGone,
