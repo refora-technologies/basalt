@@ -91,15 +91,23 @@ export function useIdentity(host: string | null): Identity {
     if (!host) return undefined
     let stop: (() => void) | undefined
     let cancelled = false
-    void onProfilesChanged(() => {
+    const again = (): void => {
       void refresh()
       void reloadProfiles()
-    }).then((fn) => {
+    }
+    // Back to the front: a phone's connection does not last in the
+    // background, and what changed while it was away was told to nobody.
+    const shown = (): void => {
+      if (document.visibilityState === 'visible') again()
+    }
+    document.addEventListener('visibilitychange', shown)
+    void onProfilesChanged(again).then((fn) => {
       if (cancelled) fn()
       else stop = fn
     })
     return () => {
       cancelled = true
+      document.removeEventListener('visibilitychange', shown)
       stop?.()
     }
   }, [host, refresh, reloadProfiles])
