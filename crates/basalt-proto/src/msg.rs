@@ -57,6 +57,10 @@ pub struct HelloResponse {
     /// Whether the host is currently accepting new pairings.
     pub pairing_open: bool,
     pub host_name: String,
+    /// Whether devices may sign in with a key instead of a token: see
+    /// [`AuthRequest::key`]. Absent from a host from before keys.
+    #[serde(default)]
+    pub keys: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,19 +102,61 @@ pub struct PairFinishRequest {
     /// name here, and every device was listed under it.
     #[serde(default)]
     pub device_name: String,
+    /// The device's public key, when it pairs with one: SubjectPublicKeyInfo,
+    /// hex. The host then issues no token, and the device signs in with the
+    /// key from the start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The key's signature of the pairing message, bound to this connection:
+    /// proof the device holds the key it names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_signature: Option<String>,
+    /// Where the device says it keeps the key: see [`KeyKind`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_kind: Option<KeyKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PairFinishResponse {
-    /// 32 random bytes, hex. The client stores this and presents it forever
-    /// after.
+    /// 32 random bytes, hex, which the device presents from then on. Empty
+    /// when the device paired with a key.
+    #[serde(default)]
     pub token: String,
     pub vault: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Where a device keeps its key, as it reports it. Shown on the host; nothing
+/// is decided by it, since a device could say anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyKind {
+    /// A security chip: a computer's TPM, a phone's hardware key store.
+    Chip,
+    /// Sealed by the operating system for the person signed in.
+    System,
+    /// A file only the app reads.
+    File,
+}
+
+/// Signs a connection in: with a token, or with a key.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthRequest {
+    /// The device token. Empty when signing in with a key.
+    #[serde(default)]
     pub token: String,
+    /// The device's public key, SubjectPublicKeyInfo hex. Only to a host that
+    /// said [`HelloResponse::keys`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The signature of the sign-in message bound to this connection: by the
+    /// key itself, or by the key `session` names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// The key's statement that a key in the device's memory signs in for it
+    /// for a few hours: see `basalt_trust::statement`. When present, the
+    /// signature is that key's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SignedStatement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +167,47 @@ pub struct AuthResponse {
     /// setting; the client uses this to grey out the actions rather than
     /// letting them fail at the end of a long upload.
     pub writable: bool,
+    /// The host no longer accepts this device's token: it signs in with its
+    /// key now, and may forget the token.
+    #[serde(default)]
+    pub retire_token: bool,
+    /// The household's statement that this device is one of its own, when a
+    /// new one is due. See `basalt_trust::statement`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<SignedStatement>,
+    /// Whether the host's owner has made this device an owner.
+    #[serde(default)]
+    pub owner: bool,
+    /// For an owner's device, an endorsement of the host's key to sign and
+    /// return with [`EndorseRequest`], when one is due: the payload, hex.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endorse: Option<String>,
+}
+
+/// A statement as it travels: the payload's bytes and the issuer's
+/// signature, both hex. Read with `basalt_trust::statement`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedStatement {
+    pub payload: String,
+    pub signature: String,
+}
+
+/// A device paired with a token giving the host a key to use instead. Sent
+/// on a connection already signed in with the token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrolRequest {
+    /// SubjectPublicKeyInfo, hex.
+    pub key: String,
+    /// The key's signature of the enrolment message bound to this connection.
+    pub signature: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_kind: Option<KeyKind>,
+}
+
+/// An owner's device returning the endorsement it was offered, signed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EndorseRequest {
+    pub statement: SignedStatement,
 }
 
 // ---------------------------------------------------------------------------
@@ -585,6 +672,10 @@ pub struct ProfileSession {
     pub profile: ProfileView,
     /// 32 random bytes, hex. Presented with [`ProfileUseRequest`].
     pub token: String,
+    /// The profile's statement that this device acts for it, for a device
+    /// signed in with a key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<SignedStatement>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -600,6 +691,10 @@ pub struct ProfileUseRequest {
 pub struct ProfileUseResponse {
     #[serde(default)]
     pub profile: Option<ProfileView>,
+    /// A new statement from the profile, when one is due. See
+    /// [`ProfileSession::member`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<SignedStatement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

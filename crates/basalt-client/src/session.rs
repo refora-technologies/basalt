@@ -5,6 +5,7 @@
 //! assume both.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use basalt_net::framing::{
     call_json, call_unit, read_response, read_response_header, write_request,
@@ -18,6 +19,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 
+use crate::keys::KeyRing;
 use crate::{ClientError, Result};
 
 /// How long a host has to complete the handshake and sign-in once its
@@ -38,9 +40,51 @@ pub struct SessionInfo {
 pub struct Session {
     stream: TlsStream<TcpStream>,
     info: SessionInfo,
+    /// How this session signed in, and what the host said about keys.
+    pub(crate) signed_in: SignedIn,
     /// Which of the pool's profile choices this connection has told the host
     /// about. See `Pool::set_profile`.
     pub(crate) profile_gen: u64,
+}
+
+/// What a device has to sign in with, at one host.
+#[derive(Clone, Default)]
+pub struct Credentials {
+    /// The device token. Empty once the host has retired it, or for a device
+    /// that paired with its key.
+    pub token: String,
+    /// This device's key, when it has one.
+    pub key: Option<Arc<KeyRing>>,
+    /// Whether the host has this key on record, so it is tried first.
+    pub key_on_host: bool,
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never the token.
+        f.debug_struct("Credentials")
+            .field("token", &(!self.token.is_empty()))
+            .field("key", &self.key)
+            .field("key_on_host", &self.key_on_host)
+            .finish()
+    }
+}
+
+/// How a session signed in, and what the host said while it did.
+#[derive(Debug, Clone, Default)]
+pub struct SignedIn {
+    /// With the key, rather than the token.
+    pub by_key: bool,
+    /// The host can take a key: see [`HelloResponse::keys`].
+    pub host_keys: bool,
+    /// The host no longer accepts this device's token.
+    pub retire_token: bool,
+    /// The host's owner made this device an owner.
+    pub owner: bool,
+    /// An endorsement the host would like signed, its payload hex.
+    pub endorse: Option<String>,
+    /// The household's statement about this device, when a new one was due.
+    pub member: Option<SignedStatement>,
 }
 
 /// Who this device is, as it introduces itself to a host.
@@ -76,6 +120,49 @@ pub struct PairChallenge {
     pub host_id: String,
     /// The name this device asked under.
     pub device_name: String,
+    /// Whether the host can take a key, so the device pairs with one.
+    pub host_keys: bool,
+}
+
+/// Signs a message with the device's key, off the async threads: a TPM takes
+/// tens of milliseconds and holds its caller for all of them.
+async fn sign(key: &Arc<KeyRing>, message: Vec<u8>) -> Result<basalt_trust::Signature> {
+    let key = Arc::clone(key);
+    tokio::task::spawn_blocking(move || key.sign_with_device(&message))
+        .await
+        .map_err(|e| ClientError::Key(format!("signing stopped: {e}")))?
+        .map_err(|e| ClientError::Key(format!("this device's key could not sign: {e}")))
+}
+
+/// The message for `purpose`, bound to this connection.
+fn bound_message(
+    stream: &TlsStream<TcpStream>,
+    purpose: basalt_trust::message::Purpose,
+    host_id: &str,
+) -> Result<Vec<u8>> {
+    let binding = basalt_net::tls::client_binding(stream.get_ref().1).ok_or_else(|| {
+        ClientError::Key("signing in with a key needs a TLS 1.3 connection".into())
+    })?;
+    basalt_trust::message::device_message(purpose, &binding, host_id)
+        .map_err(|e| ClientError::Key(e.to_string()))
+}
+
+/// Builds the message for `purpose` and signs it with the device's key.
+async fn signed_message(
+    stream: &TlsStream<TcpStream>,
+    key: &Arc<KeyRing>,
+    purpose: basalt_trust::message::Purpose,
+    host_id: &str,
+) -> Result<basalt_trust::Signature> {
+    let message = bound_message(stream, purpose, host_id)?;
+    sign(key, message).await
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Opens a TLS connection and reads the host's greeting.
@@ -125,14 +212,19 @@ async fn open(
 
 impl Session {
     /// Reconnects to a host already paired with.
-    pub async fn connect(addr: SocketAddr, host_id: &str, token: &str, me: &Me) -> Result<Self> {
+    pub async fn connect(
+        addr: SocketAddr,
+        host_id: &str,
+        credentials: &Credentials,
+        me: &Me,
+    ) -> Result<Self> {
         // The connection itself gives up after a few seconds, but a host that
         // has frozen, asleep or stuck, still has the computer accept it, and
         // then never answers: the handshake and the sign-in waited forever,
         // and a film being picked up again sat on "picking up" for good.
         tokio::time::timeout(
             HANDSHAKE_TIMEOUT,
-            Self::connect_now(addr, host_id, token, me),
+            Self::connect_now(addr, host_id, credentials, me),
         )
         .await
         .map_err(|_| {
@@ -143,7 +235,12 @@ impl Session {
         })?
     }
 
-    async fn connect_now(addr: SocketAddr, host_id: &str, token: &str, me: &Me) -> Result<Self> {
+    async fn connect_now(
+        addr: SocketAddr,
+        host_id: &str,
+        credentials: &Credentials,
+        me: &Me,
+    ) -> Result<Self> {
         let (mut stream, hello, presented) =
             open(addr, Trust::Pinned(host_id.to_string()), me).await?;
 
@@ -156,26 +253,169 @@ impl Session {
             });
         }
 
+        // The key first, when the host has it; the token if the key is
+        // refused for any reason and the device still has one, on the same
+        // connection. A refusal leaves the connection open for another try.
+        let key = credentials
+            .key
+            .as_ref()
+            .filter(|_| hello.keys && credentials.key_on_host);
+        let mut key_error = None;
+        if let Some(key) = key {
+            match Self::auth_with_key(&mut stream, key, &presented).await {
+                Ok(auth) => {
+                    return Ok(Self::signed_in(stream, presented, hello, auth, addr, true));
+                }
+                // Only a refusal leaves anything to try; a dropped connection
+                // does not.
+                Err(e) if e.code().is_some() || matches!(e, ClientError::Key(_)) => {
+                    tracing::warn!("signing in with this device's key failed: {e}");
+                    key_error = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        if credentials.token.is_empty() {
+            return Err(match key_error {
+                Some(e) => e,
+                // The host has a key for this device that it no longer has,
+                // and there is nothing else to sign in with.
+                None if credentials.key.is_some() && hello.keys => ClientError::KeyGone,
+                None if !hello.keys => ClientError::HostTooOld,
+                None => ClientError::KeyGone,
+            });
+        }
         let auth: AuthResponse = call_json(
             &mut stream,
             Op::Auth,
             &AuthRequest {
-                token: token.to_string(),
+                token: credentials.token.clone(),
+                ..AuthRequest::default()
             },
         )
         .await?;
+        Ok(Self::signed_in(stream, presented, hello, auth, addr, false))
+    }
 
-        Ok(Self {
+    /// Signs in with the key in memory, vouched for by the device's key; or,
+    /// at a host that will not take that, with the device's key itself.
+    async fn auth_with_key(
+        stream: &mut TlsStream<TcpStream>,
+        key: &Arc<KeyRing>,
+        host_id: &str,
+    ) -> Result<AuthResponse> {
+        let message = bound_message(stream, basalt_trust::message::Purpose::Auth, host_id)?;
+        if !key.direct_at(host_id) {
+            let now = unix_now();
+            let pass = match key.pass(host_id, now) {
+                Some(pass) => pass,
+                None => {
+                    let ring = Arc::clone(key);
+                    let host = host_id.to_string();
+                    tokio::task::spawn_blocking(move || ring.make_pass(&host, now))
+                        .await
+                        .map_err(|e| ClientError::Key(format!("signing stopped: {e}")))?
+                        .map_err(|e| {
+                            ClientError::Key(format!("this device's key could not sign: {e}"))
+                        })?
+                }
+            };
+            let signature = key
+                .sign_with_session(&message)
+                .map_err(|e| ClientError::Key(e.to_string()))?;
+            let answer = call_json(
+                stream,
+                Op::Auth,
+                &AuthRequest {
+                    token: String::new(),
+                    key: Some(key.public_key().to_hex()),
+                    signature: Some(signature.to_hex()),
+                    session: Some(pass),
+                },
+            )
+            .await;
+            match answer {
+                Ok(auth) => return Ok(auth),
+                // Refused as not vouched for: the device's key signs here
+                // from now on. Anything else is the answer.
+                Err(e) if e.code() == Some(ErrorCode::Denied) => {
+                    tracing::warn!("the host would not take this device's session key: {e}");
+                    key.refused_at(host_id);
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let signature = sign(key, message).await?;
+        Ok(call_json(
+            stream,
+            Op::Auth,
+            &AuthRequest {
+                token: String::new(),
+                key: Some(key.public_key().to_hex()),
+                signature: Some(signature.to_hex()),
+                session: None,
+            },
+        )
+        .await?)
+    }
+
+    fn signed_in(
+        stream: TlsStream<TcpStream>,
+        host_id: String,
+        hello: HelloResponse,
+        auth: AuthResponse,
+        address: SocketAddr,
+        by_key: bool,
+    ) -> Self {
+        Self {
             stream,
             profile_gen: 0,
+            signed_in: SignedIn {
+                by_key,
+                host_keys: hello.keys,
+                retire_token: auth.retire_token,
+                owner: auth.owner,
+                endorse: auth.endorse,
+                member: auth.member,
+            },
             info: SessionInfo {
-                host_id: presented,
+                host_id,
                 host_name: hello.host_name,
                 vault: auth.vault,
                 writable: auth.writable,
-                address: addr,
+                address,
             },
-        })
+        }
+    }
+
+    /// Gives the host this device's key, on a session signed in with its
+    /// token. The host goes on taking the token until the key has been used.
+    pub async fn enrol(&mut self, key: &Arc<KeyRing>) -> Result<()> {
+        let signature = signed_message(
+            &self.stream,
+            key,
+            basalt_trust::message::Purpose::Enrol,
+            &self.info.host_id,
+        )
+        .await?;
+        call_unit(
+            &mut self.stream,
+            Op::Enrol,
+            &EnrolRequest {
+                key: key.public_key().to_hex(),
+                signature: signature.to_hex(),
+                key_kind: Some(key.kind()),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Returns an endorsement this device signed for the host.
+    pub async fn endorse(&mut self, statement: SignedStatement) -> Result<()> {
+        call_unit(&mut self.stream, Op::Endorse, &EndorseRequest { statement }).await?;
+        Ok(())
     }
 
     /// Looks at a host without pairing, so the client can show what it found.
@@ -225,12 +465,17 @@ impl Session {
             server_nonce: begin.server_nonce,
             host_id: presented.clone(),
             device_name: me.name.clone(),
+            host_keys: hello.keys,
         };
 
         Ok((
             Self {
                 stream,
                 profile_gen: 0,
+                signed_in: SignedIn {
+                    host_keys: hello.keys,
+                    ..SignedIn::default()
+                },
                 info: SessionInfo {
                     host_id: presented,
                     host_name: hello.host_name,
@@ -244,11 +489,15 @@ impl Session {
         ))
     }
 
-    /// Completes a pairing the host is displaying, returning the device token.
+    /// Completes a pairing the host is displaying.
+    ///
+    /// With a key, to a host that takes one, the device pairs with the key and
+    /// no token is returned (an empty one). Otherwise, the device token.
     pub async fn finish_pair(
         &mut self,
         challenge: &PairChallenge,
         pin: Option<&str>,
+        key: Option<&Arc<KeyRing>>,
     ) -> Result<String> {
         let proof = if challenge.requires_pin {
             let pin = pin.ok_or(ClientError::PinRequired)?;
@@ -265,6 +514,21 @@ impl Session {
             None
         };
 
+        let key = key.filter(|_| challenge.host_keys);
+        let key_signature = match key {
+            Some(key) => Some(
+                signed_message(
+                    &self.stream,
+                    key,
+                    basalt_trust::message::Purpose::Pair,
+                    &challenge.host_id,
+                )
+                .await?
+                .to_hex(),
+            ),
+            None => None,
+        };
+
         let finish: PairFinishResponse = call_json(
             &mut self.stream,
             Op::PairFinish,
@@ -275,6 +539,9 @@ impl Session {
                 // host's — and every device was listed on the host under the
                 // name of the machine it was connecting to.
                 device_name: challenge.device_name.clone(),
+                key: key.map(|k| k.public_key().to_hex()),
+                key_signature,
+                key_kind: key.map(|k| k.kind()),
             },
         )
         .await
@@ -286,6 +553,16 @@ impl Session {
         })?;
 
         self.info.vault = finish.vault;
+        if key.is_some() {
+            self.signed_in.by_key = true;
+            // Paired with a key: there never was a token to keep.
+            return Ok(String::new());
+        }
+        if finish.token.is_empty() {
+            return Err(ClientError::Protocol(
+                "the host finished pairing without a token or a key".into(),
+            ));
+        }
         Ok(finish.token)
     }
 

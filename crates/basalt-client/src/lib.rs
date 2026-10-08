@@ -10,6 +10,7 @@
 //! against a real host in one process.
 
 pub mod client;
+pub mod keys;
 pub mod players;
 pub mod pool;
 pub mod proxy;
@@ -86,6 +87,29 @@ pub enum ClientError {
         "{host_name} removed this device, so it can no longer reach {vault}. Pair again to use it."
     )]
     Removed { host_name: String, vault: String },
+
+    /// This device's key is gone (its security chip was reset, or its files
+    /// came from somewhere else) and it has no other way to sign in. Found
+    /// while connecting; the pairing is dropped and [`ClientError::KeyReset`]
+    /// says so with the names.
+    #[error("this device's key was reset, and the host only knows the old one")]
+    KeyGone,
+
+    /// [`ClientError::KeyGone`], with the pairing dropped and the names to say.
+    #[error(
+        "This device's security key was reset, so {host_name} no longer recognises it. Pair again to use {vault}."
+    )]
+    KeyReset { host_name: String, vault: String },
+
+    /// The key is there and could not sign just now. Never a reason to drop a
+    /// pairing: it is tried again.
+    #[error("{0}")]
+    Key(String),
+
+    /// The host is older than keys, and this device has none of the older
+    /// ways to sign in left.
+    #[error("The drive's Basalt Host is older than this app. Update Basalt Host on that computer.")]
+    HostTooOld,
 }
 
 impl ClientError {
@@ -111,7 +135,9 @@ impl ClientError {
             ClientError::Incompatible { .. } => "incompatible",
             ClientError::PairingClosed | ClientError::BadPin(_) => "pairing",
             ClientError::PinRequired => "pinrequired",
-            ClientError::Removed { .. } => "removed",
+            ClientError::Removed { .. } | ClientError::KeyReset { .. } => "removed",
+            ClientError::KeyGone => "keygone",
+            ClientError::HostTooOld => "incompatible",
             ClientError::Cancelled => "cancelled",
             ClientError::Net(e) => match e.code() {
                 Some(E::NotFound) => "notfound",

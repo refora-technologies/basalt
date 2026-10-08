@@ -14,7 +14,7 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use crate::session::{Me, Session};
+use crate::session::{Credentials, Me, Session};
 use crate::{ClientError, Result};
 
 const MAX_IDLE: usize = 4;
@@ -41,7 +41,9 @@ struct Idle {
 struct Inner {
     addr: SocketAddr,
     host_id: String,
-    token: String,
+    /// What a new connection signs in with. Changes when the device moves
+    /// from its token to its key.
+    credentials: Mutex<Credentials>,
     me: Me,
     idle: Mutex<Vec<Idle>>,
     profile: Mutex<ProfileChoice>,
@@ -73,12 +75,12 @@ pub struct Pool {
 }
 
 impl Pool {
-    pub fn new(addr: SocketAddr, host_id: &str, token: &str, me: &Me) -> Self {
+    pub fn new(addr: SocketAddr, host_id: &str, credentials: Credentials, me: &Me) -> Self {
         Self {
             inner: Arc::new(Inner {
                 addr,
                 host_id: host_id.to_string(),
-                token: token.to_string(),
+                credentials: Mutex::new(credentials),
                 me: me.clone(),
                 idle: Mutex::new(Vec::new()),
                 profile: Mutex::new(ProfileChoice::default()),
@@ -91,11 +93,11 @@ impl Pool {
     pub fn with_session(
         addr: SocketAddr,
         host_id: &str,
-        token: &str,
+        credentials: Credentials,
         me: &Me,
         session: Session,
     ) -> Self {
-        let pool = Self::new(addr, host_id, token, me);
+        let pool = Self::new(addr, host_id, credentials, me);
         pool.inner.idle.lock().expect("idle lock").push(Idle {
             session,
             since: std::time::Instant::now(),
@@ -123,10 +125,11 @@ impl Pool {
         let mut session = loop {
             let pooled = self.inner.idle.lock().expect("idle lock").pop();
             let Some(Idle { mut session, since }) = pooled else {
+                let credentials = self.credentials();
                 break Session::connect(
                     self.inner.addr,
                     &self.inner.host_id,
-                    &self.inner.token,
+                    &credentials,
                     &self.inner.me,
                 )
                 .await?;
@@ -174,6 +177,29 @@ impl Pool {
             inner: Arc::clone(&self.inner),
             healthy: true,
         })
+    }
+
+    /// What new connections sign in with.
+    pub fn credentials(&self) -> Credentials {
+        self.inner
+            .credentials
+            .lock()
+            .expect("credentials lock")
+            .clone()
+    }
+
+    /// Changes what new connections sign in with. Connections already open
+    /// stay as they are: they have signed in.
+    pub fn set_credentials(&self, credentials: Credentials) {
+        *self.inner.credentials.lock().expect("credentials lock") = credentials;
+    }
+
+    /// Keeps a connection opened elsewhere for later use.
+    pub fn give(&self, session: Session) {
+        self.inner.idle.lock().expect("idle lock").push(Idle {
+            session,
+            since: std::time::Instant::now(),
+        });
     }
 
     /// Acts for a profile from now on, or for the device itself with None.
@@ -325,13 +351,20 @@ impl ClientError {
 mod tests {
     use super::*;
 
+    fn token() -> Credentials {
+        Credentials {
+            token: "token".into(),
+            ..Credentials::default()
+        }
+    }
+
     fn addr() -> SocketAddr {
         "127.0.0.1:1".parse().unwrap()
     }
 
     #[test]
     fn a_new_pool_holds_nothing() {
-        let pool = Pool::new(addr(), "aa", "token", &Me::new("Laptop A", ""));
+        let pool = Pool::new(addr(), "aa", token(), &Me::new("Laptop A", ""));
         assert_eq!(pool.idle_count(), 0);
         assert_eq!(pool.host_id(), "aa");
         assert_eq!(pool.address(), addr());
@@ -340,7 +373,7 @@ mod tests {
     #[tokio::test]
     async fn acquiring_against_a_dead_host_fails_rather_than_hanging() {
         // Port 1 has nothing on it, so this is a connection refusal.
-        let pool = Pool::new(addr(), "aa", "token", &Me::new("Laptop A", ""));
+        let pool = Pool::new(addr(), "aa", token(), &Me::new("Laptop A", ""));
         let Err(err) = pool.acquire().await else {
             panic!("nothing is listening on port 1");
         };
@@ -350,7 +383,7 @@ mod tests {
 
     #[test]
     fn clearing_empties_the_pool() {
-        let pool = Pool::new(addr(), "aa", "token", &Me::new("Laptop A", ""));
+        let pool = Pool::new(addr(), "aa", token(), &Me::new("Laptop A", ""));
         pool.clear();
         assert_eq!(pool.idle_count(), 0);
     }

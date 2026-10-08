@@ -429,6 +429,7 @@ mod tests {
             paired_at: 0,
             used_at: 0,
             identity: Default::default(),
+            key: String::new(),
         }
     }
 

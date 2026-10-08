@@ -322,10 +322,17 @@ impl ProfileBook {
         Ok(token)
     }
 
-    /// The profile a token stands for, if it still does. Notes its use.
-    pub fn resolve(&mut self, token: &str, now: i64) -> Option<Profile> {
+    /// The profile a token stands for, if it still does, used from the
+    /// device it was given to. Notes its use.
+    ///
+    /// A sign-in is the device's, not the token's: a remembered one copied to
+    /// another paired device is refused there.
+    pub fn resolve(&mut self, token: &str, device_key: &str, now: i64) -> Option<Profile> {
         let hash = hash_token(token);
-        let entry = self.tokens.iter_mut().find(|t| t.token_hash == hash)?;
+        let entry = self
+            .tokens
+            .iter_mut()
+            .find(|t| t.token_hash == hash && t.device_key == device_key)?;
         let limit = if entry.remembered {
             REMEMBERED_IDLE_SECS
         } else {
@@ -339,6 +346,28 @@ impl ProfileBook {
         let profile = self.profiles.iter_mut().find(|p| p.id == id)?;
         profile.last_used = now;
         Some(profile.clone())
+    }
+
+    /// Files sign-ins under the key each device goes by now.
+    ///
+    /// A sign-in records its device by `Device::key`, which for a device paired
+    /// before devices had ids was its token hash, and became its id once it
+    /// said what that was. Sign-ins made in between would be refused as
+    /// another device's now that [`ProfileBook::resolve`] checks; this moves
+    /// them across once, at start. `devices` is each device's token hash and
+    /// key. Returns whether anything moved.
+    pub fn rebind_devices(&mut self, devices: &[(String, String)]) -> bool {
+        let mut moved = false;
+        for token in &mut self.tokens {
+            if devices.iter().any(|(_, key)| *key == token.device_key) {
+                continue;
+            }
+            if let Some((_, key)) = devices.iter().find(|(hash, _)| *hash == token.device_key) {
+                token.device_key = key.clone();
+                moved = true;
+            }
+        }
+        moved
     }
 
     /// Whether a sign-in a connection is acting on still stands.
@@ -439,7 +468,7 @@ mod tests {
                 .starts_with("$argon2id$")
         );
         assert!(!profile.pin_hash.as_deref().unwrap().contains("4821"));
-        assert_eq!(b.resolve(&token, 101).unwrap().id, profile.id);
+        assert_eq!(b.resolve(&token, "dev-a", 101).unwrap().id, profile.id);
     }
 
     #[test]
@@ -462,7 +491,11 @@ mod tests {
         let (p, _) = b.create("Maya", "4821", 0, "dev-a", false, 1).unwrap();
         assert!(b.sign_in(&p.id, "0000", "dev-b", false, 2).is_err());
         let (_, token) = b.sign_in(&p.id, "4821", "dev-b", false, 3).unwrap();
-        assert!(b.resolve(&token, 4).is_some());
+        assert!(b.resolve(&token, "dev-b", 4).is_some());
+        assert!(
+            b.resolve(&token, "dev-a", 4).is_none(),
+            "a sign-in is refused on any device but its own"
+        );
     }
 
     #[test]
@@ -504,10 +537,27 @@ mod tests {
         let (_, short) = b.create("Maya", "4821", 0, "a", false, 0).unwrap();
         let (_, long) = b.create("Sam", "4821", 0, "a", true, 0).unwrap();
         let later = SESSION_IDLE_SECS + 10;
-        assert!(b.resolve(&short, later).is_none());
-        assert!(b.resolve(&long, later).is_some());
+        assert!(b.resolve(&short, "a", later).is_none());
+        assert!(b.resolve(&long, "a", later).is_some());
         assert!(b.prune(later));
         assert_eq!(b.tokens().len(), 1);
+    }
+
+    #[test]
+    fn sign_ins_filed_under_a_token_hash_move_to_the_id_the_device_has_now() {
+        let mut b = book();
+        let (_, token) = b
+            .create("Maya", "4821", 0, "hash-of-old-token", true, 0)
+            .unwrap();
+        let (_, other) = b.create("Sam", "4821", 0, "id-b", true, 0).unwrap();
+        let devices = vec![
+            ("hash-of-old-token".to_string(), "id-a".to_string()),
+            ("hash-b".to_string(), "id-b".to_string()),
+        ];
+        assert!(b.rebind_devices(&devices));
+        assert!(b.resolve(&token, "id-a", 1).is_some());
+        assert!(b.resolve(&other, "id-b", 1).is_some());
+        assert!(!b.rebind_devices(&devices), "once is enough");
     }
 
     #[test]
@@ -516,8 +566,8 @@ mod tests {
         let (p, on_a) = b.create("Maya", "4821", 0, "a", true, 0).unwrap();
         let (_, on_b) = b.sign_in(&p.id, "4821", "b", true, 1).unwrap();
         assert!(b.sign_out(&on_a));
-        assert!(b.resolve(&on_a, 2).is_none());
-        assert!(b.resolve(&on_b, 2).is_some());
+        assert!(b.resolve(&on_a, "a", 2).is_none());
+        assert!(b.resolve(&on_b, "b", 2).is_some());
     }
 
     #[test]
@@ -525,8 +575,8 @@ mod tests {
         let mut b = book();
         let (p, first) = b.create("Maya", "4821", 0, "a", true, 0).unwrap();
         let (_, second) = b.sign_in(&p.id, "4821", "a", true, 1).unwrap();
-        assert!(b.resolve(&first, 2).is_none());
-        assert!(b.resolve(&second, 2).is_some());
+        assert!(b.resolve(&first, "a", 2).is_none());
+        assert!(b.resolve(&second, "a", 2).is_some());
         assert_eq!(b.tokens().len(), 1);
     }
 
@@ -535,7 +585,7 @@ mod tests {
         let mut b = book();
         let (p, token) = b.create("Maya", "4821", 0, "a", true, 0).unwrap();
         assert!(b.reset_pin(&p.id));
-        assert!(b.resolve(&token, 1).is_none());
+        assert!(b.resolve(&token, "a", 1).is_none());
         assert!(!b.find(&p.id).unwrap().view().has_pin);
         b.sign_in(&p.id, "7777", "a", true, 2).unwrap();
         assert!(
@@ -550,7 +600,7 @@ mod tests {
         let mut b = book();
         let (p, token) = b.create("Maya", "4821", 0, "a", true, 0).unwrap();
         assert!(b.remove(&p.id));
-        assert!(b.resolve(&token, 1).is_none());
+        assert!(b.resolve(&token, "a", 1).is_none());
         assert!(b.profiles().is_empty());
     }
 
@@ -560,7 +610,7 @@ mod tests {
         let (_, token) = b.create("Maya", "4821", 0, "a", true, 0).unwrap();
         b.create("Sam", "4821", 0, "b", true, 0).unwrap();
         assert!(b.forget_device("a"));
-        assert!(b.resolve(&token, 1).is_none());
+        assert!(b.resolve(&token, "a", 1).is_none());
         assert_eq!(b.tokens().len(), 1);
     }
 }

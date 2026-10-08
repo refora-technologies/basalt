@@ -313,6 +313,7 @@ mod tests {
             writable: true,
             device_id: String::new(),
             named_by_host: false,
+            ..Device::default()
         }
     }
 

@@ -1,6 +1,6 @@
 //! Statements: one key saying something about another, signed.
 //!
-//! Two are made today, and later features stand on both:
+//! Three are made today:
 //!
 //! - **member**: a person's key says "this device acts for me, at this host".
 //!   A profile's key for devices signed in to it; the household's key for
@@ -8,6 +8,11 @@
 //! - **endorse**: an owner's device says "this is my host's key". Renewed in
 //!   the background whenever an owner's device connects, so a host key that
 //!   was copied stops being vouched for within days.
+//! - **session**: a device's key says "for the next few hours, this key in
+//!   my memory signs in for me, at this host". A key in a chip takes a tenth
+//!   of a second to sign, one signature at a time; a device opens several
+//!   connections at once, so the chip signs once per host and run of the app
+//!   and the key in memory signs each connection.
 //!
 //! Nothing at home depends on either yet: the host knows its devices from its
 //! own list. They are made, renewed and checked now so that they are proven
@@ -35,6 +40,11 @@ pub const MEMBER_RENEW_WITHIN: i64 = 15 * DAY;
 /// How long an endorsement lasts, and how old it gets before it is renewed.
 pub const ENDORSE_LIFETIME: i64 = 30 * DAY;
 pub const ENDORSE_RENEW_AFTER: i64 = 7 * DAY;
+/// How long a session key may sign in for its device, and how close to the
+/// end a new one is made. Short: the key is in memory, where a program
+/// reading the app's memory could take it, and then it is worth hours.
+pub const SESSION_LIFETIME: i64 = 12 * 60 * 60;
+pub const SESSION_RENEW_WITHIN: i64 = 60 * 60;
 /// How far apart two clocks may be and still agree on a date.
 pub const CLOCK_SKEW: i64 = 10 * 60;
 /// Far more than any statement needs, and a bound on what is parsed.
@@ -45,6 +55,7 @@ const MAX_PAYLOAD_BYTES: usize = 4096;
 pub enum Kind {
     Member,
     Endorse,
+    Session,
 }
 
 impl Kind {
@@ -52,6 +63,7 @@ impl Kind {
         match self {
             Kind::Member => MEMBER_LIFETIME,
             Kind::Endorse => ENDORSE_LIFETIME,
+            Kind::Session => SESSION_LIFETIME,
         }
     }
 }
@@ -133,8 +145,8 @@ impl Payload {
         if self.profile.len() > 64 || !self.profile.bytes().all(|b| b.is_ascii_alphanumeric()) {
             return bad("a profile id is a short run of letters and digits".into());
         }
-        if self.kind == Kind::Endorse && !self.profile.is_empty() {
-            return bad("an endorsement is not about a profile".into());
+        if self.kind != Kind::Member && !self.profile.is_empty() {
+            return bad("only a member statement is about a profile".into());
         }
         if self.exp <= self.iat {
             return bad("a statement must end after it starts".into());
@@ -650,6 +662,50 @@ mod tests {
             sign(&other, &payload),
             Err(TrustError::Rejected(_))
         ));
+    }
+
+    #[test]
+    fn a_session_statement_lasts_hours_not_days() {
+        let device = SoftwareKey::generate().unwrap();
+        let session = SoftwareKey::generate().unwrap();
+        let host = host_key().public_key().id();
+        let payload = Payload::new(
+            Kind::Session,
+            device.public_key(),
+            session.public_key(),
+            &host,
+            "",
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(payload.exp - payload.iat, SESSION_LIFETIME);
+        let statement = sign(&device, &payload).unwrap();
+        let e = Expect {
+            kind: Kind::Session,
+            issuer: Some(device.public_key()),
+            subject: None,
+            host: Some(&host),
+            now: NOW + SESSION_LIFETIME - 1,
+        };
+        assert!(verify(&statement, e).is_ok());
+        let late = Expect {
+            now: NOW + SESSION_LIFETIME + CLOCK_SKEW,
+            ..e
+        };
+        assert!(verify(&statement, late).is_err());
+
+        // A day-long one is refused, however it was signed.
+        let long = Payload {
+            exp: NOW + MEMBER_LIFETIME,
+            ..payload.clone()
+        };
+        assert!(sign(&device, &long).is_err());
+        // And a session is never about a profile.
+        let profiled = Payload {
+            profile: "p1".into(),
+            ..payload
+        };
+        assert!(sign(&device, &profiled).is_err());
     }
 
     #[test]

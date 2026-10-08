@@ -166,6 +166,15 @@ impl Host {
             config.profile_tokens.clone(),
         );
         profiles.prune(unix_now());
+        // Sign-ins are checked against the device using them; any filed under
+        // a key the device no longer goes by move across. Saved with the next
+        // change, and done again on every start until then.
+        let device_keys: Vec<(String, String)> = config
+            .devices
+            .iter()
+            .map(|d| (d.token_hash.clone(), d.key().to_string()))
+            .collect();
+        profiles.rebind_devices(&device_keys);
         let stars = match &config.vault_path {
             Some(root) => load_stars(&stars_path(&config_dir, root)),
             None => Default::default(),
@@ -703,12 +712,120 @@ impl Host {
         Ok((profile.view(), token))
     }
 
-    fn resolve_profile(&self, token: &str) -> Option<ProfileView> {
+    fn resolve_profile(&self, token: &str, device_key: &str) -> Option<ProfileView> {
         self.profiles
             .lock()
             .expect("profiles lock")
-            .resolve(token, unix_now())
+            .resolve(token, device_key, unix_now())
             .map(|p| p.view())
+    }
+
+    // -----------------------------------------------------------------------
+    // Device keys
+    // -----------------------------------------------------------------------
+
+    /// Checks a device's signature of `purpose`'s message for this session.
+    ///
+    /// Every failure here is `Denied`, never `Unauthenticated`: a device told
+    /// it is unauthenticated drops its pairing, and a signature that did not
+    /// check out (a bug, a session that is not TLS 1.3) is no reason to.
+    fn check_device_signature(
+        &self,
+        purpose: basalt_trust::message::Purpose,
+        binding: Option<&[u8; basalt_trust::message::EXPORTER_BYTES]>,
+        key: &str,
+        signature: Option<&str>,
+    ) -> Result<basalt_trust::PublicKey> {
+        let key = read_key(key)?;
+        self.check_signature(purpose, binding, &key, signature)?;
+        Ok(key)
+    }
+
+    /// Checks `signer`'s signature of `purpose`'s message for this session.
+    fn check_signature(
+        &self,
+        purpose: basalt_trust::message::Purpose,
+        binding: Option<&[u8; basalt_trust::message::EXPORTER_BYTES]>,
+        signer: &basalt_trust::PublicKey,
+        signature: Option<&str>,
+    ) -> Result<()> {
+        let denied = |why: &str| HostError::Denied(why.to_string());
+        let binding =
+            binding.ok_or_else(|| denied("signing in with a key needs a TLS 1.3 connection"))?;
+        let signature = basalt_trust::Signature::from_hex(signature.unwrap_or_default())
+            .map_err(|e| denied(&format!("the key's signature is not readable: {e}")))?;
+        let message = basalt_trust::message::device_message(purpose, binding, self.host_id())
+            .map_err(|e| denied(&e.to_string()))?;
+        if !signer.verify(&message, &signature) {
+            return Err(denied("the key's signature does not match this connection"));
+        }
+        Ok(())
+    }
+
+    /// The key a session statement lets sign in for `device`: checked to be
+    /// signed by the device's own key, for this host, and in date.
+    fn session_key(
+        &self,
+        device: &basalt_trust::PublicKey,
+        session: &SignedStatement,
+    ) -> Result<basalt_trust::PublicKey> {
+        let statement = basalt_trust::Statement {
+            payload: session.payload.clone(),
+            signature: session.signature.clone(),
+        };
+        let payload = basalt_trust::statement::verify(
+            &statement,
+            basalt_trust::statement::Expect {
+                kind: basalt_trust::Kind::Session,
+                issuer: Some(device),
+                subject: None,
+                host: Some(self.host_id()),
+                now: unix_now(),
+            },
+        )
+        .map_err(|e| HostError::Denied(format!("the session key is not vouched for: {e}")))?;
+        payload
+            .subject_key()
+            .map_err(|e| HostError::Denied(e.to_string()))
+    }
+
+    /// Signs a connection in with a device's key: the signature checked, the
+    /// device found by its key, and its token retired now that the key has
+    /// been used. Returns the device and whether anything needs saving.
+    fn sign_in_with_key(
+        &self,
+        binding: Option<&[u8; basalt_trust::message::EXPORTER_BYTES]>,
+        key: &str,
+        signature: Option<&str>,
+        session: Option<&SignedStatement>,
+        hello: Option<&HelloRequest>,
+    ) -> Result<(Device, bool)> {
+        let key = read_key(key)?;
+        let signer = match session {
+            Some(session) => self.session_key(&key, session)?,
+            None => key.clone(),
+        };
+        self.check_signature(
+            basalt_trust::message::Purpose::Auth,
+            binding,
+            &signer,
+            signature,
+        )?;
+        let mut registry = self.registry.lock().expect("registry lock");
+        // A key the host has no record of is a device it removed, or never
+        // paired: the one case that is unauthenticated.
+        let device = registry
+            .authenticate_key(&key)
+            .ok_or(HostError::Unauthenticated)?;
+        let mut changed = registry.retire_token(&device.token_hash);
+        if let Some(hello) = hello {
+            changed |= registry.observe(&device.token_hash, &hello.device_id, &hello.device_name);
+        }
+        let device = registry
+            .device(&device.token_hash)
+            .cloned()
+            .ok_or(HostError::Unauthenticated)?;
+        Ok((device, changed))
     }
 
     /// Whether the profile a connection acts for is still signed in.
@@ -2280,7 +2397,8 @@ pub async fn serve(server: BoundServer) -> Result<()> {
         tokio::spawn(async move {
             match acceptor.accept(stream).await {
                 Ok(tls) => {
-                    if let Err(e) = serve_connection(tls, host).await {
+                    let binding = basalt_net::tls::server_binding(tls.get_ref().1);
+                    if let Err(e) = serve_connection(tls, host, binding).await {
                         tracing::debug!("connection from {peer} ended: {e}");
                     }
                 }
@@ -2295,6 +2413,11 @@ pub async fn serve(server: BoundServer) -> Result<()> {
 /// Per-connection state.
 #[derive(Default)]
 struct Session {
+    /// Material only this connection's two ends can derive, which a device
+    /// signs to sign in. None unless the connection is TLS 1.3.
+    binding: Option<[u8; basalt_trust::message::EXPORTER_BYTES]>,
+    /// Whether this connection signed in with a key rather than a token.
+    by_key: bool,
     device: Option<Device>,
     /// The profile this connection acts for, when it has signed in to one,
     /// and the hash of the sign-in it acts on.
@@ -2326,11 +2449,18 @@ impl Session {
     }
 }
 
-pub async fn serve_connection<S>(mut stream: S, host: Arc<Host>) -> Result<()>
+pub async fn serve_connection<S>(
+    mut stream: S,
+    host: Arc<Host>,
+    binding: Option<[u8; basalt_trust::message::EXPORTER_BYTES]>,
+) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut session = Session::default();
+    let mut session = Session {
+        binding,
+        ..Session::default()
+    };
     // Undone when this connection ends, however it ends.
     let mut counted: Option<String> = None;
 
@@ -2442,6 +2572,7 @@ where
                     host_id: host.host_id().to_string(),
                     pairing_open: true,
                     host_name: host.host_name(),
+                    keys: true,
                 },
             )
             .await?;
@@ -2478,6 +2609,39 @@ where
 
         Op::PairFinish => {
             let req: PairFinishRequest = decode(payload)?;
+            if let Some(key) = req.key.as_deref() {
+                // Checked before the request is touched, so a device whose
+                // signature is wrong has not used up a PIN attempt on it.
+                let key = host.check_device_signature(
+                    basalt_trust::message::Purpose::Pair,
+                    session.binding.as_ref(),
+                    key,
+                    req.key_signature.as_deref(),
+                )?;
+                let device = {
+                    let mut registry = host.registry.lock().expect("registry lock");
+                    registry.finish_pairing_with_key(
+                        Instant::now(),
+                        host.host_id(),
+                        &req.request,
+                        req.proof.as_deref(),
+                        &key,
+                        req.key_kind,
+                    )?
+                };
+                host.persist()?;
+                session.device = Some(device);
+                session.by_key = true;
+                reply(
+                    stream,
+                    &PairFinishResponse {
+                        token: String::new(),
+                        vault: host.vault_name(),
+                    },
+                )
+                .await?;
+                return Ok(());
+            }
             let token = {
                 let mut registry = host.registry.lock().expect("registry lock");
                 // The host id comes from this host's own identity. Taking it
@@ -2511,6 +2675,33 @@ where
 
         Op::Auth => {
             let req: AuthRequest = decode(payload)?;
+            if let Some(key) = req.key.as_deref() {
+                let (device, changed) = host.sign_in_with_key(
+                    session.binding.as_ref(),
+                    key,
+                    req.signature.as_deref(),
+                    req.session.as_ref(),
+                    session.hello.as_ref(),
+                )?;
+                if changed {
+                    host.persist()?;
+                }
+                let response = AuthResponse {
+                    vault: host.vault_name(),
+                    device_name: device.name.clone(),
+                    writable: device.writable,
+                    // Said every time: a device that missed it last time,
+                    // crashing before it saved, forgets its token now.
+                    retire_token: true,
+                    member: None,
+                    owner: device.owner,
+                    endorse: None,
+                };
+                session.device = Some(device);
+                session.by_key = true;
+                reply(stream, &response).await?;
+                return Ok(());
+            }
             let (device, changed) = {
                 let mut registry = host.registry.lock().expect("registry lock");
                 match registry.authenticate(&req.token) {
@@ -2541,9 +2732,54 @@ where
                 vault: host.vault_name(),
                 device_name: device.name.clone(),
                 writable: device.writable,
+                retire_token: false,
+                member: None,
+                owner: device.owner,
+                endorse: None,
             };
             session.device = Some(device);
             reply(stream, &response).await?;
+        }
+
+        // A device paired with a token, giving the host the key it signs in
+        // with from now on. The token goes on working until the key has been
+        // used once: see `Registry::enrol`.
+        Op::Enrol => {
+            let req: EnrolRequest = decode(payload)?;
+            let device = session.device.clone().ok_or(HostError::Unauthenticated)?;
+            if session.by_key {
+                return Err(HostError::Denied(
+                    "this connection signed in with a key already".into(),
+                ));
+            }
+            let key = host.check_device_signature(
+                basalt_trust::message::Purpose::Enrol,
+                session.binding.as_ref(),
+                &req.key,
+                Some(&req.signature),
+            )?;
+            let changed = host.registry.lock().expect("registry lock").enrol(
+                &device.token_hash,
+                &key,
+                req.key_kind,
+            )?;
+            if changed {
+                host.persist()?;
+            }
+            session.device = host
+                .registry
+                .lock()
+                .expect("registry lock")
+                .device(&device.token_hash)
+                .cloned();
+            write_ok(stream, &[]).await?;
+        }
+
+        Op::Endorse => {
+            let _: EndorseRequest = decode(payload)?;
+            return Err(HostError::Denied(
+                "this host is not asking for an endorsement".into(),
+            ));
         }
 
         Op::List => {
@@ -2759,20 +2995,43 @@ where
                 host.sign_in_profile(decode(payload)?, &device_key)?
             };
             session.profile = Some((profile.id.clone(), crate::profiles::hash_token(&token)));
-            reply(stream, &ProfileSession { profile, token }).await?;
+            reply(
+                stream,
+                &ProfileSession {
+                    profile,
+                    token,
+                    member: None,
+                },
+            )
+            .await?;
         }
 
         Op::ProfileUse => {
             let req: ProfileUseRequest = decode(payload).unwrap_or_default();
+            let device_key = session
+                .device
+                .as_ref()
+                .map(|d| d.key().to_string())
+                .ok_or(HostError::Unauthenticated)?;
             let (profile, hash) = match req.token {
                 None => (None, None),
                 Some(token) => (
-                    Some(host.resolve_profile(&token).ok_or(HostError::SignedOut)?),
+                    Some(
+                        host.resolve_profile(&token, &device_key)
+                            .ok_or(HostError::SignedOut)?,
+                    ),
                     Some(crate::profiles::hash_token(&token)),
                 ),
             };
             session.profile = profile.as_ref().zip(hash).map(|(p, h)| (p.id.clone(), h));
-            reply(stream, &ProfileUseResponse { profile }).await?;
+            reply(
+                stream,
+                &ProfileUseResponse {
+                    profile,
+                    member: None,
+                },
+            )
+            .await?;
         }
 
         Op::ProfileSignOut => {
@@ -3009,6 +3268,12 @@ where
             return Ok(());
         }
     }
+}
+
+/// A key from the wire. Refused as `Denied`: see `Host::check_device_signature`.
+fn read_key(hex: &str) -> Result<basalt_trust::PublicKey> {
+    basalt_trust::PublicKey::from_hex(hex)
+        .map_err(|e| HostError::Denied(format!("that key is not one this host reads: {e}")))
 }
 
 fn require_write(session: &Session) -> Result<()> {
