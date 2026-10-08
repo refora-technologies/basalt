@@ -1278,3 +1278,96 @@ async fn a_connection_on_a_token_that_is_retired_is_stopped_at_its_next_request(
         Some(ErrorCode::Unauthenticated)
     );
 }
+
+#[tokio::test]
+async fn a_connection_on_a_key_the_device_has_since_replaced_is_closed() {
+    let fixture = start_host().await;
+    let old = SoftwareKey::generate().unwrap();
+    raw_pair(&fixture, Some(&old), ID_A).await;
+    let (mut stream, host_id) = raw(fixture.addr, ID_A).await;
+    let request = by_key(
+        &old,
+        old.sign(&bound(&stream, Purpose::Auth, &host_id)).unwrap(),
+    );
+    auth(&mut stream, &request).await.unwrap();
+
+    // The device pairs again, with a new key.
+    let new = SoftwareKey::generate().unwrap();
+    raw_pair(&fixture, Some(&new), ID_A).await;
+
+    let listed: std::result::Result<ListResponse, _> = call_json(
+        &mut stream,
+        Op::List,
+        &ListRequest {
+            path: String::new(),
+        },
+    )
+    .await;
+    assert_eq!(listed.unwrap_err().code(), Some(ErrorCode::Unavailable));
+    // And closed: nothing more is answered on it.
+    let again: std::result::Result<ListResponse, _> = call_json(
+        &mut stream,
+        Op::List,
+        &ListRequest {
+            path: String::new(),
+        },
+    )
+    .await;
+    assert!(
+        again.unwrap_err().code().is_none(),
+        "the connection is gone"
+    );
+}
+
+#[tokio::test]
+async fn the_households_statement_is_handed_over_again_until_it_is_due() {
+    let fixture = start_host().await;
+    let key = SoftwareKey::generate().unwrap();
+    raw_pair(&fixture, Some(&key), ID_A).await;
+    let mut serials = Vec::new();
+    for _ in 0..2 {
+        let (mut stream, host_id) = raw(fixture.addr, ID_A).await;
+        let request = by_key(
+            &key,
+            key.sign(&bound(&stream, Purpose::Auth, &host_id)).unwrap(),
+        );
+        let answer = auth(&mut stream, &request).await.unwrap();
+        let member = answer.member.expect("a statement every time");
+        serials.push(
+            basalt_trust::statement::read_offer(&member.payload)
+                .unwrap()
+                .serial,
+        );
+    }
+    assert_eq!(serials[0], serials[1], "the same one, not a new one");
+}
+
+#[tokio::test]
+async fn a_key_is_given_only_by_the_device_the_row_is() {
+    let fixture = start_host().await;
+    let token = raw_pair(&fixture, None, ID_A).await;
+    raw_pair(&fixture, Some(&SoftwareKey::generate().unwrap()), ID_B).await;
+
+    // A's token, from a connection saying it is B.
+    let (mut stream, host_id) = raw(fixture.addr, ID_B).await;
+    auth(
+        &mut stream,
+        &AuthRequest {
+            token,
+            ..AuthRequest::default()
+        },
+    )
+    .await
+    .unwrap();
+    let key = SoftwareKey::generate().unwrap();
+    let enrol = EnrolRequest {
+        key: key.public_key().to_hex(),
+        signature: key
+            .sign(&bound(&stream, Purpose::Enrol, &host_id))
+            .unwrap()
+            .to_hex(),
+        key_kind: None,
+    };
+    let refused = call_unit(&mut stream, Op::Enrol, &enrol).await.unwrap_err();
+    assert_eq!(refused.code(), Some(ErrorCode::Denied));
+}

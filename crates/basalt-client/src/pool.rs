@@ -223,6 +223,16 @@ impl Pool {
         self.inner.credentials.clone()
     }
 
+    /// Keeps a statement a connection outside the pool was handed (the
+    /// watch's), with the pool's own, for the client to keep.
+    pub fn hand_over(&self, member: basalt_proto::msg::SignedStatement) {
+        self.inner
+            .statements
+            .lock()
+            .expect("statements lock")
+            .push(member);
+    }
+
     /// Whether a connection was told the token is retired since this was
     /// last asked.
     pub fn take_token_retired(&self) -> bool {

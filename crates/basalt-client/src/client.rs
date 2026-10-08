@@ -714,6 +714,16 @@ impl Basalt {
         member: basalt_proto::msg::SignedStatement,
         key: &KeyRing,
     ) {
+        // Handed over again on every sign-in: one already kept is let be.
+        let already = self
+            .store
+            .lock()
+            .expect("store lock")
+            .find(host_id)
+            .is_some_and(|known| known.members.iter().any(|m| m.payload == member.payload));
+        if already {
+            return;
+        }
         let now = unix_now();
         let opened = basalt_trust::Statement {
             payload: member.payload.clone(),
@@ -805,6 +815,11 @@ impl Basalt {
             return None;
         }
         if !session.signed_in.host_keys {
+            return None;
+        }
+        // The host has the key and it was only unusable for a moment: nothing
+        // to give again, and the chip not asked twice.
+        if credentials.key_on_host && !session.signed_in.key_unknown {
             return None;
         }
         let key = credentials.key.clone()?;
@@ -1378,6 +1393,9 @@ impl Basalt {
 
         let mut session =
             Session::connect(pool.address(), &host_id, &pool.credentials(), &self.me).await?;
+        if let Some(member) = session.signed_in.member.take() {
+            pool.hand_over(member);
+        }
         if let Some(profile) = profile.as_deref() {
             match session.profile_use(Some(profile)).await {
                 Ok(_) => {}

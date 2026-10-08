@@ -99,6 +99,9 @@ pub struct SignedIn {
     pub endorse: Option<String>,
     /// The household's statement about this device, when a new one was due.
     pub member: Option<SignedStatement>,
+    /// The key was tried and the host said it knows no such key: it needs
+    /// giving again.
+    pub key_unknown: bool,
 }
 
 /// Who this device is, as it introduces itself to a host.
@@ -305,6 +308,7 @@ impl Session {
                 None => ClientError::KeyGone,
             });
         }
+        let key_unknown = key_error.as_ref().is_some_and(|e| e.kind() == "unpaired");
         let answer: Result<AuthResponse> = call_json(
             &mut stream,
             Op::Auth,
@@ -316,7 +320,11 @@ impl Session {
         .await
         .map_err(Into::into);
         match answer {
-            Ok(auth) => Ok(Self::signed_in(stream, presented, hello, auth, addr, false)),
+            Ok(auth) => {
+                let mut session = Self::signed_in(stream, presented, hello, auth, addr, false);
+                session.signed_in.key_unknown = key_unknown;
+                Ok(session)
+            }
             // The token refused. That is "removed" only when the key could not
             // have been the reason: when the host knows no key for this device,
             // or refused the key as unknown too. Otherwise the host retired the
@@ -415,6 +423,7 @@ impl Session {
                 owner: auth.owner,
                 endorse: auth.endorse,
                 member: auth.member,
+                key_unknown: false,
             },
             info: SessionInfo {
                 host_id,

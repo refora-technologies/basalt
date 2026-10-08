@@ -820,7 +820,9 @@ impl Host {
         let made = {
             let mut authority = self.authority.lock().expect("authority lock");
             if !authority.due(device.key(), &device.public_key, "", now) {
-                return None;
+                // Handed over again: one given before may never have been
+                // kept, on a connection the device let go of.
+                return authority.current(device.key(), &device.public_key, "", now);
             }
             authority.issue_household(device.key(), &subject, self.host_id(), now)
         };
@@ -850,7 +852,7 @@ impl Host {
         let made = {
             let mut authority = self.authority.lock().expect("authority lock");
             if !fresh && !authority.due(device.key(), &device.public_key, profile, now) {
-                return None;
+                return authority.current(device.key(), &device.public_key, profile, now);
             }
             authority.issue_profile(
                 &issuer,
@@ -2696,6 +2698,9 @@ struct Session {
     binding: Option<[u8; basalt_trust::message::EXPORTER_BYTES]>,
     /// Whether this connection signed in with a key rather than a token.
     by_key: bool,
+    /// The key it signed in with, hex: a device that pairs again with a new
+    /// key leaves connections on the old one behind.
+    signed_key: Option<String>,
     device: Option<Device>,
     /// The profile this connection acts for, when it has signed in to one,
     /// and the hash of the sign-in it acts on.
@@ -2794,21 +2799,28 @@ where
             continue;
         }
 
-        // Signed in with a token that has since been retired: the device signs
-        // in with its key now, and a copy of the token is worth nothing, even
-        // on a connection opened before. Asked to connect again, which the
-        // device itself does with its key; a copy cannot.
-        if !op.allowed_unauthenticated()
-            && !session.by_key
-            && session.device.as_ref().is_some_and(|d| d.token_retired)
+        // Signed in with something the device no longer signs in with: a
+        // token since retired, or a key since replaced by pairing again. A
+        // copy of either is worth nothing, even on a connection opened before.
+        // Said, and the connection closed, so a device's own app connects
+        // again with what it has now rather than retrying this one.
+        if !matches!(op, Op::Hello | Op::Auth)
+            && let Some(device) = &session.device
         {
-            write_err(
-                &mut stream,
-                ErrorCode::Unavailable,
-                "this device signs in with its key now; connect again",
-            )
-            .await?;
-            continue;
+            let stale = if session.by_key {
+                session.signed_key.as_deref() != Some(device.public_key.as_str())
+            } else {
+                device.token_retired
+            };
+            if stale {
+                let _ = write_err(
+                    &mut stream,
+                    ErrorCode::Unavailable,
+                    "this device signs in differently now; connect again",
+                )
+                .await;
+                break Ok(());
+            }
         }
 
         // A drive kept private: a device acting as itself may still pick and
@@ -2827,7 +2839,16 @@ where
         if let Err(e) = dispatch(&mut stream, &host, &mut session, op, &payload).await {
             // A refusal is an answer, not a reason to hang up: the client is
             // pooling this connection and will use it again.
-            let e = host.explain(e).await;
+            // A refusal to sign in or pair is said as it is: an unplugged
+            // drive is not why a key was refused.
+            let e = if matches!(
+                op,
+                Op::Auth | Op::PairBegin | Op::PairFinish | Op::Enrol | Op::Endorse
+            ) {
+                e
+            } else {
+                host.explain(e).await
+            };
             let code = e.code();
             tracing::debug!("{op:?} failed: {e}");
             if let Err(e) = write_err(&mut stream, code, &e.to_string()).await {
@@ -2926,6 +2947,7 @@ where
                 };
                 host.persist()?;
                 host.forget_old_keys(&device);
+                session.signed_key = Some(device.public_key.clone());
                 session.device = Some(device);
                 session.by_key = true;
                 reply(
@@ -2959,6 +2981,7 @@ where
                 registry.authenticate(&token)
             };
             session.by_key = false;
+            session.signed_key = None;
             // A device that had a key and pairs again with a token (an older
             // app on it) no longer has one: what was said about the key, and
             // any endorsement it made, go with it.
@@ -3002,6 +3025,7 @@ where
                     owner: device.owner,
                     endorse,
                 };
+                session.signed_key = Some(device.public_key.clone());
                 session.device = Some(device);
                 session.by_key = true;
                 reply(stream, &response).await?;
@@ -3039,6 +3063,7 @@ where
                     .rebind_devices(&[(was, device.key().to_string())]);
             }
             session.by_key = false;
+            session.signed_key = None;
             if changed {
                 host.persist()?;
             }
@@ -3064,6 +3089,18 @@ where
             if session.by_key {
                 return Err(HostError::Denied(
                     "this connection signed in with a key already".into(),
+                ));
+            }
+            // From the device the row is, by the id it gives: one more thing a
+            // copy of the token would need.
+            let said = session
+                .hello
+                .as_ref()
+                .map(|h| h.device_id.trim().to_ascii_lowercase())
+                .unwrap_or_default();
+            if !device.device_id.is_empty() && said != device.device_id {
+                return Err(HostError::Denied(
+                    "a key is given by the device itself".into(),
                 ));
             }
             let key = host.check_device_signature(

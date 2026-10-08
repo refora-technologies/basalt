@@ -41,6 +41,9 @@ pub struct Issued {
     #[serde(default)]
     pub profile: String,
     pub exp: i64,
+    /// The statement itself, to hand over again: see [`Authority::current`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement: Option<SignedStatement>,
 }
 
 #[derive(Debug, Default)]
@@ -161,6 +164,27 @@ impl Authority {
         })
     }
 
+    /// The statement already made for `device` holding `subject`, for
+    /// `profile`, while it stands.
+    pub fn current(
+        &self,
+        device: &str,
+        subject: &str,
+        profile: &str,
+        now: i64,
+    ) -> Option<SignedStatement> {
+        self.issued
+            .iter()
+            .find(|i| {
+                i.device == device
+                    && i.subject == subject
+                    && i.profile == profile
+                    && i.exp > now
+                    && !self.revoked.contains(&i.serial)
+            })
+            .and_then(|i| i.statement.clone())
+    }
+
     /// A member statement from the household, for a device acting as itself.
     pub fn issue_household(
         &mut self,
@@ -210,6 +234,7 @@ impl Authority {
             subject: subject.to_hex(),
             profile: profile.to_string(),
             exp: payload.exp,
+            statement: Some(statement.clone()),
         });
         self.prune(now);
     }
