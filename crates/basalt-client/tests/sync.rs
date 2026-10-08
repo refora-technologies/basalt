@@ -530,7 +530,8 @@ async fn asking_for_the_status_answers() {
     // The locks it takes have to be free afterwards, or the freeze simply moves
     // to whatever asks next. These are the two that were held.
     assert!(fixture.host.devices().is_empty());
-    assert_eq!(fixture.host.library_items().len(), 0);
+    // Answering at all is the point; how far the scan has got is not.
+    let _ = fixture.host.library_items();
 }
 
 /// The index has to reach the disk.

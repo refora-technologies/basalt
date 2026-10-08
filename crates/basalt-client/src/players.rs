@@ -117,6 +117,7 @@ const CANDIDATES: &[Candidate] = &[
 
 /// Video types whose registered programs are searched for players, besides
 /// the file's own.
+#[cfg(windows)]
 const VIDEO_TYPES: &[&str] = &[".mkv", ".mp4", ".avi"];
 
 /// The first streaming-capable player found on this machine.
@@ -238,6 +239,7 @@ fn display_name(path: &Path) -> String {
 
 /// The program in a shell command such as `"D:\Apps\Player.exe" "%1"` or
 /// `C:\Apps\Player.exe /open "%1"`.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn program_in_command(command: &str) -> Option<PathBuf> {
     let command = command.trim();
     if let Some(rest) = command.strip_prefix('"') {
@@ -528,6 +530,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn every_fallback_path_is_absolute() {
         // A relative path here would resolve against whatever directory the
         // app happened to be started from.

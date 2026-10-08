@@ -123,19 +123,17 @@ impl DeviceKey {
         if let Policy::Off = policy {
             return Err(KeyError::Unavailable("this client makes no keys".into()));
         }
-        if let Policy::Platform(phone) = policy {
-            if let Some(phone) = phone {
-                match phone_create(phone) {
-                    Ok(key) => return Ok(key),
-                    Err(e) => tracing::warn!("the phone's key store could not make a key: {e}"),
-                }
+        if let Policy::Platform(Some(phone)) = policy {
+            match phone_create(phone) {
+                Ok(key) => return Ok(key),
+                Err(e) => tracing::warn!("the phone's key store could not make a key: {e}"),
             }
-            #[cfg(windows)]
-            if phone.is_none() {
-                match tpm::create_key() {
-                    Ok(key) => return Ok(key),
-                    Err(e) => tracing::info!("no key in the TPM, using a sealed one: {e}"),
-                }
+        }
+        #[cfg(windows)]
+        if let Policy::Platform(None) = policy {
+            match tpm::create_key() {
+                Ok(key) => return Ok(key),
+                Err(e) => tracing::info!("no key in the TPM, using a sealed one: {e}"),
             }
         }
         software_create()

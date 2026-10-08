@@ -489,9 +489,13 @@ mod tests {
         store.remember(paired);
         store.save(&path).unwrap();
 
-        let on_disk = std::fs::read_to_string(&path).unwrap();
-        assert!(!on_disk.contains("secret-device-token"), "sealed on disk");
-        assert!(!on_disk.contains("secret-profile-token"), "sealed on disk");
+        // Sealed where Windows can seal them; elsewhere kept as they are.
+        #[cfg(windows)]
+        {
+            let on_disk = std::fs::read_to_string(&path).unwrap();
+            assert!(!on_disk.contains("secret-device-token"), "sealed on disk");
+            assert!(!on_disk.contains("secret-profile-token"), "sealed on disk");
+        }
 
         let back = ClientStore::load(&path).unwrap();
         let host = back.find("aa").unwrap();
