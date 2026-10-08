@@ -250,6 +250,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "basalt-trust"
+version = "1.4.6"
+dependencies = [
+ "basalt-proto",
+ "ring",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "basalt-update"
 version = "1.4.6"
 dependencies = [
