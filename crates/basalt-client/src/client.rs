@@ -823,9 +823,15 @@ impl Basalt {
             return None;
         }
         let key = credentials.key.clone()?;
+        if key.enrol_refused_at(host_id) {
+            return None;
+        }
 
         if let Err(e) = session.enrol(&key).await {
             tracing::warn!("could not give the host this device's key: {e}");
+            if e.code().is_some() {
+                key.enrol_refused(host_id);
+            }
             return None;
         }
         {

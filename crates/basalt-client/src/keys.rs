@@ -219,6 +219,10 @@ pub struct KeyRing {
     /// together near the end of the last one wait for one signature rather
     /// than each making their own.
     making_pass: Mutex<()>,
+    /// Hosts that would not take this key this run: not asked again until
+    /// the app starts afresh, so a refusal does not cost a signature on
+    /// every connection.
+    enrol_refused: Mutex<HashSet<String>>,
 }
 
 impl std::fmt::Debug for KeyRing {
@@ -238,6 +242,7 @@ impl KeyRing {
             refused: Mutex::new(HashSet::new()),
             endorsed: Mutex::new(HashMap::new()),
             making_pass: Mutex::new(()),
+            enrol_refused: Mutex::new(HashSet::new()),
         })
     }
 
@@ -306,6 +311,22 @@ impl KeyRing {
             payload: signed.payload,
             signature: signed.signature,
         }))
+    }
+
+    /// Whether `host_id` refused this key earlier in this run.
+    pub fn enrol_refused_at(&self, host_id: &str) -> bool {
+        self.enrol_refused
+            .lock()
+            .expect("enrol lock")
+            .contains(host_id)
+    }
+
+    /// `host_id` would not take this key: not asked again this run.
+    pub fn enrol_refused(&self, host_id: &str) {
+        self.enrol_refused
+            .lock()
+            .expect("enrol lock")
+            .insert(host_id.to_string());
     }
 
     /// The endorsement just signed for `host_id` did not reach it: the next

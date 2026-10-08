@@ -152,15 +152,18 @@ impl Pool {
                     self.inner
                         .token_retired
                         .store(true, std::sync::atomic::Ordering::SeqCst);
+                    // Connections signed in with the token are closed by the
+                    // host at their next request: let go of the idle ones now.
+                    self.inner
+                        .idle
+                        .lock()
+                        .expect("idle lock")
+                        .retain(|idle| idle.session.signed_in.by_key);
                 }
                 // The host may have handed over a statement as this one signed
                 // in, and counts it as given: kept for the client.
                 if let Some(member) = session.signed_in.member.take() {
-                    self.inner
-                        .statements
-                        .lock()
-                        .expect("statements lock")
-                        .push(member);
+                    self.hand_over(member);
                 }
                 break session;
             };
@@ -183,11 +186,7 @@ impl Pool {
                 Ok(answer) => {
                     session.profile_gen = choice.generation;
                     if let Some(member) = answer.member {
-                        self.inner
-                            .statements
-                            .lock()
-                            .expect("statements lock")
-                            .push(member);
+                        self.hand_over(member);
                     }
                 }
                 // The sign-in ended on the host. The device carries on as
@@ -226,11 +225,11 @@ impl Pool {
     /// Keeps a statement a connection outside the pool was handed (the
     /// watch's), with the pool's own, for the client to keep.
     pub fn hand_over(&self, member: basalt_proto::msg::SignedStatement) {
-        self.inner
-            .statements
-            .lock()
-            .expect("statements lock")
-            .push(member);
+        let mut statements = self.inner.statements.lock().expect("statements lock");
+        // The host hands the current one over on every sign-in: one copy.
+        if !statements.iter().any(|kept| kept.payload == member.payload) {
+            statements.push(member);
+        }
     }
 
     /// Whether a connection was told the token is retired since this was
@@ -338,7 +337,9 @@ impl Lease {
     /// connection, while "the socket reset" does not.
     pub fn check<T>(&mut self, result: Result<T>) -> Result<T> {
         if let Err(e) = &result {
-            if e.is_transient() {
+            // Unavailable is also what a host says as it closes a connection
+            // signed in with something the device no longer uses.
+            if e.is_transient() || e.kind() == "unavailable" {
                 self.discard();
             } else if e.kind() == "signedout" {
                 // Every connection goes back to acting for the device.

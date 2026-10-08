@@ -843,17 +843,21 @@ impl Host {
         fresh: bool,
     ) -> Option<SignedStatement> {
         let subject = basalt_trust::PublicKey::from_hex(&device.public_key).ok()?;
+        let now = unix_now();
+        if !fresh {
+            let authority = self.authority.lock().expect("authority lock");
+            if !authority.due(device.key(), &device.public_key, profile, now) {
+                return authority.current(device.key(), &device.public_key, profile, now);
+            }
+        }
+        // The person's key, read only when a statement is to be made.
         let issuer = self
             .profiles
             .lock()
             .expect("profiles lock")
             .person(profile)?;
-        let now = unix_now();
         let made = {
             let mut authority = self.authority.lock().expect("authority lock");
-            if !fresh && !authority.due(device.key(), &device.public_key, profile, now) {
-                return authority.current(device.key(), &device.public_key, profile, now);
-            }
             authority.issue_profile(
                 &issuer,
                 device.key(),

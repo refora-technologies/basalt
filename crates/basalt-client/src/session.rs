@@ -301,11 +301,18 @@ impl Session {
                 None if credentials.key.is_none() && credentials.key_problem.is_some() => {
                     ClientError::Key(credentials.key_problem.clone().unwrap_or_default())
                 }
+                None if !hello.keys => ClientError::HostTooOld,
                 // The host has a key for this device that it no longer has,
                 // and there is nothing else to sign in with.
-                None if credentials.key.is_some() && hello.keys => ClientError::KeyGone,
-                None if !hello.keys => ClientError::HostTooOld,
-                None => ClientError::KeyGone,
+                None if credentials.key_expected => ClientError::KeyGone,
+                // Nothing to sign in with, and no key the host knows of: as
+                // good as removed, and paired again the same way.
+                None => {
+                    ClientError::Net(basalt_net::NetError::Remote(basalt_proto::WireError::new(
+                        ErrorCode::Unauthenticated,
+                        "this device has nothing left to sign in to this host with",
+                    )))
+                }
             });
         }
         let key_unknown = key_error.as_ref().is_some_and(|e| e.kind() == "unpaired");
