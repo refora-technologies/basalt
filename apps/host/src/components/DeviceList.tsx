@@ -130,7 +130,7 @@ function KeyNote({ device }: { device: DeviceView }): React.JSX.Element {
         ? ['key', 'Signs in with a key of its own, kept sealed by its system.']
         : ['key', 'Signs in with a key of its own.']
   return (
-    <span title={title} className={cn('flex items-center gap-1', !device.keyed && 'opacity-60')}>
+    <span title={title} className="flex items-center gap-1">
       <KeyRound size={10} />
       {label}
     </span>
