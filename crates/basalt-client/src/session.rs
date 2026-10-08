@@ -436,7 +436,9 @@ impl Session {
         let signed =
             tokio::task::spawn_blocking(move || ring.sign_endorsement(&offer, &host_id, now)).await;
         let statement = match signed {
-            Ok(Ok(statement)) => statement,
+            Ok(Ok(Some(statement))) => statement,
+            // Answered on another connection a moment ago.
+            Ok(Ok(None)) => return,
             Ok(Err(e)) => {
                 tracing::warn!("did not endorse the host: {e}");
                 return;

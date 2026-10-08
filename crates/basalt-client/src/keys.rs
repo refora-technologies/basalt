@@ -94,6 +94,8 @@ impl std::fmt::Display for KeyError {
 }
 
 const PHONE_ALIAS: &str = "basalt-device-key";
+/// How long after vouching for a host further offers from it are let pass.
+const ENDORSE_QUIET: i64 = 60 * 60;
 const SELF_TEST: &[u8] = b"basalt/self-test";
 
 pub struct DeviceKey {
@@ -208,6 +210,11 @@ pub struct KeyRing {
     /// Hosts that refused the statement this run (a clock far out, say): the
     /// device's key signs every connection there instead.
     refused: Mutex<HashSet<String>>,
+    /// When this device last vouched for each host. Every connection opened
+    /// while an endorsement is due is offered one; the first is answered and
+    /// the rest let pass for an hour, so a burst of connections does not
+    /// queue at the chip for a renewal that has weeks to spare.
+    endorsed: Mutex<HashMap<String, i64>>,
 }
 
 impl std::fmt::Debug for KeyRing {
@@ -225,6 +232,7 @@ impl KeyRing {
             session,
             passes: Mutex::new(HashMap::new()),
             refused: Mutex::new(HashSet::new()),
+            endorsed: Mutex::new(HashMap::new()),
         })
     }
 
@@ -257,7 +265,9 @@ impl KeyRing {
         offer: &str,
         pinned_host: &str,
         now: i64,
-    ) -> Result<SignedStatement, TrustError> {
+    ) -> Result<Option<SignedStatement>, TrustError> {
+        // Checked before anything else: an unfair offer is refused, never
+        // let pass as if it had been answered.
         let payload = basalt_trust::statement::read_offer(offer)?;
         basalt_trust::statement::check_endorse_offer(
             &payload,
@@ -265,11 +275,24 @@ impl KeyRing {
             pinned_host,
             now,
         )?;
+        let recently = self
+            .endorsed
+            .lock()
+            .expect("endorsed lock")
+            .get(pinned_host)
+            .is_some_and(|at| (now - at).abs() < ENDORSE_QUIET);
+        if recently {
+            return Ok(None);
+        }
         let signed = basalt_trust::statement::sign_offered(&*self.device.signer, offer)?;
-        Ok(SignedStatement {
+        self.endorsed
+            .lock()
+            .expect("endorsed lock")
+            .insert(pinned_host.to_string(), now);
+        Ok(Some(SignedStatement {
             payload: signed.payload,
             signature: signed.signature,
-        })
+        }))
     }
 
     /// The statement for `host_id` while it has more than an hour left.
@@ -957,7 +980,17 @@ mod tests {
             host.public_key(),
             basalt_trust::Kind::Endorse,
         );
-        assert!(ring.sign_endorsement(&fair, &host_id, now).is_ok());
+        assert!(
+            ring.sign_endorsement(&fair, &host_id, now)
+                .unwrap()
+                .is_some()
+        );
+        // Offered again within the hour: let pass, without signing.
+        assert!(
+            ring.sign_endorsement(&fair, &host_id, now + 60)
+                .unwrap()
+                .is_none()
+        );
         // About another key, as another kind, at another host, or long ago.
         let other = basalt_trust::SoftwareKey::generate().unwrap();
         let wrong_subject = offer(
