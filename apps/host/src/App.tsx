@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, Plus } from 'lucide-react'
 import { api, type DeviceView, type HostStatus } from '@/lib/api'
 import { usePoll } from '@/lib/usePoll'
 import { DeviceList } from './components/DeviceList'
@@ -8,6 +8,8 @@ import { PairingRequests } from './components/PairingRequests'
 import { SettingsPanel } from './components/SettingsPanel'
 import { UpdateBanner } from './components/UpdateBanner'
 import { ProfileList } from './components/ProfileList'
+import { ProfileAccess } from './components/ProfileAccess'
+import { AddProfileDialog } from './components/AddProfileDialog'
 import { Setup } from './components/Setup'
 import { TitleBar } from './components/TitleBar'
 import { VaultCard } from './components/VaultCard'
@@ -32,6 +34,9 @@ export function App(): React.JSX.Element {
   const pairings = usePoll(useCallback(() => api.pendingPairings(), []), PAIRING_INTERVAL)
 
   const [prompt, setPrompt] = useState<PromptRequest | null>(null)
+  const [adding, setAdding] = useState(false)
+  /** Why the last change to the profile rules was refused. */
+  const [rulesError, setRulesError] = useState<string | null>(null)
   /** Which build this is. Asked once — it cannot change while running. */
   const [build, setBuild] = useState('')
   /** Set when the user asks to share something else, over a live vault. */
@@ -208,19 +213,50 @@ export function App(): React.JSX.Element {
                 </section>
 
                 <section>
-                  <div className="mb-2.5 flex items-baseline justify-between">
-                    <h3 className="font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
-                      Profiles
-                    </h3>
-                    {current.profiles.length > 0 && (
-                      <span className="tnum font-mono text-[10px] text-textFaint">
-                        {current.profiles.length}{' '}
-                        {current.profiles.length === 1 ? 'profile' : 'profiles'}
-                      </span>
-                    )}
+                  <div className="mb-2.5 flex items-center justify-between">
+                    <div className="flex items-baseline gap-3">
+                      <h3 className="font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
+                        Profiles
+                      </h3>
+                      {current.profiles.length > 0 && (
+                        <span className="tnum font-mono text-[10px] text-textFaint">
+                          {current.profiles.length}{' '}
+                          {current.profiles.length === 1 ? 'profile' : 'profiles'}
+                        </span>
+                      )}
+                    </div>
+                    <motion.button
+                      whileTap={{ scale: 0.97 }}
+                      onClick={() => setAdding(true)}
+                      className="flex items-center gap-1.5 rounded-md border border-line bg-panel2 px-2.5 py-1 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text"
+                    >
+                      <Plus size={12} />
+                      Add profile
+                    </motion.button>
                   </div>
+                  <ProfileAccess
+                    rules={current.profileRules}
+                    profileCount={current.profiles.length}
+                    error={rulesError}
+                    onRequireProfile={(require) => {
+                      setRulesError(null)
+                      void api
+                        .setRequireProfile(require)
+                        .then(apply)
+                        .catch((e: unknown) => setRulesError(reason(e)))
+                    }}
+                    onOwnerAddsProfiles={(ownerOnly) => {
+                      setRulesError(null)
+                      void api
+                        .setOwnerAddsProfiles(ownerOnly)
+                        .then(apply)
+                        .catch((e: unknown) => setRulesError(reason(e)))
+                    }}
+                  />
                   <ProfileList
                     profiles={current.profiles}
+                    ownerAdds={current.profileRules.ownerAddsProfiles}
+                    onAdd={() => setAdding(true)}
                     onResetPin={(profile) =>
                       setPrompt({
                         title: `Reset ${profile.name}'s PIN?`,
@@ -304,6 +340,14 @@ export function App(): React.JSX.Element {
       </main>
 
       <PromptDialog request={prompt} onClose={() => setPrompt(null)} />
+      {current && (
+        <AddProfileDialog
+          open={adding}
+          taken={current.profiles.map((p) => p.name.toLowerCase())}
+          onClose={() => setAdding(false)}
+          onAdd={(name, color) => api.addProfile(name, color).then(apply)}
+        />
+      )}
     </div>
   )
 }
@@ -344,4 +388,10 @@ function Splash({
       )}
     </div>
   )
+}
+
+/** A refusal from the host, as a sentence. */
+function reason(e: unknown): string {
+  const message = e instanceof Error ? e.message : String(e)
+  return message.charAt(0).toUpperCase() + message.slice(1) + (message.endsWith('.') ? '' : '.')
 }

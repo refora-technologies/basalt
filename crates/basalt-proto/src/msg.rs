@@ -523,6 +523,26 @@ pub struct ProfileView {
 #[serde(rename_all = "camelCase")]
 pub struct ProfilesResponse {
     pub profiles: Vec<ProfileView>,
+    /// What the host's owner allows. Missing from a host that predates the
+    /// rules, which then reads as both off: the way every host behaved.
+    #[serde(default)]
+    pub rules: ProfileRules,
+}
+
+/// The host owner's rules about profiles, for a drive kept private.
+///
+/// Both off by default, which is how a household drive has always worked:
+/// anyone using it may add a profile, and a device may use it as itself.
+/// The host enforces both; devices only follow them in what they offer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileRules {
+    /// Every device must sign in to a profile: none uses the drive as itself.
+    #[serde(default)]
+    pub require_profile: bool,
+    /// Only the host's owner adds profiles; devices cannot.
+    #[serde(default)]
+    pub owner_adds_profiles: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -187,6 +187,19 @@ export interface IdentityState {
   ended: boolean
   /** The profile last signed in to here, shown first. */
   lastProfile: string | null
+  /** What the host's owner allows. Both off on a host from before them. */
+  rules: ProfileRules
+}
+
+/**
+ * The host owner's rules about profiles, for a drive kept private. The host
+ * enforces both; the app only follows them in what it offers.
+ */
+export interface ProfileRules {
+  /** Every device must sign in to a profile: no "continue as this device". */
+  requireProfile: boolean
+  /** Only the host adds profiles: no "Add profile" here. */
+  ownerAddsProfiles: boolean
 }
 
 export interface Star {
@@ -925,6 +938,9 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     case 'profiles':
       return mockProfiles.map((p) => ({ ...p })) as T
     case 'create_profile': {
+      if (mockRules.ownerAddsProfiles) {
+        throw new ApiError('denied', 'profiles on this drive are added on the host')
+      }
       const profile: ProfileView = {
         id: `p${mockProfiles.length + 1}`,
         name: String(args?.name ?? '').trim(),
@@ -934,7 +950,7 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       }
       mockProfiles.push(profile)
       mockPins.set(profile.id, String(args?.pin ?? ''))
-      mockIdentity = { profile, choose: false, ended: false, lastProfile: profile.id }
+      mockIdentity = { rules: mockRules, profile, choose: false, ended: false, lastProfile: profile.id }
       return profile as T
     }
     case 'sign_in_profile': {
@@ -948,14 +964,14 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
         mockPins.set(profile.id, pin)
         profile.hasPin = true
       }
-      mockIdentity = { profile, choose: false, ended: false, lastProfile: profile.id }
+      mockIdentity = { rules: mockRules, profile, choose: false, ended: false, lastProfile: profile.id }
       return profile as T
     }
     case 'sign_out_profile':
-      mockIdentity = { profile: null, choose: true, ended: false, lastProfile: mockIdentity.lastProfile }
+      mockIdentity = { rules: mockRules, profile: null, choose: true, ended: false, lastProfile: mockIdentity.lastProfile }
       return undefined as T
     case 'continue_as_device':
-      mockIdentity = { profile: null, choose: false, ended: false, lastProfile: mockIdentity.lastProfile }
+      mockIdentity = { rules: mockRules, profile: null, choose: false, ended: false, lastProfile: mockIdentity.lastProfile }
       return undefined as T
     case 'subtitles_for':
       return { tracks: [], others: [] } as T
@@ -990,10 +1006,26 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 // Preview profiles, from the showcase. Maya's PIN is 1234; Sam and Leo have
 // none yet, so signing in as either chooses one. `?device` opens as the
 // device, skipping the choice.
-const mockProfiles: ProfileView[] = showcase.profiles()
+const mockProfiles: ProfileView[] = [
+  ...showcase.profiles(),
+  // On a private drive the owner adds people: one not signed in yet.
+  ...(previewFlag('private')
+    ? [{ id: 'p-new', name: 'Nina', color: 6, hasPin: false, lastUsed: 0 }]
+    : []),
+]
 const mockPins = showcase.pins()
 let mockProfileStars: Star[] = []
+/**
+ * The preview's rules: `?private` for a private drive, or `?requireProfile`
+ * and `?ownerAdds` one at a time.
+ */
+const mockRules: ProfileRules = {
+  requireProfile: previewFlag('private') || previewFlag('requireProfile'),
+  ownerAddsProfiles: previewFlag('private') || previewFlag('ownerAdds'),
+}
+
 let mockIdentity: IdentityState = {
+  rules: mockRules,
   profile: null,
   choose: !(typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('device')),
   ended: false,

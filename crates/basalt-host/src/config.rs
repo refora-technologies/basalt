@@ -85,6 +85,14 @@ pub struct HostConfig {
     #[serde(default)]
     pub profile_tokens: Vec<crate::profiles::ProfileToken>,
 
+    /// Every device must sign in to a profile; none uses the drive as
+    /// itself. Off unless the owner turns it on, as it has always been.
+    #[serde(default)]
+    pub require_profile: bool,
+    /// Only the host's owner adds profiles. Off: anyone using the drive may.
+    #[serde(default)]
+    pub owner_adds_profiles: bool,
+
     /// Which library sections devices show. All of them unless the owner
     /// unticks some.
     #[serde(default)]
@@ -126,6 +134,8 @@ impl HostConfig {
             progress_per_device: false,
             profiles: Vec::new(),
             profile_tokens: Vec::new(),
+            require_profile: false,
+            owner_adds_profiles: false,
             sections: basalt_proto::msg::Sections::default(),
             convert_enabled: true,
             convert_at_once: None,

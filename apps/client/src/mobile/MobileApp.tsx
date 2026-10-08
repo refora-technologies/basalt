@@ -169,6 +169,7 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
             profiles={identity.profiles}
             lastProfile={identity.state.lastProfile}
             ended={identity.state.ended}
+            rules={identity.state.rules}
             onDone={() => {
               model.setSigningIn(false)
               void identity.refresh()

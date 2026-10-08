@@ -587,3 +587,119 @@ async fn profiles_survive_the_host_restarting() {
     let saved = std::fs::read_to_string(fixture.dir.join("host.json")).unwrap();
     assert!(!saved.contains("4821"), "the PIN is never written down");
 }
+
+// ---------------------------------------------------------------------------
+// A drive kept private: the owner's two rules about profiles
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_private_drive_is_closed_to_a_device_acting_as_itself() {
+    let fixture = start_host().await;
+    fixture.host.add_profile("Maya", 2).unwrap();
+    fixture.host.set_require_profile(true).unwrap();
+
+    let laptop = fixture.paired_client().await;
+    laptop.continue_as_device(true).await.unwrap();
+    let refused = laptop.list("").await.unwrap_err();
+    assert_eq!(refused.kind(), "signedout", "{refused}");
+
+    // The app is told to ask, whatever was remembered, and why.
+    let identity = laptop.identity().await;
+    assert!(identity.choose && identity.rules.require_profile);
+
+    // Signed in, the drive opens. Maya chooses her own PIN the first time.
+    let maya = laptop.profiles().await.unwrap().remove(0);
+    assert!(!maya.has_pin);
+    laptop
+        .sign_in_profile(&maya.id, "2468", true)
+        .await
+        .unwrap();
+    assert!(laptop.list("").await.is_ok());
+}
+
+#[tokio::test]
+async fn requiring_a_profile_needs_one_to_exist_and_ends_with_the_last() {
+    let fixture = start_host().await;
+    assert!(
+        fixture.host.set_require_profile(true).is_err(),
+        "with no profile, nobody could get in"
+    );
+
+    fixture.host.add_profile("Maya", 0).unwrap();
+    fixture.host.set_require_profile(true).unwrap();
+    assert!(fixture.host.profile_rules().require_profile);
+
+    let maya = fixture.host.profile_views().remove(0);
+    assert!(fixture.host.remove_profile(&maya.id).unwrap());
+    assert!(
+        !fixture.host.profile_rules().require_profile,
+        "the last profile gone, devices may use the drive as themselves again"
+    );
+}
+
+#[tokio::test]
+async fn only_the_host_adds_profiles_when_the_owner_says_so() {
+    let fixture = start_host().await;
+    fixture.host.set_owner_adds_profiles(true).unwrap();
+
+    let laptop = fixture.paired_client().await;
+    let refused = laptop
+        .create_profile("Sam", "4821", 1, false)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.kind(), "denied", "{refused}");
+    assert!(laptop.identity().await.rules.owner_adds_profiles);
+
+    // The owner adds one: no PIN, not used yet, nobody signed in.
+    fixture.host.add_profile("Sam", 1).unwrap();
+    let listed = laptop.profiles().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(!listed[0].has_pin);
+    assert_eq!(listed[0].last_used, 0);
+
+    // The first sign-in sets the PIN; after that it is checked like any.
+    laptop
+        .sign_in_profile(&listed[0].id, "1357", true)
+        .await
+        .unwrap();
+    laptop.sign_out_profile().await.unwrap();
+    assert!(
+        laptop
+            .sign_in_profile(&listed[0].id, "9999", false)
+            .await
+            .is_err()
+    );
+    assert!(
+        laptop
+            .sign_in_profile(&listed[0].id, "1357", false)
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn a_sign_in_ended_on_the_host_is_refused_on_a_private_drive() {
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let maya = laptop
+        .create_profile("Maya", "4821", 0, true)
+        .await
+        .unwrap();
+    fixture.host.set_require_profile(true).unwrap();
+    assert!(laptop.list("").await.is_ok());
+
+    // The owner resets her PIN: every device signed in to her is signed out,
+    // and on a private drive that means it can no longer read the drive.
+    assert!(fixture.host.reset_profile_pin(&maya.id).unwrap());
+    assert!(laptop.list("").await.is_err());
+    assert!(laptop.identity().await.choose);
+}
+
+#[tokio::test]
+async fn an_older_host_reads_as_both_rules_off() {
+    // A host that predates the rules sends a list without them.
+    let parsed: basalt_proto::msg::ProfilesResponse =
+        serde_json::from_str(r#"{"profiles":[]}"#).unwrap();
+    assert_eq!(parsed.rules, basalt_proto::msg::ProfileRules::default());
+    assert!(!parsed.rules.require_profile && !parsed.rules.owner_adds_profiles);
+}

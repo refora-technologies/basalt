@@ -60,6 +60,17 @@ export interface ProfileSummary {
   devices: ProfileDevice[]
 }
 
+/**
+ * The owner's rules about profiles. Both off by default: anyone using the
+ * drive may add a profile, and a device may use the drive as itself.
+ */
+export interface ProfileRules {
+  /** Every device must sign in to a profile. */
+  requireProfile: boolean
+  /** Only this host adds profiles; devices cannot. */
+  ownerAddsProfiles: boolean
+}
+
 export interface ProfileDevice {
   name: string
   /** Stays signed in, rather than until the app closes. */
@@ -88,6 +99,8 @@ export interface HostStatus {
   library: LibraryStatus
   /** The household's profiles, with the devices signed in to each. */
   profiles: ProfileSummary[]
+  /** The owner's rules about profiles, for a drive kept private. */
+  profileRules: ProfileRules
   /** Which library sections devices show. */
   sections: Sections
   serving: boolean
@@ -254,6 +267,13 @@ export const api = {
   setTmdbKey: (key: string): Promise<HostStatus> => call('set_tmdb_key', { key }),
   resetProfilePin: (id: string): Promise<HostStatus> => call('reset_profile_pin', { id }),
   removeProfile: (id: string): Promise<HostStatus> => call('remove_profile', { id }),
+  /** A profile made here: its person chooses the PIN at their first sign-in. */
+  addProfile: (name: string, color: number): Promise<HostStatus> =>
+    call('add_profile', { name, color }),
+  setRequireProfile: (require: boolean): Promise<HostStatus> =>
+    call('set_require_profile', { require }),
+  setOwnerAddsProfiles: (ownerOnly: boolean): Promise<HostStatus> =>
+    call('set_owner_adds_profiles', { ownerOnly }),
   setSections: (sections: Sections): Promise<HostStatus> =>
     call('set_sections', { sections }),
   openVaultFolder: (): Promise<void> => call('open_vault_folder'),
@@ -293,6 +313,7 @@ const sample: {
     hostName: 'LIVING-ROOM-PC',
     port: 7742,
     requirePin: true,
+    profileRules: { requireProfile: false, ownerAddsProfiles: false },
     startWithWindows: false,
     vault: null,
     addresses: ['192.168.1.20'],
@@ -573,6 +594,36 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return sample.status
       case 'remove_profile':
         sample.status.profiles = sample.status.profiles.filter((p) => p.id !== args?.id)
+        if (sample.status.profiles.length === 0) sample.status.profileRules.requireProfile = false
+        return sample.status
+      case 'add_profile': {
+        const name = String(args?.name ?? '').trim()
+        if (!name) throw new ApiError('error', 'give the profile a name')
+        if (sample.status.profiles.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+          throw new ApiError('exists', `there is already a profile called ${name}`)
+        }
+        sample.status.profiles = [
+          ...sample.status.profiles,
+          {
+            id: `p${Date.now()}`,
+            name,
+            color: Number(args?.color ?? 0),
+            hasPin: false,
+            createdAt: Date.now() / 1000,
+            lastUsed: 0,
+            devices: [],
+          },
+        ]
+        return sample.status
+      }
+      case 'set_require_profile':
+        if (args?.require && sample.status.profiles.length === 0) {
+          throw new ApiError('error', 'add a profile first: with none, nobody could sign in')
+        }
+        sample.status.profileRules.requireProfile = Boolean(args?.require)
+        return sample.status
+      case 'set_owner_adds_profiles':
+        sample.status.profileRules.ownerAddsProfiles = Boolean(args?.ownerOnly)
         return sample.status
       case 'set_sections':
         sample.status.sections = args?.sections as Sections

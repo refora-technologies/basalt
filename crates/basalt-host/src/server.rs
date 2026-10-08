@@ -732,8 +732,17 @@ impl Host {
 
     /// Removes a profile with its history and stars.
     pub fn remove_profile(&self, id: &str) -> Result<bool> {
-        let removed = self.profiles.lock().expect("profiles lock").remove(id);
+        let (removed, none_left) = {
+            let mut book = self.profiles.lock().expect("profiles lock");
+            let removed = book.remove(id);
+            (removed, book.profiles().is_empty())
+        };
         if removed {
+            // The last profile gone: requiring one would lock the household
+            // out of its own drive, so devices may use it as themselves again.
+            if none_left {
+                self.config.lock().expect("config lock").require_profile = false;
+            }
             self.persist()?;
             if self
                 .progress
@@ -1660,6 +1669,7 @@ impl Host {
             )
         };
         let profiles = self.profiles_overview();
+        let profile_rules = self.profile_rules();
 
         // Both taken before the struct is built, for the reason spelled out on
         // `library_status`: a guard written inline as a field value is a
@@ -1685,6 +1695,7 @@ impl Host {
             device_count,
             library,
             profiles,
+            profile_rules,
             sections,
             serving,
             problem: None,
@@ -1815,6 +1826,55 @@ impl Host {
 
     pub fn require_pin(&self) -> bool {
         self.registry.lock().expect("registry lock").require_pin()
+    }
+
+    /// The owner's rules about profiles, as devices are told them.
+    pub fn profile_rules(&self) -> basalt_proto::msg::ProfileRules {
+        let config = self.config.lock().expect("config lock");
+        basalt_proto::msg::ProfileRules {
+            require_profile: config.require_profile,
+            owner_adds_profiles: config.owner_adds_profiles,
+        }
+    }
+
+    /// Makes every device sign in to a profile, or lets devices use the drive
+    /// as themselves again.
+    ///
+    /// Refused while there is no profile: with none, nobody could get in, and
+    /// a drive its own household cannot open is not a setting anyone means.
+    /// Devices using the drive as themselves are turned away at their next
+    /// request, and asked who is using them.
+    pub fn set_require_profile(&self, require: bool) -> Result<()> {
+        if require
+            && self
+                .profiles
+                .lock()
+                .expect("profiles lock")
+                .profiles()
+                .is_empty()
+        {
+            return Err(HostError::BadRequest(
+                "add a profile first: with none, nobody could sign in".into(),
+            ));
+        }
+        self.config.lock().expect("config lock").require_profile = require;
+        self.persist()
+    }
+
+    /// Lets only the host's owner add profiles, or anyone using the drive.
+    pub fn set_owner_adds_profiles(&self, owner_only: bool) -> Result<()> {
+        self.config.lock().expect("config lock").owner_adds_profiles = owner_only;
+        self.persist()
+    }
+
+    /// A profile made from the host's window: a name and a colour, no PIN.
+    /// Its person chooses the PIN at their first sign-in.
+    pub fn add_profile(&self, name: &str, color: u8) -> Result<()> {
+        self.profiles
+            .lock()
+            .expect("profiles lock")
+            .create_without_pin(name, color, unix_now())?;
+        self.persist()
     }
 
     /// Turns the PIN requirement on or off.
@@ -2294,6 +2354,29 @@ where
             continue;
         }
 
+        // A drive kept private: a device acting as itself may still pick and
+        // sign in to a profile, and nothing else. Answered as signed out, the
+        // answer every app already takes as "ask who is using this device".
+        if session.device.is_some()
+            && !op.open_without_profile()
+            && host.profile_rules().require_profile
+        {
+            let refused = if session.profile.is_none() {
+                true
+            } else {
+                host.check_profile(&mut session).is_err()
+            };
+            if refused {
+                write_err(
+                    &mut stream,
+                    ErrorCode::SignedOut,
+                    "this drive asks everyone to sign in to a profile",
+                )
+                .await?;
+                continue;
+            }
+        }
+
         if let Err(e) = dispatch(&mut stream, &host, &mut session, op, &payload).await {
             // A refusal is an answer, not a reason to hang up: the client is
             // pooling this connection and will use it again.
@@ -2631,6 +2714,7 @@ where
                 stream,
                 &ProfilesResponse {
                     profiles: host.profile_views(),
+                    rules: host.profile_rules(),
                 },
             )
             .await?;
@@ -2643,6 +2727,11 @@ where
                 .map(|d| d.key().to_string())
                 .ok_or(HostError::Unauthenticated)?;
             let (profile, token) = if op == Op::ProfileCreate {
+                if host.profile_rules().owner_adds_profiles {
+                    return Err(HostError::Denied(
+                        "profiles on this drive are added on the host".into(),
+                    ));
+                }
                 host.create_profile(decode(payload)?, &device_key)?
             } else {
                 host.sign_in_profile(decode(payload)?, &device_key)?

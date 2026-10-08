@@ -179,10 +179,41 @@ impl ProfileBook {
         remember: bool,
         now: i64,
     ) -> Result<(Profile, String), HostError> {
-        let name = clean_name(name)?;
         if !valid_pin(pin) {
             return Err(HostError::BadRequest("a PIN is 4 to 8 digits".into()));
         }
+        let profile = self.add(name, color, Some(hash_pin(pin)?), now)?;
+        let token = self.issue(&profile.id, device_key, remember, now)?;
+        Ok((profile, token))
+    }
+
+    /// Makes a profile from the host's own window, with no PIN and nobody
+    /// signed in. Whoever it is for chooses the PIN the first time they sign
+    /// in, so the host's owner never knows it.
+    pub fn create_without_pin(
+        &mut self,
+        name: &str,
+        color: u8,
+        now: i64,
+    ) -> Result<Profile, HostError> {
+        let mut profile = self.add(name, color, None, now)?;
+        // Not used until its first sign-in: the host shows "not used yet".
+        profile.last_used = 0;
+        if let Some(stored) = self.profiles.iter_mut().find(|p| p.id == profile.id) {
+            stored.last_used = 0;
+        }
+        Ok(profile)
+    }
+
+    /// A new profile, checked and kept.
+    fn add(
+        &mut self,
+        name: &str,
+        color: u8,
+        pin_hash: Option<String>,
+        now: i64,
+    ) -> Result<Profile, HostError> {
+        let name = clean_name(name)?;
         if self
             .profiles
             .iter()
@@ -204,13 +235,12 @@ impl ProfileBook {
             id,
             name,
             color: color % COLORS,
-            pin_hash: Some(hash_pin(pin)?),
+            pin_hash,
             created_at: now,
             last_used: now,
         };
         self.profiles.push(profile.clone());
-        let token = self.issue(&profile.id, device_key, remember, now)?;
-        Ok((profile, token))
+        Ok(profile)
     }
 
     /// Checks a PIN and signs the device in. Returns the token.

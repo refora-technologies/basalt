@@ -1573,6 +1573,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
             profiles={identity.profiles}
             lastProfile={identity.state.lastProfile}
             ended={identity.state.ended}
+            rules={identity.state.rules}
             onDone={() => {
               setSigningIn(false)
               void identity.refresh()

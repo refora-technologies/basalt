@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Check, Laptop, Loader2, Plus } from 'lucide-react'
-import { api, ApiError, inTauri, type ProfileView } from '@/lib/api'
+import { ArrowLeft, Check, Laptop, Loader2, Lock, Plus } from 'lucide-react'
+import { api, ApiError, inTauri, type ProfileRules, type ProfileView } from '@/lib/api'
 import { PROFILE_COLORS, profileColor, validPin } from '@/lib/useIdentity'
 import { EASE_OUT } from '@/lib/motion'
 import { cn } from '@/lib/utils'
@@ -20,6 +20,11 @@ import { useBack } from '@/mobile/useBack'
  * history and stars follow it to every device in the house. The profile last
  * used here sits first, so signing back in after signing out is a tap and a
  * PIN.
+ *
+ * **A private drive offers less, on purpose.** When the host's owner requires
+ * a profile, the device path is not offered; when only the host adds
+ * profiles, "Add profile" is not either. The host refuses both anyway: this
+ * only keeps the screen from offering what would be refused.
  */
 
 type Step =
@@ -33,6 +38,7 @@ export function ProfileGate({
   profiles,
   lastProfile,
   ended,
+  rules,
   onDone,
   onChangeDrive,
 }: {
@@ -42,6 +48,9 @@ export function ProfileGate({
   lastProfile: string | null
   /** The host signed a profile out since the app last looked. */
   ended: boolean
+  /** The host owner's rules: whether a device may carry on as itself, and
+   *  whether profiles may be added here. */
+  rules: ProfileRules
   /** Signed in, or carrying on as the device. */
   onDone: () => void
   /** Back to the drive list, for a drive other than this one. */
@@ -104,8 +113,9 @@ export function ProfileGate({
                   Who is using {vaultName}?
                 </h1>
                 <p className="mt-2 max-w-[400px] text-[12.5px] leading-relaxed text-textDim">
-                  Choose your profile and your watch history and stars come with you, on any
-                  device. Or carry on as this device, straight in.
+                  {rules.requireProfile
+                    ? 'Choose your profile to continue. Your watch history and stars come with you, on any device.'
+                    : 'Choose your profile and your watch history and stars come with you, on any device. Or carry on as this device, straight in.'}
                 </p>
                 {ended && (
                   <p className="mt-3 rounded-full bg-white/[0.05] px-3 py-1 text-[11.5px] text-textDim">
@@ -125,6 +135,7 @@ export function ProfileGate({
                     onClick={() => setStep({ kind: 'pin', profile })}
                   />
                 ))}
+                {!rules.ownerAddsProfiles && (
                 <motion.button
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -141,8 +152,23 @@ export function ProfileGate({
                     Add profile
                   </span>
                 </motion.button>
+                )}
               </div>
 
+              {(rules.requireProfile || rules.ownerAddsProfiles) && (
+                <motion.p
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.3, delay: 0.2 }}
+                  className="mx-auto mt-7 flex w-fit items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 py-1.5 text-[11.5px] text-textDim"
+                >
+                  <Lock size={12} className="shrink-0 text-textFaint" />
+                  {privateNote(rules)}
+                </motion.p>
+              )}
+
+              {!rules.requireProfile && (
+              <>
               <div className="my-8 flex items-center gap-3">
                 <span className="h-px flex-1 bg-line" />
                 <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-textFaint">or</span>
@@ -177,6 +203,8 @@ export function ProfileGate({
                   className="mt-3 justify-center"
                 />
               </div>
+              </>
+              )}
             </>
           )}
 
@@ -271,8 +299,10 @@ function PinStep({
   onBack: () => void
   onDone: () => void
 }): React.JSX.Element {
-  // A profile whose PIN the host cleared chooses a new one here.
+  // A profile whose PIN the host cleared chooses a new one here, and so does
+  // one the host's owner added, at its very first sign-in.
   const choosing = !profile.hasPin
+  const first = choosing && profile.lastUsed === 0
   const [pin, setPin] = useState('')
   const [confirm, setConfirm] = useState('')
   const [remember, setRemember] = useState(true)
@@ -307,9 +337,15 @@ function PinStep({
     <div className="mx-auto flex max-w-[360px] flex-col items-center text-center">
       <BackButton onClick={onBack} />
       <Avatar name={profile.name} color={profile.color} size={84} />
-      <h2 className="mt-4 text-[19px] font-semibold tracking-tight text-text">{profile.name}</h2>
-      <p className="mt-1 text-[12px] text-textDim">
-        {choosing ? 'This PIN was reset on the host. Choose a new one.' : 'Enter your PIN'}
+      <h2 className="mt-4 text-[19px] font-semibold tracking-tight text-text">
+        {first ? `Welcome, ${profile.name}` : profile.name}
+      </h2>
+      <p className="mt-1 max-w-[300px] text-[12px] leading-relaxed text-textDim">
+        {first
+          ? 'Choose a PIN for your profile. Only you will know it, not even the host.'
+          : choosing
+            ? 'This PIN was reset on the host. Choose a new one.'
+            : 'Enter your PIN'}
       </p>
 
       <motion.div
@@ -608,4 +644,13 @@ function previewStep(profiles: ProfileView[]): Step {
   if (gate === 'pin' && pinned) return { kind: 'pin', profile: pinned }
   if (gate === 'reset' && reset) return { kind: 'pin', profile: reset }
   return { kind: 'choose' }
+}
+
+/** What a private drive's rules mean, in one line under the profiles. */
+function privateNote(rules: ProfileRules): string {
+  if (rules.requireProfile && rules.ownerAddsProfiles) {
+    return 'A private drive. Profiles are added on the host.'
+  }
+  if (rules.requireProfile) return 'This drive asks everyone to sign in to a profile.'
+  return 'New profiles are added on the host.'
 }

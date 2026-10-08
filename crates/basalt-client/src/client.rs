@@ -575,6 +575,9 @@ impl Basalt {
     /// yet, so a profile removed or signed out elsewhere is noticed here
     /// rather than on the first thing somebody tries to do.
     pub async fn identity(&self) -> IdentityState {
+        // The host owner's rules, asked every time: a drive can be made
+        // private while a device is using it as itself.
+        let mut rules = basalt_proto::msg::ProfileRules::default();
         if let Ok(pool) = self.pool().await {
             // Asked outright, not left to the pool: a connection already told
             // which profile it is for does not ask again by itself.
@@ -583,6 +586,12 @@ impl Basalt {
             {
                 let result = lease.profile_use(Some(&token)).await;
                 let _ = lease.check(result);
+            }
+            if let Ok(mut lease) = pool.acquire().await {
+                let result = lease.profiles().await;
+                if let Ok(response) = lease.check(result) {
+                    rules = response.rules;
+                }
             }
             if pool.take_profile_ended() {
                 let mut current = self.identity.lock().expect("identity lock");
@@ -598,11 +607,15 @@ impl Basalt {
         let last_profile = self
             .current_host()
             .and_then(|host| host.identity.last_profile);
+        // Acting as the device on a drive that requires a profile: asked
+        // again, whatever was chosen or remembered before.
+        let refused_as_device = current.profile.is_none() && rules.require_profile;
         IdentityState {
             profile: current.profile,
-            choose: !current.chosen,
+            choose: !current.chosen || refused_as_device,
             ended: current.ended,
             last_profile,
+            rules,
         }
     }
 
@@ -1446,6 +1459,9 @@ pub struct IdentityState {
     pub ended: bool,
     /// The profile last signed in to here, to show first.
     pub last_profile: Option<String>,
+    /// What the host's owner allows: whether a device may use the drive as
+    /// itself, and whether devices may add profiles.
+    pub rules: basalt_proto::msg::ProfileRules,
 }
 
 /// What a folder upload did.
