@@ -56,6 +56,18 @@ class PickArgs {
 }
 
 @InvokeArg
+class KeyArgs {
+  lateinit var alias: String
+}
+
+@InvokeArg
+class KeySignArgs {
+  lateinit var alias: String
+  /** Hex. */
+  lateinit var message: String
+}
+
+@InvokeArg
 class UriArgs {
   lateinit var uri: String
 }
@@ -907,6 +919,53 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   fun deviceHint(invoke: Invoke) {
     val id = Settings.Secure.getString(activity.contentResolver, Settings.Secure.ANDROID_ID) ?: ""
     invoke.resolve(JSObject().put("id", id))
+  }
+
+  // -------------------------------------------------------------------------
+  // This device's key: see DeviceKeys. Rust's alone.
+  // -------------------------------------------------------------------------
+
+  @Command
+  fun keyCreate(invoke: Invoke) {
+    try {
+      val args = invoke.parseArgs(KeyArgs::class.java)
+      invoke.resolve(JSObject().put("spki", DeviceKeys.hex(DeviceKeys.create(args.alias))))
+    } catch (e: Exception) {
+      invoke.reject("the key store could not make a key: ${e.message}")
+    }
+  }
+
+  @Command
+  fun keyPublic(invoke: Invoke) {
+    try {
+      val args = invoke.parseArgs(KeyArgs::class.java)
+      val spki = DeviceKeys.public(args.alias)
+      invoke.resolve(JSObject().put("spki", spki?.let { DeviceKeys.hex(it) } ?: JSONObject.NULL))
+    } catch (e: Exception) {
+      invoke.reject("the key store could not be read: ${e.message}")
+    }
+  }
+
+  @Command
+  fun keySign(invoke: Invoke) {
+    try {
+      val args = invoke.parseArgs(KeySignArgs::class.java)
+      val signature = DeviceKeys.sign(args.alias, DeviceKeys.unhex(args.message))
+      invoke.resolve(JSObject().put("signature", DeviceKeys.hex(signature)))
+    } catch (e: Exception) {
+      invoke.reject("the key store could not sign: ${e.message}")
+    }
+  }
+
+  @Command
+  fun keyDelete(invoke: Invoke) {
+    try {
+      val args = invoke.parseArgs(KeyArgs::class.java)
+      DeviceKeys.delete(args.alias)
+      invoke.resolve()
+    } catch (e: Exception) {
+      invoke.reject("the key store could not delete the key: ${e.message}")
+    }
   }
 
   /** What a notification tap asked for, once: "update", or nothing. */

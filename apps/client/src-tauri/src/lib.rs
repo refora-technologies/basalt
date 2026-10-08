@@ -204,6 +204,34 @@ fn status_of(client: &Arc<Basalt>) -> Status {
 // Live changes
 // ---------------------------------------------------------------------------
 
+/// The phone's hardware key store, as the client reaches it: through the
+/// Basalt plugin's Rust-only commands, which no page can call.
+#[cfg(mobile)]
+struct PhoneKeyStore(tauri::AppHandle);
+
+#[cfg(mobile)]
+impl basalt_client::keys::PhoneKeys for PhoneKeyStore {
+    fn create(&self, alias: &str) -> Result<Vec<u8>, String> {
+        use tauri_plugin_basalt_android::BasaltAndroidExt;
+        self.0.basalt_android().key_create(alias).map_err(|e| e.to_string())
+    }
+    fn public(&self, alias: &str) -> Result<Option<Vec<u8>>, String> {
+        use tauri_plugin_basalt_android::BasaltAndroidExt;
+        self.0.basalt_android().key_public(alias).map_err(|e| e.to_string())
+    }
+    fn sign(&self, alias: &str, message: &[u8]) -> Result<Vec<u8>, String> {
+        use tauri_plugin_basalt_android::BasaltAndroidExt;
+        self.0
+            .basalt_android()
+            .key_sign(alias, message)
+            .map_err(|e| e.to_string())
+    }
+    fn delete(&self, alias: &str) -> Result<(), String> {
+        use tauri_plugin_basalt_android::BasaltAndroidExt;
+        self.0.basalt_android().key_delete(alias).map_err(|e| e.to_string())
+    }
+}
+
 /// Subscribes to the host's changes and forwards them to the window.
 ///
 /// Replaces any watch already running, so reconnecting does not leave two
@@ -1195,7 +1223,18 @@ pub fn run() {
             };
             #[cfg(desktop)]
             let hint: Option<String> = None;
-            let client = Arc::new(Basalt::open_as_this_device(store_path, hint.as_deref())?);
+            // The device's key goes in the phone's hardware key store there;
+            // on Windows the client finds the TPM by itself.
+            #[cfg(mobile)]
+            let phone: Option<Arc<dyn basalt_client::keys::PhoneKeys>> =
+                Some(Arc::new(PhoneKeyStore(app.handle().clone())));
+            #[cfg(desktop)]
+            let phone: Option<Arc<dyn basalt_client::keys::PhoneKeys>> = None;
+            let client = Arc::new(Basalt::open_as_this_device_with_keys(
+                store_path,
+                hint.as_deref(),
+                phone,
+            )?);
 
             // Registered **before** anything else in this closure.
             //

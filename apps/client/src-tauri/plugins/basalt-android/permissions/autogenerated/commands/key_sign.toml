@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-key-sign"
+description = "Enables the key_sign command without any pre-configured scope."
+commands.allow = ["key_sign"]
+
+[[permission]]
+identifier = "deny-key-sign"
+description = "Denies the key_sign command without any pre-configured scope."
+commands.deny = ["key_sign"]

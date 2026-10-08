@@ -317,6 +317,110 @@ Denies the keep_alive command without any pre-configured scope.
 <tr>
 <td>
 
+`basalt-android:allow-key-create`
+
+</td>
+<td>
+
+Enables the key_create command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-key-create`
+
+</td>
+<td>
+
+Denies the key_create command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-key-delete`
+
+</td>
+<td>
+
+Enables the key_delete command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-key-delete`
+
+</td>
+<td>
+
+Denies the key_delete command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-key-public`
+
+</td>
+<td>
+
+Enables the key_public command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-key-public`
+
+</td>
+<td>
+
+Denies the key_public command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-key-sign`
+
+</td>
+<td>
+
+Enables the key_sign command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-key-sign`
+
+</td>
+<td>
+
+Denies the key_sign command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `basalt-android:allow-let-go`
 
 </td>

@@ -36,6 +36,10 @@ const COMMANDS: &[&str] = &[
     "play_review",
     // Rust's alone: read once at startup, never by the page.
     "device_hint",
+    "key_create",
+    "key_public",
+    "key_sign",
+    "key_delete",
     "request_notifications",
     "insets",
     "mpv_init",
