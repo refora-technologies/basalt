@@ -137,6 +137,11 @@ impl Pool {
                     &self.inner.me,
                 )
                 .await?;
+                // An owner's device asked to vouch for the host answers here
+                // too: an app left open for weeks would otherwise let it lapse.
+                if let Some(key) = &credentials.key {
+                    session.answer_endorsement(key).await;
+                }
                 // The host may have handed over a statement as this one signed
                 // in, and counts it as given: kept for the client.
                 if let Some(member) = session.signed_in.member.take() {

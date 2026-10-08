@@ -412,10 +412,39 @@ impl Session {
         Ok(())
     }
 
-    /// Returns an endorsement this device signed for the host.
-    pub async fn endorse(&mut self, statement: SignedStatement) -> Result<()> {
-        call_unit(&mut self.stream, Op::Endorse, &EndorseRequest { statement }).await?;
-        Ok(())
+    /// Answers the endorsement the host offered as this session signed in,
+    /// if it offered one: checked, signed by the device's key, and returned.
+    ///
+    /// Never fails the session. An offer that does not check out is refused
+    /// and noted; one that could not be returned is offered again next time.
+    pub async fn answer_endorsement(&mut self, key: &Arc<KeyRing>) {
+        let Some(offer) = self.signed_in.endorse.take() else {
+            return;
+        };
+        if !self.signed_in.by_key {
+            return;
+        }
+        let ring = Arc::clone(key);
+        let host_id = self.info.host_id.clone();
+        let now = unix_now();
+        let signed =
+            tokio::task::spawn_blocking(move || ring.sign_endorsement(&offer, &host_id, now)).await;
+        let statement = match signed {
+            Ok(Ok(statement)) => statement,
+            Ok(Err(e)) => {
+                tracing::warn!("did not endorse the host: {e}");
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("endorsing the host stopped: {e}");
+                return;
+            }
+        };
+        if let Err(e) =
+            call_unit(&mut self.stream, Op::Endorse, &EndorseRequest { statement }).await
+        {
+            tracing::warn!("the host did not take this device's endorsement: {e}");
+        }
     }
 
     /// Looks at a host without pairing, so the client can show what it found.

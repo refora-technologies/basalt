@@ -123,6 +123,9 @@ pub struct HostConfig {
     /// Statements taken back before their time.
     #[serde(default)]
     pub revoked: basalt_trust::revocation::RevocationList,
+    /// An owner's device vouching for this host's key, the newest there is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endorsement: Option<crate::authority::Endorsement>,
 }
 
 impl HostConfig {
@@ -155,6 +158,7 @@ impl HostConfig {
             household_key: Default::default(),
             issued: Vec::new(),
             revoked: Default::default(),
+            endorsement: None,
         })
     }
 

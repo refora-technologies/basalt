@@ -250,6 +250,28 @@ impl KeyRing {
         self.session.sign(message)
     }
 
+    /// Signs an endorsement a host offered, with the device's key, once it
+    /// has passed [`basalt_trust::statement::check_endorse_offer`]. Blocks.
+    pub fn sign_endorsement(
+        &self,
+        offer: &str,
+        pinned_host: &str,
+        now: i64,
+    ) -> Result<SignedStatement, TrustError> {
+        let payload = basalt_trust::statement::read_offer(offer)?;
+        basalt_trust::statement::check_endorse_offer(
+            &payload,
+            self.device.public_key(),
+            pinned_host,
+            now,
+        )?;
+        let signed = basalt_trust::statement::sign_offered(&*self.device.signer, offer)?;
+        Ok(SignedStatement {
+            payload: signed.payload,
+            signature: signed.signature,
+        })
+    }
+
     /// The statement for `host_id` while it has more than an hour left.
     pub fn pass(&self, host_id: &str, now: i64) -> Option<SignedStatement> {
         if self.refused.lock().expect("refused lock").contains(host_id) {
@@ -917,6 +939,48 @@ mod tests {
         ring.refused_at(&host);
         assert!(ring.direct_at(&host));
         assert!(ring.pass(&host, now).is_none());
+    }
+
+    #[test]
+    fn a_ring_signs_only_a_fair_endorsement() {
+        let ring = KeyRing::new(DeviceKey::create(&Policy::Software).unwrap()).unwrap();
+        let host = basalt_trust::SoftwareKey::generate().unwrap();
+        let host_id = host.public_key().id();
+        let now = 1_800_000_000;
+        let offer = |issuer: &PublicKey, subject: &PublicKey, kind| {
+            let payload =
+                basalt_trust::Payload::new(kind, issuer, subject, &host_id, "", now).unwrap();
+            hex::encode(&serde_json::to_vec(&payload).unwrap())
+        };
+        let fair = offer(
+            ring.public_key(),
+            host.public_key(),
+            basalt_trust::Kind::Endorse,
+        );
+        assert!(ring.sign_endorsement(&fair, &host_id, now).is_ok());
+        // About another key, as another kind, at another host, or long ago.
+        let other = basalt_trust::SoftwareKey::generate().unwrap();
+        let wrong_subject = offer(
+            ring.public_key(),
+            other.public_key(),
+            basalt_trust::Kind::Endorse,
+        );
+        assert!(
+            ring.sign_endorsement(&wrong_subject, &host_id, now)
+                .is_err()
+        );
+        let member = offer(
+            ring.public_key(),
+            host.public_key(),
+            basalt_trust::Kind::Member,
+        );
+        assert!(ring.sign_endorsement(&member, &host_id, now).is_err());
+        assert!(
+            ring.sign_endorsement(&fair, &other.public_key().id(), now)
+                .is_err()
+        );
+        assert!(ring.sign_endorsement(&fair, &host_id, now + 3600).is_err());
+        assert!(ring.sign_endorsement("zz", &host_id, now).is_err());
     }
 
     #[test]

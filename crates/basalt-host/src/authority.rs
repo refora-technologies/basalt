@@ -19,6 +19,16 @@ use basalt_trust::statement::MEMBER_RENEW_WITHIN;
 use basalt_trust::{Kind, Payload, PublicKey, Signer, SoftwareKey};
 use serde::{Deserialize, Serialize};
 
+/// An owner's device vouching for this host's key, the newest there is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Endorsement {
+    pub statement: SignedStatement,
+    /// The owner's device that signed it, by `Device::key`.
+    pub by: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
 /// A member statement the host made and has not seen expire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Issued {
@@ -38,12 +48,18 @@ pub struct Authority {
     household: Option<SoftwareKey>,
     issued: Vec<Issued>,
     revoked: RevocationList,
+    endorsement: Option<Endorsement>,
 }
 
 impl Authority {
     /// From what the config kept. A household key that does not read is
     /// replaced by [`Authority::ensure_household`]; nothing relies on it yet.
-    pub fn new(household: &str, issued: Vec<Issued>, revoked: RevocationList) -> Self {
+    pub fn new(
+        household: &str,
+        issued: Vec<Issued>,
+        revoked: RevocationList,
+        endorsement: Option<Endorsement>,
+    ) -> Self {
         let household = (!household.is_empty())
             .then(|| basalt_proto::hex::decode(household).ok())
             .flatten()
@@ -52,6 +68,47 @@ impl Authority {
             household,
             issued,
             revoked,
+            endorsement,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Endorsements
+    // -----------------------------------------------------------------------
+
+    pub fn endorsement(&self) -> Option<&Endorsement> {
+        self.endorsement.as_ref()
+    }
+
+    /// Whether an owner's device signing in should be asked for a fresh
+    /// endorsement: there is none, or it is a week old.
+    pub fn endorse_due(&self, now: i64) -> bool {
+        self.endorsement.as_ref().is_none_or(|e| {
+            now - e.iat >= basalt_trust::statement::ENDORSE_RENEW_AFTER || e.exp <= now
+        })
+    }
+
+    /// Keeps an endorsement, already checked, unless the one kept is newer.
+    pub fn accept_endorsement(&mut self, endorsement: Endorsement) -> bool {
+        if self
+            .endorsement
+            .as_ref()
+            .is_some_and(|kept| kept.iat > endorsement.iat)
+        {
+            return false;
+        }
+        self.endorsement = Some(endorsement);
+        true
+    }
+
+    /// Lets go of the endorsement a device signed: it is no longer an owner,
+    /// was removed, or has a new key.
+    pub fn drop_endorsement_by(&mut self, device: &str) -> bool {
+        if self.endorsement.as_ref().is_some_and(|e| e.by == device) {
+            self.endorsement = None;
+            true
+        } else {
+            false
         }
     }
 
@@ -200,7 +257,11 @@ impl Authority {
         self.issued
             .retain(|i| i.exp + basalt_trust::statement::CLOCK_SKEW > now);
         let pruned = self.revoked.prune(now);
-        pruned || self.issued.len() != before
+        let lapsed = self.endorsement.as_ref().is_some_and(|e| e.exp <= now);
+        if lapsed {
+            self.endorsement = None;
+        }
+        pruned || lapsed || self.issued.len() != before
     }
 }
 
@@ -351,6 +412,52 @@ mod tests {
         assert!(authority.issued().is_empty());
     }
 
+    fn endorsement(by: &str, iat: i64) -> Endorsement {
+        Endorsement {
+            statement: SignedStatement {
+                payload: String::new(),
+                signature: String::new(),
+            },
+            by: by.into(),
+            iat,
+            exp: iat + basalt_trust::statement::ENDORSE_LIFETIME,
+        }
+    }
+
+    #[test]
+    fn an_endorsement_is_asked_for_when_there_is_none_or_it_is_a_week_old() {
+        let mut authority = Authority::default();
+        assert!(authority.endorse_due(NOW));
+        assert!(authority.accept_endorsement(endorsement("phone", NOW)));
+        assert!(!authority.endorse_due(NOW + 60));
+        let week = basalt_trust::statement::ENDORSE_RENEW_AFTER;
+        assert!(!authority.endorse_due(NOW + week - 1));
+        assert!(authority.endorse_due(NOW + week));
+    }
+
+    #[test]
+    fn an_older_endorsement_never_replaces_a_newer_one() {
+        let mut authority = Authority::default();
+        authority.accept_endorsement(endorsement("phone", NOW));
+        assert!(!authority.accept_endorsement(endorsement("laptop", NOW - 10)));
+        assert_eq!(authority.endorsement().unwrap().by, "phone");
+        assert!(authority.accept_endorsement(endorsement("laptop", NOW + 10)));
+        assert_eq!(authority.endorsement().unwrap().by, "laptop");
+    }
+
+    #[test]
+    fn an_endorsement_goes_with_its_owner_and_its_date() {
+        let mut authority = Authority::default();
+        authority.accept_endorsement(endorsement("phone", NOW));
+        assert!(!authority.drop_endorsement_by("laptop"));
+        assert!(authority.drop_endorsement_by("phone"));
+        assert!(authority.endorsement().is_none());
+
+        authority.accept_endorsement(endorsement("phone", NOW));
+        assert!(authority.prune(NOW + basalt_trust::statement::ENDORSE_LIFETIME));
+        assert!(authority.endorsement().is_none());
+    }
+
     #[test]
     fn expired_statements_and_revocations_are_let_go() {
         let mut authority = Authority::default();
@@ -370,10 +477,10 @@ mod tests {
         let mut authority = Authority::default();
         authority.ensure_household();
         let kept = authority.household_pkcs8();
-        let back = Authority::new(&kept, Vec::new(), RevocationList::default());
+        let back = Authority::new(&kept, Vec::new(), RevocationList::default(), None);
         assert_eq!(back.household_key(), authority.household_key());
         // Unreadable reads as none, to be made again.
-        let none = Authority::new("zz", Vec::new(), RevocationList::default());
+        let none = Authority::new("zz", Vec::new(), RevocationList::default(), None);
         assert!(none.household_key().is_none());
     }
 }

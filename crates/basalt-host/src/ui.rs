@@ -71,6 +71,18 @@ pub struct HostStatus {
     pub problem: Option<String>,
     /// Converting video for devices that cannot play it.
     pub conversion: ConversionStatus,
+    /// The owner's device vouching for this host's key, and until when.
+    pub endorsement: Option<EndorsementView>,
+}
+
+/// Which owner's device last vouched for the host, and until when.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndorsementView {
+    /// The device's name, as the host lists it.
+    pub by: String,
+    /// Unix seconds.
+    pub until: i64,
 }
 
 /// Video conversion, as the host's window shows it.
@@ -201,6 +213,12 @@ pub struct DeviceView {
     pub received: u64,
     pub send_rate: f64,
     pub receive_rate: f64,
+    /// Whether it signs in with a key of its own.
+    pub keyed: bool,
+    /// Where it says it keeps the key.
+    pub key_kind: Option<basalt_proto::msg::KeyKind>,
+    /// Whether the host's owner made it an owner.
+    pub owner: bool,
 }
 
 /// A device asking to be let in.
@@ -258,6 +276,9 @@ pub fn devices_view(
                 received: moved.received,
                 send_rate: rate.send,
                 receive_rate: rate.receive,
+                keyed: device.keyed(),
+                key_kind: device.key_kind,
+                owner: device.owner,
             }
         })
         .collect()
@@ -361,6 +382,7 @@ mod tests {
                 limit: 1,
                 active: Vec::new(),
             },
+            endorsement: None,
         };
         assert_eq!(
             keys(&status),
@@ -368,6 +390,7 @@ mod tests {
                 "addresses",
                 "conversion",
                 "deviceCount",
+                "endorsement",
                 "hostId",
                 "hostName",
                 "library",
@@ -507,9 +530,12 @@ mod tests {
             [
                 "connections",
                 "id",
+                "keyKind",
+                "keyed",
                 "lastSeen",
                 "name",
                 "online",
+                "owner",
                 "pairedAt",
                 "receiveRate",
                 "received",

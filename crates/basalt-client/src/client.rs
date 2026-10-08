@@ -610,6 +610,13 @@ impl Basalt {
         let proven = self
             .settle_key(host_id, addr, &mut session, &mut credentials)
             .await;
+        let mut proven = proven;
+        if let Some(key) = &credentials.key {
+            session.answer_endorsement(key).await;
+            if let Some(proven) = proven.as_mut() {
+                proven.answer_endorsement(key).await;
+            }
+        }
         let members: Vec<_> = std::iter::once(&session)
             .chain(proven.as_ref())
             .filter_map(|s| s.signed_in.member.clone())

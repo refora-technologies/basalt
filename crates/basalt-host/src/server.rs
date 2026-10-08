@@ -53,6 +53,8 @@ pub struct Host {
     profile_changes: tokio::sync::broadcast::Sender<()>,
     /// The household's key, and the member statements made and taken back.
     authority: std::sync::Mutex<crate::authority::Authority>,
+    /// This host's public key, as an owner's endorsement names it.
+    host_key: Option<basalt_trust::PublicKey>,
     /// Whether the chosen drive was missing the last time anyone looked.
     drive_lost: std::sync::atomic::AtomicBool,
     /// Bumped whenever the drive served is replaced or let go, always while
@@ -182,7 +184,12 @@ impl Host {
             &config.household_key.0,
             config.issued.clone(),
             config.revoked.clone(),
+            config.endorsement.clone(),
         );
+        let host_key = identity
+            .spki()
+            .ok()
+            .and_then(|spki| basalt_trust::PublicKey::from_spki(&spki).ok());
         let made_household = authority.ensure_household();
         let pruned = authority.prune(unix_now());
         let stars = match &config.vault_path {
@@ -231,6 +238,7 @@ impl Host {
             access_changes: tokio::sync::broadcast::Sender::new(16),
             profile_changes: tokio::sync::broadcast::Sender::new(16),
             authority: std::sync::Mutex::new(authority),
+            host_key,
             drive_lost: std::sync::atomic::AtomicBool::new(drive_lost),
             drive_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             state_root: std::sync::Mutex::new(state_root),
@@ -861,14 +869,139 @@ impl Host {
         made
     }
 
-    /// Takes back a device's statements about any key but the one it holds
-    /// now, after it pairs again or gives a new key.
-    fn forget_old_keys(&self, device: &Device) {
-        let changed = self
+    /// An endorsement for an owner's device to sign, when one is due: the
+    /// payload, hex. None for any other device.
+    fn endorse_offer(&self, device: &Device) -> Option<String> {
+        if !device.owner {
+            return None;
+        }
+        let now = unix_now();
+        if !self
             .authority
             .lock()
             .expect("authority lock")
-            .revoke_other_keys(device.key(), &device.public_key);
+            .endorse_due(now)
+        {
+            return None;
+        }
+        let owner = basalt_trust::PublicKey::from_hex(&device.public_key).ok()?;
+        let payload = basalt_trust::Payload::new(
+            basalt_trust::Kind::Endorse,
+            &owner,
+            self.host_key.as_ref()?,
+            self.host_id(),
+            "",
+            now,
+        )
+        .ok()?;
+        serde_json::to_vec(&payload)
+            .ok()
+            .map(|bytes| basalt_proto::hex::encode(&bytes))
+    }
+
+    /// Takes an endorsement an owner's device returned: signed by that
+    /// device's key, of this host's key, made just now, and from a device
+    /// that is an owner at this moment.
+    fn accept_endorsement(&self, device: &Device, statement: SignedStatement) -> Result<()> {
+        let denied = |why: String| HostError::Denied(why);
+        if !device.owner {
+            return Err(denied("this device is not an owner of this host".into()));
+        }
+        let owner = basalt_trust::PublicKey::from_hex(&device.public_key)
+            .map_err(|e| denied(e.to_string()))?;
+        let host_key = self
+            .host_key
+            .as_ref()
+            .ok_or_else(|| denied("this host cannot read its own key".into()))?;
+        let now = unix_now();
+        let payload = basalt_trust::statement::verify(
+            &basalt_trust::Statement {
+                payload: statement.payload.clone(),
+                signature: statement.signature.clone(),
+            },
+            basalt_trust::statement::Expect {
+                kind: basalt_trust::Kind::Endorse,
+                issuer: Some(&owner),
+                subject: Some(host_key),
+                host: Some(self.host_id()),
+                now,
+            },
+        )
+        .map_err(|e| denied(format!("that endorsement does not check out: {e}")))?;
+        if (payload.iat - now).abs() > basalt_trust::statement::CLOCK_SKEW {
+            return Err(denied("that endorsement is not from today".into()));
+        }
+        let accepted = self
+            .authority
+            .lock()
+            .expect("authority lock")
+            .accept_endorsement(crate::authority::Endorsement {
+                statement,
+                by: device.key().to_string(),
+                iat: payload.iat,
+                exp: payload.exp,
+            });
+        if accepted {
+            self.persist()?;
+        }
+        Ok(())
+    }
+
+    /// Makes a device an owner, or not. Only a device with a key can be; one
+    /// that stops being an owner no longer vouches for the host.
+    pub fn set_owner(&self, token_hash: &str, owner: bool) -> Result<bool> {
+        let (changed, key) = {
+            let mut registry = self.registry.lock().expect("registry lock");
+            let changed = registry.set_owner(token_hash, owner)?;
+            let key = registry.device(token_hash).map(|d| d.key().to_string());
+            (changed, key)
+        };
+        if changed {
+            if !owner && let Some(key) = key {
+                self.authority
+                    .lock()
+                    .expect("authority lock")
+                    .drop_endorsement_by(&key);
+            }
+            self.persist()?;
+        }
+        Ok(changed)
+    }
+
+    /// Which owner's device last vouched for the host, and until when.
+    pub fn endorsement_view(&self) -> Option<crate::ui::EndorsementView> {
+        let endorsement = self
+            .authority
+            .lock()
+            .expect("authority lock")
+            .endorsement()
+            .cloned()?;
+        let by = self
+            .registry
+            .lock()
+            .expect("registry lock")
+            .devices()
+            .iter()
+            .find(|d| d.key() == endorsement.by)
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| "An owner's device".into());
+        Some(crate::ui::EndorsementView {
+            by,
+            until: endorsement.exp,
+        })
+    }
+
+    /// Takes back a device's statements about any key but the one it holds
+    /// now, after it pairs again or gives a new key.
+    fn forget_old_keys(&self, device: &Device) {
+        let changed = {
+            let mut authority = self.authority.lock().expect("authority lock");
+            let revoked = authority.revoke_other_keys(device.key(), &device.public_key);
+            // A device that is no longer an owner (its key changed) no longer
+            // vouches for the host.
+            let dropped = !device.owner && authority.drop_endorsement_by(device.key());
+            revoked || dropped
+        };
         if changed && let Err(e) = self.persist() {
             tracing::warn!("could not save statements taken back: {e}");
         }
@@ -1946,6 +2079,7 @@ impl Host {
             serving,
             problem: None,
             conversion: self.conversion_status(),
+            endorsement: self.endorsement_view(),
         }
     }
 
@@ -2231,10 +2365,9 @@ impl Host {
                     .lock()
                     .expect("profiles lock")
                     .forget_device(&key);
-                self.authority
-                    .lock()
-                    .expect("authority lock")
-                    .revoke_device(&key);
+                let mut authority = self.authority.lock().expect("authority lock");
+                authority.revoke_device(&key);
+                authority.drop_endorsement_by(&key);
             }
             removed
         };
@@ -2260,12 +2393,13 @@ impl Host {
                 let book = self.profiles.lock().expect("profiles lock");
                 (book.profiles().to_vec(), book.tokens().to_vec())
             };
-            let (household, issued, revoked) = {
+            let (household, issued, revoked, endorsement) = {
                 let authority = self.authority.lock().expect("authority lock");
                 (
                     authority.household_pkcs8(),
                     authority.issued().to_vec(),
                     authority.revoked().clone(),
+                    authority.endorsement().cloned(),
                 )
             };
             let mut config = self.config.lock().expect("config lock");
@@ -2275,6 +2409,7 @@ impl Host {
             config.household_key = crate::sealed::Secret(household);
             config.issued = issued;
             config.revoked = revoked;
+            config.endorsement = endorsement;
             config.clone()
         };
         snapshot.save(&self.config_path)
@@ -2829,6 +2964,7 @@ where
                     host.persist()?;
                 }
                 let member = host.household_member(&device);
+                let endorse = host.endorse_offer(&device);
                 let response = AuthResponse {
                     vault: host.vault_name(),
                     device_name: device.name.clone(),
@@ -2838,7 +2974,7 @@ where
                     retire_token: true,
                     member,
                     owner: device.owner,
-                    endorse: None,
+                    endorse,
                 };
                 session.device = Some(device);
                 session.by_key = true;
@@ -2922,10 +3058,27 @@ where
         }
 
         Op::Endorse => {
-            let _: EndorseRequest = decode(payload)?;
-            return Err(HostError::Denied(
-                "this host is not asking for an endorsement".into(),
-            ));
+            let req: EndorseRequest = decode(payload)?;
+            if !session.by_key {
+                return Err(HostError::Denied(
+                    "an endorsement comes from a connection signed in with a key".into(),
+                ));
+            }
+            // Looked up again: the owner may have changed their mind since
+            // this connection signed in.
+            let device = session
+                .device
+                .as_ref()
+                .and_then(|d| {
+                    host.registry
+                        .lock()
+                        .expect("registry lock")
+                        .device(&d.token_hash)
+                        .cloned()
+                })
+                .ok_or(HostError::Unauthenticated)?;
+            host.accept_endorsement(&device, req.statement)?;
+            write_ok(stream, &[]).await?;
         }
 
         Op::List => {

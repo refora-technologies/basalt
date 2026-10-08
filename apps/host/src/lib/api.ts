@@ -108,6 +108,8 @@ export interface HostStatus {
   problem: string | null
   /** Converting video for devices that cannot play it. */
   conversion: ConversionStatus
+  /** The owner's device vouching for this computer, when one has. */
+  endorsement: EndorsementView | null
 }
 
 /** What a machine was measured to manage. */
@@ -164,6 +166,23 @@ export interface DeviceView {
   /** Bytes per second, measured over the interval between two polls. */
   sendRate: number
   receiveRate: number
+  /** Signs in with a key of its own, rather than a pairing code. */
+  keyed: boolean
+  /** Where it says it keeps the key. */
+  keyKind: KeyKind | null
+  /** The host's owner made it an owner: it vouches for this computer. */
+  owner: boolean
+}
+
+/** Where a device keeps its key: a security chip, sealed by its system, or a file. */
+export type KeyKind = 'chip' | 'system' | 'file'
+
+/** Which owner's device last vouched for this computer, and until when. */
+export interface EndorsementView {
+  /** The device's name. */
+  by: string
+  /** Unix seconds. */
+  until: number
 }
 
 export interface PairingView {
@@ -247,6 +266,9 @@ export const api = {
     call('rename_device', { id, name }),
   setDeviceWritable: (id: string, writable: boolean): Promise<boolean> =>
     call('set_device_writable', { id, writable }),
+  /** Makes a device an owner, or not. Only a device with a key can be one. */
+  setDeviceOwner: (id: string, owner: boolean): Promise<boolean> =>
+    call('set_device_owner', { id, owner }),
 
   pendingPairings: (): Promise<PairingView[]> => call('pending_pairings'),
   denyPairing: (id: string): Promise<boolean> => call('deny_pairing', { id }),
@@ -383,6 +405,7 @@ const sample: {
     sections: { movies: true, series: true, videos: true, music: true, photos: true },
     serving: true,
     problem: null,
+    endorsement: { by: "Maya's laptop", until: Math.floor(Date.now() / 1000) + 86_400 * 26 },
   },
   devices: [
     {
@@ -397,6 +420,9 @@ const sample: {
       received: 2.4 * GB,
       sendRate: 21_800_000,
       receiveRate: 14_000,
+      keyed: true,
+      keyKind: 'chip',
+      owner: true,
     },
     {
       id: 'bb22',
@@ -410,6 +436,9 @@ const sample: {
       received: 4.8 * GB,
       sendRate: 0,
       receiveRate: 6_400_000,
+      keyed: true,
+      keyKind: 'chip',
+      owner: false,
     },
     {
       id: 'cc33',
@@ -423,6 +452,9 @@ const sample: {
       received: 0,
       sendRate: 0,
       receiveRate: 0,
+      keyed: false,
+      keyKind: null,
+      owner: false,
     },
   ],
   pending: [
@@ -505,6 +537,21 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         const device = sample.devices.find((d) => d.id === args?.id)
         if (device) device.writable = Boolean(args?.writable)
         return Boolean(device)
+      }
+      case 'set_device_owner': {
+        const device = sample.devices.find((d) => d.id === args?.id)
+        if (!device) return false
+        if (args?.owner && !device.keyed) {
+          throw new ApiError(
+            'error',
+            'only a device signing in with a key can be an owner; it moves to one the next time it connects with an up-to-date Basalt',
+          )
+        }
+        device.owner = Boolean(args?.owner)
+        if (!device.owner && sample.status.endorsement?.by === device.name) {
+          sample.status.endorsement = null
+        }
+        return true
       }
       case 'pending_pairings':
         return sample.pending

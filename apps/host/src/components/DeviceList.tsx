@@ -3,13 +3,15 @@ import { AnimatePresence, motion } from 'framer-motion'
 import {
   ArrowDown,
   ArrowUp,
+  KeyRound,
   Laptop,
   MoreHorizontal,
   Pencil,
+  ShieldCheck,
   ShieldOff,
   Trash2,
 } from 'lucide-react'
-import type { DeviceView } from '@/lib/api'
+import type { DeviceView, EndorsementView } from '@/lib/api'
 import { cn, formatAgo, formatBytes, formatRate } from '@/lib/utils'
 
 /**
@@ -25,11 +27,13 @@ export function DeviceList({
   onRevoke,
   onRename,
   onToggleWritable,
+  onToggleOwner,
 }: {
   devices: DeviceView[]
   onRevoke: (device: DeviceView) => void
   onRename: (device: DeviceView) => void
   onToggleWritable: (device: DeviceView) => void
+  onToggleOwner: (device: DeviceView) => void
 }): React.JSX.Element {
   if (devices.length === 0) {
     return (
@@ -60,6 +64,7 @@ export function DeviceList({
               onRevoke={() => onRevoke(device)}
               onRename={() => onRename(device)}
               onToggleWritable={() => onToggleWritable(device)}
+              onToggleOwner={() => onToggleOwner(device)}
             />
           </motion.div>
         ))}
@@ -68,16 +73,82 @@ export function DeviceList({
   )
 }
 
+/**
+ * Which owner's device last vouched for this computer, under the Devices
+ * heading. Quiet when nothing is to be said: no device has a key yet.
+ */
+export function OwnerLine({
+  endorsement,
+  devices,
+}: {
+  endorsement: EndorsementView | null
+  devices: DeviceView[]
+}): React.JSX.Element | null {
+  const owners = devices.some((d) => d.owner)
+  if (endorsement) {
+    const until = new Date(endorsement.until * 1000).toLocaleDateString(undefined, {
+      day: 'numeric',
+      month: 'short',
+    })
+    return (
+      <p
+        title="An owner's device signs for this computer's key each week, so it can always be told apart from a copy."
+        className="mb-2.5 flex items-center gap-1.5 text-[11.5px] text-textDim"
+      >
+        <ShieldCheck size={13} className="shrink-0 text-basalt" />
+        Vouched for by {endorsement.by} until {until}
+      </p>
+    )
+  }
+  if (owners) {
+    return (
+      <p className="mb-2.5 flex items-center gap-1.5 text-[11.5px] text-textFaint">
+        <ShieldCheck size={13} className="shrink-0" />
+        Waiting for an owner's device to connect and vouch for this computer
+      </p>
+    )
+  }
+  if (!devices.some((d) => d.keyed)) return null
+  return (
+    <p className="mb-2.5 flex items-center gap-1.5 text-[11.5px] text-textFaint">
+      <ShieldCheck size={13} className="shrink-0" />
+      Make one of your own devices an owner, and it vouches for this computer every week
+    </p>
+  )
+}
+
+/** How a device signs in, in two words, with the long version on hover. */
+function KeyNote({ device }: { device: DeviceView }): React.JSX.Element {
+  const [label, title] = !device.keyed
+    ? [
+        'pairing code',
+        'Signs in with the code it was given when it paired. It moves to a key of its own the next time it connects with an up-to-date Basalt.',
+      ]
+    : device.keyKind === 'chip'
+      ? ['chip key', 'Signs in with a key kept in its security chip, which never leaves it.']
+      : device.keyKind === 'system'
+        ? ['key', 'Signs in with a key of its own, kept sealed by its system.']
+        : ['key', 'Signs in with a key of its own.']
+  return (
+    <span title={title} className={cn('flex items-center gap-1', !device.keyed && 'opacity-60')}>
+      <KeyRound size={10} />
+      {label}
+    </span>
+  )
+}
+
 function DeviceRow({
   device,
   onRevoke,
   onRename,
   onToggleWritable,
+  onToggleOwner,
 }: {
   device: DeviceView
   onRevoke: () => void
   onRename: () => void
   onToggleWritable: () => void
+  onToggleOwner: () => void
 }): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false)
   const moving = device.sendRate > 0 || device.receiveRate > 0
@@ -128,6 +199,16 @@ function DeviceRow({
             </span>
           )}
 
+          {device.owner && (
+            <span
+              title="An owner: it vouches for this computer"
+              className="flex items-center gap-1 rounded-[4px] border border-white/15 bg-white/[0.04] px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.1em] text-textDim"
+            >
+              <ShieldCheck size={9} />
+              owner
+            </span>
+          )}
+
           {!device.writable && (
             <span
               title="This device can read but not change anything"
@@ -141,6 +222,7 @@ function DeviceRow({
         <div className="tnum mt-1 flex items-center gap-3 font-mono text-[10.5px] text-textFaint">
           <span title="Sent to this device">↑ {formatBytes(device.sent)}</span>
           <span title="Received from this device">↓ {formatBytes(device.received)}</span>
+          <KeyNote device={device} />
         </div>
       </div>
 
@@ -194,6 +276,16 @@ function DeviceRow({
                     onToggleWritable()
                   }}
                 />
+                {device.keyed && (
+                  <MenuItem
+                    icon={<ShieldCheck size={12} />}
+                    label={device.owner ? 'Remove as owner' : 'Make owner'}
+                    onClick={() => {
+                      setMenuOpen(false)
+                      onToggleOwner()
+                    }}
+                  />
+                )}
                 <div className="my-1 h-px bg-line" />
                 <MenuItem
                   icon={<Trash2 size={12} />}

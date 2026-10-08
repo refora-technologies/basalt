@@ -19,7 +19,7 @@ use basalt_net::tls::{Trust, client_binding, client_config, sni_name};
 use basalt_proto::msg::*;
 use basalt_proto::{ErrorCode, Op, PROTOCOL_VERSION};
 use basalt_trust::message::{Purpose, device_message};
-use basalt_trust::{Kind, Payload, Signer, SoftwareKey};
+use basalt_trust::{Kind, Payload, PublicKey, Signer, SoftwareKey};
 
 fn unique(prefix: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -352,6 +352,51 @@ async fn a_statement_handed_over_on_a_background_connection_is_still_kept() {
         .cloned()
         .unwrap_or_default();
     assert_eq!(members.len(), 1, "the household's statement was kept");
+}
+
+#[tokio::test]
+async fn an_owners_device_vouches_for_the_host_when_it_connects_and_stops_when_it_is_not_one() {
+    let fixture = start_host().await;
+    let store = fixture.store("phone");
+    let client = Basalt::open(store.clone()).unwrap();
+    fixture.pair(&client).await;
+    drop(client);
+    assert!(fixture.host.endorsement_view().is_none());
+
+    let device = fixture.device();
+    assert!(fixture.host.set_owner(&device.token_hash, true).unwrap());
+    let client = Basalt::open(store.clone()).unwrap();
+    client.connect_saved().await.unwrap();
+
+    let endorsed = fixture.host.endorsement_view().expect("the owner vouched");
+    assert_eq!(endorsed.by, device.name);
+    let month = basalt_trust::statement::ENDORSE_LIFETIME;
+    assert!(
+        (endorsed.until - (now() + month)).abs() < 120,
+        "{endorsed:?}"
+    );
+
+    // No longer an owner: no longer vouching.
+    assert!(fixture.host.set_owner(&device.token_hash, false).unwrap());
+    assert!(fixture.host.endorsement_view().is_none());
+
+    // Owner again, then removed.
+    fixture.host.set_owner(&device.token_hash, true).unwrap();
+    drop(client);
+    let client = Basalt::open(store).unwrap();
+    client.connect_saved().await.unwrap();
+    assert!(fixture.host.endorsement_view().is_some());
+    fixture.host.revoke(&device.token_hash).unwrap();
+    assert!(fixture.host.endorsement_view().is_none());
+}
+
+#[tokio::test]
+async fn a_device_still_on_a_token_cannot_be_made_an_owner() {
+    let fixture = start_host().await;
+    let old = Basalt::open_without_keys(fixture.store("laptop")).unwrap();
+    fixture.pair(&old).await;
+    let device = fixture.device();
+    assert!(fixture.host.set_owner(&device.token_hash, true).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -828,4 +873,116 @@ async fn pairing_with_a_key_that_did_not_sign_the_pairing_uses_up_nothing() {
         .unwrap();
     assert!(finished.token.is_empty());
     assert!(fixture.device().keyed());
+}
+
+#[tokio::test]
+async fn only_a_true_endorsement_from_an_owners_own_key_is_taken() {
+    let fixture = start_host().await;
+    let owner = SoftwareKey::generate().unwrap();
+    let other = SoftwareKey::generate().unwrap();
+    raw_pair(&fixture, Some(&owner), ID_A).await;
+    raw_pair(&fixture, Some(&other), ID_B).await;
+
+    let signed_in = |stream: &Tls, key: &SoftwareKey, host_id: &str| {
+        by_key(
+            key,
+            key.sign(&bound(stream, Purpose::Auth, host_id)).unwrap(),
+        )
+    };
+    let endorse = |issuer: &SoftwareKey, subject: &PublicKey, host: &str, iat: i64| {
+        let payload =
+            Payload::new(Kind::Endorse, issuer.public_key(), subject, host, "", iat).unwrap();
+        let statement = basalt_trust::statement::sign(issuer, &payload).unwrap();
+        EndorseRequest {
+            statement: SignedStatement {
+                payload: statement.payload,
+                signature: statement.signature,
+            },
+        }
+    };
+
+    // Not an owner yet: offered nothing, and its endorsement refused.
+    let (mut stream, host_id) = raw(fixture.addr, ID_A).await;
+    let request = signed_in(&stream, &owner, &host_id);
+    let answer = auth(&mut stream, &request).await.unwrap();
+    assert!(answer.endorse.is_none() && !answer.owner);
+    let host_key = {
+        let offer_less = fixture.host.devices();
+        assert!(!offer_less.is_empty());
+        // The host's key, read from the certificate it presents.
+        basalt_trust::PublicKey::from_hex(&read_offer_host_key(&fixture).await).unwrap()
+    };
+    let fair = endorse(&owner, &host_key, &host_id, now());
+    let refused = call_unit(&mut stream, Op::Endorse, &fair)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Some(ErrorCode::Denied));
+
+    let a = fixture
+        .host
+        .devices()
+        .into_iter()
+        .find(|d| d.device_id == ID_A)
+        .unwrap();
+    fixture.host.set_owner(&a.token_hash, true).unwrap();
+
+    let (mut stream, _) = raw(fixture.addr, ID_A).await;
+    let request = signed_in(&stream, &owner, &host_id);
+    let answer = auth(&mut stream, &request).await.unwrap();
+    assert!(answer.owner);
+    let offer = answer.endorse.expect("an owner is asked to vouch");
+    let offered = basalt_trust::statement::read_offer(&offer).unwrap();
+    assert_eq!(offered.subject, host_key.to_hex());
+
+    // Vouching for some other key, for another host, signed by another
+    // device, or dated long ago: all refused.
+    let stranger = SoftwareKey::generate().unwrap();
+    for bad in [
+        endorse(&owner, stranger.public_key(), &host_id, now()),
+        endorse(&owner, &host_key, &stranger.public_key().id(), now()),
+        endorse(&other, &host_key, &host_id, now()),
+        endorse(&owner, &host_key, &host_id, now() - 3 * 60 * 60),
+    ] {
+        let refused = call_unit(&mut stream, Op::Endorse, &bad).await.unwrap_err();
+        assert_eq!(refused.code(), Some(ErrorCode::Denied));
+    }
+    assert!(fixture.host.endorsement_view().is_none());
+
+    // The true one is taken.
+    call_unit(
+        &mut stream,
+        Op::Endorse,
+        &endorse(&owner, &host_key, &host_id, now()),
+    )
+    .await
+    .unwrap();
+    assert!(fixture.host.endorsement_view().is_some());
+
+    // And another device, not an owner, cannot replace it.
+    let (mut stream, _) = raw(fixture.addr, ID_B).await;
+    let request = signed_in(&stream, &other, &host_id);
+    auth(&mut stream, &request).await.unwrap();
+    let refused = call_unit(
+        &mut stream,
+        Op::Endorse,
+        &endorse(&other, &host_key, &host_id, now()),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code(), Some(ErrorCode::Denied));
+}
+
+/// The host's public key, SubjectPublicKeyInfo hex, from the certificate it
+/// presents: what an endorsement has to name.
+async fn read_offer_host_key(fixture: &Fixture) -> String {
+    let tcp = basalt_net::socket::connect(fixture.addr).await.unwrap();
+    let (connector, _) = client_config(Trust::FirstContact);
+    let stream = connector.connect(sni_name(), tcp).await.unwrap();
+    let certificate = stream.get_ref().1.peer_certificates().unwrap()[0].clone();
+    let identity = basalt_net::HostIdentity {
+        cert_der: certificate.to_vec(),
+        key_der: Vec::new(),
+        host_id: String::new(),
+    };
+    basalt_proto::hex::encode(&identity.spki().unwrap())
 }
