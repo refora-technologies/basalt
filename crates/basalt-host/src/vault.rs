@@ -158,6 +158,7 @@ impl Vault {
             let Ok(name) = item.file_name().into_string() else {
                 continue;
             };
+            let hidden = is_hidden(&name, &meta);
 
             entries.push(DirEntry {
                 name,
@@ -171,7 +172,7 @@ impl Vault {
                 size: if meta.is_dir() { 0 } else { meta.len() },
                 mtime: mtime_of(&meta),
                 readonly: meta.permissions().readonly(),
-                hidden: is_hidden(&meta),
+                hidden,
             });
         }
 
@@ -199,7 +200,7 @@ impl Vault {
             let Ok(path) = self.resolve(&prefix) else {
                 return false;
             };
-            if std::fs::symlink_metadata(&path).is_ok_and(|meta| is_hidden(&meta)) {
+            if std::fs::symlink_metadata(&path).is_ok_and(|meta| is_hidden(part, &meta)) {
                 return true;
             }
         }
@@ -214,6 +215,7 @@ impl Vault {
             .and_then(|n| n.to_str())
             .unwrap_or(&self.name)
             .to_string();
+        let hidden = is_hidden(&name, &meta);
         Ok(DirEntry {
             name,
             kind: if meta.is_dir() {
@@ -224,7 +226,7 @@ impl Vault {
             size: if meta.is_dir() { 0 } else { meta.len() },
             mtime: mtime_of(&meta),
             readonly: meta.permissions().readonly(),
-            hidden: is_hidden(&meta),
+            hidden,
         })
     }
 
@@ -393,12 +395,14 @@ fn mtime_of(meta: &std::fs::Metadata) -> i64 {
     }
 }
 
-/// Whether Windows marks this hidden or as part of the system, which is what
-/// Explorer leaves out of a folder unless asked.
-fn is_hidden(meta: &std::fs::Metadata) -> bool {
+/// Whether the system keeps this out of sight: marked hidden or system on
+/// Windows, which is what Explorer leaves out unless asked; a name starting
+/// with a dot elsewhere, which is what a Linux file manager leaves out.
+fn is_hidden(name: &str, meta: &std::fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
+        let _ = name;
         const HIDDEN: u32 = 0x2;
         const SYSTEM: u32 = 0x4;
         meta.file_attributes() & (HIDDEN | SYSTEM) != 0
@@ -406,7 +410,7 @@ fn is_hidden(meta: &std::fs::Metadata) -> bool {
     #[cfg(not(windows))]
     {
         let _ = meta;
-        false
+        name.starts_with('.')
     }
 }
 

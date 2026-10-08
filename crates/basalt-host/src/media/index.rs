@@ -362,8 +362,10 @@ pub fn walk_within(
         for entry in entries {
             // Hidden and system items are the computer's, not the person's:
             // a shared user folder holds AppData, and a browser's cache in it
-            // is thousands of pictures nobody took.
-            if entry.hidden {
+            // is thousands of pictures nobody took. Basalt's own unfinished
+            // uploads are looked at all the same, to be swept when abandoned:
+            // on Linux their dotted names make them hidden too.
+            if entry.hidden && !crate::uploads::is_temp_name(&entry.name) {
                 continue;
             }
             let path = if dir.is_empty() {

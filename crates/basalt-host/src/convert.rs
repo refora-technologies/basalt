@@ -239,6 +239,7 @@ pub fn find_ffmpeg(config_dir: &Path) -> Option<PathBuf> {
 
 /// A command that shows no console window on Windows.
 fn quiet(program: &Path) -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut command = Command::new(program);
     #[cfg(windows)]
     {

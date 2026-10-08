@@ -253,11 +253,14 @@ mod tests {
 
     #[test]
     fn paths_are_reported_relative_to_the_vault_with_forward_slashes() {
-        let root = Path::new(r"D:\Films");
-        assert_eq!(
-            relative(root, Path::new(r"D:\Films\2024\a.mkv")).as_deref(),
-            Some("2024/a.mkv")
+        #[cfg(windows)]
+        let (root, file) = (Path::new(r"D:\Films"), Path::new(r"D:\Films\2024\a.mkv"));
+        #[cfg(not(windows))]
+        let (root, file) = (
+            Path::new("/media/films"),
+            Path::new("/media/films/2024/a.mkv"),
         );
+        assert_eq!(relative(root, file).as_deref(), Some("2024/a.mkv"));
     }
 
     // A change carrying an absolute path would tell a client where the drive is

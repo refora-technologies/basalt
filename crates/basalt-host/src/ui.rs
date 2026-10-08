@@ -491,6 +491,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_label_is_offered_separately_from_the_list_name() {
         let view = DriveView::from(Drive {
             path: PathBuf::from("E:\\"),
@@ -655,6 +656,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[cfg(windows)]
     fn an_empty_card_reader_slot_is_listed_but_not_ready() {
         let view = DriveView::from(Drive {
             path: PathBuf::from("F:\\"),

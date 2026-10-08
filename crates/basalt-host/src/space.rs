@@ -1,8 +1,4 @@
 //! Free and total space on the volume holding a path.
-//!
-//! Windows only, because that is what the host runs on. The non-Windows arm
-//! exists so the crate still builds elsewhere — tests included — rather than
-//! being unbuildable off-platform.
 
 use std::path::Path;
 
@@ -16,11 +12,34 @@ pub fn for_path(path: &Path) -> (u64, u64) {
     {
         windows_space(path).unwrap_or((0, 0))
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        unix_space(path).unwrap_or((0, 0))
+    }
+    #[cfg(not(any(windows, unix)))]
     {
         let _ = path;
         (0, 0)
     }
+}
+
+#[cfg(unix)]
+fn unix_space(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: a NUL-terminated path and a zeroed struct for statvfs to fill.
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stats) } != 0 {
+        return None;
+    }
+    let block = stats.f_frsize as u64;
+    // Available to this user, not the blocks kept for root, which is what a
+    // person can actually fill.
+    Some((
+        (stats.f_bavail as u64).saturating_mul(block),
+        (stats.f_blocks as u64).saturating_mul(block),
+    ))
 }
 
 #[cfg(windows)]
