@@ -10,6 +10,7 @@ import { UpdateBanner } from './components/UpdateBanner'
 import { ProfileList } from './components/ProfileList'
 import { ProfileAccess } from './components/ProfileAccess'
 import { AddProfileDialog } from './components/AddProfileDialog'
+import { ImportantNotice } from './components/ImportantNotice'
 import { Setup } from './components/Setup'
 import { TitleBar } from './components/TitleBar'
 import { VaultCard } from './components/VaultCard'
@@ -359,6 +360,7 @@ export function App(): React.JSX.Element {
           onAdd={(name, color) => api.addProfile(name, color).then(apply)}
         />
       )}
+      {!needsSetup && <ImportantNotice devices={list} />}
     </div>
   )
 }

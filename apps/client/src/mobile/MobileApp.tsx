@@ -45,6 +45,7 @@ import { PromptDialog } from '@/components/ui/PromptDialog'
 import { PropertiesDetails } from '@/components/PropertiesPanel'
 import { About } from '@/components/About'
 import { WhatsNew } from '@/components/WhatsNew'
+import { ImportantNotice } from '@/components/ImportantNotice'
 import type { NavKey } from '@/components/Sidebar'
 import type { Entry } from '@/components/FileList'
 import { api, isFinished, parentOf } from '@/lib/api'
@@ -181,6 +182,7 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
               setChangingDrive(true)
             }}
           />
+          <ImportantNotice />
         </div>
       </Safe>
     )
@@ -519,6 +521,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       </div>
 
       <WhatsNew />
+      <ImportantNotice />
 
       <Rise
         show={notice !== null}
