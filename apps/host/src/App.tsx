@@ -7,6 +7,7 @@ import { DeviceList, OwnerLine } from './components/DeviceList'
 import { PairingRequests } from './components/PairingRequests'
 import { SettingsPanel } from './components/SettingsPanel'
 import { UpdateBanner } from './components/UpdateBanner'
+import { FirewallNotice } from './components/FirewallNotice'
 import { ProfileList } from './components/ProfileList'
 import { ProfileAccess } from './components/ProfileAccess'
 import { AddProfileDialog } from './components/AddProfileDialog'
@@ -140,6 +141,7 @@ export function App(): React.JSX.Element {
             >
               <div className="mx-auto flex max-w-[740px] flex-col gap-6 px-8 py-7">
                 <UpdateBanner />
+                <FirewallNotice />
 
                 {!current.serving && current.problem && (
                   <div className="flex items-start gap-3 rounded-md bg-dangerBg px-4 py-3">

@@ -67,6 +67,61 @@ async fn status(state: State<'_, AppState>) -> Answer<HostStatus> {
     Ok(status)
 }
 
+/// Whether the computer's firewall lets other devices reach this host.
+///
+/// A second or two of asking Windows, so on a blocking thread. See
+/// `basalt_host::firewall`.
+#[tauri::command]
+async fn firewall(state: State<'_, AppState>) -> Answer<basalt_host::firewall::Firewall> {
+    let port = state.host.port();
+    let Ok(exe) = std::env::current_exe() else {
+        return Ok(basalt_host::firewall::Firewall::Unknown);
+    };
+    Ok(
+        tokio::task::spawn_blocking(move || basalt_host::firewall::check(&exe, port))
+            .await
+            .unwrap_or(basalt_host::firewall::Firewall::Unknown),
+    )
+}
+
+/// Lets other devices through the firewall, once Windows has asked for an
+/// administrator, and says what the firewall does now.
+#[tauri::command]
+async fn allow_through_firewall(
+    state: State<'_, AppState>,
+) -> Answer<basalt_host::firewall::Firewall> {
+    use basalt_host::firewall::AllowError;
+    let port = state.host.port();
+    let exe = std::env::current_exe().map_err(|e| UiError {
+        kind: "error".into(),
+        message: format!("Basalt Host could not find itself: {e}"),
+    })?;
+    let result = tokio::task::spawn_blocking(move || basalt_host::firewall::allow(&exe, port))
+        .await
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: e.to_string(),
+        })?;
+    match result {
+        Ok(now) => {
+            tracing::info!("let other devices through the firewall: {now:?}");
+            Ok(now)
+        }
+        Err(e) => {
+            tracing::warn!("letting other devices through the firewall: {e}");
+            Err(UiError {
+                kind: if e == AllowError::Declined {
+                    "declined"
+                } else {
+                    "error"
+                }
+                .into(),
+                message: e.to_string(),
+            })
+        }
+    }
+}
+
 /// The drives this machine could share.
 ///
 /// On a blocking thread, and `async` so Tauri keeps it off the main one.
@@ -963,6 +1018,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            firewall,
+            allow_through_firewall,
             app_version,
             check_update,
             download_update,

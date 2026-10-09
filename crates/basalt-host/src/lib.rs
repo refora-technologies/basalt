@@ -21,6 +21,7 @@ pub mod config;
 pub mod convert;
 pub mod drives;
 pub mod error;
+pub mod firewall;
 pub mod manage;
 pub mod media;
 pub mod profiles;
