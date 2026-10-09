@@ -2712,6 +2712,9 @@ struct Session {
     profile: Option<(String, String)>,
     /// What the device said about itself when it connected: its name and id.
     hello: Option<HelloRequest>,
+    /// A reply was cut off part-way, so the connection cannot carry another
+    /// and ends once the request returns.
+    hang_up: bool,
 }
 
 impl Session {
@@ -2859,6 +2862,9 @@ where
             if let Err(e) = write_err(&mut stream, code, &e.to_string()).await {
                 break Err(e.into());
             }
+        }
+        if session.hang_up {
+            break Ok(());
         }
     };
 
@@ -3502,7 +3508,24 @@ where
                 tokio::select! {
                     _ = stream.read(&mut hung_up) => break,
                     piece = conversion.next() => match piece {
-                        Ok(Some(piece)) => write_ok(stream, &piece).await?,
+                        // Written while watching for a seek or the next film
+                        // to take this one's place. A device that has moved
+                        // on may have stopped reading, and a write waiting on
+                        // it used to hold the place the new one needed, so
+                        // that was refused as if the host were busy. Cut off
+                        // part-way, this reply cannot be finished, and the
+                        // connection goes with it.
+                        Ok(Some(piece)) => {
+                            let replaced = conversion.replaced();
+                            tokio::select! {
+                                biased;
+                                () = replaced => {
+                                    session.hang_up = true;
+                                    break;
+                                }
+                                written = write_ok(stream, &piece) => written?,
+                            }
+                        }
                         Ok(None) => {
                             write_ok(stream, &[]).await?;
                             break;

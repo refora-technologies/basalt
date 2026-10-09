@@ -1501,6 +1501,9 @@ async fn a_seek_replaces_the_devices_own_conversion() {
         .expect("a seek takes the place of the conversion it replaces");
     assert!(moved.next().await.unwrap().is_some());
     assert_eq!(fixture.host.conversion_status().active.len(), 1);
+    // Left unread for a moment, as a player that has moved on leaves it: the
+    // host's write to this device fills up and waits on it.
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // On to the next episode: another film, the same device. Not refused
     // either, asked first or straight away; it takes the place.

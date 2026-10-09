@@ -499,6 +499,14 @@ impl Conversion {
         buffer.truncate(read);
         Ok(Some(buffer))
     }
+
+    /// Done when another conversion for the same device takes this one's
+    /// place, for whoever is sending it to stop waiting on a device that has
+    /// moved on.
+    pub fn replaced(&self) -> impl std::future::Future<Output = ()> + use<> {
+        let stop = std::sync::Arc::clone(&self.stop);
+        async move { stop.notified().await }
+    }
 }
 
 fn unix_now() -> i64 {
