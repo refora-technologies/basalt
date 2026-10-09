@@ -78,7 +78,9 @@ Description: Basalt Host with no screen: shares a drive with your devices
  a NAS. It shares one drive or folder with your phones and computers on this
  network, and is set up and managed from the Basalt app.
 EOF
-    dpkg-deb --root-owner-group --build "$root" "$out/Basalt-Host-Server-Linux-$arch.deb" >/dev/null
+    # xz, not the zstd newer dpkg defaults to: Debian 11 and Raspberry Pi OS 11
+    # cannot open zstd packages at all.
+    dpkg-deb -Zxz --root-owner-group --build "$root" "$out/Basalt-Host-Server-Linux-$arch.deb" >/dev/null
 
     # --- .rpm ---------------------------------------------------------------
     sources="$work/rpm-sources-$arch"
