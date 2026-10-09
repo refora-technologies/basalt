@@ -292,7 +292,7 @@ fn broadcast_targets() -> Vec<SocketAddr> {
 
     if let Ok(interfaces) = if_addrs::get_if_addrs() {
         for interface in interfaces {
-            if interface.is_loopback() {
+            if is_loopback(&interface) {
                 continue;
             }
             let if_addrs::IfAddr::V4(v4) = interface.addr else {
@@ -310,6 +310,13 @@ fn broadcast_targets() -> Vec<SocketAddr> {
     targets
 }
 
+/// The loopback interface, whatever address it carries. Linux names it `lo`,
+/// and WSL gives it an extra address outside 127.0.0.0/8 that is no use to any
+/// other machine.
+fn is_loopback(interface: &if_addrs::Interface) -> bool {
+    interface.is_loopback() || interface.name == "lo"
+}
+
 /// This machine's non-loopback IPv4 addresses, for the host to display.
 pub fn local_addresses() -> Vec<IpAddr> {
     let Ok(interfaces) = if_addrs::get_if_addrs() else {
@@ -317,7 +324,7 @@ pub fn local_addresses() -> Vec<IpAddr> {
     };
     interfaces
         .into_iter()
-        .filter(|i| !i.is_loopback())
+        .filter(|i| !is_loopback(i))
         .filter_map(|i| match i.addr {
             if_addrs::IfAddr::V4(v4) => Some(IpAddr::V4(v4.ip)),
             _ => None,
