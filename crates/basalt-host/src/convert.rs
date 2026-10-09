@@ -46,10 +46,6 @@ pub const WIDTH: u32 = 1920;
 /// Bytes read from ffmpeg per chunk sent.
 pub const CHUNK: usize = 256 * 1024;
 
-/// How long a route has to produce its first bytes before it counts as having
-/// failed. Generous: a 4K film's first frame through software takes a moment.
-const FIRST_BYTES: std::time::Duration = std::time::Duration::from_secs(12);
-
 /// One way of converting, from decoding to encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
@@ -814,7 +810,14 @@ impl Converter {
                     }
                     Err(e) => {
                         tracing::debug!("{route:?} (subtitles {subtitles}) did not convert: {e}");
+                        let silent = e == SILENT;
                         last_error = e;
+                        // Nothing at all came out: that was not the subtitles,
+                        // and asking again without them only doubled the wait
+                        // a device sat through before being told no.
+                        if silent {
+                            break;
+                        }
                     }
                 }
             }
@@ -1013,7 +1016,7 @@ async fn make_sample(ffmpeg: &Path, dir: &Path) -> Result<PathBuf, String> {
         };
         // An encoder a 4K picture is too much for is stopped here, not by
         // the system: the sample is the dearest part of measuring.
-        match finish_watching_memory(vec![child]).await {
+        match finish_watching_memory(vec![child], std::time::Duration::from_secs(300)).await {
             Ok(_) => {
                 if std::fs::rename(&partial, &sample).is_ok() {
                     return Ok(sample);
@@ -1126,7 +1129,7 @@ async fn run_at_once(
             .map_err(|e| format!("ffmpeg would not start: {e}"))?;
         running.push(child);
     }
-    let lowest_free = finish_watching_memory(running)
+    let lowest_free = finish_watching_memory(running, MEASURE_RUN_LONGEST)
         .await
         .map_err(|e| match e.as_str() {
             LOW_MEMORY => e,
@@ -1145,7 +1148,10 @@ async fn run_at_once(
 /// Watched rather than only waited on: free memory is read every fifth of a
 /// second, and work that leaves too little is stopped here, as
 /// [`LOW_MEMORY`], by dropping it, before the system stops the whole host.
-async fn finish_watching_memory(mut running: Vec<Child>) -> Result<Option<u64>, String> {
+async fn finish_watching_memory(
+    mut running: Vec<Child>,
+    longest: std::time::Duration,
+) -> Result<Option<u64>, String> {
     let started = std::time::Instant::now();
     let mut lowest_free: Option<u64> = None;
     loop {
@@ -1168,12 +1174,33 @@ async fn finish_watching_memory(mut running: Vec<Child>) -> Result<Option<u64>, 
                 return Err(LOW_MEMORY.into());
             }
         }
-        if started.elapsed() > std::time::Duration::from_secs(300) {
+        if started.elapsed() > longest {
             return Err("took far too long".into());
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
+
+/// The longest one measuring run may take: twelve seconds of the sample
+/// converted at a tenth of real time, far too slow to count anyway. A route
+/// that hangs used to hold the measurement up for five minutes, and then the
+/// next route for five more.
+const MEASURE_RUN_LONGEST: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long a route has to show its first bytes before it is taken not to
+/// work. Graphics answer in a second or two when they work at all. The
+/// processor, starting part-way into a 4K film, first decodes from the last
+/// keyframe before that point, which on a small machine took longer than the
+/// twelve seconds it was given: it was refused, and the device stopped asking.
+fn first_bytes(route: Route) -> std::time::Duration {
+    match route {
+        Route::Software => std::time::Duration::from_secs(40),
+        _ => std::time::Duration::from_secs(12),
+    }
+}
+
+/// What a route that showed nothing in time is said to have done.
+const SILENT: &str = "nothing came out in time";
 
 /// Why this machine cannot be measured now, in words for the person who
 /// asked, or `None` when it can be.
@@ -1212,7 +1239,7 @@ async fn try_route(
     let mut stderr = child.stderr.take().ok_or("no errors from ffmpeg")?;
 
     let mut first = vec![0u8; CHUNK];
-    let read = tokio::time::timeout(FIRST_BYTES, stdout.read(&mut first)).await;
+    let read = tokio::time::timeout(first_bytes(route), stdout.read(&mut first)).await;
     match read {
         Ok(Ok(n)) if n > 0 => {
             first.truncate(n);
@@ -1239,7 +1266,7 @@ async fn try_route(
         }
         Err(_) => {
             let _ = child.kill().await;
-            Err("nothing came out in time".into())
+            Err(SILENT.into())
         }
     }
 }
