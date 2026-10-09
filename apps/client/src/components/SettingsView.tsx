@@ -176,7 +176,7 @@ export function SettingsView({
                   : 'its pairing code'
             }
           />
-          {status?.owner && <Row label="Owner" value="vouches for this host every week" />}
+          {status?.owner && <Row label="Manages this host" value="vouches for it every week" />}
           <Note>
             The host&rsquo;s public key, pinned when you paired. Every connection
             since has had to present exactly this key — a different machine at

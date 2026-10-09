@@ -1500,7 +1500,7 @@ function MoreScreen({
                   ? "Signs in with a key in this phone's security chip"
                   : 'Signs in with a key of its own'
                 : 'Signs in with its pairing code'}
-              {vault.status?.owner && ' · owner'}
+              {vault.status?.owner && ' · manages host'}
             </div>
           )}
           <button

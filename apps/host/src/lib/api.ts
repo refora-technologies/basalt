@@ -562,7 +562,7 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         if (args?.owner && !device.keyed) {
           throw new ApiError(
             'error',
-            'only a device signing in with a key can be an owner; it moves to one the next time it connects with an up-to-date Basalt',
+            'only a device signing in with a key can manage the host; it moves to one the next time it connects with an up-to-date Basalt',
           )
         }
         device.owner = Boolean(args?.owner)

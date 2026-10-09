@@ -641,7 +641,7 @@ impl Registry {
             .ok_or_else(|| HostError::NotFound("that device".into()))?;
         if owner && !device.keyed() {
             return Err(HostError::BadRequest(
-                "only a device signing in with a key can be an owner; it moves to one the next \
+                "only a device signing in with a key can manage the host; it moves to one the next \
                  time it connects with an up-to-date Basalt"
                     .into(),
             ));

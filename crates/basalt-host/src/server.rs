@@ -908,7 +908,7 @@ impl Host {
     fn accept_endorsement(&self, device: &Device, statement: SignedStatement) -> Result<()> {
         let denied = |why: String| HostError::Denied(why);
         if !device.owner {
-            return Err(denied("this device is not an owner of this host".into()));
+            return Err(denied("this device does not manage this host".into()));
         }
         let owner = basalt_trust::PublicKey::from_hex(&device.public_key)
             .map_err(|e| denied(e.to_string()))?;
