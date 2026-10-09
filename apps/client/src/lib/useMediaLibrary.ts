@@ -2,8 +2,18 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ALL_SECTIONS, api, type LibraryItem, type LibraryResponse, type Sections } from './api'
 
 export interface MediaLibrary {
-  /** False when the host has the feature switched off. */
+  /**
+   * False when the host has the feature switched off, and until it has said:
+   * read it together with `known`.
+   */
   enabled: boolean
+  /**
+   * Whether this host has answered yet. Until it has, `enabled` is only a
+   * default, and saying "not switched on" from it told people a host had
+   * recognition off when it simply had not been asked, or had not let this
+   * device in yet.
+   */
+  known: boolean
   scanning: boolean
   films: LibraryItem[]
   series: LibraryItem[]
@@ -55,11 +65,13 @@ export function withEmptyLists(items: LibraryItem[]): LibraryItem[] {
  */
 export function useMediaLibrary(host: string | null): MediaLibrary {
   const [state, setState] = useState<{
+    /** The host that gave this answer, or null before any has. */
+    from: string | null
     enabled: boolean
     scanning: boolean
     items: LibraryItem[]
     sections: Sections
-  }>({ enabled: false, scanning: false, items: [], sections: ALL_SECTIONS })
+  }>({ from: null, enabled: false, scanning: false, items: [], sections: ALL_SECTIONS })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -89,6 +101,7 @@ export function useMediaLibrary(host: string | null): MediaLibrary {
       if (!live.current || current.current !== asked) return
       revision.current = response.revision
       setState((previous) => ({
+        from: asked,
         enabled: response.enabled,
         scanning: response.scanning,
         // No items means "you already have them", not "there are none".
@@ -113,7 +126,7 @@ export function useMediaLibrary(host: string | null): MediaLibrary {
     // revision least of all.
     revision.current = 0
     inFlight.current = null
-    setState({ enabled: false, scanning: false, items: [], sections: ALL_SECTIONS })
+    setState({ from: null, enabled: false, scanning: false, items: [], sections: ALL_SECTIONS })
     setError(null)
     setLoading(false)
     if (host) void load()
@@ -129,6 +142,7 @@ export function useMediaLibrary(host: string | null): MediaLibrary {
 
   return {
     enabled: state.enabled,
+    known: state.from !== null && state.from === host,
     scanning: state.scanning,
     films: state.items.filter((item) => item.kind === 'film'),
     series: state.items.filter((item) => item.kind === 'series'),

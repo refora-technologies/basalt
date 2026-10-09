@@ -30,6 +30,9 @@ export function LibraryView({
   kind,
   items,
   enabled,
+  known,
+  error,
+  onRetry,
   scanning,
   watched,
   continueWatching,
@@ -40,6 +43,11 @@ export function LibraryView({
   kind: 'film' | 'series'
   items: LibraryItem[]
   enabled: boolean
+  /** Whether the host has answered: until then `enabled` is only a default. */
+  known: boolean
+  /** Why the host's answer did not come, if it did not. */
+  error: string | null
+  onRetry: () => void
   scanning: boolean
   /** How far through each file, by vault path. */
   watched: Map<string, Watched>
@@ -91,7 +99,19 @@ export function LibraryView({
     [items],
   )
 
-  if (!enabled) return <Unavailable kind={kind} />
+  // "Not switched on" only once the host has said so. Before that the
+  // question is still out, or did not get through, and saying it was off
+  // sent people to a host where it was on.
+  if (!enabled) {
+    if (known) return <Unavailable kind={kind} />
+    if (error) return <Unanswered kind={kind} error={error} onRetry={onRetry} />
+    return (
+      <Centered>
+        <Loader2 size={16} className="animate-spin text-textFaint" />
+        <p className="text-[12px] text-textFaint">Asking the host…</p>
+      </Centered>
+    )
+  }
 
   if (ordered.length === 0) {
     return scanning ? (
@@ -191,6 +211,36 @@ function Unavailable({ kind }: { kind: 'film' | 'series' }): React.JSX.Element {
         Turn on <span className="text-textDim">Recognise films and series</span> in
         Basalt Host on the machine with the drive.
       </p>
+    </Centered>
+  )
+}
+
+function Unanswered({
+  kind,
+  error,
+  onRetry,
+}: {
+  kind: 'film' | 'series'
+  error: string
+  onRetry: () => void
+}): React.JSX.Element {
+  return (
+    <Centered>
+      <span className="text-textFaint">
+        {kind === 'film' ? <Clapperboard size={20} /> : <Tv size={20} />}
+      </span>
+      <p className="text-[13px] text-textDim">
+        Could not get the {kind === 'film' ? 'films' : 'series'} from the host.
+      </p>
+      <p className="max-w-[340px] text-center text-[11.5px] leading-relaxed text-textFaint">
+        {error.charAt(0).toUpperCase() + error.slice(1)}
+      </p>
+      <button
+        onClick={onRetry}
+        className="rounded-md px-3 py-1.5 text-[12px] text-textDim transition-colors hover:bg-white/[0.05] hover:text-text"
+      >
+        Try again
+      </button>
     </Centered>
   )
 }

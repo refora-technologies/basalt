@@ -73,6 +73,23 @@ beforeEach(() => {
 })
 
 describe('the film and series library', () => {
+  it('does not say whether recognition is on until the host has said', async () => {
+    const { result, rerender } = renderHook(({ host }) => useMediaLibrary(host), {
+      initialProps: { host: 'host-a' as string | null },
+    })
+    expect(result.current.known).toBe(false)
+    await answer('library', { revision: 3, enabled: true, scanning: false, items: [film('Arrival')] })
+    await waitFor(() => expect(result.current.known).toBe(true))
+    expect(result.current.enabled).toBe(true)
+
+    // Another host: not known again until it answers, rather than "off".
+    rerender({ host: 'host-b' })
+    expect(result.current.known).toBe(false)
+    await answer('library', { revision: 1, enabled: false, scanning: false })
+    await waitFor(() => expect(result.current.known).toBe(true))
+    expect(result.current.enabled).toBe(false)
+  })
+
   it('starts again from nothing on another host, revision and all', async () => {
     const { result, rerender } = renderHook(({ host }) => useMediaLibrary(host), {
       initialProps: { host: 'host-a' as string | null },

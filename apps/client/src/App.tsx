@@ -165,19 +165,27 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
 
   const identity = useIdentity(host)
   const profileId = identity.state?.profile?.id ?? null
+  /**
+   * The host, once it is settled who is using this device on it: a profile
+   * chosen, or none needed. A drive kept private refuses everything else
+   * until then, and the lists below used to be asked for in that moment.
+   * Refused, the library read as switched off and the collections as a host
+   * too old to have them, and nothing asked again once a profile was chosen.
+   */
+  const settled = host && identity.loaded && !identity.state?.choose ? host : null
   /** "Sign in to a profile" from the sidebar, while carrying on as the device. */
   const [signingIn, setSigningIn] = useState(false)
 
   const stars = useStars(vault.status?.hostId, nav === 'starred', profileId)
 
-  const collections = useCollections(host)
+  const collections = useCollections(settled)
   const mediaBase = useMediaBase(host)
   // Only for a host too old to sort the drive itself.
   const needsScan =
     collections.unsupported && (nav === 'recent' || LIBRARY_KEYS.includes(nav))
   const scan = useLibraryScan(needsScan, host)
 
-  const media = useMediaLibrary(host)
+  const media = useMediaLibrary(settled)
 
   /** Sections the host's owner chose not to show. */
   const hiddenSections = useMemo(() => {
@@ -197,7 +205,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
   }, [hiddenSections, nav])
   const isMedia = MEDIA_KEYS.includes(nav)
 
-  const watched = useWatched(host, profileId ?? '')
+  const watched = useWatched(settled, profileId ?? '')
 
   // A change of host leaves nothing of the last drive open: not a film
   // playing, a photo up, a selection or a search, nor its posters.
@@ -1799,6 +1807,9 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                 kind={nav === 'movies' ? 'film' : 'series'}
                 items={mediaItems}
                 enabled={media.enabled}
+                known={media.known}
+                error={media.error}
+                onRetry={media.refresh}
                 scanning={media.scanning}
                 watched={watchedByPath}
                 continueWatching={watched.continueWatching}

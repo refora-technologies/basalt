@@ -1331,6 +1331,9 @@ function LibraryScreen({
           kind={section === 'movies' ? 'film' : 'series'}
           items={mediaItems}
           enabled={media.enabled}
+          known={media.known}
+          error={media.error}
+          onRetry={media.refresh}
           scanning={media.scanning}
           watched={watchedByPath}
           continueWatching={watched.continueWatching}
