@@ -12,10 +12,16 @@
     "resources": [],
     "linux": {
       "deb": {
-        "recommends": ["ffmpeg", "libmpv2"]
+        "recommends": ["ffmpeg", "libmpv2"],
+        "files": {
+          "/etc/ufw/applications.d/basalt-host": "linux/basalt-host.ufw"
+        }
       },
       "rpm": {
-        "recommends": ["ffmpeg", "mpv-libs"]
+        "recommends": ["ffmpeg", "mpv-libs"],
+        "files": {
+          "/usr/lib/firewalld/services/basalt-host.xml": "linux/basalt-host.firewalld.xml"
+        }
       }
     }
   }
