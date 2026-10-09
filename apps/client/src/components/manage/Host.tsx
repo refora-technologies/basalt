@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Check,
   Disc3,
+  FolderOpen,
   HardDrive,
   Info,
   Loader2,
@@ -182,7 +183,7 @@ function driveIcon(kind: HostDrive['kind']): typeof HardDrive {
  * Asked for when opened, so a drive plugged in a moment ago is there.
  */
 function DrivePicker({ tools, onDone }: { tools: Tools; onDone: () => void }): React.JSX.Element {
-  const { m, view, confirm } = tools
+  const { m, view, confirm, prompt } = tools
   const { act } = m
   const phone = useLayout() === 'phone'
   const [asked, setAsked] = useState(false)
@@ -191,6 +192,20 @@ function DrivePicker({ tools, onDone }: { tools: Tools; onDone: () => void }): R
   useEffect(() => {
     void act({ do: 'listDrives' }).then(() => setAsked(true))
   }, [act])
+
+  /** A folder typed in: the host checks it is there. Named after its last part. */
+  const choosePath = async (path: string): Promise<void> => {
+    const trimmed = path.trim().replace(/[\\/]+$/, '') || path.trim()
+    const name = trimmed.split(/[\\/]/).filter(Boolean).pop() ?? trimmed
+    const ok = await confirm({
+      title: `Share ${name}?`,
+      message: view.status.vault
+        ? `Your devices see ${trimmed} in place of ${view.status.vault.name}. Nothing on either is moved or changed.`
+        : `Your devices see ${trimmed}. Nothing in it is moved or changed.`,
+      confirmLabel: 'Share this folder',
+    })
+    if (ok && (await m.act({ do: 'chooseDrive', path: trimmed, name }))) onDone()
+  }
 
   const choose = async (drive: HostDrive): Promise<void> => {
     if (drive.path === current) return
@@ -248,10 +263,30 @@ function DrivePicker({ tools, onDone }: { tools: Tools; onDone: () => void }): R
               />
             )
           })}
+          <Row
+            icon={<FolderOpen size={phone ? 18 : 15} />}
+            title="A folder, by its path…"
+            sub={
+              view.status.platform === 'windows'
+                ? 'For one folder rather than a whole drive, such as D:\\Media'
+                : 'For one folder rather than a whole drive, such as /srv/media'
+            }
+            disabled={m.busy === 'chooseDrive'}
+            onClick={() =>
+              prompt({
+                title: 'Share a folder',
+                value: view.status.platform === 'windows' ? 'D:\\' : '/',
+                confirmLabel: 'Share it',
+                onConfirm: (path) => void choosePath(path),
+              })
+            }
+          />
         </Rows>
       </Card>
       <p className={cn('mt-3 px-1 leading-snug text-textFaint', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
-        Drives on the host’s computer. To share one folder rather than a whole drive, choose it at the host.
+        {view.status.headless
+          ? 'What the host can see. In Docker, that is the folders mounted under /media.'
+          : 'Drives on the host’s computer.'}
       </p>
     </div>
   )

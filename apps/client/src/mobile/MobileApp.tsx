@@ -44,6 +44,7 @@ import { PlayerOverlay } from '@/components/PlayerOverlay'
 import { ImageViewer } from '@/components/ImageViewer'
 import { PromptDialog } from '@/components/ui/PromptDialog'
 import { PhoneManagePanel } from '@/components/manage/ManageHost'
+import { NoDrive } from '@/components/NoDrive'
 import { PropertiesDetails } from '@/components/PropertiesPanel'
 import { About } from '@/components/About'
 import { WhatsNew } from '@/components/WhatsNew'
@@ -482,6 +483,18 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
               <LibraryScreen model={model} section={librarySection} wide={wide} />
             </SectionPager>
           )}
+          {/* A host just set up shares nothing yet: every tab but More says
+              so, with the way to choose a drive for the device managing it. */}
+          {model.connected && vault.status?.hasDrive === false && tab !== 'more' && (
+            <div className="absolute inset-0 z-10 bg-ink">
+              <NoDrive
+                large
+                hostName={vault.status.hostName ?? 'This host'}
+                canManage={canManage}
+                onManage={() => setManaging(true)}
+              />
+            </div>
+          )}
           {tab === 'more' && (
             <MoreScreen
               model={model}
@@ -491,7 +504,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
             />
           )}
 
-          {tab === 'files' && writable && !selecting && (
+          {tab === 'files' && writable && !selecting && vault.status?.hasDrive !== false && (
             <Fab onClick={() => setAdding(true)} raised={active.length > 0 || shared.length > 0 || actions.clipboard !== null} />
           )}
         </main>

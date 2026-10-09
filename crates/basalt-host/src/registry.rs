@@ -118,6 +118,9 @@ pub struct PairingRequest {
     /// The nonces this attempt is bound to.
     pub client_nonce: String,
     pub server_nonce: String,
+    /// Made with the host's setup code rather than a PIN: the device that
+    /// proves it becomes the host's first manager. See [`crate::setup`].
+    pub setup: bool,
 }
 
 impl PairingRequest {
@@ -137,6 +140,9 @@ pub struct Registry {
     pending: Vec<PairingRequest>,
     /// Whether a request has to prove it knows a PIN.
     require_pin: bool,
+    /// Wrong setup codes since the code was last made or used. See
+    /// [`crate::setup::MAX_WRONG_CODES`].
+    pub wrong_setup_codes: u32,
 }
 
 /// Hashes a token for storage and comparison.
@@ -175,6 +181,7 @@ impl Registry {
             devices,
             pending: Vec::new(),
             require_pin,
+            wrong_setup_codes: 0,
         }
     }
 
@@ -243,6 +250,35 @@ impl Registry {
         device_id: &str,
         client_nonce: &str,
     ) -> Result<PairingRequest> {
+        self.begin(now, device_name, device_id, client_nonce, None)
+    }
+
+    /// Records a device asking to pair with a host being set up: what it has
+    /// to prove is the setup code, not a PIN, and nothing shows it anywhere.
+    pub fn begin_setup_pairing(
+        &mut self,
+        now: Instant,
+        device_name: &str,
+        device_id: &str,
+        client_nonce: &str,
+        code: &str,
+    ) -> Result<PairingRequest> {
+        self.begin(now, device_name, device_id, client_nonce, Some(code))
+    }
+
+    /// Whether a waiting request was made with the setup code.
+    pub fn is_setup_request(&self, id: &str) -> bool {
+        self.pending.iter().any(|r| r.id == id && r.setup)
+    }
+
+    fn begin(
+        &mut self,
+        now: Instant,
+        device_name: &str,
+        device_id: &str,
+        client_nonce: &str,
+        setup_code: Option<&str>,
+    ) -> Result<PairingRequest> {
         self.forget_expired(now);
 
         // A client that retries should replace its own waiting request rather
@@ -264,7 +300,9 @@ impl Registry {
         }
 
         let pin =
-            if self.require_pin {
+            if let Some(code) = setup_code {
+                Some(code.to_string())
+            } else if self.require_pin {
                 Some(pairing::generate_pin().map_err(|e| {
                     HostError::PairingRefused(format!("could not generate a PIN: {e}"))
                 })?)
@@ -285,6 +323,7 @@ impl Registry {
             attempts: 0,
             client_nonce: client_nonce.to_string(),
             server_nonce,
+            setup: setup_code.is_some(),
         };
         self.pending.push(request.clone());
         Ok(request)
@@ -379,6 +418,10 @@ impl Registry {
             });
 
             if !ok {
+                let setup = self.pending[index].setup;
+                if setup {
+                    self.wrong_setup_codes += 1;
+                }
                 self.pending[index].attempts += 1;
                 let spent = self.pending[index].attempts >= MAX_PIN_ATTEMPTS;
                 if spent {
@@ -388,10 +431,12 @@ impl Registry {
                     // somebody has to be at the host to read the new number.
                     self.pending.remove(index);
                 }
-                return Err(HostError::PairingRefused(if spent {
-                    "too many wrong PINs. Try connecting again for a new one.".into()
-                } else {
-                    "that PIN is not right".into()
+                return Err(HostError::PairingRefused(match (setup, spent) {
+                    (true, true) => "too many wrong codes. Check the setup code on the host                                      and try again."
+                        .into(),
+                    (true, false) => "that setup code is not right".into(),
+                    (false, true) => "too many wrong PINs. Try connecting again for a new one.".into(),
+                    (false, false) => "that PIN is not right".into(),
                 }));
             }
         }
@@ -1612,5 +1657,80 @@ mod tests {
         pair_with_key(&mut registry, now, "Phone", DEVICE_A, &k).unwrap();
         assert!(registry.authenticate(&k.to_hex()).is_none());
         assert!(registry.authenticate(&k.id()).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Setting up a host with no screen
+    // -----------------------------------------------------------------------
+
+    const CODE: &str = "K7QM4XPR";
+
+    #[test]
+    fn a_setup_request_is_proven_with_the_code_however_it_was_typed() {
+        // Whether the host asks for a PIN otherwise does not matter.
+        let mut registry = without_pin();
+        let now = Instant::now();
+        let nonce = pairing::random_nonce().unwrap();
+        let request = registry
+            .begin_setup_pairing(now, "Phone", DEVICE_A, &nonce, CODE)
+            .unwrap();
+        assert!(request.setup);
+        assert!(registry.is_setup_request(&request.id));
+        let proof = pairing::compute_proof(
+            "k7qm-4xpr",
+            HOST_ID,
+            &request.client_nonce,
+            &request.server_nonce,
+        )
+        .unwrap();
+        let k = key();
+        let device = registry
+            .finish_pairing_with_key(now, HOST_ID, &request.id, Some(&proof), &k, None)
+            .unwrap();
+        assert_eq!(device.name, "Phone");
+        assert!(!registry.is_setup_request(&request.id), "used up");
+    }
+
+    #[test]
+    fn a_setup_request_without_the_code_is_refused_and_counted() {
+        let mut registry = without_pin();
+        let now = Instant::now();
+        let nonce = pairing::random_nonce().unwrap();
+        let request = registry
+            .begin_setup_pairing(now, "Phone", DEVICE_A, &nonce, CODE)
+            .unwrap();
+        let k = key();
+        let refused = registry
+            .finish_pairing_with_key(now, HOST_ID, &request.id, None, &k, None)
+            .unwrap_err();
+        assert!(refused.to_string().contains("setup code"), "{refused}");
+        let wrong = pairing::compute_proof(
+            "K7QM4XPS",
+            HOST_ID,
+            &request.client_nonce,
+            &request.server_nonce,
+        )
+        .unwrap();
+        assert!(
+            registry
+                .finish_pairing_with_key(now, HOST_ID, &request.id, Some(&wrong), &k, None)
+                .is_err()
+        );
+        assert_eq!(registry.wrong_setup_codes, 2);
+        assert_eq!(registry.device_count(), 0);
+    }
+
+    #[test]
+    fn a_wrong_pin_is_not_counted_against_the_setup_code() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let nonce = pairing::random_nonce().unwrap();
+        let request = registry
+            .begin_pairing_for(now, "Phone", DEVICE_A, &nonce)
+            .unwrap();
+        assert!(!request.setup);
+        let k = key();
+        let _ = registry.finish_pairing_with_key(now, HOST_ID, &request.id, None, &k, None);
+        assert_eq!(registry.wrong_setup_codes, 0);
     }
 }

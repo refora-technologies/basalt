@@ -65,6 +65,11 @@ pub struct HelloResponse {
     /// [`ManageRequest`]. Absent from a host from before that.
     #[serde(default)]
     pub manage: bool,
+    /// Whether the host shares a drive yet. A host set up from a device has
+    /// none until its manager chooses one. Absent from older hosts, which
+    /// only ever answered with one.
+    #[serde(default = "default_true")]
+    pub has_vault: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +96,11 @@ pub struct PairBeginResponse {
     /// without one — the host has been set to let anyone on the network in.
     #[serde(default = "default_true")]
     pub requires_pin: bool,
+    /// The host has no screen and nobody managing it yet: what it checks is
+    /// its setup code, read on the machine itself, and the device that pairs
+    /// with it becomes the host's first manager. Absent from older hosts.
+    #[serde(default)]
+    pub setup: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +137,10 @@ pub struct PairFinishResponse {
     #[serde(default)]
     pub token: String,
     pub vault: String,
+    /// The device manages the host from now on: it set up a host with no
+    /// screen, with its setup code. Absent from older hosts.
+    #[serde(default)]
+    pub manages: bool,
 }
 
 /// Where a device keeps its key, as it reports it. Shown on the host; nothing

@@ -112,6 +112,8 @@ export interface HostStatus {
   endorsement: EndorsementView | null
   /** The system the host runs on, for the window to use its words. */
   platform: 'windows' | 'linux' | 'macos' | 'other'
+  /** Running with no screen: never true for this window's own host. */
+  headless: boolean
 }
 
 /** What a machine was measured to manage. */
@@ -194,9 +196,11 @@ export interface EndorsementView {
 export interface PairingView {
   id: string
   deviceName: string
-  /** Null when the host is not asking for a PIN. */
+  /** Null when the host is not asking for a PIN, or for a setup code. */
   pin: string | null
   secondsLeft: number
+  /** Pairing with the setup code of a host with no screen. */
+  setup: boolean
 }
 
 export type ErrorKind = 'notfound' | 'denied' | 'pairing' | 'exists' | 'declined' | 'error'
@@ -434,6 +438,7 @@ const sample: {
       typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('linux')
         ? 'linux'
         : 'windows',
+    headless: false,
   },
   devices: [
     {
@@ -491,6 +496,7 @@ const sample: {
       deviceName: 'Kitchen tablet',
       pin: '482915',
       secondsLeft: 104,
+      setup: false,
     },
   ],
   drives: [

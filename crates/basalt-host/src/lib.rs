@@ -29,6 +29,7 @@ pub mod rates;
 pub mod registry;
 pub mod sealed;
 pub mod server;
+pub mod setup;
 pub mod space;
 pub mod traffic;
 pub mod ui;

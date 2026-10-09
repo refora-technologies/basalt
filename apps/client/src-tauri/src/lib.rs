@@ -99,7 +99,10 @@ async fn discover(state: State<'_, AppState>) -> Answer<Vec<DiscoveredHost>> {
 /// against the number to read across — so the interface can show a PIN field
 /// knowing one is on screen at the other end.
 #[tauri::command]
-async fn begin_pairing(state: State<'_, AppState>, address: String) -> Answer<bool> {
+async fn begin_pairing(
+    state: State<'_, AppState>,
+    address: String,
+) -> Answer<basalt_client::ui::PairingStart> {
     Ok(state.client.begin_pairing_at(&address).await?)
 }
 
@@ -416,9 +419,16 @@ async fn identity(state: State<'_, AppState>) -> Answer<basalt_client::IdentityS
 #[tauri::command]
 async fn manage(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     action: basalt_proto::msg::ManageAction,
 ) -> Answer<serde_json::Value> {
-    Ok(state.client.manage(action).await?)
+    let before = state.client.status().map(|i| (i.has_vault, i.vault));
+    let view = state.client.manage(action).await?;
+    // A drive chosen, or another: the rest of the window follows at once.
+    if state.client.status().map(|i| (i.has_vault, i.vault)) != before {
+        let _ = app.emit("basalt://status", status_of(&state.client));
+    }
+    Ok(view)
 }
 
 #[tauri::command]

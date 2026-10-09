@@ -43,6 +43,9 @@ pub struct Status {
     pub owner: bool,
     /// This device can manage the host from here: see [`crate::Basalt::manage`].
     pub can_manage: bool,
+    /// The host shares a drive. Only false while connected to a host that has
+    /// none yet: one just set up, whose manager has still to choose it.
+    pub has_drive: bool,
 }
 
 impl Status {
@@ -88,6 +91,7 @@ impl Status {
             signs_in_with_key: info.as_ref().is_some_and(|i| i.by_key),
             owner: info.as_ref().is_some_and(|i| i.owner),
             can_manage: info.as_ref().is_some_and(|i| i.manage),
+            has_drive: info.as_ref().is_none_or(|i| i.has_vault),
         }
     }
 
@@ -123,6 +127,9 @@ pub struct DiscoveredHost {
     pub has_vault: bool,
     /// Whether this device has already paired with it.
     pub paired: bool,
+    /// A host with no screen that nobody manages yet: set it up from here,
+    /// with the setup code read on that machine.
+    pub needs_setup: bool,
 }
 
 impl DiscoveredHost {
@@ -135,8 +142,20 @@ impl DiscoveredHost {
             requires_pin: found.beacon.requires_pin,
             has_vault: found.beacon.has_vault,
             paired,
+            needs_setup: found.beacon.needs_setup,
         }
     }
+}
+
+/// What a host said when asked to pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingStart {
+    /// A PIN (or the setup code) has to be typed.
+    pub requires_pin: bool,
+    /// What is typed is the host's setup code: it has no screen, and this
+    /// device becomes its first manager.
+    pub setup: bool,
 }
 
 /// Puts a discovered list in an order that does not move under the cursor.
@@ -238,6 +257,7 @@ mod tests {
                 "connected",
                 "connecting",
                 "deviceName",
+                "hasDrive",
                 "hasPaired",
                 "hostId",
                 "hostName",
@@ -259,6 +279,7 @@ mod tests {
                 port: 7742,
                 requires_pin,
                 has_vault,
+                needs_setup: false,
             },
             address: "192.168.1.90:7742".parse().unwrap(),
         }
@@ -274,6 +295,7 @@ mod tests {
                 "hasVault",
                 "hostId",
                 "hostName",
+                "needsSetup",
                 "paired",
                 "requiresPin",
                 "vault",
@@ -314,6 +336,7 @@ mod tests {
             requires_pin: true,
             has_vault,
             paired,
+            needs_setup: false,
         }
     }
 
@@ -509,6 +532,7 @@ mod tests {
             by_key: true,
             owner: false,
             manage: false,
+            has_vault: true,
         };
         let host = saved_host();
         let status = Status::new(Some(info), Some(&host), "Laptop A");

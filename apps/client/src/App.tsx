@@ -43,6 +43,7 @@ import {
 import { MusicList, PhotoGrid, VideoGrid, sortTracks } from '@/components/MediaViews'
 import { SettingsView } from '@/components/SettingsView'
 import { ManageHost } from '@/components/manage/ManageHost'
+import { NoDrive } from '@/components/NoDrive'
 import { TransfersPanel } from '@/components/TransfersPanel'
 import { PlayerOverlay } from '@/components/PlayerOverlay'
 import { ImageViewer } from '@/components/ImageViewer'
@@ -1518,6 +1519,8 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
 
   // "Manage host" is there only while the host lets this device manage it.
   const canManage = vault.status?.canManage === true
+  // A host just set up shares nothing until its manager chooses a drive.
+  const noDrive = connected && vault.status?.hasDrive === false
   useEffect(() => {
     if (!canManage && nav === 'manage') setNav('files')
   }, [canManage, nav, setNav])
@@ -1812,6 +1815,12 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                 space={vault.space}
                 onForget={forgetVault}
                 onChangeDrive={() => setChangingDrive(true)}
+              />
+            ) : noDrive ? (
+              <NoDrive
+                hostName={vault.status.hostName ?? 'This host'}
+                canManage={canManage}
+                onManage={() => setNav('manage')}
               />
             ) : isMedia ? (
               <LibraryView

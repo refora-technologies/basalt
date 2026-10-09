@@ -120,6 +120,8 @@ export interface ManagedHostStatus {
   }
   endorsement: { by: string; until: number } | null
   platform: 'windows' | 'linux' | 'macos' | 'other'
+  /** Running with no screen: a service, or in Docker. Absent from older hosts. */
+  headless?: boolean
 }
 
 /** The host after an action: the window's views, and which device is this one. */

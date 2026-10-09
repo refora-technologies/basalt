@@ -33,10 +33,13 @@ use crate::vault::Vault;
 /// Everything shared between connections.
 pub struct Host {
     identity: HostIdentity,
-    config_path: std::path::PathBuf,
+    pub(crate) config_path: std::path::PathBuf,
     config: std::sync::Mutex<HostConfig>,
     vault: tokio::sync::RwLock<Option<Arc<Vault>>>,
-    registry: std::sync::Mutex<Registry>,
+    pub(crate) registry: std::sync::Mutex<Registry>,
+    /// Running with no screen: set up from a device with a setup code. See
+    /// [`crate::setup`].
+    pub(crate) headless: std::sync::atomic::AtomicBool,
     uploads: Uploads,
     traffic: Traffic,
     /// Watching the drive. Replaced whenever the vault is.
@@ -228,6 +231,7 @@ impl Host {
             config: std::sync::Mutex::new(config),
             vault: tokio::sync::RwLock::new(vault),
             registry: std::sync::Mutex::new(registry),
+            headless: std::sync::atomic::AtomicBool::new(false),
             uploads: Uploads::default(),
             traffic: Traffic::default(),
             watch: tokio::sync::RwLock::new(watch),
@@ -1754,6 +1758,15 @@ impl Host {
         self.config.lock().expect("config lock").vault_name.clone()
     }
 
+    /// Whether a drive or folder has been chosen to share.
+    pub fn has_drive(&self) -> bool {
+        self.config
+            .lock()
+            .expect("config lock")
+            .vault_path
+            .is_some()
+    }
+
     pub async fn vault(&self) -> Option<Arc<Vault>> {
         self.vault.read().await.clone()
     }
@@ -2088,6 +2101,7 @@ impl Host {
             conversion: self.conversion_status(),
             endorsement: self.endorsement_view(),
             platform: crate::ui::platform(),
+            headless: self.is_headless(),
         }
     }
 
@@ -2324,6 +2338,8 @@ impl Host {
 
     /// What this host broadcasts about itself.
     pub fn beacon(&self) -> basalt_net::discovery::Beacon {
+        // Asked before the config is locked: it looks at the device list.
+        let needs_setup = self.in_setup();
         let config = self.config.lock().expect("config lock");
         basalt_net::discovery::Beacon {
             host_id: self.identity.host_id.clone(),
@@ -2332,6 +2348,7 @@ impl Host {
             port: config.port,
             requires_pin: config.require_pin,
             has_vault: config.vault_path.is_some(),
+            needs_setup,
         }
     }
 
@@ -2950,6 +2967,7 @@ where
                     host_name: host.host_name(),
                     keys: true,
                     manage: true,
+                    has_vault: host.has_drive(),
                 },
             )
             .await?;
@@ -2969,16 +2987,46 @@ where
                 "" => hello.map_or("", |h| h.device_id.as_str()),
                 id => id,
             };
+            // A host with no screen that nobody manages yet asks for its setup
+            // code instead of a PIN: see `crate::setup`.
+            let setup_code = host.setup_code()?;
             let request = {
                 let mut registry = host.registry.lock().expect("registry lock");
-                registry.begin_pairing_for(Instant::now(), name, device_id, &req.client_nonce)?
+                match &setup_code {
+                    Some(code) => registry.begin_setup_pairing(
+                        Instant::now(),
+                        name,
+                        device_id,
+                        &req.client_nonce,
+                        code,
+                    )?,
+                    None => registry.begin_pairing_for(
+                        Instant::now(),
+                        name,
+                        device_id,
+                        &req.client_nonce,
+                    )?,
+                }
             };
+            if !request.setup && host.is_headless() {
+                // No window to show it in: the log has it, for whoever reads
+                // the machine, and Manage host shows it on managers' devices.
+                match &request.pin {
+                    Some(pin) => tracing::info!(
+                        "{} wants to join. PIN: {}",
+                        request.device_name,
+                        basalt_net::pairing::format_pin(pin)
+                    ),
+                    None => tracing::info!("{} is joining", request.device_name),
+                }
+            }
             reply(
                 stream,
                 &PairBeginResponse {
                     server_nonce: request.server_nonce.clone(),
                     request: request.id.clone(),
                     requires_pin: request.pin.is_some(),
+                    setup: request.setup,
                 },
             )
             .await?;
@@ -2986,6 +3034,20 @@ where
 
         Op::PairFinish => {
             let req: PairFinishRequest = decode(payload)?;
+            let setup = host
+                .registry
+                .lock()
+                .expect("registry lock")
+                .is_setup_request(&req.request);
+            // The first manager signs in with a key of its own, as every
+            // manager must: a device on an older Basalt pairs once it is
+            // updated.
+            if setup && req.key.is_none() {
+                return Err(HostError::PairingRefused(
+                    "setting up this host needs an up-to-date Basalt on this device. Update it                      and try again."
+                        .into(),
+                ));
+            }
             if let Some(key) = req.key.as_deref() {
                 // Checked before the request is touched, so a device whose
                 // signature is wrong has not used up a PIN attempt on it.
@@ -2995,18 +3057,39 @@ where
                     key,
                     req.key_signature.as_deref(),
                 )?;
-                let device = {
+                let finished = {
                     let mut registry = host.registry.lock().expect("registry lock");
-                    registry.finish_pairing_with_key(
-                        Instant::now(),
-                        host.host_id(),
-                        &req.request,
-                        req.proof.as_deref(),
-                        &key,
-                        req.key_kind,
-                    )?
+                    registry
+                        .finish_pairing_with_key(
+                            Instant::now(),
+                            host.host_id(),
+                            &req.request,
+                            req.proof.as_deref(),
+                            &key,
+                            req.key_kind,
+                        )
+                        .and_then(|mut device| {
+                            if setup {
+                                registry.set_owner(&device.token_hash, true)?;
+                                device.owner = true;
+                            }
+                            Ok(device)
+                        })
+                };
+                let device = match finished {
+                    Ok(device) => device,
+                    Err(e) => {
+                        if setup {
+                            host.check_setup_guesses();
+                        }
+                        return Err(e);
+                    }
                 };
                 host.persist()?;
+                if setup {
+                    host.setup_done(&device.name);
+                }
+                let manages = device.owner;
                 host.forget_old_keys(&device);
                 session.signed_key = Some(device.public_key.clone());
                 session.device = Some(device);
@@ -3016,6 +3099,7 @@ where
                     &PairFinishResponse {
                         token: String::new(),
                         vault: host.vault_name(),
+                        manages,
                     },
                 )
                 .await?;
@@ -3055,6 +3139,7 @@ where
                 &PairFinishResponse {
                     token,
                     vault: host.vault_name(),
+                    manages: false,
                 },
             )
             .await?;

@@ -418,9 +418,23 @@ impl Basalt {
     /// Resolution lives here rather than in the Tauri shell so the shell needs
     /// no knowledge of the network layer at all — and so that turning a bad
     /// address into a sensible error is covered by a test.
-    pub async fn begin_pairing_at(&self, address: &str) -> Result<bool> {
+    pub async fn begin_pairing_at(&self, address: &str) -> Result<crate::ui::PairingStart> {
         let addr = basalt_net::socket::resolve(address, basalt_net::DEFAULT_PORT).await?;
-        self.begin_pairing(addr).await
+        let requires_pin = self.begin_pairing(addr).await?;
+        Ok(crate::ui::PairingStart {
+            requires_pin,
+            setup: self.pairing_is_setup().await,
+        })
+    }
+
+    /// Whether the pairing begun asks for the host's setup code rather than a
+    /// PIN: a host with no screen, being set up by this device.
+    pub async fn pairing_is_setup(&self) -> bool {
+        self.pending
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|(_, challenge)| challenge.setup)
     }
 
     /// Asks a host to pair, and says whether it wants a PIN.
@@ -1018,7 +1032,23 @@ impl Basalt {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
         let result = lease.manage(action).await;
-        Ok(lease.check(result)?.view)
+        let view = lease.check(result)?.view;
+        // The drive as the host has it now. A manager choosing one here is
+        // what a host just set up is waiting for, and the rest of the app
+        // shows it at once rather than at the next connection.
+        let drive = view.get("status").and_then(|s| s.get("vault"));
+        let has_vault = drive.is_some_and(|v| !v.is_null());
+        let name = drive
+            .and_then(|v| v.get("name"))
+            .and_then(|n| n.as_str())
+            .map(str::to_string);
+        if let Some(info) = self.info.lock().expect("info lock").as_mut() {
+            info.has_vault = has_vault;
+            if let Some(name) = name {
+                info.vault = name;
+            }
+        }
+        Ok(view)
     }
 
     pub async fn profiles(&self) -> Result<Vec<ProfileView>> {
@@ -1466,16 +1496,21 @@ impl Basalt {
         }
         // What the host says about access now, which is newer than what the
         // rest of the app was told when it connected.
-        let (writable, manage) = (session.info().writable, session.info().manage);
+        let now = session.info();
         let changed = {
             let mut info = self.info.lock().expect("info lock");
             match info.as_mut() {
                 Some(info)
                     if info.host_id == host_id
-                        && (info.writable != writable || info.manage != manage) =>
+                        && (info.writable != now.writable
+                            || info.manage != now.manage
+                            || info.has_vault != now.has_vault
+                            || info.vault != now.vault) =>
                 {
-                    info.writable = writable;
-                    info.manage = manage;
+                    info.writable = now.writable;
+                    info.manage = now.manage;
+                    info.has_vault = now.has_vault;
+                    info.vault = now.vault.clone();
                     true
                 }
                 _ => false,

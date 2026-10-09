@@ -76,6 +76,9 @@ pub struct HostStatus {
     /// The system the host runs on, so the window can use its words:
     /// `windows`, `linux`, `macos`, or `other`.
     pub platform: &'static str,
+    /// Running with no screen (a service, or in Docker): managed only from
+    /// devices, and set up with a setup code. See [`crate::setup`].
+    pub headless: bool,
 }
 
 /// The system this host was built for.
@@ -250,6 +253,9 @@ pub struct PairingView {
     /// nothing to read across and the request grants itself.
     pub pin: Option<String>,
     pub seconds_left: u64,
+    /// Pairing with the host's setup code, to set it up. The code itself is
+    /// never shown: it is read on the machine, by whoever owns it.
+    pub setup: bool,
 }
 
 impl PairingView {
@@ -257,8 +263,13 @@ impl PairingView {
         Self {
             id: request.id.clone(),
             device_name: request.device_name.clone(),
-            pin: request.pin.clone(),
+            pin: if request.setup {
+                None
+            } else {
+                request.pin.clone()
+            },
             seconds_left: request.remaining(now).as_secs(),
+            setup: request.setup,
         }
     }
 }
@@ -404,6 +415,7 @@ mod tests {
             },
             endorsement: None,
             platform: "windows",
+            headless: false,
         };
         assert_eq!(
             keys(&status),
@@ -412,6 +424,7 @@ mod tests {
                 "conversion",
                 "deviceCount",
                 "endorsement",
+                "headless",
                 "hostId",
                 "hostName",
                 "library",
@@ -581,9 +594,13 @@ mod tests {
             attempts: 0,
             client_nonce: "n".into(),
             server_nonce: "s".into(),
+            setup: false,
         };
         let view = PairingView::new(&request, Instant::now());
-        assert_eq!(keys(&view), ["deviceName", "id", "pin", "secondsLeft"]);
+        assert_eq!(
+            keys(&view),
+            ["deviceName", "id", "pin", "secondsLeft", "setup"]
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -704,6 +721,7 @@ mod tests {
             attempts: 0,
             client_nonce: "n".into(),
             server_nonce: "s".into(),
+            setup: false,
         };
         let fresh = PairingView::new(&request, opened);
         assert!(fresh.seconds_left > 0);
@@ -726,6 +744,7 @@ mod tests {
             attempts: 0,
             client_nonce: "n".into(),
             server_nonce: "s".into(),
+            setup: false,
         };
         let json = serde_json::to_value(PairingView::new(&request, Instant::now())).unwrap();
         assert!(json["pin"].is_null());

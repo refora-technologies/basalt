@@ -73,6 +73,11 @@ pub struct Beacon {
     /// False when the host is running but has not been given a drive yet.
     #[serde(default)]
     pub has_vault: bool,
+    /// A host with no screen that nobody manages yet: it is set up from a
+    /// device, with the setup code read on the machine. Absent from older
+    /// hosts.
+    #[serde(default)]
+    pub needs_setup: bool,
 }
 
 /// A host that answered, and where it answered from.
@@ -390,6 +395,7 @@ mod tests {
             port: 7742,
             requires_pin: true,
             has_vault: true,
+            needs_setup: false,
         }
     }
 
@@ -448,6 +454,7 @@ mod tests {
                 "hasVault",
                 "hostId",
                 "hostName",
+                "needsSetup",
                 "port",
                 "requiresPin",
                 "vault",
