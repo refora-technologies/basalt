@@ -18,8 +18,8 @@
 //!   rather than dropping events and leaving clients subtly wrong.
 
 use std::collections::HashSet;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use basalt_proto::msg::Change;
@@ -38,11 +38,16 @@ pub const MAX_BATCH: usize = 64;
 /// How many changes a slow client may fall behind before it is told to reload.
 const CHANNEL_DEPTH: usize = 256;
 
+/// The platform's watcher, shared with the thread that reads its events so
+/// that, on Linux, folders made later can be followed too.
+type Shared = Arc<Mutex<Box<dyn Watcher + Send>>>;
+
 /// A live view of what is happening on the drive.
 pub struct Watch {
     sender: broadcast::Sender<Change>,
-    /// Held because dropping it stops the watcher.
-    _watcher: Box<dyn Watcher + Send + Sync>,
+    /// Held because dropping it stops the watcher. `None` for a line to the
+    /// devices that follows nothing on the drive: see [`Watch::announcer`].
+    _watcher: Option<Shared>,
 }
 
 impl Watch {
@@ -51,28 +56,76 @@ impl Watch {
         let (sender, _) = broadcast::channel(CHANNEL_DEPTH);
         let (raw_tx, raw_rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
 
-        let mut watcher = notify::recommended_watcher(move |event| {
+        let watcher = notify::recommended_watcher(move |event| {
             // A closed receiver means the host is shutting down; nothing to say.
             let _ = raw_tx.send(event);
         })
         .map_err(|e| crate::HostError::BadRequest(format!("could not watch the drive: {e}")))?;
+        let watcher: Shared = Arc::new(Mutex::new(Box::new(watcher)));
 
-        watcher.watch(root, RecursiveMode::Recursive).map_err(|e| {
-            crate::HostError::BadRequest(format!("could not watch {}: {e}", root.display()))
-        })?;
+        // Windows and macOS follow a whole tree as one. Linux follows each
+        // folder by itself, and is done that way here: see `Folders`.
+        // The drive's own folder before anything else, so a drive that cannot
+        // be watched at all is known now; the folders under it are taken on
+        // in the background, since a big drive has hundreds of thousands and
+        // the host serves meanwhile.
+        #[cfg(target_os = "linux")]
+        let folders = {
+            watcher
+                .lock()
+                .expect("watcher lock")
+                .watch(root, RecursiveMode::NonRecursive)
+                .map_err(|e| {
+                    crate::HostError::BadRequest(format!("could not watch {}: {e}", root.display()))
+                })?;
+            let folders = Arc::new(Folders::new(root));
+            let walking = Arc::clone(&folders);
+            let watcher = Arc::downgrade(&watcher);
+            let root = root.to_path_buf();
+            std::thread::spawn(move || walking.follow(&watcher, &root));
+            Some(folders)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let folders: Option<Arc<Folders>> = {
+            watcher
+                .lock()
+                .expect("watcher lock")
+                .watch(root, RecursiveMode::Recursive)
+                .map_err(|e| {
+                    crate::HostError::BadRequest(format!("could not watch {}: {e}", root.display()))
+                })?;
+            None
+        };
 
         // The notify callback is not async, so its events cross into tokio
-        // through a std channel drained on a blocking thread.
+        // through a std channel drained on a blocking thread. It holds the
+        // watcher only weakly: dropping this `Watch` must still stop it.
         {
             let sender = sender.clone();
             let root = root.to_path_buf();
-            std::thread::spawn(move || coalesce(raw_rx, &root, &sender));
+            let watcher = Arc::downgrade(&watcher);
+            std::thread::spawn(move || coalesce(raw_rx, &root, &sender, folders, watcher));
         }
 
         Ok(Arc::new(Self {
             sender,
-            _watcher: Box::new(watcher),
+            _watcher: Some(watcher),
         }))
+    }
+
+    /// A line to the devices that follows nothing on the drive.
+    ///
+    /// For when the drive cannot be watched at all. The host still has
+    /// things to tell devices that the disk never shows: the library switched
+    /// on, a profile removed, a device's access changed. Without this they
+    /// all went unsaid, and every device was told the host had no drive and
+    /// asked again every ten seconds, for as long as it was connected.
+    pub fn announcer() -> Arc<Self> {
+        let (sender, _) = broadcast::channel(CHANNEL_DEPTH);
+        Arc::new(Self {
+            sender,
+            _watcher: None,
+        })
     }
 
     /// A stream of changes. Every subscriber gets every change.
@@ -89,11 +142,94 @@ impl Watch {
     }
 }
 
+/// Following a drive on Linux, one folder at a time.
+///
+/// Linux watches folders, not trees, and the library this uses walks the
+/// whole tree and gives up at the first folder it cannot watch. On a drive
+/// shared whole that was always: `/proc` and `/sys` are the kernel's, `/root`
+/// is not the user's, and nothing on the drive was followed at all. Here a
+/// folder that cannot be followed is passed over, mounts that are not drives
+/// are never entered, and reaching the system's limit on watched folders
+/// stops quietly with what was followed so far. Folders made later are
+/// followed as they appear.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+struct Folders {
+    /// Mounts inside the drive that are not drives, never entered.
+    skip: Vec<PathBuf>,
+    /// Set once the system's limit is reached, to say so once.
+    full: std::sync::atomic::AtomicBool,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+impl Folders {
+    fn new(root: &Path) -> Self {
+        let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+        Self {
+            skip: crate::drives::not_drives(&mounts)
+                .into_iter()
+                .filter(|point| point != root)
+                .collect(),
+            full: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Follows `top` and every folder under it that can be, for as long as
+    /// the watcher is wanted: a drive changed part-way stops the walk.
+    fn follow(&self, watcher: &Weak<Mutex<Box<dyn Watcher + Send>>>, top: &Path) {
+        let mut pending = vec![top.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            if self.full.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            if self.skip.contains(&dir) {
+                continue;
+            }
+            let Some(watcher) = watcher.upgrade() else {
+                return;
+            };
+            // Taken for one folder at a time, so folders made meanwhile are
+            // not kept waiting for the whole drive.
+            let watched = watcher
+                .lock()
+                .expect("watcher lock")
+                .watch(&dir, RecursiveMode::NonRecursive);
+            drop(watcher);
+            match watched {
+                Ok(()) => {}
+                Err(e) if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) => {
+                    if !self.full.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        tracing::warn!(
+                            "following changes in as many folders as the system allows \
+                             (fs.inotify.max_user_watches); changes elsewhere show at the \
+                             next scan of the drive"
+                        );
+                    }
+                    return;
+                }
+                // Not this user's to read: neither followed nor entered.
+                Err(_) => continue,
+            }
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            // `file_type` does not follow links: a linked folder is followed
+            // where it really is, if that is on the drive.
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    pending.push(entry.path());
+                }
+            }
+        }
+    }
+}
+
 /// Drains raw events, batches them, and publishes the result.
 fn coalesce(
     raw: std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
     root: &Path,
     sender: &broadcast::Sender<Change>,
+    folders: Option<Arc<Folders>>,
+    watcher: Weak<Mutex<Box<dyn Watcher + Send>>>,
 ) {
     loop {
         // Block until something happens at all, so an idle drive costs nothing.
@@ -109,6 +245,18 @@ fn coalesce(
             match raw.recv_timeout(remaining) {
                 Ok(event) => batch.push(event),
                 Err(_) => break,
+            }
+        }
+
+        // Folders made since: followed too, where folders are followed one by
+        // one.
+        if let Some(folders) = &folders {
+            for event in batch.iter().flatten() {
+                if matches!(event.kind, EventKind::Create(_)) {
+                    for path in event.paths.iter().filter(|path| path.is_dir()) {
+                        folders.follow(&watcher, path);
+                    }
+                }
             }
         }
 
@@ -539,6 +687,59 @@ mod tests {
             matches!(&change, Change::Created { path } | Change::Modified { path } if path == "appeared.mkv"),
             "got {change:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_folder_made_later_is_followed_too() {
+        // Linux follows folders one at a time: one made after the watch began
+        // has to be taken on as it appears, or what goes into it is never seen.
+        let dir = temp_dir();
+        let watch = Watch::start(&dir.0).unwrap();
+        let mut events = watch.subscribe();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        std::fs::create_dir(dir.0.join("Season 02")).unwrap();
+        // Long enough for the new folder's own event to settle and be acted on.
+        tokio::time::sleep(SETTLE * 4).await;
+        std::fs::write(dir.0.join("Season 02").join("S02E01.mkv"), b"hello").unwrap();
+
+        let seen = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match events.recv().await {
+                    Ok(Change::Created { path } | Change::Modified { path })
+                        if path == "Season 02/S02E01.mkv" =>
+                    {
+                        return true;
+                    }
+                    Ok(_) => continue,
+                    Err(_) => return false,
+                }
+            }
+        })
+        .await;
+        assert_eq!(seen, Ok(true));
+    }
+
+    #[test]
+    fn mounts_that_are_not_drives_are_passed_over() {
+        let mounts = "proc /proc proc rw 0 0\n\
+                      /dev/sda2 / ext4 rw 0 0\n\
+                      tmpfs /run tmpfs rw 0 0\n\
+                      /dev/loop3 /snap/core/17 squashfs ro 0 0\n\
+                      /dev/sdb1 /media/maya/Films\\040Drive exfat rw 0 0\n";
+        let skipped = crate::drives::not_drives(mounts);
+        assert!(skipped.contains(&PathBuf::from("/proc")));
+        assert!(skipped.contains(&PathBuf::from("/run")));
+        assert!(skipped.contains(&PathBuf::from("/snap/core/17")));
+        assert!(!skipped.contains(&PathBuf::from("/")));
+        assert!(!skipped.contains(&PathBuf::from("/media/maya/Films Drive")));
+    }
+
+    #[tokio::test]
+    async fn an_announcer_carries_announcements_with_no_drive_to_follow() {
+        let watch = Watch::announcer();
+        let mut events = watch.subscribe();
+        watch.announce(Change::LibraryChanged);
+        assert_eq!(events.recv().await.unwrap(), Change::LibraryChanged);
     }
 
     #[tokio::test]

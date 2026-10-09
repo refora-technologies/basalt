@@ -131,12 +131,9 @@ impl Host {
         let drive_lost = config.vault_path.is_some() && vault.is_none();
 
         // Starting the watcher must not stop a host from serving: a drive that
-        // will not report changes is still a drive you can read.
-        let watch = vault.as_ref().and_then(|vault| {
-            crate::watch::Watch::start(vault.root())
-                .inspect_err(|e| tracing::warn!("changes will not be live: {e}"))
-                .ok()
-        });
+        // will not report changes is still a drive you can read, and the host
+        // still has its own news for the devices.
+        let watch = vault.as_ref().map(|vault| watch_or_announce(vault.root()));
 
         let library = match (&config.vault_path, config.library_enabled) {
             (Some(root), true) => {
@@ -1886,10 +1883,8 @@ impl Host {
         // A new watcher, and the old one dropped. That closes every watch
         // connection, and a client that reconnects gets changes for the drive
         // actually being served now.
-        let watch = crate::watch::Watch::start(vault.root())
-            .inspect_err(|e| tracing::warn!("changes will not be live: {e}"))
-            .ok();
-        self.replace_watch(watch).await;
+        self.replace_watch(Some(watch_or_announce(vault.root())))
+            .await;
 
         // A different drive is a different library, and a different history.
         //
@@ -2614,6 +2609,15 @@ pub async fn bind(host: Arc<Host>, addr: SocketAddr) -> Result<BoundServer> {
         acceptor,
         host,
         addr,
+    })
+}
+
+/// Follows the drive at `root` for changes, or, when it cannot be followed,
+/// keeps a line to the devices for the host's own news all the same.
+fn watch_or_announce(root: &std::path::Path) -> Arc<crate::watch::Watch> {
+    crate::watch::Watch::start(root).unwrap_or_else(|e| {
+        tracing::warn!("changes on the drive will not be live: {e}");
+        crate::watch::Watch::announcer()
     })
 }
 

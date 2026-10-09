@@ -178,6 +178,22 @@ fn linux_drives(mounts: &str, user: Option<&str>) -> Vec<Drive> {
     drives
 }
 
+/// Where, in the mount table's text, things are mounted that are not drives:
+/// the kernel's own views (`/proc`, `/sys`), memory (`/run`), snaps and the
+/// like. A drive shared whole passes over these, which hold no one's files
+/// and cannot all be read.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn not_drives(mounts: &str) -> Vec<std::path::PathBuf> {
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let (_, point, fs) = (fields.next()?, fields.next()?, fields.next()?);
+            (!DRIVE_FILE_SYSTEMS.contains(&fs)).then(|| unescape_mount(point).into())
+        })
+        .collect()
+}
+
 /// The mount table writes a space as `\040`, and a few other characters the
 /// same way.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
