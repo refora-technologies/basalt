@@ -865,6 +865,17 @@ pub fn run() {
                     host.converter.use_ffmpeg(ffmpeg);
                 }
             }
+            // On Linux the package asks for the system's ffmpeg rather than
+            // carrying its own, so that one is this host's, as the one beside
+            // the app is on Windows. Taken as such, the host measures what it
+            // can convert; it used to wait for an ffmpeg of its own that never
+            // comes, and said "not measured yet" for good.
+            #[cfg(all(target_os = "linux", not(debug_assertions)))]
+            if let Some(dir) = basalt_host::config::default_path().parent() {
+                if let Some(ffmpeg) = basalt_host::convert::find_ffmpeg(dir) {
+                    host.converter.use_ffmpeg(ffmpeg);
+                }
+            }
             tracing::info!("vault open");
 
             let serving = Arc::new(AtomicBool::new(false));

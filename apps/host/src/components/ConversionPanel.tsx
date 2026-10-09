@@ -79,7 +79,7 @@ export function ConversionPanel({
           className="flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] text-textDim transition-colors hover:bg-panel2 hover:text-text disabled:opacity-50"
         >
           <RefreshCw size={11} className={conversion.measuring ? 'animate-spin' : ''} />
-          {conversion.measuring ? 'Measuring…' : 'Measure again'}
+          {conversion.measuring ? 'Measuring…' : measured ? 'Measure again' : 'Measure'}
         </button>
       </div>
 
