@@ -843,14 +843,14 @@ pub fn run() {
             build_tray(app.handle())?;
             tracing::info!("tray icon built");
 
-            // Windows started this, not the user: stay out of the way. The
-            // host serves whether or not anyone is looking at its window, and
-            // the tray icon is there when they want it.
+            // The system started this at login, not the user: stay out of the
+            // way. The host serves whether or not anyone is looking at its
+            // window, and the tray icon is there when they want it.
             if basalt_host::autostart::launched_at_startup() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
                 }
-                tracing::info!("started by Windows, so the window stays hidden");
+                tracing::info!("started at login, so the window stays hidden");
             }
 
             tracing::info!("ready");

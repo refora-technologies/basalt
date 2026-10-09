@@ -421,7 +421,23 @@ fn is_hidden(name: &str, meta: &std::fs::Metadata) -> bool {
 /// does not, and one sent up as it was came back as "The filename, directory
 /// name, or volume label syntax is incorrect. (os error 123)" — true, and of
 /// no use to the person holding the phone.
+///
+/// A host on Linux keeps the same rules. Its own disk would take these names,
+/// but a computer running Windows could then never download or open them, and
+/// the drive is meant to work the same from every device.
 pub fn name_problem(name: &str) -> Option<String> {
+    // Where the rule comes from, said from where the host stands.
+    let (refuses, keeps) = if cfg!(windows) {
+        (
+            "Windows does not allow",
+            "is a name Windows keeps for itself",
+        )
+    } else {
+        (
+            "Windows devices could not open it, as Windows does not allow",
+            "is a name Windows keeps for itself and Windows devices could not open it",
+        )
+    };
     const FORBIDDEN: &[char] = &['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
     if let Some(c) = name
         .chars()
@@ -433,12 +449,12 @@ pub fn name_problem(name: &str) -> Option<String> {
             format!("\u{201c}{c}\u{201d}")
         };
         return Some(format!(
-            "\u{201c}{name}\u{201d} cannot be used as a name on the host's drive: Windows does not allow {shown} in a name. Rename it and try again."
+            "\u{201c}{name}\u{201d} cannot be used as a name on the host's drive: {refuses} {shown} in a name. Rename it and try again."
         ));
     }
     if name.ends_with('.') || name.ends_with(' ') {
         return Some(format!(
-            "\u{201c}{name}\u{201d} cannot be used as a name on the host's drive: Windows does not allow a name to end in a dot or a space."
+            "\u{201c}{name}\u{201d} cannot be used as a name on the host's drive: {refuses} a name to end in a dot or a space."
         ));
     }
     let stem = name
@@ -454,7 +470,7 @@ pub fn name_problem(name: &str) -> Option<String> {
             && stem.as_bytes()[3] != b'0');
     if reserved {
         return Some(format!(
-            "\u{201c}{name}\u{201d} is a name Windows keeps for itself, so it cannot be used on the host's drive. Rename it and try again."
+            "\u{201c}{name}\u{201d} {keeps}, so it cannot be used on the host's drive. Rename it and try again."
         ));
     }
     None

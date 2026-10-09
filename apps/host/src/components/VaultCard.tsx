@@ -45,7 +45,11 @@ export function VaultCard({
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
-          <IconButton icon={<ExternalLink size={12} />} label="Open in Explorer" onClick={onOpen} />
+          <IconButton
+            icon={<ExternalLink size={12} />}
+            label={status.platform === 'windows' ? 'Open in Explorer' : 'Open the folder'}
+            onClick={onOpen}
+          />
           <IconButton icon={<Repeat size={12} />} label="Share a different drive" onClick={onChange} />
         </div>
       </div>
