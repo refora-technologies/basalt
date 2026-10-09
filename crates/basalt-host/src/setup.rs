@@ -70,8 +70,27 @@ pub fn new_code(config_path: &Path) -> Result<String> {
         file.sync_all()?;
     }
     std::fs::rename(&temp, &path)?;
+    give_to_folder_owner(&path);
     Ok(code)
 }
+
+/// Made by root (`sudo basalt-host setup-code`, `docker exec`), the file
+/// would be root's, and the host, running as its own user, could not read it.
+/// It belongs to whoever owns the folder it is in: the host's user.
+#[cfg(unix)]
+fn give_to_folder_owner(path: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    if let Some(folder) = path.parent().and_then(|dir| std::fs::metadata(dir).ok()) {
+        let _ = std::os::unix::fs::chown(path, Some(folder.uid()), Some(folder.gid()));
+    }
+}
+
+#[cfg(not(unix))]
+fn give_to_folder_owner(_path: &Path) {}
 
 /// Throws the setup code away: used, or no longer wanted.
 pub fn remove_code(config_path: &Path) {
