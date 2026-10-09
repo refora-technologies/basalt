@@ -299,8 +299,10 @@ export function AboutHost({ view }: Tools): React.JSX.Element {
           value={
             status.addresses.length > 0 ? (
               <span className="flex flex-col items-end gap-0.5">
-                {status.addresses.map((address) => (
-                  <span key={address}>
+                {/* The network the host's computer uses first; the rest,
+                    usually VirtualBox or WSL adapters, quietly after. */}
+                {status.addresses.map((address, i) => (
+                  <span key={address} className={i > 0 ? 'text-[11px] text-textFaint' : undefined}>
                     {address}
                     <span className="text-textFaint">:{status.port}</span>
                   </span>

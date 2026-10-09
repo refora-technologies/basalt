@@ -217,12 +217,18 @@ export function SettingsPanel({
         </div>
         <div className="tnum mt-1.5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11.5px] text-textDim">
           {status.addresses.length > 0 ? (
-            status.addresses.map((address) => (
-              <span key={address}>
-                {address}
+            <>
+              {/* The network the computer actually uses comes first. The
+                  rest are usually adapters other software adds — VirtualBox,
+                  WSL — and are shown quietly after it. */}
+              <span>
+                {status.addresses[0]}
                 <span className="text-textFaint">:{status.port}</span>
               </span>
-            ))
+              {status.addresses.length > 1 && (
+                <span className="text-textFaint">also {status.addresses.slice(1).join(', ')}</span>
+              )}
+            </>
           ) : (
             <span className="text-textFaint">no network connection</span>
           )}
