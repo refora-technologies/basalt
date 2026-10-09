@@ -138,7 +138,14 @@ async fn serve(config_path: PathBuf, port: Option<u16>) -> Result<()> {
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
-    let mut config = HostConfig::load_or_create(&config_path, &config::machine_name())
+    // In a container the machine's name is a random id: `BASALT_HOST_NAME`
+    // names it the first time instead. Manage host renames it any time.
+    let name = std::env::var("BASALT_HOST_NAME")
+        .ok()
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(config::machine_name);
+    let mut config = HostConfig::load_or_create(&config_path, &name)
         .with_context(|| format!("reading {}", config_path.display()))?;
     if let Some(port) = port {
         config.port = port;

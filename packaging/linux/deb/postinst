@@ -1,0 +1,35 @@
+#!/bin/sh
+# Basalt Host (no screen): after installing or upgrading.
+set -e
+
+if [ "$1" = "configure" ]; then
+    # The host's own user: no login, no home but its settings folder.
+    if ! getent passwd basalt >/dev/null 2>&1; then
+        useradd --system --user-group --no-create-home \
+            --home-dir /var/lib/basalt-host --shell /usr/sbin/nologin \
+            --comment "Basalt Host" basalt
+    fi
+
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl enable basalt-host.service >/dev/null 2>&1 || true
+        systemctl restart basalt-host.service >/dev/null 2>&1 || true
+    fi
+
+    if [ -z "$2" ]; then
+        cat <<'EOF'
+
+  Basalt Host is running.
+
+  To set it up, open Basalt on your phone or computer, on this network, and
+  choose this host. It asks for the setup code, which this shows:
+
+      sudo basalt-host setup-code
+
+  Give it access to the folders it shares: see /usr/share/doc/basalt-host-server/README.md
+
+EOF
+    fi
+fi
+
+exit 0
