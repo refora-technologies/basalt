@@ -813,6 +813,16 @@ Section Uninstall
 
   !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
+  ; Basalt's device key lives in the computer's security chip, not in the
+  ; app's data, so deleting the data left it there for good. The app deletes
+  ; it itself, while it is still here to ask. The host has no device key.
+  !if "${PRODUCTNAME}" == "Basalt"
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
+    ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --forget-device-key'
+  ${EndIf}
+  !endif
+
   ; Delete the app directory and its content from disk
   ; Copy main executable
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"

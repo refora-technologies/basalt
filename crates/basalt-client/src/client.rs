@@ -187,6 +187,29 @@ impl Basalt {
         })
     }
 
+    /// Deletes device keys an earlier copy of Basalt left in this computer's
+    /// chip, keeping the one in use. Only for the app itself: a client that
+    /// makes no chip keys, as tests and the command line do, never touches
+    /// the chip. Nothing until this device has a key of its own, so a key in
+    /// the middle of being made is never taken for one left over.
+    pub fn tidy_device_keys(&self) -> usize {
+        #[cfg(windows)]
+        {
+            if !matches!(self.keys, Policy::Platform(_)) {
+                return 0;
+            }
+            let current = self.store.lock().expect("store lock").device_key.clone();
+            match current {
+                Some(current) => crate::keys::tidy_chip_keys(&current),
+                None => 0,
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            0
+        }
+    }
+
     pub fn open(store_path: PathBuf) -> Result<Self> {
         let mut store = ClientStore::load(&store_path)?;
         let device_name = store
