@@ -37,6 +37,28 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* ---- The window's own corners, on Linux (see lib/windowFrame.ts) ----
+   The window is transparent there and the page is the frame: clipped to a
+   rounded shape with a hairline edge, as Windows 11 draws every window.
+   `contain: paint` holds the fixed backdrop and dialogs inside the shape. */
+html[data-shape] {
+  background: transparent;
+}
+html[data-shape='rounded'] body {
+  border-radius: 10px;
+  clip-path: inset(0 round 10px);
+  contain: paint;
+}
+html[data-shape='rounded'] body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+  pointer-events: none;
+}
+
 /* Digits that sit in columns must not jitter as they change. */
 .tnum {
   font-variant-numeric: tabular-nums;
