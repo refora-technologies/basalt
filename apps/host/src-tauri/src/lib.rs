@@ -331,11 +331,31 @@ async fn open_vault_folder(state: State<'_, AppState>, app: tauri::AppHandle) ->
 // ---------------------------------------------------------------------------
 
 /// Brings the window back, wherever it was.
+/// Whether closing the window frees it, rather than hiding it.
+///
+/// On Linux the window's web view is a WebKit process of a few hundred
+/// megabytes, kept for a window that is closed nearly all the time: a host
+/// spends its life in the tray. There it is let go when the window closes and
+/// made again when it opens, which takes a moment and costs nothing while
+/// nobody is looking. The drive is shared by this process either way.
+const FREE_WHEN_CLOSED: bool = cfg!(target_os = "linux");
+
 fn show_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        return;
+    }
+    // Freed when it was closed: made again, as it was configured.
+    let Some(config) = app.config().app.windows.first() else {
+        return;
+    };
+    match tauri::WebviewWindowBuilder::from_config(app, config).and_then(|b| b.build()) {
+        Ok(window) => {
+            let _ = window.set_focus();
+        }
+        Err(e) => tracing::error!("could not open the window again: {e}"),
     }
 }
 
@@ -723,6 +743,16 @@ async fn install_update_linux(app: tauri::AppHandle, path: String) -> Answer<()>
 }
 
 pub fn run() {
+    // WebKit's compositing keeps a second copy of the window in memory, and
+    // in a virtual machine or on some graphics drivers draws nothing at all.
+    // This window is still text and a few cards: drawn directly, it looks the
+    // same in half the memory. Set before anything starts, unless whoever
+    // started it chose otherwise.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+    }
+
     let log = start_logging();
 
     tauri::Builder::default()
@@ -848,7 +878,11 @@ pub fn run() {
             // window, and the tray icon is there when they want it.
             if basalt_host::autostart::launched_at_startup() {
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
+                    let _ = if FREE_WHEN_CLOSED {
+                        window.destroy()
+                    } else {
+                        window.hide()
+                    };
                 }
                 tracing::info!("started at login, so the window stays hidden");
             }
@@ -861,10 +895,13 @@ pub fn run() {
         // This app is a server that happens to have a window. Someone tidying
         // their taskbar should not silently disconnect a laptop mid-transfer,
         // so the close button hides; Quit, in the tray menu, stops sharing.
+        // Where the window is freed instead, it closes, and the app stays.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if !FREE_WHEN_CLOSED {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -903,6 +940,17 @@ pub fn run() {
             open_log_folder,
             open_vault_folder,
         ])
-        .run(tauri::generate_context!())
-        .expect("could not start Basalt Host");
+        .build(tauri::generate_context!())
+        .expect("could not start Basalt Host")
+        .run(|_app, event| {
+            // The last window closing is not the end: the host goes on
+            // sharing from the tray. Only Quit, which gives an exit code,
+            // stops it.
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                api.prevent_exit();
+            }
+        });
 }
