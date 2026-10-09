@@ -46,6 +46,43 @@ enum Command {
     /// List every Basalt host answering on this network.
     Find,
 
+    /// List the drives the host could share (for a device that manages it).
+    Drives,
+
+    /// Choose what the host shares (for a device that manages it).
+    Share {
+        path: String,
+        #[arg(long, short, default_value = "")]
+        name: String,
+    },
+
+    /// Use another paired host from now on.
+    Switch {
+        host_id: String,
+        /// Where it is, when finding it on the network will not do.
+        #[arg(long)]
+        address: Option<String>,
+    },
+
+    /// List the host's profiles.
+    Profiles,
+
+    /// Make a profile and sign in to it.
+    ProfileNew { name: String, pin: String },
+
+    /// Profiles this device is signed in to on its other hosts.
+    Elsewhere,
+
+    /// Use one of them on this host: signed in, or waiting to be let in.
+    UseElsewhere { host_id: String, profile_id: String },
+
+    /// Profiles from other drives waiting to be let in (for a device that
+    /// manages the host).
+    Links,
+
+    /// Let one in (for a device that manages the host).
+    LetIn { id: String },
+
     /// List a folder.
     Ls {
         #[arg(default_value = "")]
@@ -123,8 +160,15 @@ async fn main() -> Result<()> {
             // argument would mean a second run, a second request, and a second
             // PIN — leaving the one on the host's screen already stale.
             let requires_pin = client.begin_pairing(addr).await?;
+            let setup = client.pairing_is_setup().await;
             let pin = if requires_pin {
-                println!("This host is showing a PIN. Type it here:");
+                if setup {
+                    println!(
+                        "This host has no screen and is waiting to be set up. Type its setup code (in its log, or `basalt-host setup-code` on it):"
+                    );
+                } else {
+                    println!("This host is showing a PIN. Type it here:");
+                }
                 let mut typed = String::new();
                 std::io::stdin().read_line(&mut typed)?;
                 Some(typed.trim().to_string())
@@ -140,6 +184,46 @@ paired with {} ({})",
                 info.host_name, info.vault
             );
             println!("identity {}", info.host_id);
+            if info.manage {
+                println!("this device manages the host");
+            }
+        }
+
+        Command::Drives => {
+            client.connect_saved().await?;
+            let view = client
+                .manage(basalt_proto::msg::ManageAction::ListDrives)
+                .await?;
+            for drive in view["drives"].as_array().into_iter().flatten() {
+                println!(
+                    "{}  {}{}",
+                    drive["path"].as_str().unwrap_or(""),
+                    drive["name"].as_str().unwrap_or(""),
+                    if drive["ready"].as_bool() == Some(false) {
+                        "  (not ready)"
+                    } else {
+                        ""
+                    }
+                );
+            }
+        }
+
+        Command::Share { path, name } => {
+            client.connect_saved().await?;
+            let view = client
+                .manage(basalt_proto::msg::ManageAction::ChooseDrive { path, name })
+                .await?;
+            println!(
+                "sharing {}",
+                view["status"]["vault"]["name"]
+                    .as_str()
+                    .unwrap_or("nothing")
+            );
+        }
+
+        Command::Switch { host_id, address } => {
+            let info = client.connect(&host_id, address.as_deref()).await?;
+            println!("using {} ({})", info.host_name, info.vault);
         }
 
         Command::Find => {
@@ -225,6 +309,61 @@ paired with {} ({})",
 
 async fn run_connected(client: &Arc<Basalt>, command: Command) -> Result<()> {
     match command {
+        Command::Profiles => {
+            for profile in client.profiles().await? {
+                println!(
+                    "{}  {}{}",
+                    profile.id,
+                    profile.name,
+                    profile
+                        .home
+                        .map(|home| format!("  (from {})", home.label))
+                        .unwrap_or_default()
+                );
+            }
+        }
+        Command::ProfileNew { name, pin } => {
+            let profile = client.create_profile(&name, &pin, 0, true).await?;
+            println!("signed in as {} ({})", profile.name, profile.id);
+        }
+        Command::Elsewhere => {
+            for pass in client.profiles_elsewhere() {
+                println!(
+                    "{} {}  {} from {}",
+                    pass.host_id, pass.profile_id, pass.name, pass.drive
+                );
+            }
+        }
+        Command::UseElsewhere {
+            host_id,
+            profile_id,
+        } => {
+            let outcome = client
+                .use_profile_elsewhere(&host_id, &profile_id, true)
+                .await?;
+            match outcome.profile {
+                Some(profile) => println!("signed in as {} ({})", profile.name, profile.id),
+                None => println!("waiting to be let in"),
+            }
+        }
+        Command::Links => {
+            let view = client.manage(basalt_proto::msg::ManageAction::View).await?;
+            for link in view["profileLinks"].as_array().into_iter().flatten() {
+                println!(
+                    "{}  {} from {} (asked by {})",
+                    link["id"].as_str().unwrap_or(""),
+                    link["name"].as_str().unwrap_or(""),
+                    link["home"].as_str().unwrap_or(""),
+                    link["deviceName"].as_str().unwrap_or("")
+                );
+            }
+        }
+        Command::LetIn { id } => {
+            client
+                .manage(basalt_proto::msg::ManageAction::ApproveProfileLink { id })
+                .await?;
+            println!("let in");
+        }
         Command::Ls { path } => {
             let entries = client.list(&path).await?;
             let (free, total) = client.space().await.unwrap_or((0, 0));
