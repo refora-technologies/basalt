@@ -1444,6 +1444,61 @@ async fn the_hosts_settings_decide_whether_it_converts() {
     assert_eq!(saved["convert_at_once"], 1);
 }
 
+// A drive that asks everyone to sign in to a profile converts for a device
+// that has. The conversion is a connection of its own, and it used to go
+// unsigned: refused before the host had even read it, and the device played
+// the film lighter, told the host could not convert it.
+#[tokio::test]
+async fn a_private_drive_converts_for_a_device_signed_in() {
+    let fixture = start_host().await;
+    let path = "Films/Private.Film.2024.mkv";
+    let film = fixture.vault_path(path);
+    std::fs::create_dir_all(film.parent().unwrap()).unwrap();
+    let made = std::process::Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+        ])
+        .arg("testsrc2=size=1280x720:rate=24")
+        .args(["-t", "10", "-c:v", "libx264", "-preset", "ultrafast"])
+        .arg(&film)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !made {
+        eprintln!("no ffmpeg here; skipped");
+        return;
+    }
+    let client = fixture.paired_client().await;
+    if client.convert_check(path).await.is_err() {
+        eprintln!("this machine cannot convert; skipped");
+        return;
+    }
+    let maya = client
+        .create_profile("Maya", "4821", 0, true)
+        .await
+        .unwrap();
+    client
+        .sign_in_profile(&maya.id, "4821", true)
+        .await
+        .unwrap();
+    fixture.host.set_require_profile(true).unwrap();
+
+    client
+        .convert_check(path)
+        .await
+        .expect("the check is allowed for a signed-in device");
+    let mut converting = client
+        .convert(path, 0.0)
+        .await
+        .expect("so is the conversion itself");
+    assert!(converting.next().await.unwrap().is_some());
+}
+
 // A seek past what has arrived is a new conversion from there. On a host that
 // converts one film at a time, the old one used to hold its place until the
 // host next wrote to a device that had moved on, and the new one was refused:

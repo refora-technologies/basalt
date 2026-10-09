@@ -1132,6 +1132,7 @@ impl Basalt {
     /// connections stay free for everything else meanwhile.
     pub async fn convert(&self, path: &str, start: f64) -> Result<Converting> {
         let pool = self.pool().await?;
+        let (_, profile) = pool.profile_choice();
         let mut session = Session::connect(
             pool.address(),
             pool.host_id(),
@@ -1139,6 +1140,18 @@ impl Basalt {
             &self.me,
         )
         .await?;
+        // A connection of its own, so signed in to the profile here as a
+        // pooled one is. It was not: a drive that asks everyone to sign in
+        // turned it away, and a film the host could convert was played
+        // lighter, said to be one the host could not.
+        if let Some(profile) = profile.as_deref()
+            && let Err(e) = session.profile_use(Some(profile)).await
+        {
+            if e.kind() == "signedout" {
+                pool.profile_ended();
+            }
+            return Err(e);
+        }
         let started = session.convert_begin(path, start).await?;
         Ok(Converting {
             by: started.by,
