@@ -123,6 +123,8 @@ export interface ConversionMeasured {
   /** How much faster than real time one runs. */
   speed: number
   at: number
+  /** Memory, not speed, set `atOnce`. */
+  memory?: boolean
 }
 
 export interface ConversionStatus {
@@ -133,6 +135,8 @@ export interface ConversionStatus {
   detected: boolean
   measured: ConversionMeasured | null
   measuring: boolean
+  /** Why it is not measured, when that is worth saying. */
+  note: string | null
   /** Chosen by hand; null goes by what was measured. */
   byHand: number | null
   /** As it stands. */
@@ -354,6 +358,7 @@ const sample: {
       detected: true,
       measured: { by: 'Intel graphics', atOnce: 2, speed: 3.4, at: Math.floor(Date.now() / 1000) - 86400 },
       measuring: false,
+      note: null,
       byHand: null,
       limit: 2,
       active: [

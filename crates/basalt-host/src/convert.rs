@@ -362,6 +362,10 @@ pub struct Measured {
     /// Which conversion settings it was measured with: see [`MEASURED_WITH`].
     #[serde(default)]
     pub settings: u32,
+    /// Whether memory, not speed, set `at_once`: one more at a time would
+    /// have kept up, but would not have fitted.
+    #[serde(default)]
+    pub memory: bool,
 }
 
 /// The conversion settings measurements are taken with, counted up whenever
@@ -413,6 +417,8 @@ pub struct Converter {
     /// What this machine was measured to manage.
     measured: Mutex<Option<Measured>>,
     measuring: std::sync::atomic::AtomicBool,
+    /// Why the last measurement came to nothing, if it did.
+    problem: Mutex<Option<String>>,
     active: std::sync::Arc<Mutex<Vec<(u64, Active)>>>,
     next_id: std::sync::atomic::AtomicU64,
 }
@@ -428,6 +434,8 @@ pub enum ConvertError {
     TooSlow,
     #[error("this host is already converting as much as it can")]
     Busy,
+    #[error("this host is short of memory right now; try again when it is less busy")]
+    Memory,
     #[error("the video could not be converted: {0}")]
     Failed(String),
 }
@@ -528,6 +536,7 @@ impl Converter {
             by_hand: Mutex::new(None),
             measured: Mutex::new(None),
             measuring: std::sync::atomic::AtomicBool::new(false),
+            problem: Mutex::new(None),
             active: std::sync::Arc::default(),
             next_id: std::sync::atomic::AtomicU64::new(1),
         }
@@ -574,6 +583,15 @@ impl Converter {
 
     pub fn is_measuring(&self) -> bool {
         self.measuring.load(Ordering::SeqCst)
+    }
+
+    /// Why the last measurement came to nothing, in words for the window.
+    pub fn problem(&self) -> Option<String> {
+        self.problem.lock().expect("problem lock").clone()
+    }
+
+    pub fn set_problem(&self, problem: Option<String>) {
+        *self.problem.lock().expect("problem lock") = problem;
     }
 
     /// Conversions allowed at once: as chosen by hand, or as measured, or one
@@ -626,6 +644,13 @@ impl Converter {
         // measurement a little low is better than a film that will not play.
         if self.running.load(Ordering::SeqCst).saturating_sub(own) >= limit {
             return Err(ConvertError::Busy);
+        }
+        // One more conversion is a gigabyte or so on a 4K film. Refused here
+        // when the room is not there, rather than started and then stopped
+        // by the system along with the host. Not while the device has one of
+        // its own running, which is about to give its memory back.
+        if own == 0 && free_memory().is_some_and(|free| free < CONVERT_NEEDS) {
+            return Err(ConvertError::Memory);
         }
         Ok(())
     }
@@ -816,6 +841,19 @@ impl Converter {
 
         let capability = self.capability().await;
         let ffmpeg = capability.ffmpeg.clone().ok_or("no ffmpeg here")?;
+        // Memory first: making the sample and converting it is a 4K film's
+        // worth of work, and a machine without room for it is stopped by its
+        // system rather than slowed. That stopped the whole host, measuring
+        // again at every start.
+        let free = free_memory();
+        if let Some(free) = free.filter(|free| *free < MEASURE_NEEDS) {
+            return Err(format!(
+                "Not measured: measuring needs about {} of free memory, and this computer has {} \
+                 free.",
+                gigabytes(MEASURE_NEEDS),
+                gigabytes(free)
+            ));
+        }
         let sample = make_sample(&ffmpeg, &self.config_dir.join("converter")).await?;
 
         // The first route that converts the sample at all. That first run also
@@ -823,18 +861,46 @@ impl Converter {
         // never again, so it is not what is timed: one more run is.
         let mut found = None;
         for &route in &capability.routes {
-            if run_at_once(&ffmpeg, route, &sample, 1).await.is_ok() {
-                found = Some(route);
-                break;
+            match run_at_once(&ffmpeg, route, &sample, 1).await {
+                Ok(_) => {
+                    found = Some(route);
+                    break;
+                }
+                Err(e) if e == LOW_MEMORY => return Err(SHORT_WHILE_MEASURING.into()),
+                Err(_) => {}
             }
         }
         let route = found.ok_or("nothing here could convert the sample")?;
-        let speed = run_at_once(&ffmpeg, route, &sample, 1).await?;
+        let one = run_at_once(&ffmpeg, route, &sample, 1).await.map_err(|e| {
+            if e == LOW_MEMORY {
+                SHORT_WHILE_MEASURING.into()
+            } else {
+                e
+            }
+        })?;
+        let speed = one.speed;
+        // What one conversion took, from how far free memory fell while it
+        // ran: never less than a floor, since a reading taken between two
+        // samples can miss the worst of it.
+        let each = match (free, one.lowest_free) {
+            (Some(before), Some(lowest)) => before.saturating_sub(lowest).max(LEAST_EACH),
+            _ => LEAST_EACH,
+        };
         let mut at_once = u32::from(speed >= KEEPS_UP);
+        let mut memory = false;
         if at_once == 1 {
             for streams in 2..=MOST_MEASURED {
+                // Not tried at all when it would not fit with room to spare.
+                if free.is_some_and(|free| free < u64::from(streams) * each + KEEP_FREE) {
+                    memory = true;
+                    break;
+                }
                 match run_at_once(&ffmpeg, route, &sample, streams).await {
-                    Ok(each) if each >= KEEPS_UP => at_once = streams,
+                    Ok(run) if run.speed >= KEEPS_UP => at_once = streams,
+                    Err(e) if e == LOW_MEMORY => {
+                        memory = true;
+                        break;
+                    }
                     _ => break,
                 }
             }
@@ -845,14 +911,20 @@ impl Converter {
             speed: (speed * 10.0).round() / 10.0,
             at: unix_now(),
             settings: MEASURED_WITH,
+            memory,
         };
         *self.preferred.lock().expect("route lock") = Some(route);
         *self.measured.lock().expect("measured lock") = Some(measured.clone());
         tracing::info!(
-            "measured video conversion: {} at once on {}, {:.1}x real time for one",
+            "measured video conversion: {} at once on {}, {:.1}x real time for one{}",
             measured.at_once,
             measured.by,
-            measured.speed
+            measured.speed,
+            if measured.memory {
+                ", as many as memory allows"
+            } else {
+                ""
+            }
         );
         Ok(measured)
     }
@@ -921,7 +993,7 @@ async fn make_sample(ffmpeg: &Path, dir: &Path) -> Result<PathBuf, String> {
         ],
     ];
     for encoder in encoders {
-        let made = quiet(ffmpeg)
+        let child = quiet(ffmpeg)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -940,27 +1012,105 @@ async fn make_sample(ffmpeg: &Path, dir: &Path) -> Result<PathBuf, String> {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true)
-            .status();
-        let ok = matches!(
-            tokio::time::timeout(std::time::Duration::from_secs(300), made).await,
-            Ok(Ok(status)) if status.success()
-        );
-        if ok && std::fs::rename(&partial, &sample).is_ok() {
-            return Ok(sample);
+            .spawn();
+        let Ok(child) = child else {
+            continue;
+        };
+        // An encoder a 4K picture is too much for is stopped here, not by
+        // the system: the sample is the dearest part of measuring.
+        match finish_watching_memory(vec![child]).await {
+            Ok(_) => {
+                if std::fs::rename(&partial, &sample).is_ok() {
+                    return Ok(sample);
+                }
+            }
+            Err(e) if e == LOW_MEMORY => {
+                let _ = std::fs::remove_file(&partial);
+                return Err(SHORT_WHILE_MEASURING.into());
+            }
+            Err(_) => {}
         }
     }
     let _ = std::fs::remove_file(&partial);
     Err("no HEVC encoder here could make the sample".into())
 }
 
+/// Free memory a machine needs before it is measured at all. Making the 4K
+/// sample took 2.1 GB on a 12-core machine, and one conversion of it 1.1 GB;
+/// fewer cores take less.
+const MEASURE_NEEDS: u64 = 2560 << 20;
+
+/// Free memory a conversion needs to be started for a device. Less, and it is
+/// refused as the host being short of memory, rather than started and then
+/// stopped part-way by the system, with the host.
+const CONVERT_NEEDS: u64 = 768 << 20;
+
+/// Why measuring stopped, when memory ran short part-way.
+const SHORT_WHILE_MEASURING: &str =
+    "Measuring stopped: this computer ran short of memory while converting the 4K sample.";
+
+/// Free memory always left alone while measuring, for the system, the host
+/// and anything else running.
+const KEEP_FREE: u64 = 768 << 20;
+
+/// The least one conversion is counted as taking, whatever was read.
+const LEAST_EACH: u64 = 256 << 20;
+
+/// Why a measurement stopped early: memory ran short while it ran.
+const LOW_MEMORY: &str = "memory ran short";
+
+/// One run of the measurement.
+struct Run {
+    /// How much faster than real time each conversion ran, the slowest.
+    speed: f64,
+    /// The least free memory seen while it ran, where that can be read.
+    lowest_free: Option<u64>,
+}
+
+/// Memory free for new work now, in bytes, as the system counts it: what can
+/// be had without anything being pushed out to disk. `None` where it cannot
+/// be read.
+pub fn free_memory() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        mem_available(&std::fs::read_to_string("/proc/meminfo").ok()?)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        // SAFETY: a zeroed structure with its own size filled in, which is
+        // all the call asks for.
+        unsafe {
+            let mut status: MEMORYSTATUSEX = std::mem::zeroed();
+            status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+            (GlobalMemoryStatusEx(&mut status) != 0).then_some(status.ullAvailPhys)
+        }
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        None
+    }
+}
+
+/// `MemAvailable` from `/proc/meminfo`, in bytes.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn mem_available(meminfo: &str) -> Option<u64> {
+    let line = meminfo
+        .lines()
+        .find(|line| line.starts_with("MemAvailable:"))?;
+    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kib * 1024)
+}
+
 /// Converts the sample `streams` times at once, and says how much faster than
-/// real time each one ran, the slowest of them.
+/// real time each one ran, the slowest of them, and how low free memory went.
+/// Stopped, as [`LOW_MEMORY`], if free memory runs short while they run.
 async fn run_at_once(
     ffmpeg: &Path,
     route: Route,
     sample: &Path,
     streams: u32,
-) -> Result<f64, String> {
+) -> Result<Run, String> {
     let mut args = arguments(route, sample, 0.0, false);
     let input = args.iter().position(|a| a == "-i").ok_or("no input")?;
     args.splice(
@@ -981,17 +1131,58 @@ async fn run_at_once(
             .map_err(|e| format!("ffmpeg would not start: {e}"))?;
         running.push(child);
     }
-    for mut child in running {
-        let status = tokio::time::timeout(std::time::Duration::from_secs(300), child.wait())
-            .await
-            .map_err(|_| "took far too long".to_string())?
-            .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err(format!("{route:?} failed with {streams} at once"));
-        }
-    }
+    let lowest_free = finish_watching_memory(running)
+        .await
+        .map_err(|e| match e.as_str() {
+            LOW_MEMORY => e,
+            _ => format!("{route:?} failed with {streams} at once: {e}"),
+        })?;
     let content = SAMPLE_SECONDS * f64::from(SAMPLE_LOOPS);
-    Ok(content / started.elapsed().as_secs_f64())
+    Ok(Run {
+        speed: content / started.elapsed().as_secs_f64(),
+        lowest_free,
+    })
+}
+
+/// Waits for every one of `running` to finish, watching free memory as they
+/// run, and says how low it went.
+///
+/// Watched rather than only waited on: free memory is read every fifth of a
+/// second, and work that leaves too little is stopped here, as
+/// [`LOW_MEMORY`], by dropping it, before the system stops the whole host.
+async fn finish_watching_memory(mut running: Vec<Child>) -> Result<Option<u64>, String> {
+    let started = std::time::Instant::now();
+    let mut lowest_free: Option<u64> = None;
+    loop {
+        let mut finished = 0;
+        for child in &mut running {
+            match child.try_wait().map_err(|e| e.to_string())? {
+                Some(status) if !status.success() => {
+                    return Err(format!("ffmpeg stopped ({status})"));
+                }
+                Some(_) => finished += 1,
+                None => {}
+            }
+        }
+        if finished == running.len() {
+            return Ok(lowest_free);
+        }
+        if let Some(free) = free_memory() {
+            lowest_free = Some(lowest_free.map_or(free, |lowest| lowest.min(free)));
+            if free < KEEP_FREE / 2 {
+                return Err(LOW_MEMORY.into());
+            }
+        }
+        if started.elapsed() > std::time::Duration::from_secs(300) {
+            return Err("took far too long".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// Bytes as people read an amount of memory: "2.5 GB".
+fn gigabytes(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / f64::from(1u32 << 30))
 }
 
 /// Runs one route until it produces its first bytes, or fails.
@@ -1131,6 +1322,16 @@ mod tests {
     }
 
     #[test]
+    fn free_memory_is_read_as_the_kernel_counts_it() {
+        let meminfo = "MemTotal:        4005324 kB\n\
+                       MemFree:          201388 kB\n\
+                       MemAvailable:    1638400 kB\n\
+                       Buffers:           52112 kB\n";
+        assert_eq!(mem_available(meminfo), Some(1_638_400 * 1024));
+        assert_eq!(mem_available("MemTotal: 4005324 kB\n"), None);
+    }
+
+    #[test]
     fn a_host_measured_with_older_settings_is_measured_again() {
         // As a host before the settings were counted kept it.
         let old: Measured = serde_json::from_str(
@@ -1142,6 +1343,10 @@ mod tests {
             settings: MEASURED_WITH,
             ..old
         };
+        assert!(
+            !new.memory,
+            "an older measurement was never limited by memory"
+        );
         assert!(new.current());
     }
 
@@ -1162,6 +1367,7 @@ mod tests {
             speed: 0.6,
             at: 0,
             settings: MEASURED_WITH,
+            memory: false,
         };
         converter.restore(true, None, Some(slow));
         assert!(matches!(converter.admit(0), Err(ConvertError::TooSlow)));

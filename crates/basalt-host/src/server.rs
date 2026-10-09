@@ -2097,6 +2097,17 @@ impl Host {
             detected: capability.is_some(),
             measured: converter.measured(),
             measuring: converter.is_measuring(),
+            note: if converter.is_measuring() {
+                None
+            } else if self.config.lock().expect("config lock").convert_measuring {
+                Some(
+                    "The last measurement did not finish, likely short of memory. Measure \
+                     again when the computer is less busy."
+                        .into(),
+                )
+            } else {
+                converter.problem()
+            },
             by_hand: converter.by_hand(),
             limit: converter.limit(),
             active: converter.active(),
@@ -2121,16 +2132,29 @@ impl Host {
     /// Measures what this machine can convert, in the background, and keeps
     /// the answer.
     pub fn measure_conversion(self: &Arc<Self>) {
+        if self.converter.is_measuring() {
+            return;
+        }
+        // Marked as under way before it starts, and kept, so that a host the
+        // system stops part-way knows at its next start.
+        self.config.lock().expect("config lock").convert_measuring = true;
+        if let Err(e) = self.persist() {
+            tracing::warn!("could not note that conversion is being measured: {e}");
+        }
         let host = Arc::clone(self);
         tokio::spawn(async move {
-            match host.converter.measure().await {
-                Ok(measured) => {
-                    host.config.lock().expect("config lock").convert_measured = Some(measured);
-                    if let Err(e) = host.persist() {
-                        tracing::warn!("could not keep what conversion measured: {e}");
-                    }
+            let result = host.converter.measure().await;
+            host.converter.set_problem(result.as_ref().err().cloned());
+            {
+                let mut config = host.config.lock().expect("config lock");
+                config.convert_measuring = false;
+                match result {
+                    Ok(measured) => config.convert_measured = Some(measured),
+                    Err(e) => tracing::warn!("could not measure video conversion: {e}"),
                 }
-                Err(e) => tracing::warn!("could not measure video conversion: {e}"),
+            }
+            if let Err(e) = host.persist() {
+                tracing::warn!("could not keep what conversion measured: {e}");
             }
         });
     }
@@ -2653,8 +2677,16 @@ pub async fn serve(server: BoundServer) -> Result<()> {
             // once more when conversions have changed since. Only an
             // installed host: a test or a development copy using the
             // computer's own ffmpeg would spend minutes of every run on it.
+            let unfinished = host.config.lock().expect("config lock").convert_measuring;
+            if unfinished {
+                tracing::warn!(
+                    "the last measurement of video conversion did not finish, so it is not \
+                     started again by itself; the system may have stopped it for want of memory"
+                );
+            }
             if capability.can_convert()
                 && host.converter.installed()
+                && !unfinished
                 && !host
                     .converter
                     .measured()

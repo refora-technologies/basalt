@@ -116,6 +116,9 @@ pub struct ConversionStatus {
     pub measured: Option<crate::convert::Measured>,
     /// Measuring now.
     pub measuring: bool,
+    /// Why it is not measured, in words, when that is worth saying: the last
+    /// measurement never finished, or this machine has too little memory.
+    pub note: Option<String>,
     /// At once, chosen by hand; None means as measured.
     pub by_hand: Option<u32>,
     /// At once, as it stands: by hand, or as measured.
@@ -394,6 +397,7 @@ mod tests {
                 detected: true,
                 measured: None,
                 measuring: false,
+                note: None,
                 by_hand: None,
                 limit: 1,
                 active: Vec::new(),
@@ -441,7 +445,8 @@ mod tests {
                 "enabled",
                 "limit",
                 "measured",
-                "measuring"
+                "measuring",
+                "note"
             ]
         );
     }

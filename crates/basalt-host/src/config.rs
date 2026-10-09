@@ -109,6 +109,12 @@ pub struct HostConfig {
     /// What this machine was measured to manage, so it is measured once.
     #[serde(default)]
     pub convert_measured: Option<crate::convert::Measured>,
+    /// Set while measuring, and cleared when a measurement ends. Still set at
+    /// a start means the last one never ended: the system stopped the host
+    /// part-way, for want of memory most likely, and it is not started again
+    /// by itself, or it would be stopped again at every start.
+    #[serde(default)]
+    pub convert_measuring: bool,
 
     #[serde(default)]
     pub devices: Vec<Device>,
@@ -154,6 +160,7 @@ impl HostConfig {
             convert_enabled: true,
             convert_at_once: None,
             convert_measured: None,
+            convert_measuring: false,
             devices: Vec::new(),
             household_key: Default::default(),
             issued: Vec::new(),

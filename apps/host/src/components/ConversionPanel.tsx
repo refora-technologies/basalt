@@ -69,8 +69,10 @@ export function ConversionPanel({
             {conversion.measuring
               ? 'Measuring now: converting a 4K sample, one at a time, then more.'
               : measured
-                ? `Measured: ${measured.atOnce} at once, one at ${measured.speed}× real time, on ${measured.by}.`
-                : 'Not measured yet.'}
+                ? `Measured: ${measured.atOnce} at once, one at ${measured.speed}× real time, on ${measured.by}${
+                    measured.memory ? ', as many as memory allows' : ''
+                  }.`
+                : (conversion.note ?? 'Not measured yet.')}
           </p>
         </div>
         <button
