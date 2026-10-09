@@ -641,11 +641,12 @@ impl Converter {
         if self.running.load(Ordering::SeqCst).saturating_sub(own) >= limit {
             return Err(ConvertError::Busy);
         }
-        // One more conversion is a gigabyte or so on a 4K film. Refused here
-        // when the room is not there, rather than started and then stopped
-        // by the system along with the host. Not while the device has one of
-        // its own running, which is about to give its memory back.
-        if own == 0 && free_memory().is_some_and(|free| free < CONVERT_NEEDS) {
+        // Refused only when not even a lean conversion fits, rather than
+        // started and then stopped by the system along with the host. Not
+        // while the device has one of its own running, which is about to give
+        // its memory back. A fixed 768 MB used to be asked for, and a 4 GB
+        // machine with a desktop open never had it, though it could convert.
+        if own == 0 && free_memory().is_some_and(|free| free < LEAN_NEEDS + SPARE) {
             return Err(ConvertError::Memory);
         }
         Ok(())
@@ -789,12 +790,19 @@ impl Converter {
             routes.insert(0, preferred);
         }
 
+        // Fewer decoding threads when a full conversion would not fit: a
+        // little slower, but a film that plays rather than one refused.
+        let lean = free_memory().is_some_and(|free| free < one_needs() + SPARE);
+        if lean {
+            tracing::info!("memory is short: converting with fewer threads");
+        }
+
         let mut last_error = String::from("no route worked");
         let mut slot = Some(slot);
         for route in routes {
             // With subtitles first, and without if they were what failed.
             for subtitles in [true, false] {
-                match try_route(&ffmpeg, route, input, start, subtitles).await {
+                match try_route(&ffmpeg, route, input, start, subtitles, lean).await {
                     Ok((child, stdout, first, said)) => {
                         *self.preferred.lock().expect("route lock") = Some(route);
                         tracing::info!("converting {} on {}", input.display(), route.describe());
@@ -1038,10 +1046,20 @@ async fn make_sample(ffmpeg: &Path, dir: &Path) -> Result<PathBuf, String> {
 /// fewer cores take less.
 const MEASURE_NEEDS: u64 = 2560 << 20;
 
-/// Free memory a conversion needs to be started for a device. Less, and it is
-/// refused as the host being short of memory, rather than started and then
-/// stopped part-way by the system, with the host.
-const CONVERT_NEEDS: u64 = 768 << 20;
+/// Roughly the memory one conversion takes on this machine. It grows with
+/// the processor, which decodes with a thread per core: measured at 420 MB
+/// on two cores, 600 MB on four and 1.1 GB on twelve.
+fn one_needs() -> u64 {
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get()) as u64;
+    (330 << 20) + cores * (65 << 20)
+}
+
+/// One conversion decoding with two threads, for when memory is tight: about
+/// 410 MB on four cores, and a quarter slower.
+const LEAN_NEEDS: u64 = 420 << 20;
+
+/// Left free besides, for the system and the host.
+const SPARE: u64 = 160 << 20;
 
 /// Why measuring stopped, when memory ran short part-way.
 const SHORT_WHILE_MEASURING: &str =
@@ -1226,9 +1244,19 @@ async fn try_route(
     input: &Path,
     start: f64,
     subtitles: bool,
+    lean: bool,
 ) -> Result<(Child, ChildStdout, Vec<u8>, std::sync::Arc<Mutex<String>>), String> {
+    let mut args = arguments(route, input, start, subtitles);
+    // The processor decodes with a thread per core, each holding 4K frames:
+    // two of them, when memory is short.
+    if lean
+        && route == Route::Software
+        && let Some(at) = args.iter().position(|a| a == "-i")
+    {
+        args.splice(at..at, ["-threads".to_string(), "2".to_string()]);
+    }
     let mut child = quiet(ffmpeg)
-        .args(arguments(route, input, start, subtitles))
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
