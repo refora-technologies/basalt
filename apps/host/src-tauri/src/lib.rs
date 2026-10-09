@@ -389,18 +389,29 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// host misbehaving on another machine completely undiagnosable — the first
 /// report of trouble had nothing to look at but guesswork.
 ///
-/// One file, truncated at each start. A host that has been running for a month
+/// One file, emptied at each start. A host that has been running for a month
 /// should not have a log nobody will ever read; what matters is the session
 /// that went wrong, and that is the one still open.
-fn start_logging() -> Option<std::path::PathBuf> {
+///
+/// It is opened without emptying it, and emptied by `clear` once this copy
+/// knows it is the one that runs. Opening Basalt Host a second time starts a
+/// process that only hands over to the running one, and it must not wipe the
+/// log of the copy that is still running.
+fn start_logging() -> Option<(std::path::PathBuf, LogFile)> {
     let path = basalt_host::config::default_path()
         .parent()?
         .join("host.log");
     std::fs::create_dir_all(path.parent()?).ok()?;
 
-    let file = std::fs::File::create(&path).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+    let log = LogFile(std::sync::Arc::new(std::sync::Mutex::new(file)));
+    let writer = log.clone();
     tracing_subscriber::fmt()
-        .with_writer(std::sync::Mutex::new(file))
+        .with_writer(move || writer.clone())
         .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -417,7 +428,37 @@ fn start_logging() -> Option<std::path::PathBuf> {
         previous(info);
     }));
 
-    Some(path)
+    Some((path, log))
+}
+
+/// The open log file, shared by every line written to it.
+#[derive(Clone)]
+struct LogFile(std::sync::Arc<std::sync::Mutex<std::fs::File>>);
+
+impl LogFile {
+    /// Empties the file. It is open for appending, so what is written next
+    /// starts at the top.
+    fn clear(&self) {
+        if let Ok(file) = self.0.lock() {
+            let _ = file.set_len(0);
+        }
+    }
+}
+
+impl std::io::Write for LogFile {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        match self.0.lock() {
+            Ok(mut file) => file.write(bytes),
+            Err(_) => Ok(bytes.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.0.lock() {
+            Ok(mut file) => file.flush(),
+            Err(_) => Ok(()),
+        }
+    }
 }
 
 /// Notices when the window stops answering, and writes it down.
@@ -683,12 +724,6 @@ async fn install_update_linux(app: tauri::AppHandle, path: String) -> Answer<()>
 
 pub fn run() {
     let log = start_logging();
-    tracing::info!(
-        "Basalt Host {} ({}) starting; log at {:?}",
-        env!("CARGO_PKG_VERSION"),
-        build_stamp(),
-        log
-    );
 
     tauri::Builder::default()
         // First, so a second launch goes no further: opening Basalt Host
@@ -700,7 +735,19 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
+            // Only the copy that runs gets this far; a second launch has
+            // already handed over and gone.
+            if let Some((_, file)) = &log {
+                file.clear();
+            }
+            tracing::info!(
+                "Basalt Host {} ({}) starting; log at {:?}",
+                env!("CARGO_PKG_VERSION"),
+                build_stamp(),
+                log.as_ref().map(|(path, _)| path)
+            );
+
             // Logged step by step because this runs on the main thread, and a
             // main thread that never finishes here is a window that never
             // responds. Silence used to leave no way to tell which step it was.
