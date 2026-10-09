@@ -1466,12 +1466,16 @@ impl Basalt {
         }
         // What the host says about access now, which is newer than what the
         // rest of the app was told when it connected.
-        let writable = session.info().writable;
+        let (writable, manage) = (session.info().writable, session.info().manage);
         let changed = {
             let mut info = self.info.lock().expect("info lock");
             match info.as_mut() {
-                Some(info) if info.host_id == host_id && info.writable != writable => {
+                Some(info)
+                    if info.host_id == host_id
+                        && (info.writable != writable || info.manage != manage) =>
+                {
                     info.writable = writable;
+                    info.manage = manage;
                     true
                 }
                 _ => false,

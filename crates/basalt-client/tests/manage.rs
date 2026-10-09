@@ -271,3 +271,54 @@ async fn the_last_device_managing_the_host_cannot_leave_it_from_afar() {
         .collect();
     assert_eq!(managers, [laptop_id]);
 }
+
+// What was reported: a device let manage the host only showed "Manage host"
+// after signing out and in again, while a change of write access shows at once.
+#[tokio::test]
+async fn a_watching_device_hears_at_once_that_it_may_manage_the_host() {
+    let fixture = start_host().await;
+    let (phone, phone_id) = fixture.paired("phone").await;
+    let phone = Arc::new(phone);
+    assert!(!phone.status().unwrap().manage);
+
+    let heard = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::clone(&heard);
+    let _watch = phone.watch_with(
+        |_| {},
+        move |notice| {
+            if matches!(notice, basalt_client::WatchNotice::AccessChanged) {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        },
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let wait_for = |want: bool| {
+        let phone = &phone;
+        async move {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                if phone.status().unwrap().manage == want {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            false
+        }
+    };
+
+    fixture.host.set_owner(&phone_id, true).unwrap();
+    assert!(wait_for(true).await, "let manage, the device must show it");
+    assert!(
+        heard.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+        "and the app is told"
+    );
+    assert!(phone.manage(ManageAction::View).await.is_ok());
+
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    fixture.host.set_owner(&phone_id, false).unwrap();
+    assert!(
+        wait_for(false).await,
+        "no longer managing, the device must show that too"
+    );
+}

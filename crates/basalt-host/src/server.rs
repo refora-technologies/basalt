@@ -967,6 +967,10 @@ impl Host {
                     .drop_endorsement_by(&key);
             }
             self.persist()?;
+            // Told at once, as a change of write access is: the device
+            // connects again and shows or hides "Manage host" without
+            // waiting to be restarted.
+            let _ = self.access_changes.send(token_hash.to_string());
         }
         Ok(changed)
     }
