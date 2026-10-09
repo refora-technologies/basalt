@@ -1,6 +1,6 @@
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
-  Check,
   Cpu,
   Film,
   Images,
@@ -141,48 +141,62 @@ export function SectionsGroup({ m, view }: Tools): React.JSX.Element {
   const phone = layout === 'phone'
   const { sections, library } = view.status
 
+  // Lit the moment it is tapped; the host's answer then settles it.
+  const [pending, setPending] = useState<LibrarySections | null>(null)
+  useEffect(() => setPending(null), [sections])
+  const shown = pending ?? sections
+
   return (
     <Group icon={LayoutGrid} title="Sections on your devices">
-      <div className="p-3">
-        <div className="grid grid-cols-3 gap-2">
-          {SECTIONS.map((section) => {
-            const on = sections[section.key]
+      <div className={phone ? 'p-4' : 'px-4 py-3.5'}>
+        <div
+          className={cn(
+            'grid grid-cols-5 overflow-hidden border border-white/[0.08] bg-white/[0.02]',
+            phone ? 'rounded-[18px]' : 'rounded-[14px]',
+          )}
+        >
+          {SECTIONS.map((section, i) => {
+            const on = shown[section.key]
             const Icon = section.icon
             const waiting = (section.key === 'movies' || section.key === 'series') && !library.enabled
             return (
-              <motion.button
+              <button
                 key={section.key}
                 type="button"
                 role="switch"
                 aria-checked={on}
                 aria-label={`Show ${section.label} on devices`}
-                whileTap={{ scale: 0.96 }}
-                onClick={() => void m.act({ do: 'setSections', sections: { ...sections, [section.key]: !on } })}
+                title={waiting ? 'Filled once films and series are recognised' : undefined}
+                onClick={() => {
+                  const next = { ...shown, [section.key]: !on }
+                  setPending(next)
+                  void m.act({ do: 'setSections', sections: next }).then((took) => {
+                    if (!took) setPending(null)
+                  })
+                }}
                 className={cn(
-                  'relative flex flex-col items-start overflow-hidden border text-left transition-[background-color,border-color] duration-200',
-                  phone ? 'rounded-xl p-3' : 'rounded-lg p-2.5',
-                  on ? 'border-white/[0.16] bg-white/[0.055]' : 'border-white/[0.06] bg-transparent',
+                  'relative flex min-w-0 flex-col items-center gap-1.5 px-1 transition-colors duration-200',
+                  phone ? 'pb-[15px] pt-4 active:bg-white/[0.05]' : 'pb-[11px] pt-3 hover:bg-white/[0.03]',
+                  i > 0 && 'border-l border-white/[0.06]',
+                  on ? 'bg-white/[0.065] text-text' : 'text-[#5c5c62]',
                 )}
               >
-                <span className="flex w-full items-start justify-between">
-                  <Icon size={phone ? 18 : 15} className={on ? 'text-text' : 'text-textFaint'} />
-                  <span
-                    className={cn(
-                      'flex items-center justify-center rounded-full transition-colors',
-                      phone ? 'h-[18px] w-[18px]' : 'h-4 w-4',
-                      on ? 'bg-basalt text-ink' : 'border border-white/20',
-                    )}
-                  >
-                    {on && <Check size={phone ? 12 : 10} strokeWidth={3} />}
-                  </span>
-                </span>
-                <span className={cn('mt-2.5 truncate', phone ? 'text-[13.5px]' : 'text-[12px]', on ? 'text-text' : 'text-textDim')}>
+                <Icon size={phone ? 20 : 17} />
+                <span className={cn('max-w-full truncate', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
                   {section.label}
                 </span>
-                <span className="tnum mt-0.5 truncate font-mono text-[10.5px] text-textFaint">
-                  {waiting ? 'needs recognising' : section.amount(library).toLocaleString()}
+                <span className={cn('tnum font-mono text-[10px]', on ? 'text-textFaint' : 'text-[#55555b]')}>
+                  {!on ? 'hidden' : waiting ? '–' : section.amount(library).toLocaleString()}
                 </span>
-              </motion.button>
+                {/* The shown ones carry a short line under them. */}
+                <span
+                  aria-hidden
+                  className={cn(
+                    'absolute bottom-0 left-1/2 -ml-[11px] h-[2px] w-[22px] rounded-full bg-basalt transition-transform duration-200',
+                    on ? 'scale-x-100' : 'scale-x-0',
+                  )}
+                />
+              </button>
             )
           })}
         </div>
