@@ -169,6 +169,31 @@ describe('who is using the device', () => {
     expect(result.current.profiles).toEqual([])
     expect(result.current.state).toBeNull()
   })
+  it('does not draw them even in the render before it is told', async () => {
+    // Checked render by render: the old profiles used to be cleared by an
+    // effect, after the first render with the new host had drawn them.
+    const seen: Array<{ host: string | null; names: string[]; loaded: boolean }> = []
+    const { rerender } = renderHook(
+      ({ host }) => {
+        const identity = useIdentity(host)
+        seen.push({ host, names: identity.profiles.map((p) => p.name), loaded: identity.loaded })
+        return identity
+      },
+      { initialProps: { host: 'host-a' as string | null } },
+    )
+    await answer('identity', { choose: true, profile: null, lastProfile: null, ended: false })
+    await answer('profiles', [{ id: 'p1', name: 'Maya', color: 0, hasPin: true }])
+    await answer('profiles', [{ id: 'p1', name: 'Maya', color: 0, hasPin: true }])
+    await waitFor(() => expect(seen.at(-1)?.loaded).toBe(true))
+
+    rerender({ host: 'host-b' })
+    const onB = seen.filter((render) => render.host === 'host-b')
+    expect(onB.length).toBeGreaterThan(0)
+    for (const render of onB) {
+      expect(render.names).toEqual([])
+      expect(render.loaded).toBe(false)
+    }
+  })
 })
 
 describe('thumbnails', () => {
