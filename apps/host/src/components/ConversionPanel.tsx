@@ -65,7 +65,7 @@ export function ConversionPanel({
               {conversion.limit === 1 ? 'device at once' : 'devices at once'}
             </span>
           </div>
-          <p className="mt-1 truncate text-[11px] text-textFaint">
+          <p className="mt-1 text-[11px] leading-snug text-textFaint">
             {conversion.measuring
               ? 'Measuring now: converting a 4K sample, one at a time, then more.'
               : measured

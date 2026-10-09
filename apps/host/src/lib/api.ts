@@ -633,6 +633,13 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return sample.status
       }
       case 'measure_conversion':
+        // `?lowmem` shows a computer without the memory to measure.
+        if (previewFlag('lowmem')) {
+          throw new ApiError(
+            'error',
+            'Not measured: it needs about 2.5 GB of free memory, and this computer has 1.4 GB free. Close other apps, or give it more memory, and measure again.',
+          )
+        }
         sample.status.conversion.measuring = true
         // Finishes on its own, as the real one does.
         setTimeout(() => {
@@ -722,8 +729,17 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   // deserialised fresh every time. Handing back the same object twice let
   // React skip a render that the desktop app would always do, which made the
   // preview behave differently from the app for no reason that was visible.
-  return new Promise((resolve) =>
-    setTimeout(() => resolve(structuredClone(answer()) as T), 60),
+  //
+  // A refusal is handed back as one, as the app's would be: thrown inside
+  // the timer, it reached nobody, and the preview waited for ever.
+  return new Promise((resolve, reject) =>
+    setTimeout(() => {
+      try {
+        resolve(structuredClone(answer()) as T)
+      } catch (e) {
+        reject(e)
+      }
+    }, 60),
   )
 }
 

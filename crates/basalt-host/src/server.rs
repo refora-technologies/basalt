@@ -2131,9 +2131,16 @@ impl Host {
 
     /// Measures what this machine can convert, in the background, and keeps
     /// the answer.
-    pub fn measure_conversion(self: &Arc<Self>) {
+    ///
+    /// Refused at once, with the reason in words, when it cannot be done now:
+    /// a person who asked should hear why, not find a note later.
+    pub fn measure_conversion(self: &Arc<Self>) -> std::result::Result<(), String> {
         if self.converter.is_measuring() {
-            return;
+            return Ok(());
+        }
+        if let Some(why) = crate::convert::cannot_measure() {
+            self.converter.set_problem(Some(why.clone()));
+            return Err(why);
         }
         // Marked as under way before it starts, and kept, so that a host the
         // system stops part-way knows at its next start.
@@ -2157,6 +2164,7 @@ impl Host {
                 tracing::warn!("could not keep what conversion measured: {e}");
             }
         });
+        Ok(())
     }
 
     /// What the host's own window shows about the index.
@@ -2691,8 +2699,9 @@ pub async fn serve(server: BoundServer) -> Result<()> {
                     .converter
                     .measured()
                     .is_some_and(|measured| measured.current())
+                && let Err(why) = host.measure_conversion()
             {
-                host.measure_conversion();
+                tracing::info!("{why}");
             }
         });
     }

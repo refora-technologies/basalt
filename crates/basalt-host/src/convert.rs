@@ -845,15 +845,10 @@ impl Converter {
         // worth of work, and a machine without room for it is stopped by its
         // system rather than slowed. That stopped the whole host, measuring
         // again at every start.
-        let free = free_memory();
-        if let Some(free) = free.filter(|free| *free < MEASURE_NEEDS) {
-            return Err(format!(
-                "Not measured: measuring needs about {} of free memory, and this computer has {} \
-                 free.",
-                gigabytes(MEASURE_NEEDS),
-                gigabytes(free)
-            ));
+        if let Some(why) = cannot_measure() {
+            return Err(why);
         }
+        let free = free_memory();
         let sample = make_sample(&ffmpeg, &self.config_dir.join("converter")).await?;
 
         // The first route that converts the sample at all. That first run also
@@ -1178,6 +1173,18 @@ async fn finish_watching_memory(mut running: Vec<Child>) -> Result<Option<u64>, 
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
+}
+
+/// Why this machine cannot be measured now, in words for the person who
+/// asked, or `None` when it can be.
+pub fn cannot_measure() -> Option<String> {
+    let free = free_memory().filter(|free| *free < MEASURE_NEEDS)?;
+    Some(format!(
+        "Not measured: it needs about {} of free memory, and this computer has {} free. Close \
+         other apps, or give it more memory, and measure again.",
+        gigabytes(MEASURE_NEEDS),
+        gigabytes(free)
+    ))
 }
 
 /// Bytes as people read an amount of memory: "2.5 GB".

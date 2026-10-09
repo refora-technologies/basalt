@@ -249,7 +249,13 @@ async fn set_conversion_at_once(
 /// Measures again what this machine can convert, in the background.
 #[tauri::command]
 async fn measure_conversion(state: State<'_, AppState>) -> Answer<HostStatus> {
-    state.host.measure_conversion();
+    state
+        .host
+        .measure_conversion()
+        .map_err(|message| UiError {
+            kind: "error".into(),
+            message,
+        })?;
     status(state).await
 }
 
