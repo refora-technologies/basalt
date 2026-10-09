@@ -105,10 +105,16 @@ export function SectionTabs({
     return () => cancelAnimationFrame(frame)
   }, [index, place, compact])
 
+  // The section chosen now, for the resize below. It is set up once, and
+  // read `index` as it was then: turning the phone round put the highlight
+  // back on the first section chosen, under another one's name.
+  const current = useRef(index)
+  current.current = index
+
   // The first placement without a slide in from nowhere.
   useLayoutEffect(() => {
-    place(index, false)
-    const resize = new ResizeObserver(() => place(index, false))
+    place(current.current, false)
+    const resize = new ResizeObserver(() => place(current.current, false))
     if (track.current) resize.observe(track.current)
     return () => resize.disconnect()
     // eslint-disable-next-line react-hooks/exhaustive-deps
