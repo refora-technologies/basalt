@@ -1,5 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "mainBinaryName": "basalt-host",
   "bundle": {
     "targets": ["deb", "rpm", "appimage"],
     "icon": [

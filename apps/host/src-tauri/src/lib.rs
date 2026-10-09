@@ -691,6 +691,13 @@ pub fn run() {
     );
 
     tauri::Builder::default()
+        // First, so a second launch goes no further: opening Basalt Host
+        // again brings this window back instead of starting another copy that
+        // cannot share the port. On a Linux desktop with no tray, it is the
+        // way back to a window that was closed.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
