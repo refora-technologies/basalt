@@ -84,7 +84,7 @@ const sample: ManageView = {
       note: null,
       byHand: null,
       limit: 3,
-      active: [{ device: 'Kitchen tablet', file: 'Films/Arrival (2016)/Arrival.2016.2160p.mkv', since: now() - 900 }],
+      active: [{ device: 'Kitchen tablet', file: 'Films/The Long Light (2019)/The.Long.Light.2019.2160p.mkv', since: now() - 900 }],
     },
     endorsement: { by: 'Maya’s phone', until: now() + 86400 * 26 },
     platform: 'windows',
