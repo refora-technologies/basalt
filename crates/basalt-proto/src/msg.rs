@@ -61,6 +61,10 @@ pub struct HelloResponse {
     /// [`AuthRequest::key`]. Absent from a host from before keys.
     #[serde(default)]
     pub keys: bool,
+    /// Whether this host can be managed from a device: see
+    /// [`ManageRequest`]. Absent from a host from before that.
+    #[serde(default)]
+    pub manage: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +212,114 @@ pub struct EnrolRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndorseRequest {
     pub statement: SignedStatement,
+}
+
+// ---------------------------------------------------------------------------
+// Managing the host from a device
+// ---------------------------------------------------------------------------
+
+/// Something a device that manages the host asks it to do, as its own window
+/// would. Only a device signed in with its own key, and marked as managing
+/// the host, is answered.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManageRequest {
+    pub action: ManageAction,
+}
+
+/// What the host's window can do, and so a device that manages it: the same
+/// things, by the same names, minus what belongs at that computer (starting
+/// at login, opening a folder there, installing an update).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "do", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ManageAction {
+    /// Nothing: only the host as it is.
+    View,
+    RenameDevice {
+        id: String,
+        name: String,
+    },
+    SetWritable {
+        id: String,
+        writable: bool,
+    },
+    /// Lets a device manage the host, or stops it.
+    SetManages {
+        id: String,
+        manages: bool,
+    },
+    RemoveDevice {
+        id: String,
+    },
+    DenyPairing {
+        id: String,
+    },
+    SetRequirePin {
+        require: bool,
+    },
+    SetHostName {
+        name: String,
+    },
+    SetLibrary {
+        enabled: bool,
+    },
+    Rescan,
+    SetPosters {
+        enabled: bool,
+    },
+    SetTmdbKey {
+        key: String,
+    },
+    SetConversion {
+        enabled: bool,
+    },
+    SetConversionAtOnce {
+        at_once: Option<u32>,
+    },
+    MeasureConversion,
+    SetSections {
+        sections: Sections,
+    },
+    AddProfile {
+        name: String,
+        color: u8,
+    },
+    RemoveProfile {
+        id: String,
+    },
+    ResetProfilePin {
+        id: String,
+    },
+    SetRequireProfile {
+        require: bool,
+    },
+    SetOwnerAddsProfiles {
+        owner_only: bool,
+    },
+    /// The drives the host's computer could share, in the answer.
+    ListDrives,
+    ChooseDrive {
+        path: String,
+        name: String,
+    },
+}
+
+impl ManageAction {
+    /// What was asked, for the host's log: never a value that should not be
+    /// written down, such as a TMDb key.
+    pub fn describe(&self) -> String {
+        match self {
+            ManageAction::SetTmdbKey { key } if key.is_empty() => "removed the TMDb key".into(),
+            ManageAction::SetTmdbKey { .. } => "set a TMDb key".into(),
+            other => format!("{other:?}"),
+        }
+    }
+}
+
+/// The host as its window shows it, after the action: the window's own views,
+/// as JSON, for the device to show in the same screens.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManageResponse {
+    pub view: serde_json::Value,
 }
 
 // ---------------------------------------------------------------------------

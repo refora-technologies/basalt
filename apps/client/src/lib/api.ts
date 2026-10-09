@@ -46,6 +46,9 @@ export interface Status {
   signsInWithKey?: boolean
   /** The drive's owner made this device an owner: it vouches for the host. */
   owner?: boolean
+  /** This device can manage the host from here: it manages the host, signed
+   *  in with its key, and the host can be managed from a device. */
+  canManage?: boolean
 }
 
 /** Where a device keeps its key: a security chip, sealed by its system, or a file. */
@@ -675,6 +678,9 @@ const MOCK_STATUS: Status = {
   key: 'chip',
   signsInWithKey: true,
   owner: typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('owner'),
+  // `?owner` is also a device that can manage the host, as an up-to-date one is.
+  canManage:
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('owner'),
 }
 
 /**

@@ -1008,6 +1008,19 @@ impl Basalt {
     }
 
     /// The household's profiles.
+    /// Asks the host this device manages to do what its own window would,
+    /// and answers with the host as that window shows it, after the change.
+    /// Refused unless this device manages the host, signed in with its key.
+    pub async fn manage(
+        &self,
+        action: basalt_proto::msg::ManageAction,
+    ) -> Result<serde_json::Value> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.manage(action).await;
+        Ok(lease.check(result)?.view)
+    }
+
     pub async fn profiles(&self) -> Result<Vec<ProfileView>> {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;

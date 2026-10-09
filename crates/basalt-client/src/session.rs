@@ -39,6 +39,9 @@ pub struct SessionInfo {
     pub by_key: bool,
     /// The host's owner made this device an owner.
     pub owner: bool,
+    /// This device may manage the host from here: the host can be managed
+    /// from a device, and this one manages it, signed in with its key.
+    pub manage: bool,
 }
 
 pub struct Session {
@@ -440,6 +443,7 @@ impl Session {
                 address,
                 by_key,
                 owner: auth.owner,
+                manage: hello.manage && by_key && auth.owner,
             },
         }
     }
@@ -572,6 +576,7 @@ impl Session {
                     address: addr,
                     by_key: false,
                     owner: false,
+                    manage: false,
                 },
             },
             challenge,
@@ -767,6 +772,22 @@ impl Session {
     }
 
     /// The household's profiles.
+    /// Asks the host to do what its window would: see [`ManageRequest`].
+    ///
+    /// [`ManageRequest`]: basalt_proto::msg::ManageRequest
+    pub async fn manage(
+        &mut self,
+        action: basalt_proto::msg::ManageAction,
+    ) -> Result<basalt_proto::msg::ManageResponse> {
+        call_json(
+            &mut self.stream,
+            Op::Manage,
+            &basalt_proto::msg::ManageRequest { action },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
     pub async fn profiles(&mut self) -> Result<basalt_proto::msg::ProfilesResponse> {
         call_json(&mut self.stream, Op::Profiles, &serde_json::json!({}))
             .await

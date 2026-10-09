@@ -2945,6 +2945,7 @@ where
                     pairing_open: true,
                     host_name: host.host_name(),
                     keys: true,
+                    manage: true,
                 },
             )
             .await?;
@@ -3183,6 +3184,18 @@ where
                 host.forget_old_keys(device);
             }
             write_ok(stream, &[]).await?;
+        }
+
+        Op::Manage => {
+            let req: basalt_proto::msg::ManageRequest = decode(payload)?;
+            let by = manager(session)?;
+            // Every change made from afar is written down, by whom: the host's
+            // owner reading the log later should never have to guess.
+            if req.action != basalt_proto::msg::ManageAction::View {
+                tracing::info!("{} managed the host: {}", by, req.action.describe());
+            }
+            let view = host.manage(req.action).await?;
+            reply(stream, &basalt_proto::msg::ManageResponse { view }).await?;
         }
 
         Op::Endorse => {
@@ -3721,6 +3734,21 @@ where
 fn read_key(hex: &str) -> Result<basalt_trust::PublicKey> {
     basalt_trust::PublicKey::from_hex(hex)
         .map_err(|e| HostError::Denied(format!("that key is not one this host reads: {e}")))
+}
+
+/// The name of the device on this connection, when it may manage the host:
+/// signed in with its own key, that key the one on record for it, and marked as
+/// managing the host. Asked again for every request, since the device is looked
+/// up again for every request: unmarked, or removed, it is stopped at once.
+fn manager(session: &Session) -> Result<String> {
+    let device = session.device.as_ref().ok_or(HostError::Unauthenticated)?;
+    let keyed = session.by_key && session.signed_key.as_deref() == Some(device.public_key.as_str());
+    if !keyed || !device.owner {
+        return Err(HostError::Denied(
+            "this device does not manage this host".into(),
+        ));
+    }
+    Ok(device.name.clone())
 }
 
 fn require_write(session: &Session) -> Result<()> {

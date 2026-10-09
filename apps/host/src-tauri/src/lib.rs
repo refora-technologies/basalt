@@ -97,23 +97,11 @@ async fn choose_vault(
     path: String,
     name: String,
 ) -> Answer<HostStatus> {
-    let path = std::path::PathBuf::from(&path);
-    if !basalt_host::drives::is_available(&path) {
-        return Err(UiError::from(HostError::NotFound(format!(
-            "{} is not there any more. Plug it back in, or pick another drive.",
-            path.display()
-        ))));
-    }
-
-    let name = if name.trim().is_empty() {
-        path.to_string_lossy()
-            .trim_end_matches(['\\', '/'])
-            .to_string()
-    } else {
-        name.trim().to_string()
-    };
-
-    state.host.set_vault(&path, &name).await?;
+    // The same as a device that manages this host choosing one.
+    state
+        .host
+        .choose_drive(std::path::Path::new(&path), &name)
+        .await?;
     status(state).await
 }
 
