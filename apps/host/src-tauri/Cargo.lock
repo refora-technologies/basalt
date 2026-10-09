@@ -366,6 +366,7 @@ dependencies = [
  "basalt-net",
  "basalt-proto",
  "basalt-update",
+ "gtk",
  "serde",
  "serde_json",
  "tauri",

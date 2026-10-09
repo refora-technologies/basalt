@@ -1,3 +1,5 @@
+import { api } from './api'
+
 /**
  * The parts of the window frame the system does not draw for this app.
  *
@@ -23,6 +25,18 @@ async function currentWindow() {
 }
 
 /**
+ * Hands the press to the system to move the window, or to resize it from
+ * `edge`, then tells the page the button was let go: on Linux the system
+ * keeps the release, and the page would go on thinking the button was held
+ * (see `release_pointer`).
+ */
+async function frameDrag(edge?: Edge): Promise<void> {
+  const win = await currentWindow()
+  await (edge ? win.startResizeDragging(edge) : win.startDragging())
+  await api.releasePointer()
+}
+
+/**
  * Moves the window from a press on the title bar, or maximises it on a
  * double press, as a system title bar would. Presses on its buttons are
  * theirs.
@@ -30,9 +44,8 @@ async function currentWindow() {
 export function dragFromTitleBar(event: React.MouseEvent): void {
   if (!inTauri() || nativeDrag() || event.button !== 0) return
   if ((event.target as HTMLElement).closest('.no-drag, button, input, a')) return
-  void currentWindow().then((win) =>
-    event.detail === 2 ? win.toggleMaximize() : win.startDragging(),
-  )
+  if (event.detail === 2) void currentWindow().then((win) => win.toggleMaximize())
+  else void frameDrag()
 }
 
 type Edge = 'North' | 'South' | 'East' | 'West' | 'NorthEast' | 'NorthWest' | 'SouthEast' | 'SouthWest'
@@ -54,8 +67,13 @@ const EDGES: Array<[Edge, string]> = [
  * over the very edge of the page, that hand the pull to the system, which
  * keeps the window to its minimum size. Outside React, since they belong to
  * the frame rather than to any screen.
+ *
+ * As wide as the band Tauri itself resizes from on Linux, five pixels at the
+ * screen's scale: a press there is always a strip's, and never reaches the
+ * scrollbar or the title bar underneath it at the same time.
  */
 function addResizeEdges(): void {
+  document.documentElement.style.setProperty('--edge', `${5 * window.devicePixelRatio}px`)
   for (const [edge, cursor] of EDGES) {
     const strip = document.createElement('div')
     strip.className = 'resize-edge'
@@ -64,7 +82,7 @@ function addResizeEdges(): void {
     strip.addEventListener('mousedown', (event) => {
       if (event.button !== 0) return
       event.preventDefault()
-      void currentWindow().then((win) => win.startResizeDragging(edge))
+      void frameDrag(edge)
     })
     document.body.appendChild(strip)
   }

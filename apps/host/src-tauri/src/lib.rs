@@ -359,6 +359,59 @@ fn show_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Tells the page the mouse button was let go, after the window has been
+/// handed to the system to move or resize (see `windowFrame.ts`).
+///
+/// The system takes the press over for the move, and on Linux the page then
+/// never hears the button go up. It went on thinking it was held: a scrollbar
+/// pressed on the way followed the pointer about with nothing pressed at all.
+#[tauri::command]
+fn release_pointer(window: tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    release_in_page(&window);
+    #[cfg(not(target_os = "linux"))]
+    let _ = window;
+}
+
+/// Tells the page the left button was let go, where the pointer is.
+#[cfg(target_os = "linux")]
+fn release_in_page(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(|webview| {
+        use gtk::gdk;
+        use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+        use gtk::prelude::*;
+
+        let Some(target) = webview.inner().window() else {
+            return;
+        };
+        let Some(pointer) = target.display().default_seat().and_then(|s| s.pointer()) else {
+            return;
+        };
+        let (_, x, y, _) = target.device_position_double(&pointer);
+        let (_, root_x, root_y) = target.origin();
+
+        let mut event = gdk::Event::new(gdk::EventType::ButtonRelease);
+        // SAFETY: a button release made just above, whose fields are all
+        // filled in here; the event takes its own reference to the window
+        // and gives it back when it is dropped.
+        unsafe {
+            let raw: *mut gdk::ffi::GdkEvent = event.to_glib_none_mut().0;
+            let button = &mut (*raw).button;
+            button.window = target.to_glib_full();
+            button.send_event = 1;
+            button.time = gdk::ffi::GDK_CURRENT_TIME as u32;
+            button.x = x;
+            button.y = y;
+            button.x_root = f64::from(root_x) + x;
+            button.y_root = f64::from(root_y) + y;
+            button.state = gdk::ffi::GDK_BUTTON1_MASK;
+            button.button = 1;
+        }
+        event.set_device(Some(&pointer));
+        gtk::main_do_event(&mut event);
+    });
+}
+
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -910,6 +963,7 @@ pub fn run() {
             download_update,
             install_update,
             update_style,
+            release_pointer,
             status,
             list_drives,
             choose_vault,

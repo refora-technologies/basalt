@@ -258,6 +258,9 @@ export const api = {
   /** `restart`: the app puts the update in and restarts; `package`: the
    *  system's software installer takes it (a .deb or .rpm on Linux). */
   updateStyle: (): Promise<'restart' | 'package'> => call('update_style'),
+  /** Tells the page the mouse button was let go, after the window was handed
+   *  to the system to move or resize: on Linux it is never told otherwise. */
+  releasePointer: (): Promise<void> => call('release_pointer'),
 
   status: (): Promise<HostStatus> => call('status'),
   listDrives: (): Promise<DriveView[]> => call('list_drives'),

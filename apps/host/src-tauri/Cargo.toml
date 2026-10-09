@@ -38,3 +38,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# The window's toolkit on Linux, already part of Tauri there: used to tell the
+# page a mouse button was let go when the system took the press for moving or
+# resizing the window, which the page is otherwise never told.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"

@@ -59,22 +59,34 @@ html[data-shape='rounded'] body::after {
   pointer-events: none;
 }
 
-/* The edges to resize by: thin, above everything, gone when maximised. */
+/* The edges to resize by: thin, above everything, gone when maximised.
+   `--edge` is set to the width Tauri resizes from (see lib/windowFrame.ts). */
 .resize-edge {
   position: fixed;
   z-index: 1001;
+  --corner: max(12px, calc(var(--edge, 5px) * 2));
 }
 html[data-shape='square'] .resize-edge {
   display: none;
 }
-.resize-edge[data-edge='North'] { top: 0; left: 12px; right: 12px; height: 4px; }
-.resize-edge[data-edge='South'] { bottom: 0; left: 12px; right: 12px; height: 4px; }
-.resize-edge[data-edge='West'] { left: 0; top: 12px; bottom: 12px; width: 4px; }
-.resize-edge[data-edge='East'] { right: 0; top: 12px; bottom: 12px; width: 4px; }
-.resize-edge[data-edge='NorthWest'] { top: 0; left: 0; width: 12px; height: 12px; }
-.resize-edge[data-edge='NorthEast'] { top: 0; right: 0; width: 12px; height: 12px; }
-.resize-edge[data-edge='SouthWest'] { bottom: 0; left: 0; width: 12px; height: 12px; }
-.resize-edge[data-edge='SouthEast'] { bottom: 0; right: 0; width: 12px; height: 12px; }
+.resize-edge[data-edge='North'] { top: 0; left: var(--corner); right: var(--corner); height: var(--edge, 5px); }
+.resize-edge[data-edge='South'] { bottom: 0; left: var(--corner); right: var(--corner); height: var(--edge, 5px); }
+.resize-edge[data-edge='West'] { left: 0; top: var(--corner); bottom: var(--corner); width: var(--edge, 5px); }
+.resize-edge[data-edge='East'] { right: 0; top: var(--corner); bottom: var(--corner); width: var(--edge, 5px); }
+.resize-edge[data-edge='NorthWest'] { top: 0; left: 0; width: var(--corner); height: var(--corner); }
+.resize-edge[data-edge='NorthEast'] { top: 0; right: 0; width: var(--corner); height: var(--corner); }
+.resize-edge[data-edge='SouthWest'] { bottom: 0; left: 0; width: var(--corner); height: var(--corner); }
+.resize-edge[data-edge='SouthEast'] { bottom: 0; right: 0; width: var(--corner); height: var(--corner); }
+
+/* On Linux the scrollbars stand clear of that edge: the bar is wider, and
+   the extra is a transparent margin on the outside, so the thumb looks the
+   same and sits where a press is only ever the scrollbar's. */
+html[data-shape] ::-webkit-scrollbar {
+  width: 16px;
+}
+html[data-shape] ::-webkit-scrollbar-thumb {
+  border-right-width: 8px;
+}
 
 /* Digits that sit in columns must not jitter as they change. */
 .tnum {
