@@ -13,6 +13,7 @@ import {
   UserRound,
   Music,
   Settings2,
+  SlidersHorizontal,
   Star,
   Tv,
   Video,
@@ -31,6 +32,7 @@ export type NavKey =
   | 'music'
   | 'photos'
   | 'settings'
+  | 'manage'
 
 const NAV: { key: NavKey; label: string; icon: typeof FolderOpen }[] = [
   { key: 'files', label: 'Files', icon: FolderOpen },
@@ -61,7 +63,10 @@ export function Sidebar({
   hidden,
   who,
   onChangeDrive,
+  canManage,
 }: {
+  /** The host lets this device manage it: "Manage host" is offered. */
+  canManage?: boolean
   /** Library sections the host's owner has chosen not to show. */
   hidden?: ReadonlySet<NavKey>
   /** Who is using the device, when the host has profiles to offer. */
@@ -129,6 +134,15 @@ export function Sidebar({
       />
 
       <nav className="mt-1 flex flex-col gap-1">
+        {canManage && (
+          <NavItem
+            navKey="manage"
+            label="Manage host"
+            icon={SlidersHorizontal}
+            active={active}
+            onNavigate={onNavigate}
+          />
+        )}
         <NavItem
           navKey="settings"
           label="Settings"
