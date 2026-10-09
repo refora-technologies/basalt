@@ -197,6 +197,20 @@ impl ClientStore {
         self.hosts.iter().max_by_key(|h| h.used_at.max(h.paired_at))
     }
 
+    /// Keeps the names a host goes by now: its drive's, renamed or chosen
+    /// since pairing, and its own. Shown in lists while it is not answering,
+    /// and on other drives as a profile's home.
+    pub fn note_names(&mut self, host_id: &str, vault: &str, host_name: &str) {
+        if let Some(host) = self.find_mut(host_id) {
+            if !vault.trim().is_empty() {
+                host.vault = vault.to_string();
+            }
+            if !host_name.trim().is_empty() {
+                host.host_name = host_name.to_string();
+            }
+        }
+    }
+
     /// Records that this device has just connected to `host_id`.
     pub fn note_used(&mut self, host_id: &str, now: i64) {
         if let Some(host) = self.find_mut(host_id) {
@@ -705,5 +719,22 @@ mod tests {
     fn a_windows_pc_has_a_lasting_id() {
         let id = lasting_device_id(None).expect("MachineGuid is readable");
         assert_eq!(id, lasting_device_id(None).unwrap());
+    }
+
+    // A host paired before its drive was chosen was called "Vault" on this
+    // device for good, here and as the home of its profiles on other drives.
+    #[test]
+    fn a_hosts_names_follow_it() {
+        let mut store = ClientStore::default();
+        store.remember(host("aa", 1));
+        store.note_names("aa", "Films", "Living room");
+        let known = store.find("aa").unwrap();
+        assert_eq!(
+            (known.vault.as_str(), known.host_name.as_str()),
+            ("Films", "Living room")
+        );
+        store.note_names("aa", "", "");
+        let known = store.find("aa").unwrap();
+        assert_eq!(known.vault, "Films", "an empty name changes nothing");
     }
 }

@@ -687,6 +687,8 @@ impl Basalt {
             let mut store = self.store.lock().expect("store lock");
             store.note_address(host_id, &addr.to_string());
             store.note_used(host_id, unix_now());
+            let named = proven.as_ref().unwrap_or(&session).info();
+            store.note_names(host_id, &named.vault, &named.host_name);
         }
         // A failure to write the address cache must not fail the connection —
         // it is an optimisation, and the client works without it.
@@ -1044,6 +1046,14 @@ impl Basalt {
             .and_then(|v| v.get("name"))
             .and_then(|n| n.as_str())
             .map(str::to_string);
+        if let Some(name) = &name {
+            let host_id = pool.host_id().to_string();
+            self.store
+                .lock()
+                .expect("store lock")
+                .note_names(&host_id, name, "");
+            let _ = self.save_store();
+        }
         if let Some(info) = self.info.lock().expect("info lock").as_mut() {
             info.has_vault = has_vault;
             if let Some(name) = name {
