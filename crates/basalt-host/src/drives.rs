@@ -67,7 +67,11 @@ pub fn list() -> Vec<Drive> {
     #[cfg(target_os = "linux")]
     {
         let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
-        linux_drives(&mounts, user_name().as_deref())
+        if in_container() {
+            container_drives(&mounts)
+        } else {
+            linux_drives(&mounts, user_name().as_deref())
+        }
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
@@ -89,6 +93,48 @@ fn linux_name(path: &Path, label: &str) -> String {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string()),
     }
+}
+
+/// Running in a container: the image says so, and Docker leaves its mark.
+#[cfg(target_os = "linux")]
+fn in_container() -> bool {
+    std::env::var_os("BASALT_CONTAINER").is_some() || Path::new("/.dockerenv").exists()
+}
+
+/// The drives a host in a container can share: whatever was mounted into it
+/// under `/media`, and `/media` itself when that is the mount.
+///
+/// Not the rules of a whole computer. Every folder handed to a container
+/// usually comes from the same disk, so one disk mounted twice is two drives
+/// here; and their file systems are whatever the outside uses, Docker
+/// Desktop's own included, so none is ruled out.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn container_drives(mounts: &str) -> Vec<Drive> {
+    let mut drives: Vec<Drive> = Vec::new();
+    for line in mounts.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(_device), Some(point)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let point = unescape_mount(point);
+        if point != "/media" && !point.starts_with("/media/") {
+            continue;
+        }
+        if drives.iter().any(|d| d.path == Path::new(&point)) {
+            continue;
+        }
+        let path = PathBuf::from(&point);
+        let (free, total) = crate::space::for_path(&path);
+        drives.push(Drive {
+            path,
+            label: String::new(),
+            kind: "fixed",
+            free,
+            total,
+        });
+    }
+    drives.sort_by(|a, b| a.path.cmp(&b.path));
+    drives
 }
 
 /// The person running the host, for finding where their drives are mounted.
@@ -368,6 +414,37 @@ overlay /var/lib/docker/overlay2/x/merged overlay rw 0 0
         assert_eq!(linux_name(&drives[1].path, &drives[1].label), "Home");
         assert_eq!(linux_name(&usb.path, &usb.label), "Media Drive");
         assert_eq!(linux_name(&drives[3].path, &drives[3].label), "backup");
+    }
+
+    // Docker hands a container its folders as bind mounts, usually all from
+    // one disk: each is a drive of its own, and only those under /media.
+    #[test]
+    fn a_container_lists_each_folder_mounted_under_media() {
+        let mounts = "overlay / overlay rw 0 0
+proc /proc proc rw 0 0
+/dev/sda1 /config ext4 rw 0 0
+/dev/sda1 /media/films ext4 rw 0 0
+/dev/sda1 /media/photos ext4 rw 0 0
+/dev/sda1 /media/photos ext4 rw 0 0
+grpcfuse /media/Music\\040Library fakeowner rw 0 0
+/dev/sda1 /etc/hosts ext4 rw 0 0
+";
+        let paths: Vec<_> = container_drives(mounts)
+            .iter()
+            .map(|d| d.path.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            paths,
+            ["/media/Music Library", "/media/films", "/media/photos"]
+        );
+        assert_eq!(
+            container_drives(
+                "/dev/sdb1 /media ext4 rw 0 0
+"
+            )[0]
+            .path,
+            Path::new("/media")
+        );
     }
 
     #[test]
