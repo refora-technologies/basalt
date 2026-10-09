@@ -35,11 +35,50 @@ export function dragFromTitleBar(event: React.MouseEvent): void {
   )
 }
 
-/** Rounds the window on Linux, and keeps it square while it is maximised. */
+type Edge = 'North' | 'South' | 'East' | 'West' | 'NorthEast' | 'NorthWest' | 'SouthEast' | 'SouthWest'
+
+/** Each edge and corner, and the cursor that says it can be pulled. */
+const EDGES: Array<[Edge, string]> = [
+  ['North', 'ns-resize'],
+  ['South', 'ns-resize'],
+  ['East', 'ew-resize'],
+  ['West', 'ew-resize'],
+  ['NorthWest', 'nwse-resize'],
+  ['SouthEast', 'nwse-resize'],
+  ['NorthEast', 'nesw-resize'],
+  ['SouthWest', 'nesw-resize'],
+]
+
+/**
+ * Edges to resize the window by, as a system frame would have. Thin strips
+ * over the very edge of the page, that hand the pull to the system, which
+ * keeps the window to its minimum size. Outside React, since they belong to
+ * the frame rather than to any screen.
+ */
+function addResizeEdges(): void {
+  for (const [edge, cursor] of EDGES) {
+    const strip = document.createElement('div')
+    strip.className = 'resize-edge'
+    strip.dataset.edge = edge
+    strip.style.cursor = cursor
+    strip.addEventListener('mousedown', (event) => {
+      if (event.button !== 0) return
+      event.preventDefault()
+      void currentWindow().then((win) => win.startResizeDragging(edge))
+    })
+    document.body.appendChild(strip)
+  }
+}
+
+/**
+ * Rounds the window on Linux, and keeps it square while it is maximised.
+ * Gives it edges to resize by there too.
+ */
 export function shapeWindow(): void {
   if (!inTauri() || !/Linux/.test(navigator.userAgent)) return
   const root = document.documentElement
   root.dataset.shape = 'rounded'
+  addResizeEdges()
   void currentWindow().then(async (win) => {
     const update = async (): Promise<void> => {
       root.dataset.shape = (await win.isMaximized()) ? 'square' : 'rounded'
