@@ -76,6 +76,10 @@ impl Host {
             ManageAction::ChooseDrive { path, name } => {
                 self.choose_drive(Path::new(&path), &name).await?;
             }
+            ManageAction::ApproveProfileLink { id } => self.approve_profile_link(&id)?,
+            ManageAction::DenyProfileLink { id } => {
+                self.deny_profile_link(&id);
+            }
         }
         Ok(self.view(drives, by).await)
     }
@@ -153,6 +157,7 @@ impl Host {
             "devices": devices,
             "pairings": pairings,
             "drives": drives,
+            "profileLinks": self.profile_links(),
             "you": by,
         })
     }

@@ -44,6 +44,18 @@ pub struct KnownHost {
     /// `basalt_trust::statement`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<basalt_proto::msg::SignedStatement>,
+    /// The names and colours of this host's profiles, as last seen: what a
+    /// profile from this drive is called when offered on another.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<ProfileLabel>,
+}
+
+/// A profile's name and colour, by its id on its host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileLabel {
+    pub id: String,
+    pub name: String,
+    pub color: u8,
 }
 
 /// Who this device signs in as, per host.
@@ -534,6 +546,7 @@ mod tests {
             identity: Default::default(),
             key: String::new(),
             members: Vec::new(),
+            profiles: Vec::new(),
         }
     }
 

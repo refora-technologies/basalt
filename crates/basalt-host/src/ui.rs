@@ -142,6 +142,9 @@ pub struct ProfileSummary {
     pub created_at: i64,
     pub last_used: i64,
     pub devices: Vec<ProfileDevice>,
+    /// For a profile from another drive, that drive's name: it signs in
+    /// from there, with no PIN here.
+    pub home: Option<String>,
 }
 
 /// One device signed in to a profile.
@@ -256,6 +259,20 @@ pub struct PairingView {
     /// Pairing with the host's setup code, to set it up. The code itself is
     /// never shown: it is read on the machine, by whoever owns it.
     pub setup: bool,
+}
+
+/// A profile from another drive waiting to be approved, as Manage host and
+/// the host's window show it. See [`crate::links`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkView {
+    pub id: String,
+    pub device_name: String,
+    pub name: String,
+    pub color: u8,
+    /// The home drive's name: "Maya from Living Room Drive".
+    pub home: String,
+    pub seconds_left: u64,
 }
 
 impl PairingView {

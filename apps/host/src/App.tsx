@@ -7,6 +7,7 @@ import { DeviceList, OwnerLine } from './components/DeviceList'
 import { PairingRequests } from './components/PairingRequests'
 import { SettingsPanel } from './components/SettingsPanel'
 import { UpdateBanner } from './components/UpdateBanner'
+import { ProfileLinks } from './components/ProfileLinks'
 import { FirewallNotice } from './components/FirewallNotice'
 import { ProfileList } from './components/ProfileList'
 import { ProfileAccess } from './components/ProfileAccess'
@@ -35,6 +36,7 @@ export function App(): React.JSX.Element {
   const status = usePoll<HostStatus>(useCallback(() => api.status(), []), STATUS_INTERVAL)
   const devices = usePoll<DeviceView[]>(useCallback(() => api.devices(), []), DEVICE_INTERVAL)
   const pairings = usePoll(useCallback(() => api.pendingPairings(), []), PAIRING_INTERVAL)
+  const links = usePoll(useCallback(() => api.profileLinks(), []), PAIRING_INTERVAL)
 
   const [prompt, setPrompt] = useState<PromptRequest | null>(null)
   const [message, setMessage] = useState<MessageRequest | null>(null)
@@ -250,6 +252,21 @@ export function App(): React.JSX.Element {
                       Add profile
                     </motion.button>
                   </div>
+                  <ProfileLinks
+                    links={links.data ?? []}
+                    onApprove={(link) => {
+                      void api
+                        .approveProfileLink(link.id)
+                        .then(() => {
+                          links.refresh()
+                          status.refresh()
+                        })
+                        .catch((e: unknown) => setRulesError(reason(e)))
+                    }}
+                    onDeny={(link) => {
+                      void api.denyProfileLink(link.id).then(() => links.refresh())
+                    }}
+                  />
                   <ProfileAccess
                     rules={current.profileRules}
                     profileCount={current.profiles.length}

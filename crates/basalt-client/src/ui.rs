@@ -147,6 +147,31 @@ impl DiscoveredHost {
     }
 }
 
+/// A profile this device is signed in to on another drive, which it can use
+/// on this one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfilePass {
+    /// Its home host.
+    pub host_id: String,
+    /// Its home drive's name: "Living Room Drive".
+    pub drive: String,
+    /// Its id there.
+    pub profile_id: String,
+    pub name: String,
+    pub color: u8,
+}
+
+/// What asking to use a profile from another drive came to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileLinkOutcome {
+    /// Signed in, as this profile.
+    pub profile: Option<basalt_proto::msg::ProfileView>,
+    /// Waiting for someone who manages this drive to approve it.
+    pub waiting: bool,
+}
+
 /// What a host said when asked to pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -475,6 +500,7 @@ mod tests {
             identity: Default::default(),
             key: String::new(),
             members: Vec::new(),
+            profiles: Vec::new(),
         }
     }
 

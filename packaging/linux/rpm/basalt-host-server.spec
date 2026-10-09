@@ -1,5 +1,6 @@
 # Basalt Host with no screen, packaged from a binary already built.
-# @VERSION@ and @RPMARCH@ are filled in by packaging/build-server.sh.
+# @VERSION@ is filled in by packaging/build-server.sh, and the architecture
+# by rpmbuild's --target: it packages a binary, so builds any on any machine.
 
 %global debug_package %{nil}
 %global __strip /bin/true
@@ -11,7 +12,6 @@ Release:        1
 Summary:        Basalt Host with no screen: shares a drive with your devices
 License:        GPL-3.0-only
 URL:            https://github.com/refora-technologies/basalt
-BuildArch:      @RPMARCH@
 Conflicts:      basalt-host
 Recommends:     ffmpeg
 Requires(pre):  shadow-utils

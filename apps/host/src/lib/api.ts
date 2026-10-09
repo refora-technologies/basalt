@@ -58,6 +58,23 @@ export interface ProfileSummary {
   createdAt: number
   lastUsed: number
   devices: ProfileDevice[]
+  /** A profile from another drive: that drive's name. It signs in from there, with no PIN here. */
+  home: string | null
+}
+
+/**
+ * A profile from another drive asking to be let in here. Mirrors
+ * `basalt_host::ui::LinkView`.
+ */
+export interface LinkView {
+  id: string
+  /** The device asking. */
+  deviceName: string
+  name: string
+  color: number
+  /** Its home drive's name. */
+  home: string
+  secondsLeft: number
 }
 
 /**
@@ -324,6 +341,10 @@ export const api = {
   /** Which build this is — the commit and the day it was made. */
   buildInfo: (): Promise<string> => call('build_info'),
   openLogFolder: (): Promise<void> => call('open_log_folder'),
+  /** Profiles from other drives waiting to be let in. */
+  profileLinks: (): Promise<LinkView[]> => call('profile_links'),
+  approveProfileLink: (id: string): Promise<void> => call('approve_profile_link', { id }),
+  denyProfileLink: (id: string): Promise<boolean> => call('deny_profile_link', { id }),
   /** Whether the computer's firewall lets other devices reach this host. */
   firewall: (): Promise<Firewall> => call('firewall'),
   /** Lets them, once Windows has asked for an administrator. */
@@ -409,6 +430,7 @@ const sample: {
           { name: "Maya's laptop", remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 120 },
           { name: "Maya's phone", remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 5400 },
         ],
+        home: null,
       },
       {
         id: 'p2',
@@ -418,6 +440,7 @@ const sample: {
         createdAt: Math.floor(Date.now() / 1000) - 86400 * 12,
         lastUsed: Math.floor(Date.now() / 1000) - 86400,
         devices: [{ name: "Sam's tablet", remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 86400 }],
+        home: null,
       },
       {
         id: 'p3',
@@ -427,6 +450,7 @@ const sample: {
         createdAt: Math.floor(Date.now() / 1000) - 86400 * 4,
         lastUsed: Math.floor(Date.now() / 1000) - 86400 * 3,
         devices: [],
+        home: null,
       },
     ],
     sections: { movies: true, series: true, videos: true, music: true, photos: true },
@@ -506,6 +530,9 @@ const sample: {
     { path: 'F:\\', name: 'Removable Disk (F:)', label: '', kind: 'removable', free: 0, total: 0, ready: false },
   ],
 }
+
+/** `?link` in the preview, until the request is let in or turned away. */
+let mockLinkSettled = false
 
 /** `?blocked` in the preview, until "Allow" is clicked. */
 let mockFirewallOpened = false
@@ -716,6 +743,7 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
             createdAt: Date.now() / 1000,
             lastUsed: 0,
             devices: [],
+            home: null,
           },
         ]
         return sample.status
@@ -747,6 +775,36 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return previewFlag('package') ? 'package' : 'restart'
       case 'open_log_folder':
         return undefined
+      case 'profile_links':
+        // `?link`: Nina, from another drive, asking to be let in.
+        return previewFlag('link') && !mockLinkSettled
+          ? [
+              {
+                id: 'link-1',
+                deviceName: 'Nina’s phone',
+                name: 'Nina',
+                color: 5,
+                home: 'Living Room Drive',
+                secondsLeft: 540,
+              },
+            ]
+          : []
+      case 'approve_profile_link':
+        mockLinkSettled = true
+        sample.status.profiles.push({
+          id: 'p-nina-linked',
+          name: 'Nina',
+          color: 5,
+          hasPin: false,
+          createdAt: Math.floor(Date.now() / 1000),
+          lastUsed: Math.floor(Date.now() / 1000),
+          devices: [{ name: 'Nina’s phone', remembered: true, lastUsed: Math.floor(Date.now() / 1000) }],
+          home: 'Living Room Drive',
+        })
+        return undefined
+      case 'deny_profile_link':
+        mockLinkSettled = true
+        return true
       case 'firewall':
         return previewFlag('blocked') && !mockFirewallOpened ? 'blocked' : 'open'
 

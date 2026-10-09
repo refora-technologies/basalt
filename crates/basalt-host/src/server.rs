@@ -101,7 +101,9 @@ pub struct Host {
     /// profile's, own history.
     progress: std::sync::Mutex<crate::media::Progress>,
     /// The household's profiles and who is signed in to them.
-    profiles: std::sync::Mutex<crate::profiles::ProfileBook>,
+    pub(crate) profiles: std::sync::Mutex<crate::profiles::ProfileBook>,
+    /// Profiles from other drives waiting to be approved: see [`crate::links`].
+    pub(crate) profile_links: std::sync::Mutex<Vec<crate::links::LinkRequest>>,
     /// Each profile's starred files, by profile id.
     stars: std::sync::Mutex<std::collections::HashMap<String, Vec<Star>>>,
 }
@@ -261,6 +263,7 @@ impl Host {
             last_scan: std::sync::Mutex::new(None),
             progress: std::sync::Mutex::new(progress),
             profiles: std::sync::Mutex::new(profiles),
+            profile_links: std::sync::Mutex::new(Vec::new()),
             stars: std::sync::Mutex::new(stars),
         });
         if abandoned > 0 {
@@ -652,7 +655,7 @@ impl Host {
 
     /// Tells every device watching that the profiles or the rules changed.
     /// Nobody listening is not an error.
-    fn profiles_changed(&self) {
+    pub(crate) fn profiles_changed(&self) {
         let _ = self.profile_changes.send(());
     }
 
@@ -695,6 +698,7 @@ impl Host {
                     created_at: profile.created_at,
                     last_used: profile.last_used,
                     devices: signed_in,
+                    home: profile.home.as_ref().map(|home| home.label.clone()),
                 }
             })
             .collect()
@@ -2438,7 +2442,7 @@ impl Host {
     }
 
     /// Copies the live device list into the config and writes it out.
-    fn persist(&self) -> Result<()> {
+    pub(crate) fn persist(&self) -> Result<()> {
         let snapshot = {
             let devices = self
                 .registry
@@ -2534,7 +2538,7 @@ fn load_stars(path: &std::path::Path) -> std::collections::HashMap<String, Vec<S
         .unwrap_or_default()
 }
 
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -3564,6 +3568,40 @@ where
                 _ => None,
             };
             reply(stream, &ProfileUseResponse { profile, member }).await?;
+        }
+
+        Op::ProfileLink => {
+            let req: basalt_proto::msg::ProfileLinkRequest = decode(payload)?;
+            let device = session.device.clone().ok_or(HostError::Unauthenticated)?;
+            // The statement is about a key: the one this connection proved.
+            let signed_key = match (session.by_key, &session.signed_key) {
+                (true, Some(key)) => key.clone(),
+                _ => {
+                    return Err(HostError::Denied(
+                        "using a profile from another drive needs this device to sign in with                          its own key: update Basalt on it"
+                            .into(),
+                    ));
+                }
+            };
+            let answer = match host.link_profile(req, &signed_key, device.key(), &device.name)? {
+                crate::links::Linked::SignedIn(profile, token) => {
+                    session.profile =
+                        Some((profile.id.clone(), crate::profiles::hash_token(&token)));
+                    basalt_proto::msg::ProfileLinkResponse {
+                        session: Some(ProfileSession {
+                            profile,
+                            token,
+                            member: None,
+                        }),
+                        waiting: false,
+                    }
+                }
+                crate::links::Linked::Waiting => basalt_proto::msg::ProfileLinkResponse {
+                    session: None,
+                    waiting: true,
+                },
+            };
+            reply(stream, &answer).await?;
         }
 
         Op::ProfileSignOut => {

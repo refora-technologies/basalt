@@ -148,7 +148,12 @@ function ProfileCard({
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[13.5px] font-semibold text-text">{profile.name}</div>
+          <div className="truncate text-[13.5px] font-semibold text-text">
+            {profile.name}
+            {profile.home && (
+              <span className="ml-1.5 text-[11px] font-normal text-textFaint">from {profile.home}</span>
+            )}
+          </div>
           <div className="mt-0.5 truncate font-mono text-[10px] text-textFaint">
             {profile.lastUsed > 0 ? `active ${formatAgo(profile.lastUsed)}` : 'not used yet'}
           </div>
@@ -162,7 +167,13 @@ function ProfileCard({
         </button>
       </div>
 
-      {!profile.hasPin && (
+      {profile.home && (
+        <div className="mt-3 flex items-center gap-2 rounded-md bg-white/[0.04] px-2.5 py-1.5 text-[11px] text-textDim">
+          <KeyRound size={12} className="shrink-0 text-textFaint" />
+          Signs in on {profile.home}, with no PIN here.
+        </div>
+      )}
+      {!profile.hasPin && !profile.home && (
         <div className="mt-3 flex items-center gap-2 rounded-md bg-white/[0.04] px-2.5 py-1.5 text-[11px] text-textDim">
           <KeyRound size={12} className="shrink-0 text-textFaint" />
           {profile.lastUsed === 0
@@ -216,14 +227,16 @@ function ProfileCard({
               style={{ transformOrigin: 'top right' }}
               className="absolute right-3 top-11 z-20 w-[190px] overflow-hidden rounded-md border border-white/10 bg-panel2 p-1 shadow-lift"
             >
-              <MenuItem
-                icon={KeyRound}
-                label="Reset PIN"
-                onClick={() => {
-                  setMenu(false)
-                  onResetPin()
-                }}
-              />
+              {!profile.home && (
+                <MenuItem
+                  icon={KeyRound}
+                  label="Reset PIN"
+                  onClick={() => {
+                    setMenu(false)
+                    onResetPin()
+                  }}
+                />
+              )}
               <MenuItem
                 icon={Trash2}
                 label="Remove profile"

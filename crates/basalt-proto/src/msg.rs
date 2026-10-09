@@ -315,6 +315,14 @@ pub enum ManageAction {
         path: String,
         name: String,
     },
+    /// Lets a profile from another drive in: see [`ProfileLinkRequest`].
+    ApproveProfileLink {
+        id: String,
+    },
+    /// Turns one away.
+    DenyProfileLink {
+        id: String,
+    },
 }
 
 impl ManageAction {
@@ -740,6 +748,53 @@ pub struct ProfileView {
     pub has_pin: bool,
     /// Unix seconds of the last sign-in anywhere, zero if never.
     pub last_used: i64,
+    /// A profile made on another drive, used here too: it signs in with the
+    /// statement its home drive gave the device, never a PIN here. Absent for
+    /// a profile of this drive, and from older hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<ProfileHome>,
+}
+
+/// Where a profile from another drive lives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileHome {
+    /// The home host's id.
+    pub host_id: String,
+    /// What it is called there, as people know it: "Living Room Drive".
+    pub label: String,
+    /// The profile's id on its home host.
+    pub profile_id: String,
+}
+
+/// Asks to use, on this drive, a profile made on another one.
+///
+/// What proves it is the member statement the profile's home host signed for
+/// this device: the person's key saying "this device acts for me". The name,
+/// colour and home label are only for showing to whoever approves it; what is
+/// believed is the statement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileLinkRequest {
+    pub statement: SignedStatement,
+    pub name: String,
+    pub color: u8,
+    /// The home drive's name, for "Maya from Living Room Drive".
+    pub home: String,
+    /// Stay signed in, as with a PIN.
+    #[serde(default)]
+    pub remember: bool,
+}
+
+/// Signed in, or waiting for someone who manages this drive to approve it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileLinkResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<ProfileSession>,
+    /// Waiting for approval: asked again once the profiles change.
+    #[serde(default)]
+    pub waiting: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

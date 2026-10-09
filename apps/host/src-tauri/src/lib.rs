@@ -236,6 +236,22 @@ async fn deny_pairing(state: State<'_, AppState>, id: String) -> Answer<bool> {
     Ok(state.host.deny_pairing(&id))
 }
 
+/// Profiles from other drives waiting to be let in.
+#[tauri::command]
+async fn profile_links(state: State<'_, AppState>) -> Answer<Vec<basalt_host::ui::LinkView>> {
+    Ok(state.host.profile_links())
+}
+
+#[tauri::command]
+async fn approve_profile_link(state: State<'_, AppState>, id: String) -> Answer<()> {
+    Ok(state.host.approve_profile_link(&id)?)
+}
+
+#[tauri::command]
+async fn deny_profile_link(state: State<'_, AppState>, id: String) -> Answer<bool> {
+    Ok(state.host.deny_profile_link(&id))
+}
+
 #[tauri::command]
 async fn set_require_pin(state: State<'_, AppState>, require: bool) -> Answer<HostStatus> {
     state.host.set_require_pin(require)?;
@@ -1020,6 +1036,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             firewall,
             allow_through_firewall,
+            profile_links,
+            approve_profile_link,
+            deny_profile_link,
             app_version,
             check_update,
             download_update,

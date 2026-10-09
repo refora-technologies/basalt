@@ -825,6 +825,17 @@ impl Session {
             .map_err(Into::into)
     }
 
+    /// Asks to use a profile from another drive here: see
+    /// [`basalt_proto::msg::ProfileLinkRequest`].
+    pub async fn profile_link(
+        &mut self,
+        request: &basalt_proto::msg::ProfileLinkRequest,
+    ) -> Result<basalt_proto::msg::ProfileLinkResponse> {
+        call_json(&mut self.stream, Op::ProfileLink, request)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Says which profile this connection acts for; None for the device.
     pub async fn profile_use(
         &mut self,
