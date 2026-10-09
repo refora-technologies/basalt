@@ -18,8 +18,13 @@ use crate::ui::{DriveView, PairingView};
 
 impl Host {
     /// Does what a device that manages this host asked, and answers with the
-    /// host as its window shows it, after the change.
-    pub async fn manage(self: &Arc<Self>, action: ManageAction) -> Result<serde_json::Value> {
+    /// host as its window shows it, after the change. `by` is the asking
+    /// device's id, said back as `you`, so it can tell itself in the list.
+    pub async fn manage(
+        self: &Arc<Self>,
+        action: ManageAction,
+        by: &str,
+    ) -> Result<serde_json::Value> {
         let mut drives = false;
         match action {
             ManageAction::View => {}
@@ -72,7 +77,7 @@ impl Host {
                 self.choose_drive(Path::new(&path), &name).await?;
             }
         }
-        Ok(self.view(drives).await)
+        Ok(self.view(drives, by).await)
     }
 
     /// Shares the drive or folder at `path`, called `name` (or by its path,
@@ -116,7 +121,7 @@ impl Host {
 
     /// The host as its window shows it: its status, its devices, the pairing
     /// requests waiting, and, when asked for, the drives it could share.
-    async fn view(self: &Arc<Self>, drives: bool) -> serde_json::Value {
+    async fn view(self: &Arc<Self>, drives: bool, by: &str) -> serde_json::Value {
         let status = self.status(true).await;
         // Rates are the window's own measure, taken between its polls: a
         // device asking now and then would only be shown noise.
@@ -148,6 +153,7 @@ impl Host {
             "devices": devices,
             "pairings": pairings,
             "drives": drives,
+            "you": by,
         })
     }
 }

@@ -411,6 +411,16 @@ async fn identity(state: State<'_, AppState>) -> Answer<basalt_client::IdentityS
     Ok(state.client.identity().await)
 }
 
+/// Asks the host this device manages to do what its own window would, and
+/// answers with the host as that window shows it.
+#[tauri::command]
+async fn manage(
+    state: State<'_, AppState>,
+    action: basalt_proto::msg::ManageAction,
+) -> Answer<serde_json::Value> {
+    Ok(state.client.manage(action).await?)
+}
+
 #[tauri::command]
 async fn profiles(state: State<'_, AppState>) -> Answer<Vec<basalt_proto::msg::ProfileView>> {
     Ok(state.client.profiles().await?)
@@ -1372,6 +1382,7 @@ pub fn run() {
             collections,
             identity,
             profiles,
+            manage,
             create_profile,
             sign_in_profile,
             sign_out_profile,

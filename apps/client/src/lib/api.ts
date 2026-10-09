@@ -12,6 +12,8 @@
  */
 
 import packageInfo from '../../package.json'
+import type { ManageAction, ManageView } from './manage'
+import { mockManage } from './manageMock'
 import type { Entry } from '@/components/FileList'
 import * as showcase from './showcase'
 import { generateEntries } from './mockData'
@@ -440,6 +442,8 @@ export const api = {
     call<LibraryResponse>('library', { knownRevision }),
   identity: () => call<IdentityState>('identity'),
   profiles: () => call<ProfileView[]>('profiles'),
+  /** Asks the host this device manages to do what its own window would. */
+  manage: (action: ManageAction) => call<ManageView>('manage', { action }),
   createProfile: (name: string, pin: string, color: number, remember: boolean) =>
     call<ProfileView>('create_profile', { name, pin, color, remember }),
   signInProfile: (id: string, pin: string, remember: boolean) =>
@@ -976,6 +980,8 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return { ...mockIdentity } as T
     case 'profiles':
       return mockProfiles.map((p) => ({ ...p })) as T
+    case 'manage':
+      return mockManage(args?.action as ManageAction) as T
     case 'create_profile': {
       if (mockRules.ownerAddsProfiles) {
         throw new ApiError('denied', 'profiles on this drive are added on the host')

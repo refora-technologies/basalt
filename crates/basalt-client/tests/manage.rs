@@ -108,6 +108,11 @@ async fn a_device_that_manages_the_host_does_what_its_window_does() {
     assert_eq!(view["status"]["vault"]["name"], "Test Vault");
     assert_eq!(view["devices"].as_array().unwrap().len(), 1);
     assert!(view["drives"].is_null(), "drives only when asked for");
+    assert_eq!(
+        view["you"],
+        phone_id.as_str(),
+        "the phone is told which device it is"
+    );
 
     let view = phone
         .manage(ManageAction::SetHostName {
