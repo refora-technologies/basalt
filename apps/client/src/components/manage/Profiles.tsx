@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { Check, KeyRound, Loader2, Lock, Plus, Trash2, UserPlus, Users } from 'lucide-react'
+import { Check, KeyRound, Loader2, Lock, Plus, Trash2, UserPlus, Users, X } from 'lucide-react'
 import type { ManagedProfile } from '@/lib/manage'
 import { PROFILE_COLORS } from '@/lib/useIdentity'
 import { cn } from '@/lib/utils'
-import { Avatar, Card, Group, Row, Rows, Segmented, Tag, Toggle, ago, useLayout } from './parts'
+import { Avatar, Card, Group, Pill, Row, Rows, Segmented, Tag, Toggle, ago, useLayout } from './parts'
 import { Surface } from './Surface'
 import type { Tools } from './tools'
 
@@ -20,8 +20,47 @@ export function Profiles(tools: Tools): React.JSX.Element {
   const [adding, setAdding] = useState(false)
   const open = profiles.find((p) => p.id === openId) ?? null
 
+  const links = view.profileLinks ?? []
+
   return (
     <>
+      {links.length > 0 && (
+        <div className="space-y-3">
+          {links.map((link) => (
+            <Card key={link.id} tone="raised">
+              <div className="p-4">
+                <div className="flex items-center gap-3">
+                  <Avatar name={link.name} color={link.color} size={phone ? 40 : 34} />
+                  <div className="min-w-0 flex-1">
+                    <div className={cn('truncate font-medium text-text', phone ? 'text-[15px]' : 'text-[13px]')}>
+                      {link.name} <span className="font-normal text-textDim">from {link.home}</span>
+                    </div>
+                    <div className={cn('leading-snug text-textDim', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
+                      {link.deviceName} asks to use this profile here
+                    </div>
+                  </div>
+                </div>
+                <p className={cn('mt-3 leading-snug text-textFaint', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
+                  It signs in on {link.home}, with no PIN here, and keeps its own history and stars on
+                  this drive.
+                </p>
+                <div className="mt-3 flex justify-end gap-2">
+                  <Pill onClick={() => void m.act({ do: 'denyProfileLink', id: link.id })} icon={<X size={14} />}>
+                    Turn away
+                  </Pill>
+                  <Pill
+                    onClick={() => void m.act({ do: 'approveProfileLink', id: link.id })}
+                    busy={m.busy === 'approveProfileLink'}
+                    icon={<Check size={14} />}
+                  >
+                    Let in
+                  </Pill>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
       <Group icon={Users} title="Profiles" aside={profiles.length > 0 ? `${profiles.length}` : undefined}>
         <Rows>
           {profiles.map((profile) => (
@@ -29,8 +68,12 @@ export function Profiles(tools: Tools): React.JSX.Element {
               key={profile.id}
               icon={<Avatar name={profile.name} color={profile.color} size={phone ? 40 : 32} />}
               title={profile.name}
-              sub={profileLine(profile)}
-              end={!profile.hasPin ? <Tag icon={<KeyRound size={10} />}>new PIN</Tag> : undefined}
+              sub={profile.home ? `From ${profile.home} · ${profileLine(profile).toLowerCase()}` : profileLine(profile)}
+              end={
+                !profile.hasPin && !profile.home ? (
+                  <Tag icon={<KeyRound size={10} />}>new PIN</Tag>
+                ) : undefined
+              }
               chevron
               onClick={() => setOpenId(profile.id)}
             />
@@ -146,7 +189,11 @@ function ProfileDetail({
         <Avatar name={profile.name} color={profile.color} size={phone ? 56 : 44} />
         <div className="min-w-0">
           <div className={cn('text-textDim', phone ? 'text-[13px]' : 'text-[12px]')}>
-            {profile.hasPin ? 'Signs in with a PIN' : 'Chooses a new PIN at the next sign-in'}
+            {profile.home
+              ? `Signs in on ${profile.home}, with no PIN here`
+              : profile.hasPin
+                ? 'Signs in with a PIN'
+                : 'Chooses a new PIN at the next sign-in'}
           </div>
           <div className={cn('mt-0.5 text-textFaint', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
             Made {ago(profile.createdAt)}
@@ -165,7 +212,15 @@ function ProfileDetail({
               <Row
                 key={`${device.name}-${i}`}
                 title={device.name}
-                sub={`${device.remembered ? 'Remembers the PIN' : 'Asks for the PIN each time'} · ${ago(device.lastUsed)}`}
+                sub={`${
+                  profile.home
+                    ? device.remembered
+                      ? 'Stays signed in'
+                      : 'Until the app closes'
+                    : device.remembered
+                      ? 'Remembers the PIN'
+                      : 'Asks for the PIN each time'
+                } · ${ago(device.lastUsed)}`}
               />
             ))}
           </Rows>
@@ -174,13 +229,15 @@ function ProfileDetail({
 
       <Card>
         <Rows>
-          <Row
-            icon={<KeyRound size={phone ? 17 : 14} />}
-            title="Reset PIN"
-            sub="For a forgotten PIN: a new one is chosen at the next sign-in"
-            onClick={() => void resetPin()}
-            disabled={!profile.hasPin}
-          />
+          {!profile.home && (
+            <Row
+              icon={<KeyRound size={phone ? 17 : 14} />}
+              title="Reset PIN"
+              sub="For a forgotten PIN: a new one is chosen at the next sign-in"
+              onClick={() => void resetPin()}
+              disabled={!profile.hasPin}
+            />
+          )}
           <Row
             icon={<Trash2 size={phone ? 17 : 14} />}
             title="Remove profile"

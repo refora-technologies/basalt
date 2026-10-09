@@ -57,6 +57,19 @@ export interface ManagedProfile {
   createdAt: number
   lastUsed: number
   devices: { name: string; remembered: boolean; lastUsed: number }[]
+  /** A profile from another drive: that drive's name. No PIN here. */
+  home?: string | null
+}
+
+/** A profile from another drive asking to be let in. */
+export interface ProfileLinkRequest {
+  id: string
+  deviceName: string
+  name: string
+  color: number
+  /** Its home drive's name. */
+  home: string
+  secondsLeft: number
 }
 
 export interface LibrarySections {
@@ -133,6 +146,8 @@ export interface ManageView {
   drives: HostDrive[] | null
   /** This device's id in `devices`. */
   you: string
+  /** Profiles from other drives waiting to be let in. Absent from older hosts. */
+  profileLinks?: ProfileLinkRequest[]
 }
 
 /** What can be asked of the host. Mirrors `ManageAction` in basalt-proto. */
@@ -160,6 +175,8 @@ export type ManageAction =
   | { do: 'setOwnerAddsProfiles'; ownerOnly: boolean }
   | { do: 'listDrives' }
   | { do: 'chooseDrive'; path: string; name: string }
+  | { do: 'approveProfileLink'; id: string }
+  | { do: 'denyProfileLink'; id: string }
 
 /** How often the screen asks again while it is open: the window's own pace. */
 const REFRESH_MS = 3000

@@ -460,6 +460,26 @@ async fn sign_in_profile(
     Ok(state.client.sign_in_profile(&id, &pin, remember).await?)
 }
 
+/// Profiles this device is signed in to on its other drives.
+#[tauri::command]
+async fn profiles_elsewhere(state: State<'_, AppState>) -> Answer<Vec<basalt_client::ui::ProfilePass>> {
+    Ok(state.client.profiles_elsewhere())
+}
+
+/// Uses one of them here: signed in, or waiting for approval.
+#[tauri::command]
+async fn use_profile_elsewhere(
+    state: State<'_, AppState>,
+    host_id: String,
+    profile_id: String,
+    remember: bool,
+) -> Answer<basalt_client::ui::ProfileLinkOutcome> {
+    Ok(state
+        .client
+        .use_profile_elsewhere(&host_id, &profile_id, remember)
+        .await?)
+}
+
 #[tauri::command]
 async fn sign_out_profile(state: State<'_, AppState>) -> Answer<()> {
     Ok(state.client.sign_out_profile().await?)
@@ -1370,6 +1390,8 @@ pub fn run() {
             status,
             discover,
             begin_pairing,
+            profiles_elsewhere,
+            use_profile_elsewhere,
             finish_pairing,
             cancel_pairing,
             connect_saved,

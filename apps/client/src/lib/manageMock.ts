@@ -149,6 +149,20 @@ const sample: ManageView = {
   ],
   pairings: [{ id: 'r-1', deviceName: 'Sam’s phone', pin: '482915', secondsLeft: 104 }],
   drives: null,
+  // `?link`: a profile from another drive asking to be let in.
+  profileLinks:
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('link')
+      ? [
+          {
+            id: 'l-1',
+            deviceName: 'Nina’s phone',
+            name: 'Nina',
+            color: 6,
+            home: 'Study Drive',
+            secondsLeft: 540,
+          },
+        ]
+      : [],
 }
 
 // This device is here: it is the one asking.
@@ -296,6 +310,25 @@ function apply(action: ManageAction): boolean {
       break
     case 'listDrives':
       return true
+    case 'approveProfileLink': {
+      const link = sample.profileLinks?.find((l) => l.id === action.id)
+      if (!link) throw new ApiError('notfound', 'that request (it may have lapsed) was not found')
+      sample.profileLinks = sample.profileLinks?.filter((l) => l.id !== action.id)
+      status.profiles.push({
+        id: `p-${Date.now()}`,
+        name: link.name,
+        color: link.color,
+        hasPin: false,
+        createdAt: now(),
+        lastUsed: now(),
+        devices: [{ name: link.deviceName, remembered: true, lastUsed: now() }],
+        home: link.home,
+      })
+      break
+    }
+    case 'denyProfileLink':
+      sample.profileLinks = sample.profileLinks?.filter((l) => l.id !== action.id)
+      break
     case 'chooseDrive': {
       const drive = drives.find((d) => d.path === action.path)
       if (!drive || !drive.ready) {

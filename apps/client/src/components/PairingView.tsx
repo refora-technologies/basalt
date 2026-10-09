@@ -623,11 +623,11 @@ function SetupCodeInput({
         <div className="mt-1.5 space-y-1">
           <div>
             In the host’s log:{' '}
-            <span className="font-mono text-[10.5px] text-textFaint">journalctl -u basalt-host</span>, or{' '}
-            <span className="font-mono text-[10.5px] text-textFaint">docker logs basalt</span>
+            <span className="whitespace-nowrap font-mono text-[10.5px] text-textFaint">journalctl -u basalt-host</span>, or{' '}
+            <span className="whitespace-nowrap font-mono text-[10.5px] text-textFaint">docker logs basalt</span>
           </div>
           <div>
-            Or run <span className="font-mono text-[10.5px] text-textFaint">basalt-host setup-code</span> on
+            Or run <span className="whitespace-nowrap font-mono text-[10.5px] text-textFaint">basalt-host setup-code</span> on
             that machine.
           </div>
         </div>

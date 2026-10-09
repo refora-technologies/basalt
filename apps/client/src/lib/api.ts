@@ -209,6 +209,41 @@ export interface ProfileView {
   /** False after the host reset the PIN: signing in chooses a new one. */
   hasPin: boolean
   lastUsed: number
+  /**
+   * A profile from another drive, used here too: it signs in with what its
+   * home drive gave this device, never a PIN here. Absent otherwise.
+   */
+  home?: ProfileHome
+}
+
+/** Where a profile from another drive lives. Mirrors `basalt_proto::msg::ProfileHome`. */
+export interface ProfileHome {
+  hostId: string
+  /** Its drive's name: "Living Room Drive". */
+  label: string
+  /** Its id there. */
+  profileId: string
+}
+
+/**
+ * A profile this device is signed in to on another drive, which it can use
+ * here. Mirrors `basalt_client::ui::ProfilePass`.
+ */
+export interface ProfilePass {
+  hostId: string
+  /** Its home drive's name. */
+  drive: string
+  profileId: string
+  name: string
+  color: number
+}
+
+/** Mirrors `basalt_client::ui::ProfileLinkOutcome`. */
+export interface ProfileLinkOutcome {
+  /** Signed in as it. */
+  profile: ProfileView | null
+  /** Waiting for someone who manages this drive to approve it. */
+  waiting: boolean
 }
 
 /** Who is using this device. */
@@ -469,6 +504,11 @@ export const api = {
     call<ProfileView>('sign_in_profile', { id, pin, remember }),
   signOutProfile: () => call<void>('sign_out_profile'),
   continueAsDevice: (always: boolean) => call<void>('continue_as_device', { always }),
+  /** Profiles this device is signed in to on its other drives. */
+  profilesElsewhere: () => call<ProfilePass[]>('profiles_elsewhere'),
+  /** Uses one here: signed in, or waiting for someone who manages this drive. */
+  useProfileElsewhere: (hostId: string, profileId: string, remember: boolean) =>
+    call<ProfileLinkOutcome>('use_profile_elsewhere', { hostId, profileId, remember }),
   /**
    * The subtitles for one video, wherever they are on the drive, and others
    * that might be meant for it. A host too old to know answers with an
@@ -1063,6 +1103,24 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       mockIdentity = { rules: mockRules, profile, choose: false, ended: false, lastProfile: profile.id }
       return profile as T
     }
+    case 'profiles_elsewhere':
+      // `?elsewhere`: Nina, signed in on another drive, not yet let in here.
+      return (previewFlag('elsewhere') ? [MOCK_PASS] : []) as T
+    case 'use_profile_elsewhere': {
+      // Waits twice, as for a manager to approve, then is let in.
+      mockLinkAsked += 1
+      if (mockLinkAsked < 3) return { profile: null, waiting: true } as T
+      const profile: ProfileView = {
+        id: 'p-nina',
+        name: MOCK_PASS.name,
+        color: MOCK_PASS.color,
+        hasPin: false,
+        lastUsed: Math.floor(Date.now() / 1000),
+        home: { hostId: MOCK_PASS.hostId, label: MOCK_PASS.drive, profileId: MOCK_PASS.profileId },
+      }
+      mockIdentity = { rules: mockRules, profile, choose: false, ended: false, lastProfile: profile.id }
+      return { profile, waiting: false } as T
+    }
     case 'sign_out_profile':
       mockIdentity = { rules: mockRules, profile: null, choose: true, ended: false, lastProfile: mockIdentity.lastProfile }
       return undefined as T
@@ -1102,6 +1160,16 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 // Preview profiles, from the showcase. Maya's PIN is 1234; Sam and Leo have
 // none yet, so signing in as either chooses one. `?device` opens as the
 // device, skipping the choice.
+/** The preview's profile from another drive. */
+const MOCK_PASS: ProfilePass = {
+  hostId: 'a83f0c6d21e94b7a5f1c2d3e4b5a6978',
+  drive: 'Living Room Drive',
+  profileId: '0a1b2c3d4e5f6071',
+  name: 'Nina',
+  color: 5,
+}
+let mockLinkAsked = 0
+
 const mockProfiles: ProfileView[] = [
   ...showcase.profiles(),
   // On a private drive the owner adds people: one not signed in yet.
