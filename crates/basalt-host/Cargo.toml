@@ -52,11 +52,16 @@ reqwest = { version = "0.13", default-features = false, features = [
     "json",
 ] }
 
+[target.'cfg(unix)'.dependencies]
+# statvfs, for free space on Linux.
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
     "Win32_System_Registry",
+    "Win32_System_SystemInformation",
     "Win32_System_WindowsProgramming",
 ] }

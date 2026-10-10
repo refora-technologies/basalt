@@ -585,7 +585,13 @@ async fn profiles_survive_the_host_restarting() {
     assert_eq!(config.profiles.len(), 1);
     assert_eq!(config.profiles[0].id, maya.id);
     let saved = std::fs::read_to_string(fixture.dir.join("host.json")).unwrap();
-    assert!(!saved.contains("4821"), "the PIN is never written down");
+    // Looked for as a word of its own, as a PIN written down would be. Not
+    // as a substring: the file is full of keys and hashes in hex, and four
+    // digits turn up inside a few thousand of those every so often.
+    let written_down = saved
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| word == "4821");
+    assert!(!written_down, "the PIN is never written down");
 }
 
 // ---------------------------------------------------------------------------

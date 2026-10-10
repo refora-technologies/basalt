@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertCircle, ArrowUpCircle, Check, ExternalLink, Github, Loader2 } from 'lucide-react'
-import { api, inTauri, type Release } from '@/lib/api'
+import { api, inTauri, type HostStatus, type Release } from '@/lib/api'
 import { parseNotes } from '@/lib/notes'
 import {
   checkForUpdate,
   downloadUpdate,
+  installLabel,
   installUpdate,
   offered,
   useUpdate,
@@ -29,7 +30,13 @@ export const ISSUES = `${REPO}/issues/new`
  * to install; running an installer is the last thing this app does before it
  * closes, so it should never happen as a side effect of a check.
  */
-export function About({ product }: { product: string }): React.JSX.Element {
+export function About({
+  product,
+  platform,
+}: {
+  product: string
+  platform: HostStatus['platform']
+}): React.JSX.Element {
   const [version, setVersion] = useState('')
   const state = useUpdate()
 
@@ -103,7 +110,8 @@ export function About({ product }: { product: string }): React.JSX.Element {
         </div>
 
         <p className="mt-3 font-mono text-[10px] text-textFaint">
-          Windows · GPLv3 · Refora Technologies
+          {platform === 'linux' ? 'Linux' : platform === 'macos' ? 'macOS' : 'Windows'} · GPLv3 ·
+          Refora Technologies
         </p>
         <p className="mt-1 font-mono text-[10px] text-textFaint">
           © 2026 Refora Technologies
@@ -152,7 +160,7 @@ function Offer({
             onClick={onInstall}
             className="shrink-0 rounded-md border border-basalt/40 bg-basalt/15 px-3 py-1.5 text-[11.5px] text-text transition-colors hover:bg-basalt/25"
           >
-            Install and restart
+            {installLabel()}
           </button>
         ) : (
           <button

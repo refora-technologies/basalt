@@ -131,12 +131,9 @@ impl Host {
         let drive_lost = config.vault_path.is_some() && vault.is_none();
 
         // Starting the watcher must not stop a host from serving: a drive that
-        // will not report changes is still a drive you can read.
-        let watch = vault.as_ref().and_then(|vault| {
-            crate::watch::Watch::start(vault.root())
-                .inspect_err(|e| tracing::warn!("changes will not be live: {e}"))
-                .ok()
-        });
+        // will not report changes is still a drive you can read, and the host
+        // still has its own news for the devices.
+        let watch = vault.as_ref().map(|vault| watch_or_announce(vault.root()));
 
         let library = match (&config.vault_path, config.library_enabled) {
             (Some(root), true) => {
@@ -1886,10 +1883,8 @@ impl Host {
         // A new watcher, and the old one dropped. That closes every watch
         // connection, and a client that reconnects gets changes for the drive
         // actually being served now.
-        let watch = crate::watch::Watch::start(vault.root())
-            .inspect_err(|e| tracing::warn!("changes will not be live: {e}"))
-            .ok();
-        self.replace_watch(watch).await;
+        self.replace_watch(Some(watch_or_announce(vault.root())))
+            .await;
 
         // A different drive is a different library, and a different history.
         //
@@ -2088,6 +2083,7 @@ impl Host {
             problem: None,
             conversion: self.conversion_status(),
             endorsement: self.endorsement_view(),
+            platform: crate::ui::platform(),
         }
     }
 
@@ -2101,6 +2097,17 @@ impl Host {
             detected: capability.is_some(),
             measured: converter.measured(),
             measuring: converter.is_measuring(),
+            note: if converter.is_measuring() {
+                None
+            } else if self.config.lock().expect("config lock").convert_measuring {
+                Some(
+                    "The last measurement did not finish, likely short of memory. Measure \
+                     again when the computer is less busy."
+                        .into(),
+                )
+            } else {
+                converter.problem()
+            },
             by_hand: converter.by_hand(),
             limit: converter.limit(),
             active: converter.active(),
@@ -2124,19 +2131,40 @@ impl Host {
 
     /// Measures what this machine can convert, in the background, and keeps
     /// the answer.
-    pub fn measure_conversion(self: &Arc<Self>) {
+    ///
+    /// Refused at once, with the reason in words, when it cannot be done now:
+    /// a person who asked should hear why, not find a note later.
+    pub fn measure_conversion(self: &Arc<Self>) -> std::result::Result<(), String> {
+        if self.converter.is_measuring() {
+            return Ok(());
+        }
+        if let Some(why) = crate::convert::cannot_measure() {
+            self.converter.set_problem(Some(why.clone()));
+            return Err(why);
+        }
+        // Marked as under way before it starts, and kept, so that a host the
+        // system stops part-way knows at its next start.
+        self.config.lock().expect("config lock").convert_measuring = true;
+        if let Err(e) = self.persist() {
+            tracing::warn!("could not note that conversion is being measured: {e}");
+        }
         let host = Arc::clone(self);
         tokio::spawn(async move {
-            match host.converter.measure().await {
-                Ok(measured) => {
-                    host.config.lock().expect("config lock").convert_measured = Some(measured);
-                    if let Err(e) = host.persist() {
-                        tracing::warn!("could not keep what conversion measured: {e}");
-                    }
+            let result = host.converter.measure().await;
+            host.converter.set_problem(result.as_ref().err().cloned());
+            {
+                let mut config = host.config.lock().expect("config lock");
+                config.convert_measuring = false;
+                match result {
+                    Ok(measured) => config.convert_measured = Some(measured),
+                    Err(e) => tracing::warn!("could not measure video conversion: {e}"),
                 }
-                Err(e) => tracing::warn!("could not measure video conversion: {e}"),
+            }
+            if let Err(e) = host.persist() {
+                tracing::warn!("could not keep what conversion measured: {e}");
             }
         });
+        Ok(())
     }
 
     /// What the host's own window shows about the index.
@@ -2616,6 +2644,15 @@ pub async fn bind(host: Arc<Host>, addr: SocketAddr) -> Result<BoundServer> {
     })
 }
 
+/// Follows the drive at `root` for changes, or, when it cannot be followed,
+/// keeps a line to the devices for the host's own news all the same.
+fn watch_or_announce(root: &std::path::Path) -> Arc<crate::watch::Watch> {
+    crate::watch::Watch::start(root).unwrap_or_else(|e| {
+        tracing::warn!("changes on the drive will not be live: {e}");
+        crate::watch::Watch::announcer()
+    })
+}
+
 /// Accepts connections until the future is dropped.
 pub async fn serve(server: BoundServer) -> Result<()> {
     let BoundServer {
@@ -2648,14 +2685,23 @@ pub async fn serve(server: BoundServer) -> Result<()> {
             // once more when conversions have changed since. Only an
             // installed host: a test or a development copy using the
             // computer's own ffmpeg would spend minutes of every run on it.
+            let unfinished = host.config.lock().expect("config lock").convert_measuring;
+            if unfinished {
+                tracing::warn!(
+                    "the last measurement of video conversion did not finish, so it is not \
+                     started again by itself; the system may have stopped it for want of memory"
+                );
+            }
             if capability.can_convert()
                 && host.converter.installed()
+                && !unfinished
                 && !host
                     .converter
                     .measured()
                     .is_some_and(|measured| measured.current())
+                && let Err(why) = host.measure_conversion()
             {
-                host.measure_conversion();
+                tracing::info!("{why}");
             }
         });
     }
@@ -2711,6 +2757,9 @@ struct Session {
     profile: Option<(String, String)>,
     /// What the device said about itself when it connected: its name and id.
     hello: Option<HelloRequest>,
+    /// A reply was cut off part-way, so the connection cannot carry another
+    /// and ends once the request returns.
+    hang_up: bool,
 }
 
 impl Session {
@@ -2858,6 +2907,9 @@ where
             if let Err(e) = write_err(&mut stream, code, &e.to_string()).await {
                 break Err(e.into());
             }
+        }
+        if session.hang_up {
+            break Ok(());
         }
     };
 
@@ -3501,7 +3553,24 @@ where
                 tokio::select! {
                     _ = stream.read(&mut hung_up) => break,
                     piece = conversion.next() => match piece {
-                        Ok(Some(piece)) => write_ok(stream, &piece).await?,
+                        // Written while watching for a seek or the next film
+                        // to take this one's place. A device that has moved
+                        // on may have stopped reading, and a write waiting on
+                        // it used to hold the place the new one needed, so
+                        // that was refused as if the host were busy. Cut off
+                        // part-way, this reply cannot be finished, and the
+                        // connection goes with it.
+                        Ok(Some(piece)) => {
+                            let replaced = conversion.replaced();
+                            tokio::select! {
+                                biased;
+                                () = replaced => {
+                                    session.hang_up = true;
+                                    break;
+                                }
+                                written = write_ok(stream, &piece) => written?,
+                            }
+                        }
                         Ok(None) => {
                             write_ok(stream, &[]).await?;
                             break;

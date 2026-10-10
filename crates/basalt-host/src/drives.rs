@@ -30,6 +30,9 @@ impl Drive {
     /// A blank label is common on a freshly formatted USB stick, and "Local
     /// Disk (E:)" reads better than "(E:)" on its own.
     pub fn display_name(&self) -> String {
+        if !cfg!(windows) {
+            return linux_name(&self.path, &self.label);
+        }
         let letter = self
             .path
             .to_string_lossy()
@@ -61,10 +64,160 @@ pub fn list() -> Vec<Drive> {
     {
         windows_drives()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+        linux_drives(&mounts, user_name().as_deref())
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Vec::new()
     }
+}
+
+/// What a Linux volume is called: its label, or the folder it is mounted
+/// on, and the system's own disk "Computer", as a file manager says it.
+fn linux_name(path: &Path, label: &str) -> String {
+    if !label.trim().is_empty() {
+        return label.trim().to_string();
+    }
+    match path.to_str() {
+        Some("/") => "Computer".to_string(),
+        Some("/home") => "Home".to_string(),
+        _ => path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string()),
+    }
+}
+
+/// The person running the host, for finding where their drives are mounted.
+#[cfg(target_os = "linux")]
+fn user_name() -> Option<String> {
+    std::env::var("USER")
+        .ok()
+        .filter(|u| !u.is_empty())
+        .or_else(|| std::env::var("LOGNAME").ok().filter(|u| !u.is_empty()))
+}
+
+/// File systems a drive full of a person's files is on. Everything else in
+/// the mount table (the kernel's own, snaps, containers) is not a drive.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const DRIVE_FILE_SYSTEMS: &[&str] = &[
+    "ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "zfs", "jfs", "reiserfs", "vfat", "exfat",
+    "ntfs", "ntfs3", "fuseblk", "hfsplus", "apfs", "nfs", "nfs4", "cifs", "smb3", "9p", "drvfs",
+];
+
+/// The drives a person would share, from the mount table's text: the
+/// system's own disk, a separate home, and whatever is mounted under
+/// `/media`, `/run/media` and `/mnt`, the places Linux puts a USB drive or a
+/// second disk. Each mounted volume once, the system first.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn linux_drives(mounts: &str, user: Option<&str>) -> Vec<Drive> {
+    let mut seen_devices = std::collections::HashSet::new();
+    let mut drives: Vec<Drive> = Vec::new();
+    for line in mounts.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(device), Some(point), Some(fs)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if !DRIVE_FILE_SYSTEMS.contains(&fs) {
+            continue;
+        }
+        let point = unescape_mount(point);
+        let wanted = point == "/"
+            || point == "/home"
+            || ["/media/", "/run/media/", "/mnt/"]
+                .iter()
+                .any(|place| point.starts_with(place));
+        // WSL's own plumbing lives under /mnt/wsl; it is not a drive.
+        if !wanted || point.starts_with("/mnt/wsl") {
+            continue;
+        }
+        // The same disk mounted twice (a bind mount) is one drive.
+        if device.starts_with('/') && !seen_devices.insert(device.to_string()) {
+            continue;
+        }
+        let path = PathBuf::from(&point);
+        let kind = if matches!(fs, "nfs" | "nfs4" | "cifs" | "smb3") {
+            "network"
+        } else if point.starts_with("/media/") || point.starts_with("/run/media/") {
+            "removable"
+        } else {
+            "fixed"
+        };
+        // A drive mounted by the desktop is named after its label, under the
+        // person's own folder: /media/maya/Films is the drive called Films.
+        let label = match user {
+            Some(user) => {
+                let under_user = [format!("/media/{user}/"), format!("/run/media/{user}/")];
+                under_user
+                    .iter()
+                    .find_map(|prefix| point.strip_prefix(prefix.as_str()))
+                    .filter(|rest| !rest.contains('/'))
+                    .unwrap_or("")
+                    .to_string()
+            }
+            None => String::new(),
+        };
+        let (free, total) = crate::space::for_path(&path);
+        drives.push(Drive {
+            path,
+            label,
+            kind,
+            free,
+            total,
+        });
+    }
+    drives.sort_by_key(|d| match d.path.to_str() {
+        Some("/") => (0, String::new()),
+        Some("/home") => (1, String::new()),
+        other => (2, other.unwrap_or_default().to_string()),
+    });
+    drives
+}
+
+/// Where, in the mount table's text, things are mounted that are not drives:
+/// the kernel's own views (`/proc`, `/sys`), memory (`/run`), snaps and the
+/// like. A drive shared whole passes over these, which hold no one's files
+/// and cannot all be read.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn not_drives(mounts: &str) -> Vec<std::path::PathBuf> {
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let (_, point, fs) = (fields.next()?, fields.next()?, fields.next()?);
+            (!DRIVE_FILE_SYSTEMS.contains(&fs)).then(|| unescape_mount(point).into())
+        })
+        .collect()
+}
+
+/// The mount table writes a space as `\040`, and a few other characters the
+/// same way.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn unescape_mount(field: &str) -> String {
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && bytes[i + 1..i + 4]
+                .iter()
+                .all(|b| (b'0'..=b'7').contains(b))
+        {
+            let value =
+                (bytes[i + 1] - b'0') * 64 + (bytes[i + 2] - b'0') * 8 + (bytes[i + 3] - b'0');
+            out.push(value);
+            i += 4;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Whether a path can actually be served right now.
@@ -174,9 +327,72 @@ fn wide(text: &str) -> Vec<u16> {
 mod tests {
     use super::*;
 
+    const MOUNTS: &str = "\
+sysfs /sys sysfs rw,nosuid 0 0
+proc /proc proc rw 0 0
+/dev/nvme0n1p2 / ext4 rw,relatime 0 0
+tmpfs /run tmpfs rw 0 0
+/dev/nvme0n1p3 /home ext4 rw 0 0
+/dev/loop3 /snap/core/123 squashfs ro 0 0
+/dev/sda1 /media/maya/Media\\040Drive exfat rw 0 0
+/dev/sdb1 /mnt/backup btrfs rw 0 0
+/dev/sdb1 /srv/backup btrfs rw 0 0
+/dev/sdb1 /mnt/backup-again btrfs rw 0 0
+none /mnt/wsl tmpfs rw 0 0
+//nas/films /mnt/nas cifs rw 0 0
+overlay /var/lib/docker/overlay2/x/merged overlay rw 0 0
+";
+
+    #[test]
+    fn linux_drives_are_the_disks_a_person_would_share_and_nothing_else() {
+        let drives = linux_drives(MOUNTS, Some("maya"));
+        let paths: Vec<_> = drives
+            .iter()
+            .map(|d| d.path.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "/",
+                "/home",
+                "/media/maya/Media Drive",
+                "/mnt/backup",
+                "/mnt/nas"
+            ]
+        );
+        let usb = &drives[2];
+        assert_eq!(usb.label, "Media Drive");
+        assert_eq!(usb.kind, "removable");
+        assert_eq!(drives[4].kind, "network");
+        assert_eq!(linux_name(&drives[0].path, &drives[0].label), "Computer");
+        assert_eq!(linux_name(&drives[1].path, &drives[1].label), "Home");
+        assert_eq!(linux_name(&usb.path, &usb.label), "Media Drive");
+        assert_eq!(linux_name(&drives[3].path, &drives[3].label), "backup");
+    }
+
+    #[test]
+    fn a_mount_table_with_nothing_wanted_lists_nothing() {
+        assert!(linux_drives("proc /proc proc rw 0 0\n", None).is_empty());
+        assert!(linux_drives("", None).is_empty());
+        assert!(linux_drives("garbage\n\n   \n", None).is_empty());
+    }
+
+    #[test]
+    fn escaped_mount_points_read_as_written() {
+        assert_eq!(unescape_mount("/media/a\\040b"), "/media/a b");
+        assert_eq!(unescape_mount("/plain"), "/plain");
+        assert_eq!(unescape_mount("/bad\\0"), "/bad\\0");
+    }
+
     #[test]
     fn this_machine_has_at_least_one_drive() {
         let drives = list();
+        if cfg!(target_os = "linux") {
+            assert!(
+                drives.iter().any(|d| d.path == Path::new("/")),
+                "Linux always has its own disk"
+            );
+        }
         if cfg!(windows) {
             assert!(!drives.is_empty(), "Windows always has a system drive");
             assert!(
@@ -187,6 +403,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn every_drive_is_a_root_path() {
         for drive in list() {
             let text = drive.path.to_string_lossy().into_owned();
@@ -196,6 +413,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_drive_without_a_label_still_has_something_to_call_it() {
         let drive = Drive {
             path: PathBuf::from("E:\\"),
@@ -208,6 +426,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_label_is_preferred_and_trimmed() {
         let drive = Drive {
             path: PathBuf::from("E:\\"),
@@ -220,6 +439,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_path_is_shown_the_way_a_person_writes_it() {
         assert_eq!(display(Path::new(r"\\?\D:\")), r"D:\");
         assert_eq!(display(Path::new(r"\\?\D:\Films")), r"D:\Films");

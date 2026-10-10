@@ -451,12 +451,17 @@ fn first_file(dir: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// `lib/libmpv-2.dll` beside the executable, which is where the installer
-/// puts it.
+/// `lib/libmpv-2.dll` beside the executable on Windows, which is where the
+/// installer puts it. On Linux, the system's libmpv, found by the loader the
+/// way any shared library is; when it is not installed, loading fails and
+/// videos simply go without pictures.
 fn default_mpv_path() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let candidate = exe.parent()?.join("lib").join("libmpv-2.dll");
-    candidate.exists().then_some(candidate)
+    if cfg!(windows) {
+        let exe = std::env::current_exe().ok()?;
+        let candidate = exe.parent()?.join("lib").join("libmpv-2.dll");
+        return candidate.exists().then_some(candidate);
+    }
+    Some(PathBuf::from("libmpv.so.2"))
 }
 
 #[cfg(test)]

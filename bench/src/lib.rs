@@ -6,6 +6,8 @@
 
 pub mod compress;
 pub mod corpus;
+// Unbuffered reads through Windows' own calls: measured on Windows only.
+#[cfg(windows)]
 pub mod disk;
 pub mod lab;
 pub mod net;
@@ -14,4 +16,5 @@ pub mod setup;
 pub mod smb;
 pub mod stats;
 pub mod verdict;
+#[cfg(windows)]
 pub mod winio;

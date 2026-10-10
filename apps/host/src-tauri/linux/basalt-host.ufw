@@ -1,0 +1,4 @@
+[Basalt Host]
+title=Basalt Host
+description=Shares a drive with your own devices on this network
+ports=7742/tcp|7743/udp

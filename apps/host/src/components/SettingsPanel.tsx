@@ -151,13 +151,17 @@ export function SettingsPanel({
 
       <Row
         onToggle={() => onStartWithWindows(!status.startWithWindows)}
-        title="Start when Windows starts"
-        detail="Opens in the notification area at login, so the drive is there before you go looking for it."
+        title={status.platform === 'windows' ? 'Start when Windows starts' : 'Start when you log in'}
+        detail={
+          status.platform === 'windows'
+            ? 'Opens in the notification area at login, so the drive is there before you go looking for it.'
+            : 'Opens in the background at login, so the drive is there before you go looking for it.'
+        }
         control={
           <Switch
             checked={status.startWithWindows}
             onChange={onStartWithWindows}
-            label="Start when Windows starts"
+            label={status.platform === 'windows' ? 'Start when Windows starts' : 'Start when you log in'}
           />
         }
       />
@@ -245,7 +249,7 @@ export function SettingsPanel({
       </div>
 
       <div id="host-about" className="scroll-mt-6">
-        <About product="Basalt Host" />
+        <About product="Basalt Host" platform={status.platform} />
       </div>
     </div>
   )

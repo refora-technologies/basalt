@@ -42,19 +42,66 @@ impl Product {
 }
 
 /// What kind of file installs this build: an installer on Windows, a
-/// package on Android. One release carries both.
+/// package on Android, and on Linux whichever way this copy was installed.
+/// One release carries them all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Platform {
     Windows,
     Android,
+    Linux(LinuxPackage),
+}
+
+/// How a copy on Linux was installed, which is how it is updated: an
+/// AppImage replaces itself; a `.deb` or `.rpm` goes through the system's
+/// package installer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxPackage {
+    AppImage,
+    Deb,
+    Rpm,
+}
+
+impl LinuxPackage {
+    /// How this copy was installed. An AppImage is told its own path in
+    /// `APPIMAGE` when it runs; otherwise the package manager the system has
+    /// says which kind of package it came from.
+    pub fn here() -> LinuxPackage {
+        if std::env::var_os("APPIMAGE").is_some() {
+            LinuxPackage::AppImage
+        } else if ["/usr/bin/dpkg", "/bin/dpkg"]
+            .iter()
+            .any(|p| std::path::Path::new(p).exists())
+        {
+            LinuxPackage::Deb
+        } else if ["/usr/bin/rpm", "/bin/rpm"]
+            .iter()
+            .any(|p| std::path::Path::new(p).exists())
+        {
+            LinuxPackage::Rpm
+        } else {
+            LinuxPackage::AppImage
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            LinuxPackage::AppImage => ".appimage",
+            LinuxPackage::Deb => ".deb",
+            LinuxPackage::Rpm => ".rpm",
+        }
+    }
 }
 
 impl Platform {
-    const HERE: Platform = if cfg!(target_os = "android") {
-        Platform::Android
-    } else {
-        Platform::Windows
-    };
+    fn here() -> Platform {
+        if cfg!(target_os = "android") {
+            Platform::Android
+        } else if cfg!(target_os = "linux") {
+            Platform::Linux(LinuxPackage::here())
+        } else {
+            Platform::Windows
+        }
+    }
 }
 
 /// The marker and extension of this app's file on a platform. The Android
@@ -63,6 +110,16 @@ fn wanted(product: Product, platform: Platform) -> (&'static str, &'static str) 
     match platform {
         Platform::Windows => (product.marker(), ".exe"),
         Platform::Android => ("android", ".apk"),
+        Platform::Linux(package) => (product.marker(), package.extension()),
+    }
+}
+
+/// The names this machine's processor goes by in a Linux file name.
+fn arch_names() -> &'static [&'static str] {
+    match std::env::consts::ARCH {
+        "x86_64" => &["x86_64", "amd64"],
+        "aarch64" => &["aarch64", "arm64"],
+        _ => &[],
     }
 }
 
@@ -230,6 +287,15 @@ pub async fn notes_for(version: &str) -> Result<Option<String>> {
 /// which release counts, which asset belongs to this app, and whether the
 /// version is actually an advance.
 fn newer_than(release: GhRelease, product: Product, current: &str) -> Option<Release> {
+    newer_than_on(release, product, current, Platform::here())
+}
+
+fn newer_than_on(
+    release: GhRelease,
+    product: Product,
+    current: &str,
+    platform: Platform,
+) -> Option<Release> {
     // A draft is not published and a prerelease was not offered to everyone.
     if release.draft || release.prerelease {
         return None;
@@ -238,7 +304,7 @@ fn newer_than(release: GhRelease, product: Product, current: &str) -> Option<Rel
         return None;
     }
 
-    let installer = pick(&release.assets, product)?;
+    let installer = pick_for(&release.assets, product, platform)?;
     let checksum = release
         .assets
         .iter()
@@ -281,16 +347,19 @@ fn android_roots() -> Vec<reqwest::Certificate> {
     Vec::new()
 }
 
-/// The installer in this release that belongs to this app.
-fn pick(assets: &[GhAsset], product: Product) -> Option<&GhAsset> {
-    pick_for(assets, product, Platform::HERE)
-}
-
+/// The installer in this release that belongs to this app on `platform`.
 fn pick_for(assets: &[GhAsset], product: Product, platform: Platform) -> Option<&GhAsset> {
     let (marker, extension) = wanted(product, platform);
     assets.iter().find(|asset| {
         let name = asset.name.to_ascii_lowercase();
-        name.ends_with(extension) && name.contains(marker)
+        let linux_fits = match platform {
+            // A Linux file says it is for Linux, and for this processor.
+            Platform::Linux(_) => {
+                name.contains("linux") && arch_names().iter().any(|arch| name.contains(arch))
+            }
+            _ => true,
+        };
+        name.ends_with(extension) && name.contains(marker) && linux_fits
     })
 }
 
@@ -400,6 +469,12 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    /// The releases in these tests are Windows ones: matched as on Windows,
+    /// whichever system runs the tests.
+    fn newer_than(release: GhRelease, product: Product, current: &str) -> Option<Release> {
+        newer_than_on(release, product, current, Platform::Windows)
+    }
+
     /// Building the HTTP client must not depend on somebody else having set
     /// up rustls first.
     ///
@@ -440,11 +515,15 @@ mod tests {
             asset("Basalt-Host-1.1.0-setup.exe"),
         ];
         assert_eq!(
-            pick(&assets, Product::Client).unwrap().name,
+            pick_for(&assets, Product::Client, Platform::Windows)
+                .unwrap()
+                .name,
             "Basalt-Client-1.1.0-setup.exe"
         );
         assert_eq!(
-            pick(&assets, Product::Host).unwrap().name,
+            pick_for(&assets, Product::Host, Platform::Windows)
+                .unwrap()
+                .name,
             "Basalt-Host-1.1.0-setup.exe"
         );
     }
@@ -472,6 +551,56 @@ mod tests {
         );
         let windows_only = [asset("Basalt-Client-1.4.0-setup.exe")];
         assert!(pick_for(&windows_only, Product::Client, Platform::Android).is_none());
+    }
+
+    /// A Linux host finds the file for the way it was installed, for its own
+    /// processor, and never a Windows installer.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn a_linux_host_finds_the_package_it_was_installed_from() {
+        let names = [
+            "Basalt-Host-Setup.exe",
+            "Basalt-Client-Setup.exe",
+            "Basalt-Android.apk",
+            "Basalt-Host-Linux-x86_64.AppImage",
+            "Basalt-Host-Linux-x86_64.AppImage.sha256",
+            "Basalt-Host-Linux-amd64.deb",
+            "Basalt-Host-Linux-x86_64.rpm",
+            "Basalt-Host-Linux-aarch64.AppImage",
+        ];
+        let assets: Vec<GhAsset> = names.iter().map(|name| asset(name)).collect();
+        let found = |package| {
+            pick_for(&assets, Product::Host, Platform::Linux(package)).map(|a| a.name.clone())
+        };
+        assert_eq!(
+            found(LinuxPackage::AppImage).as_deref(),
+            Some("Basalt-Host-Linux-x86_64.AppImage")
+        );
+        assert_eq!(
+            found(LinuxPackage::Deb).as_deref(),
+            Some("Basalt-Host-Linux-amd64.deb")
+        );
+        assert_eq!(
+            found(LinuxPackage::Rpm).as_deref(),
+            Some("Basalt-Host-Linux-x86_64.rpm")
+        );
+        // Windows still finds its own, and nothing Linux.
+        assert_eq!(
+            pick_for(&assets, Product::Host, Platform::Windows)
+                .unwrap()
+                .name,
+            "Basalt-Host-Setup.exe"
+        );
+        // A release with no Linux file offers a Linux host nothing.
+        let windows_only = [asset("Basalt-Host-Setup.exe")];
+        assert!(
+            pick_for(
+                &windows_only,
+                Product::Host,
+                Platform::Linux(LinuxPackage::Deb)
+            )
+            .is_none()
+        );
     }
 
     /// Releases name their files without a version, so a download link to the

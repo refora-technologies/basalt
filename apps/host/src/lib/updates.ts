@@ -123,6 +123,19 @@ export async function downloadUpdate(): Promise<void> {
   }
 }
 
+let style: 'restart' | 'package' = 'restart'
+void api
+  .updateStyle()
+  .then((s) => {
+    style = s
+  })
+  .catch(() => {})
+
+/** What the button that puts a downloaded update in says on this computer. */
+export function installLabel(): string {
+  return style === 'package' ? 'Open installer' : 'Install and restart'
+}
+
 /** Runs the downloaded, verified installer; the host steps aside for it. */
 export async function installUpdate(): Promise<void> {
   if (state.kind !== 'ready') return

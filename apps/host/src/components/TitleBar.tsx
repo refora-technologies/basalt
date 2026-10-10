@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion'
 import { HexMark } from './HexMark'
 import { cn } from '@/lib/utils'
+import { dragFromTitleBar } from '@/lib/windowFrame'
 
 /**
  * True when running inside the Tauri shell rather than a plain browser.
@@ -43,7 +44,10 @@ export function TitleBar({
   const alive = serving && busy
 
   return (
-    <div className="drag relative z-20 flex h-9 shrink-0 items-center gap-2.5 border-b border-line px-3">
+    <div
+      onMouseDown={dragFromTitleBar}
+      className="drag relative z-20 flex h-9 shrink-0 items-center gap-2.5 border-b border-line px-3"
+    >
       {/*
         The mark breathes only while data is actually moving. Idle it is
         perfectly still — an animation that never stops stops meaning anything.

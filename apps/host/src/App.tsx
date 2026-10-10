@@ -16,6 +16,7 @@ import { TitleBar } from './components/TitleBar'
 import { VaultCard } from './components/VaultCard'
 import { HexMark } from './components/HexMark'
 import { PromptDialog, type PromptRequest } from './components/ui/PromptDialog'
+import { MessageDialog, type MessageRequest } from './components/ui/MessageDialog'
 
 /** How often the dashboard asks for each thing. */
 const STATUS_INTERVAL = 2_000
@@ -35,6 +36,7 @@ export function App(): React.JSX.Element {
   const pairings = usePoll(useCallback(() => api.pendingPairings(), []), PAIRING_INTERVAL)
 
   const [prompt, setPrompt] = useState<PromptRequest | null>(null)
+  const [message, setMessage] = useState<MessageRequest | null>(null)
   const [adding, setAdding] = useState(false)
   /** Why the last change to the profile rules was refused. */
   const [rulesError, setRulesError] = useState<string | null>(null)
@@ -324,7 +326,12 @@ export function App(): React.JSX.Element {
                       void api.setConversionAtOnce(atOnce).then(apply)
                     }}
                     onMeasureConversion={() => {
-                      void api.measureConversion().then(apply)
+                      void api
+                        .measureConversion()
+                        .then(apply)
+                        .catch((e: unknown) =>
+                          setMessage({ title: 'Cannot measure right now', message: reason(e) }),
+                        )
                     }}
                     onRescan={() => {
                       void api.rescanLibrary().then(apply)
@@ -352,6 +359,7 @@ export function App(): React.JSX.Element {
       </main>
 
       <PromptDialog request={prompt} onClose={() => setPrompt(null)} />
+      <MessageDialog request={message} onClose={() => setMessage(null)} />
       {current && (
         <AddProfileDialog
           open={adding}

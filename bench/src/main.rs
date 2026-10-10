@@ -31,9 +31,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use basalt_bench::corpus::{Corpus, CorpusSpec};
+#[cfg(windows)]
+use basalt_bench::disk;
 use basalt_bench::report::Report;
 use basalt_bench::stats::Suite;
-use basalt_bench::{compress, disk, lab, net, report, smb};
+use basalt_bench::{compress, lab, net, report, smb};
 
 #[derive(Parser)]
 #[command(
@@ -331,14 +333,24 @@ fn main() -> Result<()> {
             sequential_bytes,
             small_files,
         } => {
-            print_banner("disk");
-            let suites = disk::run(&disk::DiskConfig {
-                root,
-                runs: cli.runs,
-                sequential_bytes,
-                small_files,
-            })?;
-            Report::new(suites).write(&cli.out)?;
+            #[cfg(windows)]
+            {
+                print_banner("disk");
+                let suites = disk::run(&disk::DiskConfig {
+                    root,
+                    runs: cli.runs,
+                    sequential_bytes,
+                    small_files,
+                })?;
+                Report::new(suites).write(&cli.out)?;
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (root, sequential_bytes, small_files);
+                anyhow::bail!(
+                    "the disk benchmark measures Windows' unbuffered reads; run it on Windows"
+                );
+            }
         }
 
         Command::Smb {

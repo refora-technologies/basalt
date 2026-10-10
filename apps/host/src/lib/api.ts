@@ -110,6 +110,8 @@ export interface HostStatus {
   conversion: ConversionStatus
   /** The owner's device vouching for this computer, when one has. */
   endorsement: EndorsementView | null
+  /** The system the host runs on, for the window to use its words. */
+  platform: 'windows' | 'linux' | 'macos' | 'other'
 }
 
 /** What a machine was measured to manage. */
@@ -121,6 +123,8 @@ export interface ConversionMeasured {
   /** How much faster than real time one runs. */
   speed: number
   at: number
+  /** Memory, not speed, set `atOnce`. */
+  memory?: boolean
 }
 
 export interface ConversionStatus {
@@ -131,6 +135,8 @@ export interface ConversionStatus {
   detected: boolean
   measured: ConversionMeasured | null
   measuring: boolean
+  /** Why it is not measured, when that is worth saying. */
+  note: string | null
   /** Chosen by hand; null goes by what was measured. */
   byHand: number | null
   /** As it stands. */
@@ -253,6 +259,12 @@ export const api = {
     call('download_update', { release }),
   /** Runs the installer and closes this app so it can be replaced. */
   installUpdate: (path: string): Promise<void> => call('install_update', { path }),
+  /** `restart`: the app puts the update in and restarts; `package`: the
+   *  system's software installer takes it (a .deb or .rpm on Linux). */
+  updateStyle: (): Promise<'restart' | 'package'> => call('update_style'),
+  /** Tells the page the mouse button was let go, after the window was handed
+   *  to the system to move or resize: on Linux it is never told otherwise. */
+  releasePointer: (): Promise<void> => call('release_pointer'),
 
   status: (): Promise<HostStatus> => call('status'),
   listDrives: (): Promise<DriveView[]> => call('list_drives'),
@@ -346,6 +358,7 @@ const sample: {
       detected: true,
       measured: { by: 'Intel graphics', atOnce: 2, speed: 3.4, at: Math.floor(Date.now() / 1000) - 86400 },
       measuring: false,
+      note: null,
       byHand: null,
       limit: 2,
       active: [
@@ -406,6 +419,11 @@ const sample: {
     serving: true,
     problem: null,
     endorsement: { by: "Maya's laptop", until: Math.floor(Date.now() / 1000) + 86_400 * 26 },
+    // `?linux` shows the window as it is on Linux.
+    platform:
+      typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('linux')
+        ? 'linux'
+        : 'windows',
   },
   devices: [
     {
@@ -615,6 +633,13 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return sample.status
       }
       case 'measure_conversion':
+        // `?lowmem` shows a computer without the memory to measure.
+        if (previewFlag('lowmem')) {
+          throw new ApiError(
+            'error',
+            'Not measured: it needs about 2.5 GB of free memory, and this computer has 1.4 GB free. Close other apps, or give it more memory, and measure again.',
+          )
+        }
         sample.status.conversion.measuring = true
         // Finishes on its own, as the real one does.
         setTimeout(() => {
@@ -686,6 +711,8 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return previewFlag('update') ? MOCK_RELEASE : null
       case 'install_update':
         return undefined
+      case 'update_style':
+        return previewFlag('package') ? 'package' : 'restart'
       case 'open_log_folder':
         return undefined
       case 'open_vault_folder':
@@ -702,8 +729,17 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   // deserialised fresh every time. Handing back the same object twice let
   // React skip a render that the desktop app would always do, which made the
   // preview behave differently from the app for no reason that was visible.
-  return new Promise((resolve) =>
-    setTimeout(() => resolve(structuredClone(answer()) as T), 60),
+  //
+  // A refusal is handed back as one, as the app's would be: thrown inside
+  // the timer, it reached nobody, and the preview waited for ever.
+  return new Promise((resolve, reject) =>
+    setTimeout(() => {
+      try {
+        resolve(structuredClone(answer()) as T)
+      } catch (e) {
+        reject(e)
+      }
+    }, 60),
   )
 }
 

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>Basalt Host</short>
+  <description>Basalt Host shares a drive with your own devices on this network: TCP 7742 for connections and UDP 7743 so devices can find it.</description>
+  <port protocol="tcp" port="7742"/>
+  <port protocol="udp" port="7743"/>
+</service>

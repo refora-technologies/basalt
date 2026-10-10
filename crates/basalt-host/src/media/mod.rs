@@ -30,7 +30,7 @@ pub use index::{Library, scan};
 /// clock, the numbers of two drives do not meet, and they still only ever go
 /// up for one. Milliseconds stay far inside what JavaScript holds exactly.
 pub fn next_revision(previous: u64) -> u64 {
-    (previous + 1).max(now_millis())
+    unique((previous + 1).max(now_millis()))
 }
 
 /// A revision loaded from disk, made at least as late as now, so it cannot
@@ -40,7 +40,23 @@ pub fn reloaded_revision(saved: u64) -> u64 {
     if saved == 0 {
         0
     } else {
-        saved.max(now_millis())
+        unique(saved.max(now_millis()))
+    }
+}
+
+/// Never the same number twice in one run, whatever the clock says: two
+/// drives changing within the same millisecond would otherwise be numbered
+/// alike, and a device could take one's library for the other's.
+fn unique(candidate: u64) -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let mut last = LAST.load(Ordering::Relaxed);
+    loop {
+        let next = candidate.max(last + 1);
+        match LAST.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(seen) => last = seen,
+        }
     }
 }
 

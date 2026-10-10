@@ -73,6 +73,22 @@ pub struct HostStatus {
     pub conversion: ConversionStatus,
     /// The owner's device vouching for this host's key, and until when.
     pub endorsement: Option<EndorsementView>,
+    /// The system the host runs on, so the window can use its words:
+    /// `windows`, `linux`, `macos`, or `other`.
+    pub platform: &'static str,
+}
+
+/// The system this host was built for.
+pub fn platform() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "other"
+    }
 }
 
 /// Which owner's device last vouched for the host, and until when.
@@ -100,6 +116,9 @@ pub struct ConversionStatus {
     pub measured: Option<crate::convert::Measured>,
     /// Measuring now.
     pub measuring: bool,
+    /// Why it is not measured, in words, when that is worth saying: the last
+    /// measurement never finished, or this machine has too little memory.
+    pub note: Option<String>,
     /// At once, chosen by hand; None means as measured.
     pub by_hand: Option<u32>,
     /// At once, as it stands: by hand, or as measured.
@@ -378,11 +397,13 @@ mod tests {
                 detected: true,
                 measured: None,
                 measuring: false,
+                note: None,
                 by_hand: None,
                 limit: 1,
                 active: Vec::new(),
             },
             endorsement: None,
+            platform: "windows",
         };
         assert_eq!(
             keys(&status),
@@ -394,6 +415,7 @@ mod tests {
                 "hostId",
                 "hostName",
                 "library",
+                "platform",
                 "port",
                 "problem",
                 "profileRules",
@@ -423,7 +445,8 @@ mod tests {
                 "enabled",
                 "limit",
                 "measured",
-                "measuring"
+                "measuring",
+                "note"
             ]
         );
     }
@@ -491,6 +514,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_label_is_offered_separately_from_the_list_name() {
         let view = DriveView::from(Drive {
             path: PathBuf::from("E:\\"),
@@ -655,6 +679,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[cfg(windows)]
     fn an_empty_card_reader_slot_is_listed_but_not_ready() {
         let view = DriveView::from(Drive {
             path: PathBuf::from("F:\\"),

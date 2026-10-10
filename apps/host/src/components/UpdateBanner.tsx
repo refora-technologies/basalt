@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowUpCircle, Loader2 } from 'lucide-react'
-import { downloadUpdate, installUpdate, offered, useUpdate } from '@/lib/updates'
+import { downloadUpdate, installLabel, installUpdate, offered, useUpdate } from '@/lib/updates'
 import { formatBytes } from '@/lib/utils'
 
 /**
@@ -51,7 +51,7 @@ export function UpdateBanner(): React.JSX.Element {
                 onClick={() => void installUpdate()}
                 className="shrink-0 rounded-md border border-basalt/40 bg-basalt/15 px-3 py-1.5 text-[11.5px] text-text transition-colors hover:bg-basalt/25"
               >
-                Install and restart
+                {installLabel()}
               </button>
             ) : (
               <button

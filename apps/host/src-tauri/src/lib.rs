@@ -249,7 +249,13 @@ async fn set_conversion_at_once(
 /// Measures again what this machine can convert, in the background.
 #[tauri::command]
 async fn measure_conversion(state: State<'_, AppState>) -> Answer<HostStatus> {
-    state.host.measure_conversion();
+    state
+        .host
+        .measure_conversion()
+        .map_err(|message| UiError {
+            kind: "error".into(),
+            message,
+        })?;
     status(state).await
 }
 
@@ -331,12 +337,85 @@ async fn open_vault_folder(state: State<'_, AppState>, app: tauri::AppHandle) ->
 // ---------------------------------------------------------------------------
 
 /// Brings the window back, wherever it was.
+/// Whether closing the window frees it, rather than hiding it.
+///
+/// On Linux the window's web view is a WebKit process of a few hundred
+/// megabytes, kept for a window that is closed nearly all the time: a host
+/// spends its life in the tray. There it is let go when the window closes and
+/// made again when it opens, which takes a moment and costs nothing while
+/// nobody is looking. The drive is shared by this process either way.
+const FREE_WHEN_CLOSED: bool = cfg!(target_os = "linux");
+
 fn show_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        return;
     }
+    // Freed when it was closed: made again, as it was configured.
+    let Some(config) = app.config().app.windows.first() else {
+        return;
+    };
+    match tauri::WebviewWindowBuilder::from_config(app, config).and_then(|b| b.build()) {
+        Ok(window) => {
+            let _ = window.set_focus();
+        }
+        Err(e) => tracing::error!("could not open the window again: {e}"),
+    }
+}
+
+/// Tells the page the mouse button was let go, after the window has been
+/// handed to the system to move or resize (see `windowFrame.ts`).
+///
+/// The system takes the press over for the move, and on Linux the page then
+/// never hears the button go up. It went on thinking it was held: a scrollbar
+/// pressed on the way followed the pointer about with nothing pressed at all.
+#[tauri::command]
+fn release_pointer(window: tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    release_in_page(&window);
+    #[cfg(not(target_os = "linux"))]
+    let _ = window;
+}
+
+/// Tells the page the left button was let go, where the pointer is.
+#[cfg(target_os = "linux")]
+fn release_in_page(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(|webview| {
+        use gtk::gdk;
+        use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+        use gtk::prelude::*;
+
+        let Some(target) = webview.inner().window() else {
+            return;
+        };
+        let Some(pointer) = target.display().default_seat().and_then(|s| s.pointer()) else {
+            return;
+        };
+        let (_, x, y, _) = target.device_position_double(&pointer);
+        let (_, root_x, root_y) = target.origin();
+
+        let mut event = gdk::Event::new(gdk::EventType::ButtonRelease);
+        // SAFETY: a button release made just above, whose fields are all
+        // filled in here; the event takes its own reference to the window
+        // and gives it back when it is dropped.
+        unsafe {
+            let raw: *mut gdk::ffi::GdkEvent = event.to_glib_none_mut().0;
+            let button = &mut (*raw).button;
+            button.window = target.to_glib_full();
+            button.send_event = 1;
+            button.time = gdk::ffi::GDK_CURRENT_TIME as u32;
+            button.x = x;
+            button.y = y;
+            button.x_root = f64::from(root_x) + x;
+            button.y_root = f64::from(root_y) + y;
+            button.state = gdk::ffi::GDK_BUTTON1_MASK;
+            button.button = 1;
+        }
+        event.set_device(Some(&pointer));
+        gtk::main_do_event(&mut event);
+    });
 }
 
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -389,18 +468,29 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// host misbehaving on another machine completely undiagnosable — the first
 /// report of trouble had nothing to look at but guesswork.
 ///
-/// One file, truncated at each start. A host that has been running for a month
+/// One file, emptied at each start. A host that has been running for a month
 /// should not have a log nobody will ever read; what matters is the session
 /// that went wrong, and that is the one still open.
-fn start_logging() -> Option<std::path::PathBuf> {
+///
+/// It is opened without emptying it, and emptied by `clear` once this copy
+/// knows it is the one that runs. Opening Basalt Host a second time starts a
+/// process that only hands over to the running one, and it must not wipe the
+/// log of the copy that is still running.
+fn start_logging() -> Option<(std::path::PathBuf, LogFile)> {
     let path = basalt_host::config::default_path()
         .parent()?
         .join("host.log");
     std::fs::create_dir_all(path.parent()?).ok()?;
 
-    let file = std::fs::File::create(&path).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+    let log = LogFile(std::sync::Arc::new(std::sync::Mutex::new(file)));
+    let writer = log.clone();
     tracing_subscriber::fmt()
-        .with_writer(std::sync::Mutex::new(file))
+        .with_writer(move || writer.clone())
         .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -417,7 +507,37 @@ fn start_logging() -> Option<std::path::PathBuf> {
         previous(info);
     }));
 
-    Some(path)
+    Some((path, log))
+}
+
+/// The open log file, shared by every line written to it.
+#[derive(Clone)]
+struct LogFile(std::sync::Arc<std::sync::Mutex<std::fs::File>>);
+
+impl LogFile {
+    /// Empties the file. It is open for appending, so what is written next
+    /// starts at the top.
+    fn clear(&self) {
+        if let Ok(file) = self.0.lock() {
+            let _ = file.set_len(0);
+        }
+    }
+}
+
+impl std::io::Write for LogFile {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        match self.0.lock() {
+            Ok(mut file) => file.write(bytes),
+            Err(_) => Ok(bytes.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.0.lock() {
+            Ok(mut file) => file.flush(),
+            Err(_) => Ok(()),
+        }
+    }
 }
 
 /// Notices when the window stops answering, and writes it down.
@@ -579,6 +699,25 @@ async fn download_update(app: tauri::AppHandle, release: basalt_update::Release)
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// How an update goes in on this computer: `restart`, where the app puts the
+/// new version in and starts it (Windows, and an AppImage on Linux); or
+/// `package`, where the system's own software installer takes the package
+/// and asks for the password itself (a `.deb` or `.rpm` on Linux).
+#[tauri::command]
+fn update_style() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        match basalt_update::LinuxPackage::here() {
+            basalt_update::LinuxPackage::AppImage => "restart",
+            _ => "package",
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "restart"
+    }
+}
+
 /// Starts the installer and stands aside.
 ///
 /// The app has to go: an installer cannot replace files that are open, and
@@ -586,6 +725,16 @@ async fn download_update(app: tauri::AppHandle, release: basalt_update::Release)
 /// exactly how somebody ends up "updating" and finding the same version.
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
+    #[cfg(target_os = "linux")]
+    {
+        return install_update_linux(app, path).await;
+    }
+    #[cfg(not(target_os = "linux"))]
+    install_update_windows(app, path).await
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn install_update_windows(app: tauri::AppHandle, path: String) -> Answer<()> {
     // As an update, not a first install: /UPDATE goes over the installed copy
     // without uninstalling it or asking anything, and keeps the user's
     // shortcuts as they are; /P shows only a progress bar, closing this app if
@@ -608,19 +757,86 @@ async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
     Ok(())
 }
 
+/// Puts a downloaded update in on Linux.
+///
+/// An AppImage is one file: the new one is written beside it, made runnable,
+/// and moved over it in one step, so a failure part-way leaves the old copy
+/// as it was; then it is started and this one leaves. A `.deb` or `.rpm`
+/// belongs to the system: it is opened in the software installer, which asks
+/// for the password and puts it in, and the new version starts next time.
+#[cfg(target_os = "linux")]
+async fn install_update_linux(app: tauri::AppHandle, path: String) -> Answer<()> {
+    let failed = |message: String| UiError {
+        kind: "error".into(),
+        message,
+    };
+    match basalt_update::LinuxPackage::here() {
+        basalt_update::LinuxPackage::AppImage => {
+            use std::os::unix::fs::PermissionsExt;
+            let current = std::env::var_os("APPIMAGE")
+                .map(std::path::PathBuf::from)
+                .ok_or_else(|| failed("this copy is not an AppImage".into()))?;
+            let incoming = current.with_extension("new");
+            std::fs::copy(&path, &incoming)
+                .map_err(|e| failed(format!("could not put the update in place: {e}")))?;
+            std::fs::set_permissions(&incoming, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| failed(format!("could not make the update runnable: {e}")))?;
+            std::fs::rename(&incoming, &current)
+                .map_err(|e| failed(format!("could not replace the old version: {e}")))?;
+            std::process::Command::new(&current)
+                .spawn()
+                .map_err(|e| failed(format!("could not start the new version: {e}")))?;
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                app.exit(0);
+            });
+            Ok(())
+        }
+        _ => {
+            use tauri_plugin_opener::OpenerExt;
+            app.opener()
+                .open_path(&path, None::<&str>)
+                .map_err(|e| failed(format!("could not open the software installer: {e}")))
+        }
+    }
+}
+
 pub fn run() {
+    // WebKit's compositing keeps a second copy of the window in memory, and
+    // in a virtual machine or on some graphics drivers draws nothing at all.
+    // This window is still text and a few cards: drawn directly, it looks the
+    // same in half the memory. Set before anything starts, unless whoever
+    // started it chose otherwise.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+    }
+
     let log = start_logging();
-    tracing::info!(
-        "Basalt Host {} ({}) starting; log at {:?}",
-        env!("CARGO_PKG_VERSION"),
-        build_stamp(),
-        log
-    );
 
     tauri::Builder::default()
+        // First, so a second launch goes no further: opening Basalt Host
+        // again brings this window back instead of starting another copy that
+        // cannot share the port. On a Linux desktop with no tray, it is the
+        // way back to a window that was closed.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
+            // Only the copy that runs gets this far; a second launch has
+            // already handed over and gone.
+            if let Some((_, file)) = &log {
+                file.clear();
+            }
+            tracing::info!(
+                "Basalt Host {} ({}) starting; log at {:?}",
+                env!("CARGO_PKG_VERSION"),
+                build_stamp(),
+                log.as_ref().map(|(path, _)| path)
+            );
+
             // Logged step by step because this runs on the main thread, and a
             // main thread that never finishes here is a window that never
             // responds. Silence used to leave no way to tell which step it was.
@@ -652,6 +868,17 @@ pub fn run() {
             if let Ok(dir) = app.path().resource_dir() {
                 let ffmpeg = dir.join("lib").join("ffmpeg.exe");
                 if ffmpeg.exists() {
+                    host.converter.use_ffmpeg(ffmpeg);
+                }
+            }
+            // On Linux the package asks for the system's ffmpeg rather than
+            // carrying its own, so that one is this host's, as the one beside
+            // the app is on Windows. Taken as such, the host measures what it
+            // can convert; it used to wait for an ffmpeg of its own that never
+            // comes, and said "not measured yet" for good.
+            #[cfg(all(target_os = "linux", not(debug_assertions)))]
+            if let Some(dir) = basalt_host::config::default_path().parent() {
+                if let Some(ffmpeg) = basalt_host::convert::find_ffmpeg(dir) {
                     host.converter.use_ffmpeg(ffmpeg);
                 }
             }
@@ -716,14 +943,18 @@ pub fn run() {
             build_tray(app.handle())?;
             tracing::info!("tray icon built");
 
-            // Windows started this, not the user: stay out of the way. The
-            // host serves whether or not anyone is looking at its window, and
-            // the tray icon is there when they want it.
+            // The system started this at login, not the user: stay out of the
+            // way. The host serves whether or not anyone is looking at its
+            // window, and the tray icon is there when they want it.
             if basalt_host::autostart::launched_at_startup() {
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
+                    let _ = if FREE_WHEN_CLOSED {
+                        window.destroy()
+                    } else {
+                        window.hide()
+                    };
                 }
-                tracing::info!("started by Windows, so the window stays hidden");
+                tracing::info!("started at login, so the window stays hidden");
             }
 
             tracing::info!("ready");
@@ -734,10 +965,13 @@ pub fn run() {
         // This app is a server that happens to have a window. Someone tidying
         // their taskbar should not silently disconnect a laptop mid-transfer,
         // so the close button hides; Quit, in the tray menu, stops sharing.
+        // Where the window is freed instead, it closes, and the app stays.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if !FREE_WHEN_CLOSED {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -745,6 +979,8 @@ pub fn run() {
             check_update,
             download_update,
             install_update,
+            update_style,
+            release_pointer,
             status,
             list_drives,
             choose_vault,
@@ -775,6 +1011,17 @@ pub fn run() {
             open_log_folder,
             open_vault_folder,
         ])
-        .run(tauri::generate_context!())
-        .expect("could not start Basalt Host");
+        .build(tauri::generate_context!())
+        .expect("could not start Basalt Host")
+        .run(|_app, event| {
+            // The last window closing is not the end: the host goes on
+            // sharing from the tray. Only Quit, which gives an exit code,
+            // stops it.
+            if let tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                api.prevent_exit();
+            }
+        });
 }

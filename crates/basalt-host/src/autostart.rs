@@ -16,6 +16,7 @@ use std::path::Path;
 
 /// The value name. Also what appears in Task Manager's Startup tab.
 const VALUE_NAME: &str = "Basalt Host";
+#[cfg(windows)]
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
 /// Passed by the startup entry so the app knows it was not opened on purpose.
@@ -170,21 +171,57 @@ fn wide(text: &str) -> Vec<u16> {
         .collect()
 }
 
+// Linux: an entry in `~/.config/autostart`, which every desktop that follows
+// the XDG autostart convention (GNOME, KDE, Xfce, Cinnamon and the rest) starts
+// at login.
+
 #[cfg(not(windows))]
-fn read_value() -> Option<String> {
-    None
+fn autostart_file() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
+        })?;
+    Some(base.join("autostart").join("basalt-host.desktop"))
 }
 
 #[cfg(not(windows))]
-fn write_value(_exe: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::other(
-        "starting with the system is Windows only",
-    ))
+fn read_value() -> Option<String> {
+    let text = std::fs::read_to_string(autostart_file()?).ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("Exec="))
+        .map(str::to_string)
+}
+
+#[cfg(not(windows))]
+fn write_value(exe: &Path) -> std::io::Result<()> {
+    let file = autostart_file()
+        .ok_or_else(|| std::io::Error::other("there is no home folder to start from"))?;
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    // An AppImage runs from a mount that changes every time; what starts it
+    // again is the AppImage file itself, which it is told in `APPIMAGE`.
+    let program = std::env::var_os("APPIMAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| exe.to_path_buf());
+    let entry = format!(
+        "[Desktop Entry]\nType=Application\nName={VALUE_NAME}\nComment=Share a drive with your own devices\nExec={}\nIcon=basalt-host\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+        command_for(&program)
+    );
+    std::fs::write(file, entry)
 }
 
 #[cfg(not(windows))]
 fn delete_value() -> std::io::Result<()> {
-    Ok(())
+    match autostart_file() {
+        Some(file) => match std::fs::remove_file(file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        },
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

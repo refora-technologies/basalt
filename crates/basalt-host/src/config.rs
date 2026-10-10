@@ -109,6 +109,12 @@ pub struct HostConfig {
     /// What this machine was measured to manage, so it is measured once.
     #[serde(default)]
     pub convert_measured: Option<crate::convert::Measured>,
+    /// Set while measuring, and cleared when a measurement ends. Still set at
+    /// a start means the last one never ended: the system stopped the host
+    /// part-way, for want of memory most likely, and it is not started again
+    /// by itself, or it would be stopped again at every start.
+    #[serde(default)]
+    pub convert_measuring: bool,
 
     #[serde(default)]
     pub devices: Vec<Device>,
@@ -154,6 +160,7 @@ impl HostConfig {
             convert_enabled: true,
             convert_at_once: None,
             convert_measured: None,
+            convert_measuring: false,
             devices: Vec::new(),
             household_key: Default::default(),
             issued: Vec::new(),
@@ -207,7 +214,7 @@ impl HostConfig {
             .map_err(|e| HostError::BadRequest(format!("could not encode the config: {e}")))?;
 
         let temp = path.with_extension("tmp");
-        std::fs::write(&temp, &json)?;
+        write_private(&temp, &json)?;
         std::fs::rename(&temp, path)?;
         Ok(())
     }
@@ -258,6 +265,32 @@ impl HostConfig {
     }
 }
 
+/// Writes a file only its owner can read. On Linux the host's settings hold
+/// its private key unsealed (there is nothing like Windows' sealing to hand),
+/// so the file itself is the protection: readable by this user alone. On
+/// Windows the folder in the person's profile already is.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        // A file left from before keeps its old mode; set it either way.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)
+    }
+}
+
 /// Where the host keeps its state.
 ///
 /// `%APPDATA%\Basalt\host.json` on Windows, falling back to the working
@@ -265,18 +298,38 @@ impl HostConfig {
 /// worse: program directories are often read-only, and the failure would only
 /// show up on the first save.
 pub fn default_path() -> PathBuf {
-    let base = std::env::var_os("APPDATA")
+    if cfg!(windows) {
+        let base = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        return base.join("Basalt").join("host.json");
+    }
+    // Linux: `~/.config/basalt`, as the XDG convention has it.
+    let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("Basalt").join("host.json")
+    base.join("basalt").join("host.json")
 }
 
 /// This machine's name, for display before pairing.
+///
+/// Windows says it in `COMPUTERNAME`. Linux keeps it in `/etc/hostname`;
+/// `HOSTNAME` is a shell's variable, and a program started from a menu does
+/// not see it.
 pub fn machine_name() -> String {
+    let named = |name: String| Some(name.trim().to_string()).filter(|n| !n.is_empty());
     std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "Basalt Host".to_string())
+        .ok()
+        .and_then(named)
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .and_then(named)
+        })
+        .or_else(|| std::env::var("HOSTNAME").ok().and_then(named))
+        .unwrap_or_else(|| "Basalt Host".to_string())
 }
 
 #[cfg(test)]
@@ -419,7 +472,11 @@ mod tests {
     #[test]
     fn the_default_path_is_absolute_and_named() {
         let path = default_path();
-        assert!(path.ends_with("Basalt/host.json") || path.ends_with("Basalt\\host.json"));
+        if cfg!(windows) {
+            assert!(path.ends_with("Basalt\\host.json"), "{path:?}");
+        } else {
+            assert!(path.ends_with("basalt/host.json"), "{path:?}");
+        }
     }
 
     #[test]

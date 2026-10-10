@@ -65,12 +65,14 @@ export function ConversionPanel({
               {conversion.limit === 1 ? 'device at once' : 'devices at once'}
             </span>
           </div>
-          <p className="mt-1 truncate text-[11px] text-textFaint">
+          <p className="mt-1 text-[11px] leading-snug text-textFaint">
             {conversion.measuring
               ? 'Measuring now: converting a 4K sample, one at a time, then more.'
               : measured
-                ? `Measured: ${measured.atOnce} at once, one at ${measured.speed}× real time, on ${measured.by}.`
-                : 'Not measured yet.'}
+                ? `Measured: ${measured.atOnce} at once, one at ${measured.speed}× real time, on ${measured.by}${
+                    measured.memory ? ', as many as memory allows' : ''
+                  }.`
+                : (conversion.note ?? 'Not measured yet.')}
           </p>
         </div>
         <button
@@ -79,7 +81,7 @@ export function ConversionPanel({
           className="flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] text-textDim transition-colors hover:bg-panel2 hover:text-text disabled:opacity-50"
         >
           <RefreshCw size={11} className={conversion.measuring ? 'animate-spin' : ''} />
-          {conversion.measuring ? 'Measuring…' : 'Measure again'}
+          {conversion.measuring ? 'Measuring…' : measured ? 'Measure again' : 'Measure'}
         </button>
       </div>
 
