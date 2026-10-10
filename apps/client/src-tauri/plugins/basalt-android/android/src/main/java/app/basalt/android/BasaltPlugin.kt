@@ -286,8 +286,19 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
       )
       val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
       val density = activity.resources.displayMetrics.density
+      // Drawn edge to edge, the page no longer shrinks for the keyboard by
+      // itself, and fields near the bottom (a sheet, a dialog, a PIN) went
+      // under it. While it is open, the page ends where the keyboard begins:
+      // what sits at the bottom rises above it, and the field being typed
+      // in is scrolled into view, as in any browser.
+      val keyboardOpen = ime.bottom > 0
+      (v.parent as? android.view.View)?.let { parent ->
+        val wanted = if (keyboardOpen) ime.bottom else 0
+        if (parent.paddingBottom != wanted) parent.setPadding(0, 0, 0, wanted)
+      }
       val top = bars.top / density
-      val bottom = bars.bottom / density
+      // Over the keyboard, nothing of the page is under the gesture bar.
+      val bottom = if (keyboardOpen) 0f else bars.bottom / density
       val left = bars.left / density
       val right = bars.right / density
       val keyboard = ime.bottom / density

@@ -82,7 +82,7 @@ export function HostHero(tools: Tools): React.JSX.Element {
         </span>
         <span className="text-textFaint">·</span>
         <span>
-          {online} of {view.devices.length} {view.devices.length === 1 ? 'device' : 'devices'} here
+          {online} of {view.devices.length} {view.devices.length === 1 ? 'device' : 'devices'} connected
         </span>
         <span className="text-textFaint">·</span>
         <span>on {PLATFORM[status.platform] ?? 'its computer'}</span>
