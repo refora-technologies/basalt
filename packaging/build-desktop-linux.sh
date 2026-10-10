@@ -23,7 +23,7 @@ docker run --rm \
     -e DEBIAN_FRONTEND=noninteractive \
     ubuntu:22.04 bash -euc '
         apt-get update -qq >/dev/null
-        apt-get install -y -qq build-essential curl wget file xz-utils patchelf \
+        apt-get install -y -qq build-essential curl wget file xz-utils patchelf xdg-utils \
             libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev \
             librsvg2-dev >/dev/null
         if [ ! -x /node/bin/node ]; then
