@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { AlertTriangle, ExternalLink, Repeat } from 'lucide-react'
+import { AlertTriangle, ExternalLink, Pencil, Repeat } from 'lucide-react'
 import type { HostStatus } from '@/lib/api'
 import { cn, formatBytes } from '@/lib/utils'
 
@@ -14,10 +14,13 @@ export function VaultCard({
   status,
   onChange,
   onOpen,
+  onRename,
 }: {
   status: HostStatus
   onChange: () => void
   onOpen: () => void
+  /** What devices call the drive: only its name, nothing on it. */
+  onRename: () => void
 }): React.JSX.Element | null {
   const vault = status.vault
   if (!vault) return null
@@ -29,9 +32,19 @@ export function VaultCard({
       <div className="flex items-start gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h2 className="truncate text-[18px] font-semibold tracking-tighter text-text">
-              {vault.name}
-            </h2>
+            <button
+              onClick={onRename}
+              title="Rename this drive"
+              className="group flex min-w-0 items-center gap-2 text-left"
+            >
+              <h2 className="truncate text-[18px] font-semibold tracking-tighter text-text">
+                {vault.name}
+              </h2>
+              <Pencil
+                size={12}
+                className="shrink-0 text-textFaint opacity-0 transition-opacity group-hover:opacity-100"
+              />
+            </button>
             {!vault.available && (
               <span className="flex shrink-0 items-center gap-1 rounded-[4px] bg-dangerBg px-1.5 py-[2px] font-mono text-[9px] uppercase tracking-[0.1em] text-danger">
                 <AlertTriangle size={9} />

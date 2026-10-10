@@ -166,6 +166,13 @@ async fn set_host_name(state: State<'_, AppState>, name: String) -> Answer<HostS
     status(state).await
 }
 
+/// What devices call the shared drive. The same drive goes on being served.
+#[tauri::command]
+async fn rename_drive(state: State<'_, AppState>, name: String) -> Answer<HostStatus> {
+    state.host.rename_drive(&name).await?;
+    status(state).await
+}
+
 // ---------------------------------------------------------------------------
 // Devices
 // ---------------------------------------------------------------------------
@@ -1049,6 +1056,7 @@ pub fn run() {
             list_drives,
             choose_vault,
             set_host_name,
+            rename_drive,
             devices,
             revoke_device,
             rename_device,

@@ -26,6 +26,7 @@ impl Host {
         by: &str,
     ) -> Result<serde_json::Value> {
         let mut drives = false;
+        let mut folders = None;
         match action {
             ManageAction::View => {}
             ManageAction::RenameDevice { id, name } => {
@@ -76,12 +77,35 @@ impl Host {
             ManageAction::ChooseDrive { path, name } => {
                 self.choose_drive(Path::new(&path), &name).await?;
             }
+            ManageAction::RenameDrive { name } => self.rename_drive(&name).await?,
+            ManageAction::ListFolders { path } => {
+                let listed = tokio::task::spawn_blocking(move || {
+                    crate::drives::list_folders(&path).map_err(|e| {
+                        let place = if path.trim().is_empty() {
+                            "the top"
+                        } else {
+                            path.trim()
+                        };
+                        HostError::NotFound(format!(
+                            "{place}: the host can't open it ({})",
+                            basalt_net::describe_io(&e)
+                        ))
+                    })
+                })
+                .await
+                .map_err(|e| HostError::Unavailable(format!("listing folders: {e}")))??;
+                folders = Some(listed);
+            }
             ManageAction::ApproveProfileLink { id } => self.approve_profile_link(&id)?,
             ManageAction::DenyProfileLink { id } => {
                 self.deny_profile_link(&id);
             }
         }
-        Ok(self.view(drives, by).await)
+        let mut view = self.view(drives, by).await;
+        if let Some(folders) = folders {
+            view["folders"] = serde_json::to_value(folders).unwrap_or_default();
+        }
+        Ok(view)
     }
 
     /// Shares the drive or folder at `path`, called `name` (or by its path,
@@ -94,9 +118,7 @@ impl Host {
             )));
         }
         let name = if name.trim().is_empty() {
-            path.to_string_lossy()
-                .trim_end_matches(['\\', '/'])
-                .to_string()
+            crate::drives::default_name(path)
         } else {
             name.trim().to_string()
         };

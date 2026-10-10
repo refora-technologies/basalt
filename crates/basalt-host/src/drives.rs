@@ -275,6 +275,102 @@ pub fn is_available(path: &Path) -> bool {
     std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)
 }
 
+/// What a device sees when it browses the host's folders to share one.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderList {
+    /// Where this is, as a person writes it; empty for the list of drives.
+    pub path: String,
+    /// One level up: `None` at the top, empty for the list of drives.
+    pub parent: Option<String>,
+    pub folders: Vec<FolderEntry>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FolderEntry {
+    pub name: String,
+    pub path: String,
+}
+
+/// The most folders one listing shows: a folder of thousands is not one to
+/// pick through on a phone, and its path can still be typed.
+const MOST_FOLDERS: usize = 500;
+
+/// The folders in `path`, for a device that manages the host to choose one
+/// to share. Empty starts where it makes sense: the drives on Windows, the
+/// mounted folders in a container, the top of the file system otherwise.
+/// Hidden folders (a dot first) are left out, as a file manager does.
+pub fn list_folders(path: &str) -> std::io::Result<FolderList> {
+    let path = path.trim();
+    if path.is_empty() {
+        if cfg!(windows) {
+            let folders = list()
+                .into_iter()
+                .filter(|d| is_available(&d.path))
+                .map(|d| FolderEntry {
+                    name: d.display_name(),
+                    path: display(&d.path),
+                })
+                .collect();
+            return Ok(FolderList {
+                path: String::new(),
+                parent: None,
+                folders,
+            });
+        }
+        #[cfg(target_os = "linux")]
+        if in_container() && Path::new("/media").is_dir() {
+            return list_folders("/media");
+        }
+        return list_folders("/");
+    }
+    let here = Path::new(path);
+    let mut folders: Vec<FolderEntry> = std::fs::read_dir(here)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            // Followed through links, as sharing one would be.
+            std::fs::metadata(entry.path()).is_ok_and(|m| m.is_dir())
+        })
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            (!name.starts_with('.') && !name.starts_with('$')).then(|| FolderEntry {
+                name,
+                path: display(&entry.path()),
+            })
+        })
+        .collect();
+    folders.sort_by_key(|f| f.name.to_lowercase());
+    folders.truncate(MOST_FOLDERS);
+    let parent = match here.parent() {
+        Some(up) if !up.as_os_str().is_empty() => Some(display(up)),
+        // At a drive's top on Windows: up is the list of drives.
+        _ if cfg!(windows) => Some(String::new()),
+        _ => None,
+    };
+    Ok(FolderList {
+        path: display(here),
+        parent,
+        folders,
+    })
+}
+
+/// What a drive or folder is called when nobody gave it a name: as the drive
+/// list shows it, or the folder's own name.
+pub fn default_name(path: &Path) -> String {
+    let shown = display(path);
+    let trimmed = shown.trim_end_matches(['\\', '/']);
+    if let Some(drive) = list()
+        .into_iter()
+        .find(|d| display(&d.path).trim_end_matches(['\\', '/']) == trimmed)
+    {
+        return drive.display_name();
+    }
+    Path::new(trimmed)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| shown.clone())
+}
+
 /// A path the way a person writes it.
 ///
 /// A canonical Windows path comes back as `\\?\D:\`, which is correct and looks

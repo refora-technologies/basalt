@@ -1882,6 +1882,28 @@ impl Host {
         Ok(())
     }
 
+    /// Renames the drive being shared. Only what devices call it: the same
+    /// drive goes on being served, with its library and history.
+    pub async fn rename_drive(&self, name: &str) -> Result<()> {
+        let name: String = name.trim().chars().take(64).collect();
+        if name.is_empty() {
+            return Err(HostError::BadRequest("a drive needs a name".into()));
+        }
+        {
+            let mut slot = self.vault.write().await;
+            let Some(current) = slot.as_ref() else {
+                return Err(HostError::NotFound(
+                    "a drive to rename: none is shared yet".into(),
+                ));
+            };
+            let mut renamed = (**current).clone();
+            renamed.set_name(&name);
+            *slot = Some(Arc::new(renamed));
+        }
+        self.config.lock().expect("config lock").vault_name = name;
+        self.persist()
+    }
+
     /// Starts serving an opened drive: watcher, library and history.
     ///
     /// Shared by choosing a drive and by a drive coming back, so a USB drive

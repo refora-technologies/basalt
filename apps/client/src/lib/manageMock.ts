@@ -310,6 +310,22 @@ function apply(action: ManageAction): boolean {
       break
     case 'listDrives':
       return true
+    case 'listFolders': {
+      const listed = MOCK_FOLDERS[action.path || '/']
+      if (!listed) throw new ApiError('notfound', `${action.path}: the host can't open it (no such folder)`)
+      const path = action.path || '/'
+      const up = path === '/' ? null : path.slice(0, path.lastIndexOf('/')) || '/'
+      sample.folders = {
+        path,
+        parent: up,
+        folders: listed.map((name) => ({ name, path: `${path === '/' ? '' : path}/${name}` })),
+      }
+      return false
+    }
+    case 'renameDrive':
+      if (!action.name.trim()) throw new ApiError('error', 'a drive needs a name')
+      if (status.vault) status.vault.name = action.name.trim()
+      break
     case 'approveProfileLink': {
       const link = sample.profileLinks?.find((l) => l.id === action.id)
       if (!link) throw new ApiError('notfound', 'that request (it may have lapsed) was not found')
@@ -339,6 +355,25 @@ function apply(action: ManageAction): boolean {
     }
   }
   return false
+}
+
+/** A small file system for the preview's folder browser. */
+const MOCK_FOLDERS: Record<string, string[]> = {
+  '/': ['home', 'media', 'mnt', 'srv'],
+  '/home': ['maya'],
+  '/home/maya': ['Documents', 'Pictures', 'Videos'],
+  '/home/maya/Documents': [],
+  '/home/maya/Pictures': [],
+  '/home/maya/Videos': [],
+  '/media': [],
+  '/mnt': ['backup'],
+  '/mnt/backup': [],
+  '/srv': ['media'],
+  '/srv/media': ['Films', 'Music', 'Photos', 'TV'],
+  '/srv/media/Films': [],
+  '/srv/media/Music': [],
+  '/srv/media/Photos': [],
+  '/srv/media/TV': [],
 }
 
 export function mockManage(action: ManageAction): ManageView {

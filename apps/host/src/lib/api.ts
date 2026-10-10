@@ -298,6 +298,7 @@ export const api = {
   chooseVault: (path: string, name: string): Promise<HostStatus> =>
     call('choose_vault', { path, name }),
   setHostName: (name: string): Promise<HostStatus> => call('set_host_name', { name }),
+  renameDrive: (name: string): Promise<HostStatus> => call('rename_drive', { name }),
 
   devices: (): Promise<DeviceView[]> => call('devices'),
   revokeDevice: (id: string): Promise<boolean> => call('revoke_device', { id }),
@@ -598,6 +599,9 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
       }
       case 'set_host_name':
         sample.status.hostName = String(args?.name ?? '')
+        return sample.status
+      case 'rename_drive':
+        if (sample.status.vault) sample.status.vault.name = String(args?.name ?? '')
         return sample.status
       case 'devices':
         return sample.devices

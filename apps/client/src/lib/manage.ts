@@ -144,6 +144,8 @@ export interface ManageView {
   pairings: PairingRequest[]
   /** Only when asked for: the drives the host's computer could share. */
   drives: HostDrive[] | null
+  /** Only when asked for: the folders in one place on the host's computer. */
+  folders?: HostFolders | null
   /** This device's id in `devices`. */
   you: string
   /** Profiles from other drives waiting to be let in. Absent from older hosts. */
@@ -175,8 +177,24 @@ export type ManageAction =
   | { do: 'setOwnerAddsProfiles'; ownerOnly: boolean }
   | { do: 'listDrives' }
   | { do: 'chooseDrive'; path: string; name: string }
+  | { do: 'renameDrive'; name: string }
+  | { do: 'listFolders'; path: string }
   | { do: 'approveProfileLink'; id: string }
   | { do: 'denyProfileLink'; id: string }
+
+/** The folders in one place on the host's computer, to choose one to share. */
+export interface HostFolders {
+  /** Where this is; empty for the list of drives. */
+  path: string
+  /** One level up: null at the top, empty for the list of drives. */
+  parent: string | null
+  folders: Array<{ name: string; path: string }>
+}
+
+/** The host's answer, with what it only says when asked kept from before. */
+function keepAsked(next: ManageView, old: ManageView | null): ManageView {
+  return { ...next, drives: next.drives ?? old?.drives ?? null, folders: next.folders ?? old?.folders ?? null }
+}
 
 /** How often the screen asks again while it is open: the window's own pace. */
 const REFRESH_MS = 3000
@@ -213,8 +231,9 @@ export function useManage(): Manage {
       try {
         const next = await api.manage({ do: 'view' })
         if (live.current && changing.current === before) {
-          // Drives are asked for only now and then; kept until asked again.
-          setView((old) => ({ ...next, drives: next.drives ?? old?.drives ?? null }))
+          // Drives and folders are asked for only now and then; kept until
+          // asked again.
+          setView((old) => keepAsked(next, old))
         }
       } catch (e) {
         if (live.current) setError(said(e))
@@ -234,7 +253,7 @@ export function useManage(): Manage {
     try {
       const next = await api.manage(action)
       if (live.current) {
-        setView((old) => ({ ...next, drives: next.drives ?? old?.drives ?? null }))
+        setView((old) => keepAsked(next, old))
         setError(null)
       }
       return true

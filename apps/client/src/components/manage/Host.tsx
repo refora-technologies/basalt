@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   AlertTriangle,
+  ArrowUp,
   Check,
+  ChevronRight,
   Disc3,
+  Folder,
   FolderOpen,
   HardDrive,
   Info,
@@ -46,6 +49,15 @@ export function HostHero(tools: Tools): React.JSX.Element {
       confirmLabel: 'Rename',
       select: 'all',
       onConfirm: (name) => void m.act({ do: 'setHostName', name }),
+    })
+
+  const renameDrive = (): void =>
+    prompt({
+      title: 'Name this drive',
+      value: vault?.name ?? '',
+      confirmLabel: 'Rename',
+      select: 'all',
+      onConfirm: (name) => void m.act({ do: 'renameDrive', name }),
     })
 
   const name = (
@@ -92,7 +104,20 @@ export function HostHero(tools: Tools): React.JSX.Element {
               <HardDrive size={phone ? 19 : 16} />
             </span>
             <div className="min-w-0 flex-1">
-              <div className={cn('truncate font-medium text-text', phone ? 'text-[15px]' : 'text-[13px]')}>{vault.name}</div>
+              <button
+                onClick={renameDrive}
+                title="Rename this drive"
+                className={cn(
+                  'group flex max-w-full items-center gap-1.5 text-left font-medium text-text',
+                  phone ? 'text-[15px]' : 'text-[13px]',
+                )}
+              >
+                <span className="truncate">{vault.name}</span>
+                <Pencil
+                  size={phone ? 13 : 11}
+                  className={cn('shrink-0 text-textFaint transition-opacity', !phone && 'opacity-0 group-hover:opacity-100')}
+                />
+              </button>
               <div className="truncate font-mono text-[11px] text-textFaint">{vault.path}</div>
             </div>
           </div>
@@ -187,6 +212,7 @@ function DrivePicker({ tools, onDone }: { tools: Tools; onDone: () => void }): R
   const { act } = m
   const phone = useLayout() === 'phone'
   const [asked, setAsked] = useState(false)
+  const [browsing, setBrowsing] = useState(false)
   const current = view.status.vault?.path ?? null
 
   useEffect(() => {
@@ -218,6 +244,26 @@ function DrivePicker({ tools, onDone }: { tools: Tools; onDone: () => void }): R
       confirmLabel: 'Share this drive',
     })
     if (ok && (await m.act({ do: 'chooseDrive', path: drive.path, name: drive.label }))) onDone()
+  }
+
+  /** The way it always was, for a path known by heart or pasted. */
+  const typePath = (): void =>
+    prompt({
+      title: 'Share a folder',
+      value: view.status.platform === 'windows' ? 'D:\\' : '/',
+      confirmLabel: 'Share it',
+      onConfirm: (path) => void choosePath(path),
+    })
+
+  if (browsing) {
+    return (
+      <FolderBrowser
+        tools={tools}
+        onShare={(path) => void choosePath(path)}
+        onType={typePath}
+        onBack={() => setBrowsing(false)}
+      />
+    )
   }
 
   if (!asked || !view.drives) {
@@ -265,21 +311,11 @@ function DrivePicker({ tools, onDone }: { tools: Tools; onDone: () => void }): R
           })}
           <Row
             icon={<FolderOpen size={phone ? 18 : 15} />}
-            title="A folder, by its path…"
-            sub={
-              view.status.platform === 'windows'
-                ? 'For one folder rather than a whole drive, such as D:\\Media'
-                : 'For one folder rather than a whole drive, such as /srv/media'
-            }
+            title="Choose a folder…"
+            sub="For one folder rather than a whole drive"
+            chevron
             disabled={m.busy === 'chooseDrive'}
-            onClick={() =>
-              prompt({
-                title: 'Share a folder',
-                value: view.status.platform === 'windows' ? 'D:\\' : '/',
-                confirmLabel: 'Share it',
-                onConfirm: (path) => void choosePath(path),
-              })
-            }
+            onClick={() => setBrowsing(true)}
           />
         </Rows>
       </Card>
@@ -287,6 +323,127 @@ function DrivePicker({ tools, onDone }: { tools: Tools; onDone: () => void }): R
         {view.status.headless
           ? 'What the host can see. In Docker, that is the folders mounted under /media.'
           : 'Drives on the host’s computer.'}
+      </p>
+    </div>
+  )
+}
+
+/**
+ * The host's folders, looked through from here: tap into one, go back up,
+ * and share the one you are in. Where it starts is the host's to say: the
+ * drives on Windows, the folders mounted into a container, the top otherwise.
+ */
+function FolderBrowser({
+  tools,
+  onShare,
+  onType,
+  onBack,
+}: {
+  tools: Tools
+  onShare: (path: string) => void
+  onType: () => void
+  onBack: () => void
+}): React.JSX.Element {
+  const { m, view } = tools
+  const { act } = m
+  const phone = useLayout() === 'phone'
+  const [path, setPath] = useState('')
+  const [loaded, setLoaded] = useState<string | null>(null)
+  // A folder that would not open leaves you where you were; the host's
+  // reason is shown as any refusal is.
+  const lastGood = useRef<string | null>(null)
+
+  useEffect(() => {
+    let live = true
+    void act({ do: 'listFolders', path }).then((ok) => {
+      if (!live) return
+      if (ok) {
+        lastGood.current = path
+        setLoaded(path)
+      } else if (lastGood.current !== null && lastGood.current !== path) {
+        setPath(lastGood.current)
+      } else {
+        setLoaded(path)
+      }
+    })
+    return () => {
+      live = false
+    }
+  }, [act, path])
+
+  const here = view.folders
+  const ready = loaded !== null && here != null
+  const loading = m.busy === 'listFolders' || loaded !== path
+  // The list of drives on Windows is somewhere to start, not a folder.
+  const atDrives = ready && here.path === ''
+
+  return (
+    <div className={phone ? 'px-4 pb-4 pt-1' : 'p-4'}>
+      <div className="mb-3 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => (ready && here.parent !== null ? setPath(here.parent) : onBack())}
+          title={ready && here.parent !== null ? 'Up one folder' : 'Back to the drives'}
+          className={cn(
+            'flex shrink-0 items-center justify-center rounded-full border border-white/[0.12] text-textDim transition-colors',
+            phone ? 'h-9 w-9 active:bg-white/[0.06]' : 'h-7 w-7 hover:bg-white/[0.05]',
+          )}
+        >
+          <ArrowUp size={phone ? 16 : 13} />
+        </button>
+        <div
+          className={cn('min-w-0 flex-1 truncate font-mono text-textDim', phone ? 'text-[12.5px]' : 'text-[11.5px]')}
+          dir="rtl"
+          title={ready ? here.path : undefined}
+        >
+          {/* Right to left, so a long path shows its end: where you are. */}
+          <bdi>{ready ? here.path || 'This computer' : ' '}</bdi>
+        </div>
+        {loading && <Loader2 size={phone ? 15 : 13} className="shrink-0 animate-spin text-textFaint" />}
+      </div>
+
+      <Card>
+        {ready && here.folders.length > 0 ? (
+          <div className={cn('overflow-y-auto', phone ? 'max-h-[46vh]' : 'max-h-[300px]')}>
+            <Rows>
+              {here.folders.map((folder) => (
+                <Row
+                  key={folder.path}
+                  icon={<Folder size={phone ? 18 : 15} />}
+                  title={folder.name}
+                  end={<ChevronRight size={phone ? 16 : 13} className="shrink-0 text-textFaint" />}
+                  disabled={loading}
+                  onClick={() => setPath(folder.path)}
+                />
+              ))}
+            </Rows>
+          </div>
+        ) : (
+          <p className={cn('px-4 py-6 text-center text-textFaint', phone ? 'text-[13px]' : 'text-[12px]')}>
+            {ready ? 'No folders in here.' : 'Looking…'}
+          </p>
+        )}
+      </Card>
+
+      <div className="mt-3.5 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={!ready || atDrives || loading || m.busy === 'chooseDrive'}
+          onClick={() => ready && onShare(here.path)}
+          className={cn(
+            'inline-flex items-center justify-center gap-2 rounded-full border border-basalt/40 bg-basalt/15 text-text transition-colors disabled:opacity-40',
+            phone ? 'px-4 py-2.5 text-[13.5px] active:bg-basalt/25' : 'px-3.5 py-1.5 text-[12px] hover:bg-basalt/25',
+          )}
+        >
+          <Check size={phone ? 15 : 13} />
+          Share this folder
+        </button>
+        <Pill onClick={onType}>Type a path</Pill>
+      </div>
+      <p className={cn('mt-3 px-1 leading-snug text-textFaint', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
+        {view.status.headless
+          ? 'Open the folder to share, then share it. In Docker, the folders mounted under /media are the ones it can see.'
+          : 'Open the folder to share, then share it. Nothing in it is moved or changed.'}
       </p>
     </div>
   )

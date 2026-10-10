@@ -71,6 +71,10 @@ impl Vault {
         &self.name
     }
 
+    pub fn set_name(&mut self, name: &str) {
+        self.name = name.to_string();
+    }
+
     pub fn writable(&self) -> bool {
         self.writable
     }

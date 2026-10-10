@@ -315,6 +315,15 @@ pub enum ManageAction {
         path: String,
         name: String,
     },
+    /// What devices call the drive being shared; nothing on it changes.
+    RenameDrive {
+        name: String,
+    },
+    /// The folders at `path` on the host's computer, in the answer, to choose
+    /// one to share. Empty starts at the top.
+    ListFolders {
+        path: String,
+    },
     /// Lets a profile from another drive in: see [`ProfileLinkRequest`].
     ApproveProfileLink {
         id: String,

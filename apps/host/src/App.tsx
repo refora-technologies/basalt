@@ -160,6 +160,17 @@ export function App(): React.JSX.Element {
                   status={current}
                   onChange={() => setReconfiguring(true)}
                   onOpen={() => void api.openVaultFolder().catch(() => {})}
+                  onRename={() =>
+                    setPrompt({
+                      title: 'Name this drive',
+                      value: current.vault?.name ?? '',
+                      confirmLabel: 'Rename',
+                      select: 'all',
+                      onConfirm: (name) => {
+                        void api.renameDrive(name).then(apply)
+                      },
+                    })
+                  }
                 />
 
                 <section>
