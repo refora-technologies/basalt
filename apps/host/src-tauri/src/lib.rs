@@ -152,11 +152,20 @@ async fn choose_vault(
     path: String,
     name: String,
 ) -> Answer<HostStatus> {
+    let first = !state.host.has_drive();
     // The same as a device that manages this host choosing one.
     state
         .host
         .choose_drive(std::path::Path::new(&path), &name)
         .await?;
+    // A host is there for devices to find whenever they look: set up for the
+    // first time, it starts when the computer does. Turned off in Settings,
+    // it stays off.
+    if first && !state.host.start_with_windows() {
+        if let Err(e) = state.host.set_start_with_windows(true) {
+            tracing::warn!("could not start with the computer: {e}");
+        }
+    }
     status(state).await
 }
 
