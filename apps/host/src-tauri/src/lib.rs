@@ -94,7 +94,7 @@ async fn allow_through_firewall(
     let port = state.host.port();
     let exe = std::env::current_exe().map_err(|e| UiError {
         kind: "error".into(),
-        message: format!("Basalt Host could not find itself: {e}"),
+        message: format!("Basalt Host couldn’t find its own program file: {e}"),
     })?;
     let result = tokio::task::spawn_blocking(move || basalt_host::firewall::allow(&exe, port))
         .await
@@ -495,7 +495,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 .cloned()
                 .ok_or_else(|| tauri::Error::AssetNotFound("the bundled window icon".into()))?,
         )
-        .tooltip("Basalt Host — sharing a drive")
+        .tooltip("Basalt Host: sharing your drive")
         .menu(&menu)
         // The menu belongs on right-click only, so a left click can do the
         // obvious thing instead of opening a two-item list.

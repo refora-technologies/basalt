@@ -33,7 +33,8 @@ docker run -d --name basalt --network host \
 
 ## Set it up
 
-1. Find the setup code: `docker logs basalt`, or `docker exec basalt basalt-host setup-code`.
+1. Find the setup code: `docker exec basalt basalt-host status` shows it with the
+   host's address, or look in `docker logs basalt`.
 2. Open Basalt on your phone or computer, on the same network. The host shows as
    **new**. Choose it and type the code.
 3. That device manages the host now. In Manage host, choose which of the folders
@@ -52,8 +53,15 @@ Setting up and pairing only happen on your own network.
 | `network_mode: host` | Lets devices find the host by themselves. Without it, publish `7742/tcp` and `7743/udp`, and use "Enter the address" in the app. |
 | `/dev/dri` | Pass it in for faster video conversion with Intel or AMD graphics. |
 
-The host never updates itself in Docker: pull or build a new image and recreate
-the container. The settings in `/config` carry over.
+A container never updates itself. When a new version is out, Manage host and
+`basalt-host status` say so; update by pulling the new image and recreating the
+container:
+
+```sh
+docker compose pull && docker compose up -d
+```
+
+The settings in `/config` carry over.
 
 ## Build the image
 

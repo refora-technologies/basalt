@@ -1,7 +1,7 @@
 # Basalt Host with no screen
 
 Basalt Host for a computer you don't sit at: a home server, a Raspberry Pi, a
-NAS, an old PC under the TV. It shares one drive or folder with your phones and
+NAS, an old computer under the TV. It shares one drive or folder with your phones and
 computers on this network. There is no window: you set it up and manage it from
 the Basalt app, with **Manage host**.
 
@@ -22,9 +22,20 @@ sudo dnf install ./Basalt-Host-Server-Linux-x86_64.rpm    # or -aarch64.rpm
 ```
 
 The package installs `/usr/bin/basalt-host`, a `basalt-host` service that starts
-with the computer, and a firewall profile (ufw or firewalld) for ports 7742/tcp
-and 7743/udp. With a `.tar.gz`, copy `basalt-host` to `/usr/bin` and the service
-file to `/etc/systemd/system`, then `sudo systemctl enable --now basalt-host`.
+with the computer, its updater, and a firewall profile (ufw or firewalld) for
+ports 7742/tcp and 7743/udp. When it finishes, it shows the host's address, its
+setup code and anything left to do.
+
+With a `.tar.gz`, copy the files into place yourself:
+
+```sh
+sudo install -m 0755 basalt-host /usr/bin/basalt-host
+sudo install -D -m 0755 basalt-host-update /usr/lib/basalt-host/basalt-host-update
+sudo cp basalt-host.service basalt-host-update.service basalt-host-update.path /etc/systemd/system/
+sudo useradd --system --user-group --home-dir /var/lib/basalt-host --shell /usr/sbin/nologin basalt
+sudo systemctl daemon-reload
+sudo systemctl enable --now basalt-host basalt-host-update.path
+```
 
 The desktop Basalt Host and this one can't be installed together: both use the
 same ports.
@@ -81,6 +92,21 @@ User=yourname
 Group=yourname
 ```
 
+## Updates
+
+The host installs new versions by itself when nothing is playing. A device that
+manages it can also update it now, or turn this off, under **Updates** in Manage
+host. On the computer itself:
+
+```sh
+sudo basalt-host update
+```
+
+Every update is the newest official release, downloaded and checked against its
+published checksum before it goes in. The host runs as its own user and can't
+install anything itself: it only asks, and a small system service
+(`basalt-host-update`) does the rest.
+
 ## If the device that manages it is lost
 
 ```sh
@@ -98,6 +124,7 @@ with it manages the host too; remove the lost device in Manage host afterwards.
 | `basalt-host start`, `stop`, `restart` | The service, saying when it is done |
 | `basalt-host setup-code [--reset]` | Shows the setup code |
 | `basalt-host status` | Running or not, address, what it shares, devices, the setup code |
+| `basalt-host update` | Installs the newest version now |
 | `basalt-host share PATH [--name NAME]` | Chooses what it shares, while the service is stopped |
 | `basalt-host health` | Exits 0 if the host answers |
 

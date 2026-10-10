@@ -913,7 +913,7 @@ async fn download_to_phone(
         })?
         .map_err(|e| UiError {
             kind: "error".into(),
-            message: format!("could not save to Downloads: {e}"),
+            message: format!("couldn’t save to Downloads: {e}"),
         })?;
 
         let cancel = Cancel::new();
@@ -983,7 +983,7 @@ async fn open_externally(
         Some(path) => Some(
             basalt_client::players::chosen(std::path::Path::new(&path)).ok_or_else(|| UiError {
                 kind: "noplayer".into(),
-                message: "That player is not on this computer any more.".into(),
+                message: "That player is no longer on this computer.".into(),
             })?,
         ),
         None => basalt_client::players::installed(extension_of(&remote))
@@ -993,7 +993,7 @@ async fn open_externally(
     let Some(player) = chosen else {
         return Err(UiError {
             kind: "noplayer".into(),
-            message: "No player that can stream was found on this computer.".into(),
+            message: "No player that can stream was found on this computer. Install VLC, then try again.".into(),
         });
     };
 
@@ -1005,7 +1005,7 @@ async fn open_externally(
         .insert(remote.clone());
     basalt_client::players::launch(&player, &url).map_err(|e| UiError {
         kind: "error".into(),
-        message: format!("could not start {}: {e}", player.name),
+        message: format!("couldn’t start {}: {e}", player.name),
     })?;
     Ok(OpenResult {
         player: player.name,
@@ -1054,7 +1054,7 @@ async fn copy_and_open(
         .open_path(shown.clone(), None::<&str>)
         .map_err(|e| UiError {
             kind: "error".into(),
-            message: format!("could not open {shown}: {e}"),
+            message: format!("couldn’t open {shown}: {e}"),
         })?;
     Ok(OpenResult {
         player: "the default app".into(),
@@ -1223,7 +1223,7 @@ async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
         .spawn()
         .map_err(|e| UiError {
             kind: "error".into(),
-            message: format!("could not start the installer: {e}"),
+            message: format!("couldn’t start the installer: {e}"),
         })?;
 
     // A moment for the installer to be up before this window disappears,

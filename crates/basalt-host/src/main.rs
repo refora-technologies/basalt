@@ -49,7 +49,8 @@ enum Command {
         port: Option<u16>,
     },
 
-    /// Show the setup code, which lets the first device in to manage the host.
+    /// Show the setup code, which lets your first device set up and manage
+    /// this host.
     SetupCode {
         /// Make a new code even though devices already manage the host: for
         /// when the device that managed it is lost. The next device to pair
@@ -68,8 +69,8 @@ enum Command {
         name: Option<String>,
     },
 
-    /// How the host stands: its name, address, drive, devices, and the setup
-    /// code while it waits to be set up.
+    /// Show whether the host is running, its address, what it shares, its
+    /// devices, and the setup code while it waits to be set up.
     Status {
         /// Wait a few seconds for a host just started to answer: for the
         /// package's install script, which shows this as its last word.
@@ -310,7 +311,7 @@ fn share(config_path: &Path, path: &Path, name: Option<String>) -> Result<()> {
     let path =
         std::fs::canonicalize(path).with_context(|| format!("{} is not there", path.display()))?;
     if !path.is_dir() {
-        bail!("{} is not a folder", path.display());
+        bail!("{} isn’t a folder", path.display());
     }
     let name = name.unwrap_or_else(|| {
         path.file_name()
@@ -663,7 +664,7 @@ fn service(config_path: &Path, action: Action) -> Result<()> {
         .status()
         .context("could not run systemctl")?;
     if !ran.success() {
-        bail!("systemctl could not {verb} it. `journalctl -u basalt-host -n 30` says why.");
+        bail!("systemctl couldn’t {verb} it. `journalctl -u basalt-host -n 30` says why.");
     }
 
     let until = std::time::Instant::now() + Duration::from_secs(15);
@@ -687,7 +688,7 @@ fn service(config_path: &Path, action: Action) -> Result<()> {
         std::thread::sleep(Duration::from_millis(200));
     }
     if !answers(port) {
-        bail!("it did not come up within 15 seconds. `journalctl -u basalt-host -n 30` says why.");
+        bail!("it didn’t start within 15 seconds. `journalctl -u basalt-host -n 30` says why.");
     }
     let done = if action == Action::Start {
         "started"
