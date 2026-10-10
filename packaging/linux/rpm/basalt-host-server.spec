@@ -11,6 +11,8 @@ Version:        @VERSION@
 Release:        1
 Summary:        Basalt Host with no screen: shares a drive with your devices
 License:        GPL-3.0-only
+Vendor:         Refora Technologies
+Packager:       Refora Technologies
 URL:            https://github.com/refora-technologies/basalt
 Conflicts:      basalt-host
 Recommends:     ffmpeg
