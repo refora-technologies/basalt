@@ -42,6 +42,7 @@ import {
 } from '@/components/SortMenu'
 import { MusicList, PhotoGrid, VideoGrid, sortTracks } from '@/components/MediaViews'
 import { SettingsView } from '@/components/SettingsView'
+import { ManageHost } from '@/components/manage/ManageHost'
 import { TransfersPanel } from '@/components/TransfersPanel'
 import { PlayerOverlay } from '@/components/PlayerOverlay'
 import { ImageViewer } from '@/components/ImageViewer'
@@ -111,6 +112,7 @@ const TITLES: Record<NavKey, string> = {
   music: 'Music',
   photos: 'Photos',
   settings: 'Settings',
+  manage: 'Manage host',
 }
 
 /**
@@ -1130,7 +1132,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         setPaletteOpen((v) => !v)
         return
       }
-      if (typing || nav === 'settings' || prompt) return
+      if (typing || nav === 'settings' || nav === 'manage' || prompt) return
 
       const chosen = entries.filter((en) => selected.has(en.id))
 
@@ -1514,6 +1516,12 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
     setIntroducing(false)
   }, [everPaired])
 
+  // "Manage host" is there only while the host lets this device manage it.
+  const canManage = vault.status?.canManage === true
+  useEffect(() => {
+    if (!canManage && nav === 'manage') setNav('files')
+  }, [canManage, nav, setNav])
+
   // --- screens -------------------------------------------------------------
 
   if (!vault.status) return <Splash failed={vault.startupFailed} />
@@ -1672,6 +1680,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
               : undefined
           }
           hidden={hiddenSections}
+          canManage={canManage}
           active={nav}
           onNavigate={setNav}
           driveUsed={vault.space ? vault.space[1] - vault.space[0] : 0}
@@ -1682,7 +1691,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
         />
 
         <main className="flex min-w-0 min-h-0 flex-1 flex-col">
-          {nav !== 'settings' && (
+          {nav !== 'settings' && nav !== 'manage' && (
             <div className="drag flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
               {nav === 'files' ? (
                 <Breadcrumbs
@@ -1795,7 +1804,9 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
             transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             className="relative min-h-0 flex-1"
           >
-            {nav === 'settings' ? (
+            {nav === 'manage' ? (
+              <ManageHost layout="desktop" onClose={() => setNav('files')} />
+            ) : nav === 'settings' ? (
               <SettingsView
                 status={vault.status}
                 space={vault.space}
@@ -1895,7 +1906,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
             <DropOverlay active={dropActive && nav === 'files'} dir={dropInto ?? vault.dir} />
           </motion.div>
 
-          {nav !== 'settings' && !isLibrary && !isMedia && (
+          {nav !== 'settings' && nav !== 'manage' && !isLibrary && !isMedia && (
             <StatusBar
               total={entries.length}
               filtered={query.trim().length > 0}

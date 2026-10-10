@@ -199,7 +199,7 @@ export interface PairingView {
   secondsLeft: number
 }
 
-export type ErrorKind = 'notfound' | 'denied' | 'pairing' | 'exists' | 'error'
+export type ErrorKind = 'notfound' | 'denied' | 'pairing' | 'exists' | 'declined' | 'error'
 
 export class ApiError extends Error {
   readonly kind: ErrorKind
@@ -236,6 +236,12 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
+
+/**
+ * What the computer's firewall does with connections from other devices.
+ * Mirrors `basalt_host::firewall::Firewall`.
+ */
+export type Firewall = 'open' | 'blocked' | 'unknown'
 
 /** A release newer than the one running. Mirrors `basalt_update::Release`. */
 export interface Release {
@@ -314,6 +320,10 @@ export const api = {
   /** Which build this is — the commit and the day it was made. */
   buildInfo: (): Promise<string> => call('build_info'),
   openLogFolder: (): Promise<void> => call('open_log_folder'),
+  /** Whether the computer's firewall lets other devices reach this host. */
+  firewall: (): Promise<Firewall> => call('firewall'),
+  /** Lets them, once Windows has asked for an administrator. */
+  allowThroughFirewall: (): Promise<Firewall> => call('allow_through_firewall'),
 }
 
 /** Opens the native folder picker, for sharing a folder rather than a drive. */
@@ -491,6 +501,9 @@ const sample: {
   ],
 }
 
+/** `?blocked` in the preview, until "Allow" is clicked. */
+let mockFirewallOpened = false
+
 function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   // The one command that does not resolve at once in the app either: it
   // resolves when the download has finished, having reported progress along
@@ -498,6 +511,19 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   // shape, because a bar that never fills is not a bar anybody can review.
   if (command === 'download_update') {
     return mockDownload(args?.release as Release) as Promise<T>
+  }
+  // Windows asking for an administrator, and someone answering.
+  if (command === 'allow_through_firewall') {
+    return new Promise<T>((resolve, reject) =>
+      setTimeout(() => {
+        if (previewFlag('declined')) {
+          reject(new ApiError('declined', 'Windows did not allow it. Try again, and choose Yes when Windows asks.'))
+          return
+        }
+        mockFirewallOpened = true
+        resolve('open' as T)
+      }, 1500),
+    )
   }
 
   const answer = (): unknown => {
@@ -562,7 +588,7 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         if (args?.owner && !device.keyed) {
           throw new ApiError(
             'error',
-            'only a device signing in with a key can be an owner; it moves to one the next time it connects with an up-to-date Basalt',
+            'only a device signing in with a key can manage the host; it moves to one the next time it connects with an up-to-date Basalt',
           )
         }
         device.owner = Boolean(args?.owner)
@@ -715,6 +741,9 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return previewFlag('package') ? 'package' : 'restart'
       case 'open_log_folder':
         return undefined
+      case 'firewall':
+        return previewFlag('blocked') && !mockFirewallOpened ? 'blocked' : 'open'
+
       case 'open_vault_folder':
         return undefined
       default:

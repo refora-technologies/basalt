@@ -187,6 +187,29 @@ impl Basalt {
         })
     }
 
+    /// Deletes device keys an earlier copy of Basalt left in this computer's
+    /// chip, keeping the one in use. Only for the app itself: a client that
+    /// makes no chip keys, as tests and the command line do, never touches
+    /// the chip. Nothing until this device has a key of its own, so a key in
+    /// the middle of being made is never taken for one left over.
+    pub fn tidy_device_keys(&self) -> usize {
+        #[cfg(windows)]
+        {
+            if !matches!(self.keys, Policy::Platform(_)) {
+                return 0;
+            }
+            let current = self.store.lock().expect("store lock").device_key.clone();
+            match current {
+                Some(current) => crate::keys::tidy_chip_keys(&current),
+                None => 0,
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            0
+        }
+    }
+
     pub fn open(store_path: PathBuf) -> Result<Self> {
         let mut store = ClientStore::load(&store_path)?;
         let device_name = store
@@ -985,6 +1008,19 @@ impl Basalt {
     }
 
     /// The household's profiles.
+    /// Asks the host this device manages to do what its own window would,
+    /// and answers with the host as that window shows it, after the change.
+    /// Refused unless this device manages the host, signed in with its key.
+    pub async fn manage(
+        &self,
+        action: basalt_proto::msg::ManageAction,
+    ) -> Result<serde_json::Value> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.manage(action).await;
+        Ok(lease.check(result)?.view)
+    }
+
     pub async fn profiles(&self) -> Result<Vec<ProfileView>> {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
@@ -1430,12 +1466,16 @@ impl Basalt {
         }
         // What the host says about access now, which is newer than what the
         // rest of the app was told when it connected.
-        let writable = session.info().writable;
+        let (writable, manage) = (session.info().writable, session.info().manage);
         let changed = {
             let mut info = self.info.lock().expect("info lock");
             match info.as_mut() {
-                Some(info) if info.host_id == host_id && info.writable != writable => {
+                Some(info)
+                    if info.host_id == host_id
+                        && (info.writable != writable || info.manage != manage) =>
+                {
                     info.writable = writable;
+                    info.manage = manage;
                     true
                 }
                 _ => false,

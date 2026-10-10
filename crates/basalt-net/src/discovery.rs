@@ -317,12 +317,20 @@ fn is_loopback(interface: &if_addrs::Interface) -> bool {
     interface.is_loopback() || interface.name == "lo"
 }
 
-/// This machine's non-loopback IPv4 addresses, for the host to display.
+/// This machine's non-loopback IPv4 addresses, for the host to display: the
+/// one on the network the computer actually uses first, and the rest after.
+///
+/// A computer with VirtualBox, WSL or Hyper-V carries an address for each of
+/// their adapters, and Windows names them no differently from real ones
+/// ("Ethernet 2"). The one that matters is the one its route out goes through,
+/// which asking the system costs nothing: a UDP socket "connected" to an
+/// outside address sends no packet, and says which local address it would
+/// leave from.
 pub fn local_addresses() -> Vec<IpAddr> {
     let Ok(interfaces) = if_addrs::get_if_addrs() else {
         return Vec::new();
     };
-    interfaces
+    let mut addresses: Vec<IpAddr> = interfaces
         .into_iter()
         .filter(|i| !is_loopback(i))
         .filter_map(|i| match i.addr {
@@ -332,7 +340,19 @@ pub fn local_addresses() -> Vec<IpAddr> {
         // A link-local address means the adapter never got a lease; showing one
         // would send somebody chasing an address that cannot work.
         .filter(|ip| !matches!(ip, IpAddr::V4(v4) if v4.is_link_local()))
-        .collect()
+        .collect();
+    if let Some(main) = main_address() {
+        addresses.sort_by_key(|ip| *ip != main);
+    }
+    addresses
+}
+
+/// The local address this machine's route out leaves from, if it has one.
+fn main_address() -> Option<IpAddr> {
+    let socket = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    // A documentation address: never reached, as nothing is sent.
+    socket.connect((Ipv4Addr::new(192, 0, 2, 1), 9)).ok()?;
+    Some(socket.local_addr().ok()?.ip())
 }
 
 fn rand_nonce() -> u64 {
@@ -350,6 +370,17 @@ fn rand_nonce() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A computer with VirtualBox or WSL listed their adapters' addresses
+    // before the one its devices could reach.
+    #[test]
+    fn the_address_of_the_network_in_use_comes_first() {
+        let addresses = local_addresses();
+        println!("{addresses:?}");
+        if let Some(main) = main_address().filter(|main| addresses.contains(main)) {
+            assert_eq!(addresses[0], main);
+        }
+    }
 
     fn beacon() -> Beacon {
         Beacon {

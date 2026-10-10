@@ -217,12 +217,18 @@ export function SettingsPanel({
         </div>
         <div className="tnum mt-1.5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11.5px] text-textDim">
           {status.addresses.length > 0 ? (
-            status.addresses.map((address) => (
-              <span key={address}>
-                {address}
+            <>
+              {/* The network the computer actually uses comes first. The
+                  rest are usually adapters other software adds — VirtualBox,
+                  WSL — and are shown quietly after it. */}
+              <span>
+                {status.addresses[0]}
                 <span className="text-textFaint">:{status.port}</span>
               </span>
-            ))
+              {status.addresses.length > 1 && (
+                <span className="text-textFaint">also {status.addresses.slice(1).join(', ')}</span>
+              )}
+            </>
           ) : (
             <span className="text-textFaint">no network connection</span>
           )}
@@ -454,33 +460,27 @@ interface SectionCard {
   key: keyof Sections
   label: string
   icon: typeof Film
-  /** How much is in it, in words: "42 films". */
-  amount: (library: HostStatus['library']) => string
+  /** How much is in it. */
+  amount: (library: HostStatus['library']) => number
   /** Filled by recognising films and series, which can be switched off. */
   recognised?: boolean
 }
 
 const SECTION_CARDS: SectionCard[] = [
-  { key: 'movies', label: 'Movies', icon: Film, recognised: true, amount: (l) => count(l.films, 'film') },
-  { key: 'series', label: 'TV Series', icon: Tv, recognised: true, amount: (l) => count(l.series, 'series', 'series') },
-  { key: 'videos', label: 'Videos', icon: Video, amount: (l) => count(l.videos, 'video') },
-  { key: 'music', label: 'Music', icon: Music, amount: (l) => count(l.music, 'song') },
-  { key: 'photos', label: 'Photos', icon: ImageIcon, amount: (l) => count(l.photos, 'photo') },
+  { key: 'movies', label: 'Movies', icon: Film, recognised: true, amount: (l) => l.films },
+  { key: 'series', label: 'TV Series', icon: Tv, recognised: true, amount: (l) => l.series },
+  { key: 'videos', label: 'Videos', icon: Video, amount: (l) => l.videos },
+  { key: 'music', label: 'Music', icon: Music, amount: (l) => l.music },
+  { key: 'photos', label: 'Photos', icon: ImageIcon, amount: (l) => l.photos },
 ]
 
-function count(n: number, one: string, many = `${one}s`): string {
-  return `${n.toLocaleString()} ${n === 1 ? one : many}`
-}
-
 /**
- * One card per section: what it is, how much is in it, and whether devices
- * show it.
+ * The five sections in one strip: each its icon over its name, with how much
+ * is in it, lit with a short line under it while devices show it.
  *
- * Cards rather than a row of chips, because each carries more than a name —
- * a section with nothing in it is worth knowing about before deciding to show
- * it, and Movies and TV Series are empty until films are being recognised.
- * The whole card is the control; the small switch in its corner only says
- * which way it is set.
+ * One row, so it never takes more room than the setting is worth, and the
+ * same strip the Basalt app shows a device that manages this host. The whole
+ * cell is the control.
  */
 function SectionPicker({
   sections,
@@ -495,61 +495,39 @@ function SectionPicker({
 
   return (
     <div className="mt-3.5">
-      <div className="grid grid-cols-5 gap-2">
-        {SECTION_CARDS.map((card) => {
+      <div className="grid grid-cols-5 overflow-hidden rounded-[14px] border border-white/[0.08] bg-white/[0.02]">
+        {SECTION_CARDS.map((card, i) => {
           const on = sections[card.key]
           const waiting = card.recognised && !library.enabled
           const Icon = card.icon
           return (
-            <motion.button
+            <button
               key={card.key}
               type="button"
               role="switch"
               aria-checked={on}
               aria-label={`Show ${card.label} on devices`}
+              title={waiting ? 'Filled once films and series are recognised' : undefined}
               onClick={() => onChange({ ...sections, [card.key]: !on })}
-              whileTap={{ scale: 0.97 }}
-              transition={{ type: 'spring', stiffness: 600, damping: 32 }}
               className={cn(
-                'group relative flex flex-col items-start overflow-hidden rounded-xl border px-3 pb-3 pt-3 text-left transition-[background-color,border-color] duration-200',
-                on
-                  ? 'border-white/[0.16] bg-white/[0.055] hover:border-white/25'
-                  : 'border-line bg-transparent hover:border-white/[0.12] hover:bg-white/[0.02]',
+                'relative flex min-w-0 flex-col items-center gap-1.5 px-1 pb-[11px] pt-3 transition-colors duration-200 hover:bg-white/[0.03]',
+                i > 0 && 'border-l border-white/[0.06]',
+                on ? 'bg-white/[0.065] text-text' : 'text-[#5c5c62]',
               )}
             >
-              {/* A soft light from above on the ones that are shown. */}
+              <Icon size={17} />
+              <span className="max-w-full truncate text-[11.5px]">{card.label}</span>
+              <span className={cn('tnum font-mono text-[10px]', on ? 'text-textFaint' : 'text-[#55555b]')}>
+                {!on ? 'hidden' : waiting ? '–' : card.amount(library).toLocaleString()}
+              </span>
               <span
                 aria-hidden
                 className={cn(
-                  'pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-white/[0.06] to-transparent transition-opacity duration-300',
-                  on ? 'opacity-100' : 'opacity-0',
+                  'absolute bottom-0 left-1/2 -ml-[11px] h-[2px] w-[22px] rounded-full bg-basalt transition-transform duration-200',
+                  on ? 'scale-x-100' : 'scale-x-0',
                 )}
               />
-
-              <div className="relative flex w-full items-start justify-between">
-                <span
-                  className={cn(
-                    'flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-200',
-                    on ? 'bg-white/[0.1] text-text' : 'bg-white/[0.03] text-textFaint',
-                  )}
-                >
-                  <Icon size={15} strokeWidth={1.8} />
-                </span>
-                <MiniSwitch on={on} />
-              </div>
-
-              <span
-                className={cn(
-                  'relative mt-3 text-[12.5px] font-medium transition-colors duration-200',
-                  on ? 'text-text' : 'text-textDim',
-                )}
-              >
-                {card.label}
-              </span>
-              <span className="tnum relative mt-0.5 truncate font-mono text-[10px] text-textFaint">
-                {!on ? 'Hidden' : waiting ? 'Recognition off' : card.amount(library)}
-              </span>
-            </motion.button>
+            </button>
           )
         })}
       </div>
@@ -561,27 +539,5 @@ function SectionPicker({
             : `${shown} of ${SECTION_CARDS.length} sections shown. Changes reach connected devices at once.`}
       </p>
     </div>
-  )
-}
-
-/** The switch in a card's corner: an indicator, not a second control. */
-function MiniSwitch({ on }: { on: boolean }): React.JSX.Element {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        'relative h-[14px] w-[24px] shrink-0 rounded-full border transition-colors duration-200',
-        on ? 'border-transparent bg-basalt/90' : 'border-line bg-panel2',
-      )}
-    >
-      <motion.span
-        layout
-        transition={{ type: 'spring', stiffness: 560, damping: 34 }}
-        className={cn(
-          'absolute top-[2px] h-[8px] w-[8px] rounded-full',
-          on ? 'right-[2px] bg-ink' : 'left-[2px] bg-textFaint',
-        )}
-      />
-    </span>
   )
 }

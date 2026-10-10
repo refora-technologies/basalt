@@ -21,6 +21,7 @@ import {
   Plus,
   Scissors,
   Search,
+  SlidersHorizontal,
   Star,
   Trash2,
   Tv,
@@ -42,6 +43,7 @@ import { MusicList, PhotoGrid, VideoGrid } from '@/components/MediaViews'
 import { PlayerOverlay } from '@/components/PlayerOverlay'
 import { ImageViewer } from '@/components/ImageViewer'
 import { PromptDialog } from '@/components/ui/PromptDialog'
+import { PhoneManagePanel } from '@/components/manage/ManageHost'
 import { PropertiesDetails } from '@/components/PropertiesPanel'
 import { About } from '@/components/About'
 import { WhatsNew } from '@/components/WhatsNew'
@@ -252,6 +254,13 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   const [transfersOpen, setTransfersOpen] = useState(false)
   const [shared, setShared] = useState<PhoneFile[]>([])
   const sectionLink = useSectionLink()
+  // Managing the host: a screen of its own, over the tabs, while this device
+  // is one the host lets manage it.
+  const canManage = vault.status?.canManage === true
+  const [managing, setManaging] = useState(false)
+  useEffect(() => {
+    if (!canManage) setManaging(false)
+  }, [canManage])
 
   const visibleSections = SECTIONS.filter((s) => !hiddenSections.has(s.key))
   const librarySection = visibleSections.some((s) => s.key === section)
@@ -474,7 +483,12 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
             </SectionPager>
           )}
           {tab === 'more' && (
-            <MoreScreen model={model} onTransfers={() => setTransfersOpen(true)} onChangeDrive={onChangeDrive} />
+            <MoreScreen
+              model={model}
+              onTransfers={() => setTransfersOpen(true)}
+              onChangeDrive={onChangeDrive}
+              onManage={canManage ? () => setManaging(true) : undefined}
+            />
           )}
 
           {tab === 'files' && writable && !selecting && (
@@ -550,6 +564,8 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       />
 
       <TransfersSheet model={model} open={transfersOpen} onClose={() => setTransfersOpen(false)} />
+
+      <PhoneManagePanel open={managing} onClose={() => setManaging(false)} />
 
       <MobilePlayer model={model} />
 
@@ -1399,11 +1415,14 @@ function MoreScreen({
   model,
   onTransfers,
   onChangeDrive,
+  onManage,
 }: {
   model: AppModel
   onTransfers: () => void
   /** The drive list, to use another drive; this one stays paired. */
   onChangeDrive: () => void
+  /** Opens "Manage host"; only for a device the host lets manage it. */
+  onManage?: () => void
 }): React.JSX.Element {
   const showHidden = useShowHidden()
   const { vault, identity, transfers } = model
@@ -1500,7 +1519,7 @@ function MoreScreen({
                   ? "Signs in with a key in this phone's security chip"
                   : 'Signs in with a key of its own'
                 : 'Signs in with its pairing code'}
-              {vault.status?.owner && ' · owner'}
+              {vault.status?.owner && ' · manages host'}
             </div>
           )}
           <button
@@ -1511,6 +1530,23 @@ function MoreScreen({
             Change drive
           </button>
         </Card>
+
+        {onManage && (
+          <Card onClick={onManage}>
+            <div className="flex items-center gap-3.5">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-basalt/[0.14] text-basalt">
+                <SlidersHorizontal size={18} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] text-text">Manage host</div>
+                <div className="truncate text-[12.5px] text-textFaint">
+                  Its devices, profiles and settings
+                </div>
+              </div>
+              <ChevronRight size={16} className="shrink-0 text-textFaint" />
+            </div>
+          </Card>
+        )}
 
         <Card>
           <Switch

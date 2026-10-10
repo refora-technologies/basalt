@@ -908,7 +908,7 @@ impl Host {
     fn accept_endorsement(&self, device: &Device, statement: SignedStatement) -> Result<()> {
         let denied = |why: String| HostError::Denied(why);
         if !device.owner {
-            return Err(denied("this device is not an owner of this host".into()));
+            return Err(denied("this device does not manage this host".into()));
         }
         let owner = basalt_trust::PublicKey::from_hex(&device.public_key)
             .map_err(|e| denied(e.to_string()))?;
@@ -967,6 +967,10 @@ impl Host {
                     .drop_endorsement_by(&key);
             }
             self.persist()?;
+            // Told at once, as a change of write access is: the device
+            // connects again and shows or hides "Manage host" without
+            // waiting to be restarted.
+            let _ = self.access_changes.send(token_hash.to_string());
         }
         Ok(changed)
     }
@@ -2945,6 +2949,7 @@ where
                     pairing_open: true,
                     host_name: host.host_name(),
                     keys: true,
+                    manage: true,
                 },
             )
             .await?;
@@ -3183,6 +3188,18 @@ where
                 host.forget_old_keys(device);
             }
             write_ok(stream, &[]).await?;
+        }
+
+        Op::Manage => {
+            let req: basalt_proto::msg::ManageRequest = decode(payload)?;
+            let (name, id) = manager(session)?;
+            // Every change made from afar is written down, by whom: the host's
+            // owner reading the log later should never have to guess.
+            if req.action != basalt_proto::msg::ManageAction::View {
+                tracing::info!("{} managed the host: {}", name, req.action.describe());
+            }
+            let view = host.manage(req.action, &id).await?;
+            reply(stream, &basalt_proto::msg::ManageResponse { view }).await?;
         }
 
         Op::Endorse => {
@@ -3721,6 +3738,21 @@ where
 fn read_key(hex: &str) -> Result<basalt_trust::PublicKey> {
     basalt_trust::PublicKey::from_hex(hex)
         .map_err(|e| HostError::Denied(format!("that key is not one this host reads: {e}")))
+}
+
+/// The name and id of the device on this connection, when it may manage the host:
+/// signed in with its own key, that key the one on record for it, and marked as
+/// managing the host. Asked again for every request, since the device is looked
+/// up again for every request: unmarked, or removed, it is stopped at once.
+fn manager(session: &Session) -> Result<(String, String)> {
+    let device = session.device.as_ref().ok_or(HostError::Unauthenticated)?;
+    let keyed = session.by_key && session.signed_key.as_deref() == Some(device.public_key.as_str());
+    if !keyed || !device.owner {
+        return Err(HostError::Denied(
+            "this device does not manage this host".into(),
+        ));
+    }
+    Ok((device.name.clone(), device.token_hash.clone()))
 }
 
 fn require_write(session: &Session) -> Result<()> {

@@ -411,6 +411,16 @@ async fn identity(state: State<'_, AppState>) -> Answer<basalt_client::IdentityS
     Ok(state.client.identity().await)
 }
 
+/// Asks the host this device manages to do what its own window would, and
+/// answers with the host as that window shows it.
+#[tauri::command]
+async fn manage(
+    state: State<'_, AppState>,
+    action: basalt_proto::msg::ManageAction,
+) -> Answer<serde_json::Value> {
+    Ok(state.client.manage(action).await?)
+}
+
 #[tauri::command]
 async fn profiles(state: State<'_, AppState>) -> Answer<Vec<basalt_proto::msg::ProfileView>> {
     Ok(state.client.profiles().await?)
@@ -1186,6 +1196,15 @@ async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Asked by the uninstaller when the app's data is deleted with it: the
+    // device key lives in the chip, not in that data, and would otherwise be
+    // left there for good. Done, and gone, before any window.
+    #[cfg(windows)]
+    if std::env::args().any(|arg| arg == "--forget-device-key") {
+        basalt_client::keys::forget_chip_keys();
+        return;
+    }
+
     // WebView2 refuses to start playback with sound unless the page has a
     // recent user gesture. Clicking a file in the list *is* one, but the
     // `<video>` element is created afterwards, during a React render, and by
@@ -1247,6 +1266,16 @@ pub fn run() {
             // nothing to show, and the app sits on its splash screen looking
             // exactly like a crash. Spawning tasks first was enough to lose
             // that race.
+            // Device keys an earlier copy of the app left in the chip, gone
+            // quietly in the background: a reinstall made a new key beside
+            // the old one, and nothing ever tidied the old.
+            {
+                let client = Arc::clone(&client);
+                std::thread::spawn(move || {
+                    client.tidy_device_keys();
+                });
+            }
+
             app.manage(AppState {
                 client: Arc::clone(&client),
                 proxy: tokio::sync::Mutex::new(None),
@@ -1353,6 +1382,7 @@ pub fn run() {
             collections,
             identity,
             profiles,
+            manage,
             create_profile,
             sign_in_profile,
             sign_out_profile,

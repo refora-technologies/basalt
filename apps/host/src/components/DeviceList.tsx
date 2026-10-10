@@ -92,7 +92,7 @@ export function OwnerLine({
     })
     return (
       <p
-        title="An owner's device signs for this computer's key each week, so it can always be told apart from a copy."
+        title="A device that manages this computer signs for its key each week, so it can always be told apart from a copy."
         className="mb-2.5 flex items-center gap-1.5 text-[11.5px] text-textDim"
       >
         <ShieldCheck size={13} className="shrink-0 text-basalt" />
@@ -104,7 +104,7 @@ export function OwnerLine({
     return (
       <p className="mb-2.5 flex items-center gap-1.5 text-[11.5px] text-textFaint">
         <ShieldCheck size={13} className="shrink-0" />
-        Waiting for an owner's device to connect and vouch for this computer
+        Waiting for a device that manages this computer to connect and vouch for it
       </p>
     )
   }
@@ -112,7 +112,7 @@ export function OwnerLine({
   return (
     <p className="mb-2.5 flex items-center gap-1.5 text-[11.5px] text-textFaint">
       <ShieldCheck size={13} className="shrink-0" />
-      Make one of your own devices an owner, and it vouches for this computer every week
+      Let one of your own devices manage this computer, and it vouches for it every week
     </p>
   )
 }
@@ -201,11 +201,11 @@ function DeviceRow({
 
           {device.owner && (
             <span
-              title="An owner: it vouches for this computer"
+              title="Manages this host, and vouches for this computer"
               className="flex items-center gap-1 rounded-[4px] border border-white/15 bg-white/[0.04] px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.1em] text-textDim"
             >
               <ShieldCheck size={9} />
-              owner
+              manages host
             </span>
           )}
 
@@ -279,7 +279,7 @@ function DeviceRow({
                 {device.keyed && (
                   <MenuItem
                     icon={<ShieldCheck size={12} />}
-                    label={device.owner ? 'Remove as owner' : 'Make owner'}
+                    label={device.owner ? 'Stop managing the host' : 'Let it manage the host'}
                     onClick={() => {
                       setMenuOpen(false)
                       onToggleOwner()

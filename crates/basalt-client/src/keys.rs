@@ -22,6 +22,41 @@ use basalt_proto::msg::{KeyKind, SignedStatement};
 use basalt_trust::{PublicKey, Signature, Signer, SoftwareKey, TrustError};
 use serde::{Deserialize, Serialize};
 
+/// Which of Basalt's keys in a chip to delete, from their names: every one
+/// made with `prefix` but `keep`. Nothing at all when `keep` is named and not
+/// among them: the key in use cannot be seen, and with it the line between
+/// what is in use and what is left over.
+pub fn left_over<'a>(names: &'a [String], prefix: &str, keep: Option<&str>) -> Vec<&'a str> {
+    if let Some(keep) = keep
+        && !names.iter().any(|name| name == keep)
+    {
+        return Vec::new();
+    }
+    names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| name.starts_with(prefix) && Some(*name) != keep)
+        .collect()
+}
+
+/// Deletes the device keys an earlier copy of Basalt left in this computer's
+/// chip, all but `current`, the one in use. A key in the chip outlives the
+/// app's own data, so a reinstall made a new one beside the old for good:
+/// harmless, since no host trusts the old one, but never tidied. How many
+/// were deleted.
+#[cfg(windows)]
+pub fn tidy_chip_keys(current: &StoredKey) -> usize {
+    let keep = (current.backend == Backend::Tpm).then_some(current.name.as_str());
+    tpm::delete_except(tpm::DEVICE_KEY_PREFIX, keep)
+}
+
+/// Deletes every device key Basalt made in this computer's chip, for this
+/// person: what the uninstaller asks for when the app's data goes too.
+#[cfg(windows)]
+pub fn forget_chip_keys() -> usize {
+    tpm::delete_except(tpm::DEVICE_KEY_PREFIX, None)
+}
+
 /// Where a key is kept, as the store records it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -539,8 +574,8 @@ pub(crate) mod tpm {
     use windows_sys::Win32::Security::Cryptography::{
         BCRYPT_ECCPUBLIC_BLOB, BCRYPT_ECDSA_P256_ALGORITHM, BCRYPT_ECDSA_PUBLIC_P256_MAGIC,
         MS_PLATFORM_CRYPTO_PROVIDER, NCRYPT_SILENT_FLAG, NCryptCreatePersistedKey, NCryptDeleteKey,
-        NCryptExportKey, NCryptFinalizeKey, NCryptFreeObject, NCryptOpenKey,
-        NCryptOpenStorageProvider, NCryptSignHash,
+        NCryptEnumKeys, NCryptExportKey, NCryptFinalizeKey, NCryptFreeBuffer, NCryptFreeObject,
+        NCryptKeyName, NCryptOpenKey, NCryptOpenStorageProvider, NCryptSignHash,
     };
     use windows_sys::core::HRESULT;
 
@@ -748,10 +783,90 @@ pub(crate) mod tpm {
         }
     }
 
+    /// What every device key Basalt makes in the TPM is called, before its
+    /// serial: how one left over is told from anything else's.
+    pub(super) const DEVICE_KEY_PREFIX: &str = "Basalt device key ";
+
+    /// The names of the keys in this person's TPM key store.
+    fn names() -> Result<Vec<String>, String> {
+        let mut provider = 0;
+        // SAFETY: a provider handle to fill, and the provider's own name.
+        check(
+            unsafe { NCryptOpenStorageProvider(&mut provider, MS_PLATFORM_CRYPTO_PROVIDER, 0) },
+            "opening the TPM's key store",
+        )
+        .map_err(|e| e.to_string())?;
+        let mut state: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut names = Vec::new();
+        loop {
+            let mut key: *mut NCryptKeyName = std::ptr::null_mut();
+            // SAFETY: the provider opened above; `key` and `state` are filled
+            // by the call and freed below with NCryptFreeBuffer.
+            let status = unsafe {
+                NCryptEnumKeys(
+                    provider,
+                    std::ptr::null(),
+                    &mut key,
+                    &mut state,
+                    NCRYPT_SILENT_FLAG,
+                )
+            };
+            if status != 0 || key.is_null() {
+                break;
+            }
+            // SAFETY: a key name the call handed back, read before it is freed.
+            names.push(unsafe { from_wide((*key).pszName) });
+            // SAFETY: allocated by NCryptEnumKeys.
+            unsafe { NCryptFreeBuffer(key.cast()) };
+        }
+        // SAFETY: as above; the provider is freed once, here.
+        unsafe {
+            if !state.is_null() {
+                NCryptFreeBuffer(state);
+            }
+            NCryptFreeObject(provider);
+        }
+        Ok(names)
+    }
+
+    fn from_wide(text: *const u16) -> String {
+        if text.is_null() {
+            return String::new();
+        }
+        let mut length = 0;
+        // SAFETY: a NUL-terminated wide string from the key store.
+        unsafe {
+            while *text.add(length) != 0 {
+                length += 1;
+            }
+            String::from_utf16_lossy(std::slice::from_raw_parts(text, length))
+        }
+    }
+
+    /// Deletes this person's TPM keys named with `prefix`, all but `keep`:
+    /// see [`super::left_over`]. How many were deleted.
+    pub(super) fn delete_except(prefix: &str, keep: Option<&str>) -> usize {
+        let names = match names() {
+            Ok(names) => names,
+            Err(e) => {
+                tracing::debug!("could not list the TPM's keys: {e}");
+                return 0;
+            }
+        };
+        let mut deleted = 0;
+        for name in super::left_over(&names, prefix, keep) {
+            match TpmKey::open(name).and_then(TpmKey::delete) {
+                Ok(()) => deleted += 1,
+                Err(e) => tracing::debug!("could not delete {name}: {e}"),
+            }
+        }
+        deleted
+    }
+
     /// A new device key in the TPM, tested before it is trusted.
     pub(super) fn create_key() -> Result<DeviceKey, String> {
         let name = format!(
-            "Basalt device key {}",
+            "{DEVICE_KEY_PREFIX}{}",
             basalt_trust::statement::new_serial().map_err(|e| e.to_string())?
         );
         let key = TpmKey::create(&name).map_err(|e| e.to_string())?;
@@ -855,6 +970,37 @@ pub(crate) mod tpm {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_basalt_keys_left_over_are_deleted() {
+        let names: Vec<String> = [
+            "Basalt device key 1111",
+            "Basalt device key 2222",
+            "Basalt device key 3333",
+            "Somebody else's key",
+            "Basalt test key 4444",
+        ]
+        .map(String::from)
+        .to_vec();
+        let prefix = "Basalt device key ";
+        // The one in use is kept, and nothing that is not a Basalt device
+        // key is touched.
+        assert_eq!(
+            left_over(&names, prefix, Some("Basalt device key 2222")),
+            ["Basalt device key 1111", "Basalt device key 3333"]
+        );
+        // The key in use cannot be seen: nothing is deleted at all.
+        assert!(left_over(&names, prefix, Some("Basalt device key 9999")).is_empty());
+        // Uninstalling: every Basalt device key, and still nothing else.
+        assert_eq!(
+            left_over(&names, prefix, None),
+            [
+                "Basalt device key 1111",
+                "Basalt device key 2222",
+                "Basalt device key 3333"
+            ]
+        );
+    }
+
     use super::*;
     use std::collections::HashMap;
     use std::sync::Mutex;

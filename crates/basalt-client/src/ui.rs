@@ -41,6 +41,8 @@ pub struct Status {
     pub signs_in_with_key: bool,
     /// The host's owner made this device an owner of the drive.
     pub owner: bool,
+    /// This device can manage the host from here: see [`crate::Basalt::manage`].
+    pub can_manage: bool,
 }
 
 impl Status {
@@ -85,6 +87,7 @@ impl Status {
             key: None,
             signs_in_with_key: info.as_ref().is_some_and(|i| i.by_key),
             owner: info.as_ref().is_some_and(|i| i.owner),
+            can_manage: info.as_ref().is_some_and(|i| i.manage),
         }
     }
 
@@ -231,6 +234,7 @@ mod tests {
             keys(&status),
             vec![
                 "address",
+                "canManage",
                 "connected",
                 "connecting",
                 "deviceName",
@@ -504,6 +508,7 @@ mod tests {
             address: "192.168.1.11:7742".parse().unwrap(),
             by_key: true,
             owner: false,
+            manage: false,
         };
         let host = saved_host();
         let status = Status::new(Some(info), Some(&host), "Laptop A");
