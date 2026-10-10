@@ -51,6 +51,13 @@ bundle=/var/lib/docker/volumes/basalt-desktop-target/_data/release/bundle
 cp "$bundle"/appimage/*.AppImage "$out/Basalt-Host-Linux-x86_64.AppImage"
 cp "$bundle"/deb/*.deb "$out/Basalt-Host-Linux-amd64.deb"
 cp "$bundle"/rpm/*.rpm "$out/Basalt-Host-Linux-x86_64.rpm"
+# The bundler writes the publisher's name alone as the .deb's maintainer;
+# packages name a way to reach them too.
+deb_dir=$(mktemp -d)
+dpkg-deb -R "$out/Basalt-Host-Linux-amd64.deb" "$deb_dir/pkg"
+sed -i 's/^Maintainer: .*/Maintainer: Refora Technologies <reforatech@gmail.com>/' "$deb_dir/pkg/DEBIAN/control"
+dpkg-deb -Zxz --root-owner-group -b "$deb_dir/pkg" "$out/Basalt-Host-Linux-amd64.deb" >/dev/null
+rm -rf "$deb_dir"
 # The bundler cannot name a vendor in an .rpm; this adds it.
 docker run --rm -v "$out":/out -v "$repo/packaging/linux/rpm":/rpm:ro fedora:latest bash /rpm/set-vendor.sh /out/Basalt-Host-Linux-x86_64.rpm
 cd "$out"
