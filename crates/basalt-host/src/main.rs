@@ -117,6 +117,13 @@ fn default_config_path() -> PathBuf {
 
 /// The host's config, as it is: never made here, outside `serve`.
 fn existing(config_path: &Path) -> Result<HostConfig> {
+    // The service's settings are its own user's alone: not missing, just
+    // not this user's to read.
+    if let Err(e) = std::fs::metadata(config_path)
+        && e.kind() == std::io::ErrorKind::PermissionDenied
+    {
+        bail!("only the host's own user can read its settings. Run it with sudo.");
+    }
     if !config_path.exists() {
         bail!(
             "there is no host at {} yet. Start it first (`basalt-host serve`, or the \
