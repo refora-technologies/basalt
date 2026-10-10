@@ -3583,7 +3583,13 @@ where
                     ));
                 }
             };
-            let answer = match host.link_profile(req, &signed_key, device.key(), &device.name)? {
+            let answer = match host.link_profile(
+                req,
+                &signed_key,
+                device.key(),
+                &device.name,
+                device.owner,
+            )? {
                 crate::links::Linked::SignedIn(profile, token) => {
                     session.profile =
                         Some((profile.id.clone(), crate::profiles::hash_token(&token)));

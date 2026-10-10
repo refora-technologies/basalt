@@ -55,13 +55,15 @@ pub enum Linked {
 impl Host {
     /// A device asks to use a profile from another drive. `signed_key` is the
     /// key this connection signed in with, hex; `device_key` is what this
-    /// host files the device's sign-ins under.
+    /// host files the device's sign-ins under. A device that `manages` the
+    /// host is let in at once: it is the one who would approve it.
     pub fn link_profile(
         &self,
         request: ProfileLinkRequest,
         signed_key: &str,
         device_key: &str,
         device_name: &str,
+        manages: bool,
     ) -> Result<Linked> {
         let now = crate::server::unix_now();
         let subject = basalt_trust::PublicKey::from_hex(signed_key)
@@ -118,6 +120,26 @@ impl Host {
         }
 
         let name = crate::profiles::clean_name(&request.name)?;
+        if manages {
+            let profile = self.profiles.lock().expect("profiles lock").add_linked(
+                &name,
+                request.color,
+                home.clone(),
+                now,
+            )?;
+            let (profile, token) = self
+                .profiles
+                .lock()
+                .expect("profiles lock")
+                .sign_in_linked(&profile.id, device_key, request.remember, payload.exp, now)?;
+            self.persist()?;
+            tracing::info!(
+                "{device_name}, which manages this drive, uses {name} from {} here",
+                home.label
+            );
+            self.profiles_changed();
+            return Ok(Linked::SignedIn(profile.view(), token));
+        }
         let mut links = self.profile_links.lock().expect("links lock");
         links.retain(|l| l.opened.elapsed() < LINK_WINDOW);
         if let Some(waiting) = links
@@ -319,6 +341,7 @@ mod tests {
                 &phone.public_key().to_hex(),
                 "phone",
                 "Maya's phone",
+                false,
             )
             .unwrap();
         assert!(matches!(asked, Linked::Waiting));
@@ -340,6 +363,7 @@ mod tests {
             &thief.public_key().to_hex(),
             "thief",
             "Laptop",
+            false,
         );
         assert!(matches!(refused, Err(HostError::Denied(_))));
         assert!(f.host.profile_links().is_empty());
@@ -358,6 +382,7 @@ mod tests {
             &phone.public_key().to_hex(),
             "phone",
             "Maya's phone",
+            false,
         );
         assert!(matches!(refused, Err(HostError::Denied(_))));
     }
@@ -375,6 +400,7 @@ mod tests {
             &phone.public_key().to_hex(),
             "phone",
             "Maya's phone",
+            false,
         );
         assert!(matches!(refused, Err(HostError::Denied(m)) if m.contains("this drive's own")));
         let household = f.host.link_profile(
@@ -382,6 +408,7 @@ mod tests {
             &phone.public_key().to_hex(),
             "phone",
             "Maya's phone",
+            false,
         );
         assert!(matches!(household, Err(HostError::Denied(m)) if m.contains("not a profile")));
     }
@@ -401,6 +428,7 @@ mod tests {
             &phone.public_key().to_hex(),
             "phone",
             "Maya's phone",
+            false,
         );
         assert!(matches!(refused, Err(HostError::Denied(_))));
     }
@@ -419,6 +447,7 @@ mod tests {
                 &phone.public_key().to_hex(),
                 "phone",
                 "Maya's phone",
+                false,
             )
             .unwrap();
         let id = f.host.profile_links()[0].id.clone();
@@ -430,6 +459,7 @@ mod tests {
                 &laptop.public_key().to_hex(),
                 "laptop",
                 "Maya's laptop",
+                false,
             )
             .unwrap();
         assert!(matches!(signed_in, Linked::SignedIn(ref p, _) if p.name == "Maya"));
@@ -442,8 +472,44 @@ mod tests {
                 &laptop.public_key().to_hex(),
                 "laptop",
                 "Maya's laptop",
+                false,
             )
             .unwrap();
         assert!(matches!(waiting, Linked::Waiting));
+    }
+
+    // Someone who manages this drive would only be approving themselves.
+    #[test]
+    fn a_device_that_manages_the_drive_is_let_in_at_once() {
+        let f = host("manager");
+        let (maya, phone) = (
+            SoftwareKey::generate().unwrap(),
+            SoftwareKey::generate().unwrap(),
+        );
+        let signed_in = f
+            .host
+            .link_profile(
+                ask(statement(&maya, &phone, HOME, "0a1b2c3d4e5f6071", now())),
+                &phone.public_key().to_hex(),
+                "phone",
+                "Maya's phone",
+                true,
+            )
+            .unwrap();
+        assert!(matches!(signed_in, Linked::SignedIn(ref p, _) if p.name == "Maya"));
+        assert!(f.host.profile_links().is_empty());
+        // Her other devices are in too, like any approved profile.
+        let laptop = SoftwareKey::generate().unwrap();
+        let again = f
+            .host
+            .link_profile(
+                ask(statement(&maya, &laptop, HOME, "0a1b2c3d4e5f6071", now())),
+                &laptop.public_key().to_hex(),
+                "laptop",
+                "Maya's laptop",
+                false,
+            )
+            .unwrap();
+        assert!(matches!(again, Linked::SignedIn(..)));
     }
 }
