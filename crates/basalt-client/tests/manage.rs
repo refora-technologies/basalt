@@ -168,6 +168,33 @@ async fn a_device_that_manages_the_host_does_what_its_window_does() {
 }
 
 #[tokio::test]
+async fn a_device_that_manages_the_host_sees_and_sets_its_updates() {
+    let fixture = start_host().await;
+    let (phone, phone_id) = fixture.paired("phone").await;
+    drop(phone);
+    fixture.host.set_owner(&phone_id, true).unwrap();
+    let phone = fixture.reopened("phone").await;
+
+    let view = phone.manage(ManageAction::View).await.unwrap();
+    let update = &view["update"];
+    assert_eq!(update["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(update["automatic"], true, "on unless turned off");
+
+    let view = phone
+        .manage(ManageAction::SetAutomaticUpdates { enabled: false })
+        .await
+        .unwrap();
+    assert_eq!(view["update"]["automatic"], false);
+    assert!(!fixture.host.automatic_updates(), "kept by the host");
+
+    // A host started by hand, as in this test, updates by hand: asked to
+    // update now, it says how instead of trying.
+    assert_eq!(view["update"]["canInstall"], false);
+    let why = refused(phone.manage(ManageAction::InstallUpdate).await);
+    assert!(why.contains("by hand"), "{why}");
+}
+
+#[tokio::test]
 async fn a_folder_is_found_by_browsing_shared_by_its_name_and_renamed() {
     let fixture = start_host().await;
     let (phone, phone_id) = fixture.paired("phone").await;
