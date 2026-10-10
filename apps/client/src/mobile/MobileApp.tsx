@@ -1615,8 +1615,8 @@ function MoreScreen({
             <span className="min-w-0 flex-1">
               <span className="block text-[15px] text-danger">Forget this drive</span>
               <span className="mt-0.5 block text-[12.5px] leading-snug text-textFaint">
-                Unpairs this phone from {vault.status?.hostName ?? 'the host'}. Nothing on the drive is
-                touched.
+                This phone stops connecting to {vault.status?.hostName ?? 'the host'} until you pair
+                again. Nothing on the drive changes.
               </span>
             </span>
             <ChevronRight size={16} className="shrink-0 text-textFaint" />
