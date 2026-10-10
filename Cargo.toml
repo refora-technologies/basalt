@@ -17,7 +17,7 @@ members = [
 exclude = ["apps/client/src-tauri", "apps/host/src-tauri"]
 
 [workspace.package]
-version = "1.4.6"
+version = "1.5.0"
 edition = "2024"
 rust-version = "1.98"
 license = "GPL-3.0-only"
@@ -30,6 +30,7 @@ basalt-host = { path = "crates/basalt-host" }
 basalt-client = { path = "crates/basalt-client" }
 basalt-catalog = { path = "crates/basalt-catalog" }
 basalt-trust = { path = "crates/basalt-trust" }
+basalt-update = { path = "crates/basalt-update" }
 
 anyhow = "1"
 blake3 = "1"

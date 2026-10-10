@@ -24,7 +24,7 @@ pub enum HostError {
     #[error("{0}")]
     BadRequest(String),
 
-    #[error("not authenticated")]
+    #[error("this device isn’t paired with this host")]
     Unauthenticated,
 
     #[error("{0}")]
@@ -35,10 +35,10 @@ pub enum HostError {
     Unavailable(String),
 
     /// A profile sign-in that has ended.
-    #[error("signed out of this profile")]
+    #[error("you were signed out of this profile")]
     SignedOut,
 
-    #[error("io: {0}")]
+    #[error("{}", basalt_net::describe_io(.0))]
     Io(#[from] std::io::Error),
 
     #[error(transparent)]
@@ -103,7 +103,7 @@ pub fn from_io(path: &str, e: std::io::Error) -> HostError {
     match e.kind() {
         std::io::ErrorKind::NotFound => HostError::NotFound(path.to_string()),
         std::io::ErrorKind::PermissionDenied => {
-            HostError::Denied(format!("{path}: permission denied"))
+            HostError::Denied(format!("the host isn’t allowed to open {path}"))
         }
         std::io::ErrorKind::AlreadyExists => HostError::Exists(path.to_string()),
         _ => HostError::Io(e),
@@ -149,11 +149,11 @@ mod tests {
 
     #[test]
     fn a_missing_drive_has_its_own_code_and_says_so_plainly() {
-        let err = HostError::Unavailable("Media is not connected to the host right now".into());
+        let err = HostError::Unavailable("Media isn’t connected to the host right now".into());
         assert_eq!(err.code(), ErrorCode::Unavailable);
         assert_eq!(
             err.to_string(),
-            "Media is not connected to the host right now"
+            "Media isn’t connected to the host right now"
         );
     }
 

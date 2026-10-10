@@ -1,0 +1,31 @@
+#!/bin/sh
+# Basalt Host (no screen): after installing or upgrading.
+set -e
+
+if [ "$1" = "configure" ]; then
+    # The host's own user: no login, no home but its settings folder.
+    if ! getent passwd basalt >/dev/null 2>&1; then
+        useradd --system --user-group --no-create-home \
+            --home-dir /var/lib/basalt-host --shell /usr/sbin/nologin \
+            --comment "Basalt Host" basalt
+    fi
+
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl enable basalt-host.service >/dev/null 2>&1 || true
+        # Lets the host ask for its own updates: see basalt-host-update.path.
+        systemctl enable --now basalt-host-update.path >/dev/null 2>&1 || true
+        systemctl restart basalt-host.service >/dev/null 2>&1 || true
+    fi
+
+    # The last word of the install: whether it runs, where devices find it,
+    # the setup code, and what is left to do on this machine, firewall
+    # included (never opened here: that is the computer owner's call).
+    if [ -d /run/systemd/system ]; then
+        basalt-host --config /var/lib/basalt-host/host.json status --wait || true
+    else
+        echo "Basalt Host is installed. Start it with: sudo systemctl enable --now basalt-host"
+    fi
+fi
+
+exit 0

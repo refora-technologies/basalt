@@ -44,6 +44,18 @@ pub struct KnownHost {
     /// `basalt_trust::statement`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<basalt_proto::msg::SignedStatement>,
+    /// The names and colours of this host's profiles, as last seen: what a
+    /// profile from this drive is called when offered on another.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<ProfileLabel>,
+}
+
+/// A profile's name and colour, by its id on its host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileLabel {
+    pub id: String,
+    pub name: String,
+    pub color: u8,
 }
 
 /// Who this device signs in as, per host.
@@ -90,6 +102,23 @@ pub struct ClientStore {
     pub device_key: Option<crate::keys::StoredKey>,
 }
 
+/// Moves `from` over `to`. On Windows a file just written is often held open
+/// for a moment by the antivirus or the search indexer, and the move is
+/// refused while it is; it is tried again for up to a second rather than
+/// failing the save.
+fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => return other,
+        }
+    }
+}
+
 impl ClientStore {
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read(path) {
@@ -117,7 +146,7 @@ impl ClientStore {
             .map_err(|e| ClientError::Config(format!("could not encode the store: {e}")))?;
         let temp = path.with_extension("tmp");
         std::fs::write(&temp, &json)?;
-        std::fs::rename(&temp, path)?;
+        replace(&temp, path)?;
         Ok(())
     }
 
@@ -183,6 +212,20 @@ impl ClientStore {
     /// last if that was later.
     pub fn primary(&self) -> Option<&KnownHost> {
         self.hosts.iter().max_by_key(|h| h.used_at.max(h.paired_at))
+    }
+
+    /// Keeps the names a host goes by now: its drive's, renamed or chosen
+    /// since pairing, and its own. Shown in lists while it is not answering,
+    /// and on other drives as a profile's home.
+    pub fn note_names(&mut self, host_id: &str, vault: &str, host_name: &str) {
+        if let Some(host) = self.find_mut(host_id) {
+            if !vault.trim().is_empty() {
+                host.vault = vault.to_string();
+            }
+            if !host_name.trim().is_empty() {
+                host.host_name = host_name.to_string();
+            }
+        }
     }
 
     /// Records that this device has just connected to `host_id`.
@@ -534,6 +577,7 @@ mod tests {
             identity: Default::default(),
             key: String::new(),
             members: Vec::new(),
+            profiles: Vec::new(),
         }
     }
 
@@ -692,5 +736,22 @@ mod tests {
     fn a_windows_pc_has_a_lasting_id() {
         let id = lasting_device_id(None).expect("MachineGuid is readable");
         assert_eq!(id, lasting_device_id(None).unwrap());
+    }
+
+    // A host paired before its drive was chosen was called "Vault" on this
+    // device for good, here and as the home of its profiles on other drives.
+    #[test]
+    fn a_hosts_names_follow_it() {
+        let mut store = ClientStore::default();
+        store.remember(host("aa", 1));
+        store.note_names("aa", "Films", "Living room");
+        let known = store.find("aa").unwrap();
+        assert_eq!(
+            (known.vault.as_str(), known.host_name.as_str()),
+            ("Films", "Living room")
+        );
+        store.note_names("aa", "", "");
+        let known = store.find("aa").unwrap();
+        assert_eq!(known.vault, "Films", "an empty name changes nothing");
     }
 }

@@ -15,11 +15,17 @@ path = "src/lib.rs"
 name = "basalt-host"
 path = "src/main.rs"
 
+# Installs a new release as root, for the Linux packages: see the file.
+[[bin]]
+name = "basalt-host-update"
+path = "src/bin/basalt-host-update.rs"
+
 [dependencies]
 basalt-proto = { workspace = true }
 basalt-net = { workspace = true }
 basalt-trust = { workspace = true }
 basalt-catalog = { workspace = true }
+basalt-update = { workspace = true }
 
 anyhow = { workspace = true }
 blake3 = { workspace = true }

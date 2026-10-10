@@ -44,6 +44,7 @@ import { PlayerOverlay } from '@/components/PlayerOverlay'
 import { ImageViewer } from '@/components/ImageViewer'
 import { PromptDialog } from '@/components/ui/PromptDialog'
 import { PhoneManagePanel } from '@/components/manage/ManageHost'
+import { NoDrive } from '@/components/NoDrive'
 import { PropertiesDetails } from '@/components/PropertiesPanel'
 import { About } from '@/components/About'
 import { WhatsNew } from '@/components/WhatsNew'
@@ -482,6 +483,18 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
               <LibraryScreen model={model} section={librarySection} wide={wide} />
             </SectionPager>
           )}
+          {/* A host just set up shares nothing yet: every tab but More says
+              so, with the way to choose a drive for the device managing it. */}
+          {model.connected && vault.status?.hasDrive === false && tab !== 'more' && (
+            <div className="absolute inset-0 z-10 bg-ink">
+              <NoDrive
+                large
+                hostName={vault.status.hostName ?? 'This host'}
+                canManage={canManage}
+                onManage={() => setManaging(true)}
+              />
+            </div>
+          )}
           {tab === 'more' && (
             <MoreScreen
               model={model}
@@ -491,7 +504,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
             />
           )}
 
-          {tab === 'files' && writable && !selecting && (
+          {tab === 'files' && writable && !selecting && vault.status?.hasDrive !== false && (
             <Fab onClick={() => setAdding(true)} raised={active.length > 0 || shared.length > 0 || actions.clipboard !== null} />
           )}
         </main>
@@ -745,7 +758,9 @@ function TopBar({
     tab === 'files'
       ? inFolder
         ? vault.dir.split('/').pop()!
-        : (vault.status?.vault ?? 'Basalt')
+        : vault.status?.hasDrive === false
+          ? (vault.status.hostName ?? 'Basalt')
+          : (vault.status?.vault ?? 'Basalt')
       : tab === 'library'
         ? 'Library'
         : tab === 'recent'
@@ -904,7 +919,8 @@ function Crumbs({ model }: { model: AppModel }): React.JSX.Element | null {
 /** Lost the host, or the drive: said plainly, above the list. */
 function ConnectionLine({ model }: { model: AppModel }): React.JSX.Element | null {
   const kind = model.vault.error?.kind
-  if (!kind) return null
+  // A host with no drive yet: the screen below says so, with what to do.
+  if (!kind || model.vault.status?.hasDrive === false) return null
   const offline = kind === 'offline'
   return (
     <div className="flex shrink-0 items-center gap-2.5 border-y border-white/[0.06] bg-[#141416] px-4 py-2.5">
@@ -1201,7 +1217,7 @@ function TransfersSheet({
   return (
     <Sheet open={open} onClose={onClose} title="Transfers" tall>
       {transfers.transfers.length === 0 ? (
-        <p className="px-5 pb-6 pt-2 text-[13.5px] text-textFaint">Nothing moving, and nothing moved yet.</p>
+        <p className="px-5 pb-6 pt-2 text-[13.5px] text-textFaint">No downloads or uploads yet.</p>
       ) : (
         <div className="pb-2">
           {transfers.transfers.map((t) => {
@@ -1242,7 +1258,7 @@ function TransfersSheet({
                     )}
                   >
                     {t.status === 'failed'
-                      ? (t.error ?? 'Did not finish')
+                      ? (t.error ?? 'Didn’t finish')
                       : t.status === 'cancelled'
                         ? 'Cancelled'
                         : saved
@@ -1365,7 +1381,7 @@ function LibraryScreen({
     return (
       <div className="flex h-full items-center justify-center px-10 text-center text-[14px] text-textFaint">
         {libraryScanning
-          ? 'Looking through the drive…'
+          ? 'Searching the drive…'
           : query
             ? `Nothing matches “${query}”`
             : `No ${section} on the drive yet`}
@@ -1516,7 +1532,7 @@ function MoreScreen({
               <KeyRound size={12} className="shrink-0" />
               {vault.status?.signsInWithKey
                 ? vault.status.key === 'chip'
-                  ? "Signs in with a key in this phone's security chip"
+                  ? 'Signs in with a key in this phone’s security chip'
                   : 'Signs in with a key of its own'
                 : 'Signs in with its pairing code'}
               {vault.status?.owner && ' · manages host'}
@@ -1551,7 +1567,7 @@ function MoreScreen({
         <Card>
           <Switch
             label="Show hidden files"
-            description="Items Windows keeps out of sight on the host, such as desktop.ini and the Recycle Bin."
+            description="Files the host’s computer normally hides, such as desktop.ini and the Recycle Bin."
             checked={showHidden}
             onChange={setShowHidden}
             className="py-0"
@@ -1599,8 +1615,8 @@ function MoreScreen({
             <span className="min-w-0 flex-1">
               <span className="block text-[15px] text-danger">Forget this drive</span>
               <span className="mt-0.5 block text-[12.5px] leading-snug text-textFaint">
-                Unpairs this phone from {vault.status?.hostName ?? 'the host'}. Nothing on the drive is
-                touched.
+                This phone stops connecting to {vault.status?.hostName ?? 'the host'} until you pair
+                again. Nothing on the drive changes.
               </span>
             </span>
             <ChevronRight size={16} className="shrink-0 text-textFaint" />

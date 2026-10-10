@@ -67,7 +67,11 @@ pub fn list() -> Vec<Drive> {
     #[cfg(target_os = "linux")]
     {
         let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
-        linux_drives(&mounts, user_name().as_deref())
+        if in_container() {
+            container_drives(&mounts)
+        } else {
+            linux_drives(&mounts, user_name().as_deref())
+        }
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
@@ -89,6 +93,48 @@ fn linux_name(path: &Path, label: &str) -> String {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string()),
     }
+}
+
+/// Running in a container: the image says so, and Docker leaves its mark.
+#[cfg(target_os = "linux")]
+fn in_container() -> bool {
+    std::env::var_os("BASALT_CONTAINER").is_some() || Path::new("/.dockerenv").exists()
+}
+
+/// The drives a host in a container can share: whatever was mounted into it
+/// under `/media`, and `/media` itself when that is the mount.
+///
+/// Not the rules of a whole computer. Every folder handed to a container
+/// usually comes from the same disk, so one disk mounted twice is two drives
+/// here; and their file systems are whatever the outside uses, Docker
+/// Desktop's own included, so none is ruled out.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn container_drives(mounts: &str) -> Vec<Drive> {
+    let mut drives: Vec<Drive> = Vec::new();
+    for line in mounts.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(_device), Some(point)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let point = unescape_mount(point);
+        if point != "/media" && !point.starts_with("/media/") {
+            continue;
+        }
+        if drives.iter().any(|d| d.path == Path::new(&point)) {
+            continue;
+        }
+        let path = PathBuf::from(&point);
+        let (free, total) = crate::space::for_path(&path);
+        drives.push(Drive {
+            path,
+            label: String::new(),
+            kind: "fixed",
+            free,
+            total,
+        });
+    }
+    drives.sort_by(|a, b| a.path.cmp(&b.path));
+    drives
 }
 
 /// The person running the host, for finding where their drives are mounted.
@@ -227,6 +273,102 @@ fn unescape_mount(field: &str) -> String {
 /// than a vault that opens onto nothing.
 pub fn is_available(path: &Path) -> bool {
     std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)
+}
+
+/// What a device sees when it browses the host's folders to share one.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderList {
+    /// Where this is, as a person writes it; empty for the list of drives.
+    pub path: String,
+    /// One level up: `None` at the top, empty for the list of drives.
+    pub parent: Option<String>,
+    pub folders: Vec<FolderEntry>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FolderEntry {
+    pub name: String,
+    pub path: String,
+}
+
+/// The most folders one listing shows: a folder of thousands is not one to
+/// pick through on a phone, and its path can still be typed.
+const MOST_FOLDERS: usize = 500;
+
+/// The folders in `path`, for a device that manages the host to choose one
+/// to share. Empty starts where it makes sense: the drives on Windows, the
+/// mounted folders in a container, the top of the file system otherwise.
+/// Hidden folders (a dot first) are left out, as a file manager does.
+pub fn list_folders(path: &str) -> std::io::Result<FolderList> {
+    let path = path.trim();
+    if path.is_empty() {
+        if cfg!(windows) {
+            let folders = list()
+                .into_iter()
+                .filter(|d| is_available(&d.path))
+                .map(|d| FolderEntry {
+                    name: d.display_name(),
+                    path: display(&d.path),
+                })
+                .collect();
+            return Ok(FolderList {
+                path: String::new(),
+                parent: None,
+                folders,
+            });
+        }
+        #[cfg(target_os = "linux")]
+        if in_container() && Path::new("/media").is_dir() {
+            return list_folders("/media");
+        }
+        return list_folders("/");
+    }
+    let here = Path::new(path);
+    let mut folders: Vec<FolderEntry> = std::fs::read_dir(here)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            // Followed through links, as sharing one would be.
+            std::fs::metadata(entry.path()).is_ok_and(|m| m.is_dir())
+        })
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            (!name.starts_with('.') && !name.starts_with('$')).then(|| FolderEntry {
+                name,
+                path: display(&entry.path()),
+            })
+        })
+        .collect();
+    folders.sort_by_key(|f| f.name.to_lowercase());
+    folders.truncate(MOST_FOLDERS);
+    let parent = match here.parent() {
+        Some(up) if !up.as_os_str().is_empty() => Some(display(up)),
+        // At a drive's top on Windows: up is the list of drives.
+        _ if cfg!(windows) => Some(String::new()),
+        _ => None,
+    };
+    Ok(FolderList {
+        path: display(here),
+        parent,
+        folders,
+    })
+}
+
+/// What a drive or folder is called when nobody gave it a name: as the drive
+/// list shows it, or the folder's own name.
+pub fn default_name(path: &Path) -> String {
+    let shown = display(path);
+    let trimmed = shown.trim_end_matches(['\\', '/']);
+    if let Some(drive) = list()
+        .into_iter()
+        .find(|d| display(&d.path).trim_end_matches(['\\', '/']) == trimmed)
+    {
+        return drive.display_name();
+    }
+    Path::new(trimmed)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| shown.clone())
 }
 
 /// A path the way a person writes it.
@@ -368,6 +510,37 @@ overlay /var/lib/docker/overlay2/x/merged overlay rw 0 0
         assert_eq!(linux_name(&drives[1].path, &drives[1].label), "Home");
         assert_eq!(linux_name(&usb.path, &usb.label), "Media Drive");
         assert_eq!(linux_name(&drives[3].path, &drives[3].label), "backup");
+    }
+
+    // Docker hands a container its folders as bind mounts, usually all from
+    // one disk: each is a drive of its own, and only those under /media.
+    #[test]
+    fn a_container_lists_each_folder_mounted_under_media() {
+        let mounts = "overlay / overlay rw 0 0
+proc /proc proc rw 0 0
+/dev/sda1 /config ext4 rw 0 0
+/dev/sda1 /media/films ext4 rw 0 0
+/dev/sda1 /media/photos ext4 rw 0 0
+/dev/sda1 /media/photos ext4 rw 0 0
+grpcfuse /media/Music\\040Library fakeowner rw 0 0
+/dev/sda1 /etc/hosts ext4 rw 0 0
+";
+        let paths: Vec<_> = container_drives(mounts)
+            .iter()
+            .map(|d| d.path.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            paths,
+            ["/media/Music Library", "/media/films", "/media/photos"]
+        );
+        assert_eq!(
+            container_drives(
+                "/dev/sdb1 /media ext4 rw 0 0
+"
+            )[0]
+            .path,
+            Path::new("/media")
+        );
     }
 
     #[test]

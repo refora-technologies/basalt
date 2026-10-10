@@ -105,6 +105,60 @@ pub fn is_valid_pin(pin: &str) -> bool {
     pin.len() == PIN_DIGITS && pin.chars().all(|c| c.is_ascii_digit())
 }
 
+/// The characters a setup code is made of: digits and capitals, without the
+/// ones that look alike in a terminal (0 and O, 1, I and L), since the code is
+/// read off a log and typed on a phone.
+pub const SETUP_CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+
+/// Characters in a setup code: 31^8, about 40 bits, behind the same slow key
+/// derivation as a PIN and a host that replaces the code after a few wrong
+/// guesses.
+pub const SETUP_CODE_LEN: usize = 8;
+
+/// A new setup code: what lets the first device in to a host with no screen,
+/// and makes it the host's manager. See `basalt_host::setup`.
+pub fn generate_setup_code() -> Result<String> {
+    let alphabet = SETUP_CODE_ALPHABET.len();
+    // Bytes at or above this would favour the alphabet's first characters.
+    let limit = 256 - 256 % alphabet;
+    let mut code = String::with_capacity(SETUP_CODE_LEN);
+    while code.len() < SETUP_CODE_LEN {
+        for byte in random_bytes(SETUP_CODE_LEN)? {
+            if usize::from(byte) < limit && code.len() < SETUP_CODE_LEN {
+                code.push(char::from(
+                    SETUP_CODE_ALPHABET[usize::from(byte) % alphabet],
+                ));
+            }
+        }
+    }
+    Ok(code)
+}
+
+/// Whether a (normalised) string is a well-formed setup code.
+pub fn is_valid_setup_code(code: &str) -> bool {
+    code.len() == SETUP_CODE_LEN && code.bytes().all(|b| SETUP_CODE_ALPHABET.contains(&b))
+}
+
+/// A PIN or setup code as typed, made comparable: spaces and dashes dropped,
+/// letters in capitals. "k7qm 4xpr" and "K7QM-4XPR" are the same code, and a
+/// PIN read out as "482 915" is the PIN 482915.
+pub fn normalise_code(typed: &str) -> String {
+    typed
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// A setup code for reading: `K7QM-4XPR`.
+pub fn format_setup_code(code: &str) -> String {
+    if code.len() == SETUP_CODE_LEN && code.is_ascii() {
+        format!("{}-{}", &code[..4], &code[4..])
+    } else {
+        code.to_string()
+    }
+}
+
 /// Computes the pairing proof.
 ///
 /// Both ends run this identically; the host compares its own result against
@@ -117,9 +171,10 @@ pub fn compute_proof(
     client_nonce: &str,
     server_nonce: &str,
 ) -> Result<String> {
-    if !is_valid_pin(pin) {
+    let pin = normalise_code(pin);
+    if !is_valid_pin(&pin) && !is_valid_setup_code(&pin) {
         return Err(NetError::Crypto(format!(
-            "a PIN is {PIN_DIGITS} digits; got {pin:?}"
+            "a PIN is {PIN_DIGITS} digits, and a setup code {SETUP_CODE_LEN} letters and digits"
         )));
     }
     let salt = hex::decode(host_id).map_err(|_| NetError::Crypto("host id is not hex".into()))?;
@@ -219,6 +274,41 @@ mod tests {
     fn malformed_pins_are_rejected() {
         for bad in ["", "12345", "1234567", "12345a", "12 345", "abcdef"] {
             assert!(!is_valid_pin(bad), "{bad:?} must not be a valid PIN");
+        }
+    }
+
+    #[test]
+    fn setup_codes_are_eight_readable_characters() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let code = generate_setup_code().unwrap();
+            assert!(is_valid_setup_code(&code), "{code}");
+            assert!(!code.contains(['0', 'O', '1', 'I', 'L']), "{code}");
+            seen.insert(code);
+        }
+        assert_eq!(seen.len(), 200, "setup codes must not repeat");
+        assert_eq!(format_setup_code("K7QM4XPR"), "K7QM-4XPR");
+    }
+
+    // Read off a log and typed on a phone: case, a dash or spaces are no
+    // reason to refuse the right code.
+    #[test]
+    fn a_setup_code_verifies_however_it_is_typed() {
+        let (c, s) = nonces();
+        let proof = compute_proof("k7qm-4xpr", HOST_A, &c, &s).unwrap();
+        assert!(verify_proof("K7QM4XPR", HOST_A, &c, &s, &proof));
+        assert!(verify_proof("K7QM 4XPR", HOST_A, &c, &s, &proof));
+        assert!(!verify_proof("K7QM4XPS", HOST_A, &c, &s, &proof));
+        // A PIN read out in two halves is the same PIN.
+        let pin = compute_proof("482 915", HOST_A, &c, &s).unwrap();
+        assert!(verify_proof("482915", HOST_A, &c, &s, &pin));
+    }
+
+    #[test]
+    fn neither_a_pin_nor_a_code_is_refused() {
+        let (c, s) = nonces();
+        for bad in ["", "12345", "K7QM4XP", "K7QM4XPRS", "K7QM40PR", "hello!"] {
+            assert!(compute_proof(bad, HOST_A, &c, &s).is_err(), "{bad:?}");
         }
     }
 

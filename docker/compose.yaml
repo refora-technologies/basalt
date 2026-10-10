@@ -1,0 +1,36 @@
+# Basalt Host with no screen, with Docker Compose.
+#
+#   docker compose up -d
+#   docker exec basalt basalt-host status     # the setup code and address
+#
+# Then open Basalt on your phone or computer, on the same network, choose the
+# new host and type the code. To update later:
+#
+#   docker compose pull && docker compose up -d
+
+services:
+  basalt:
+    image: ghcr.io/refora-technologies/basalt-host:latest
+    container_name: basalt
+    # So phones and computers on your network find it by themselves. Without
+    # it, map the ports below and use "Enter the address" in the app.
+    network_mode: host
+    # ports:
+    #   - "7742:7742/tcp"
+    #   - "7743:7743/udp"
+    environment:
+      # The user and group that own your media (`id` on the NAS says).
+      - PUID=1000
+      - PGID=1000
+      # What devices call it the first time; changeable in Manage host.
+      # - BASALT_HOST_NAME=Living room server
+    volumes:
+      # The host's identity and paired devices: keep this folder.
+      - ./config:/config
+      # Each folder mounted under /media is a drive the host can share.
+      - /srv/media:/media/Media
+      # - /srv/photos:/media/Photos:ro
+    # Faster video conversion with Intel or AMD graphics:
+    # devices:
+    #   - /dev/dri:/dev/dri
+    restart: unless-stopped

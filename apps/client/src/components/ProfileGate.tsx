@@ -1,7 +1,14 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowLeft, Check, ChevronRight, Laptop, Loader2, Lock, Plus } from 'lucide-react'
-import { api, ApiError, inTauri, type ProfileRules, type ProfileView } from '@/lib/api'
+import {
+  api,
+  ApiError,
+  inTauri,
+  type ProfilePass,
+  type ProfileRules,
+  type ProfileView,
+} from '@/lib/api'
 import { PROFILE_COLORS, profileColor, validPin } from '@/lib/useIdentity'
 import { EASE_OUT } from '@/lib/motion'
 import { cn } from '@/lib/utils'
@@ -31,6 +38,10 @@ type Step =
   | { kind: 'choose' }
   | { kind: 'pin'; profile: ProfileView }
   | { kind: 'create' }
+  /** A profile from another drive: signed in by what that drive gave this device. */
+  | { kind: 'elsewhere'; pass: ProfilePass }
+  /** One from another drive this device has not signed in to there. */
+  | { kind: 'away'; profile: ProfileView }
 
 export function ProfileGate({
   vaultName,
@@ -59,6 +70,25 @@ export function ProfileGate({
   const [step, setStep] = useState<Step>(() => previewStep(profiles))
   const [always, setAlways] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Profiles this device is signed in to on its other drives.
+  const [passes, setPasses] = useState<ProfilePass[]>([])
+  useEffect(() => {
+    void api
+      .profilesElsewhere()
+      .then(setPasses)
+      .catch(() => setPasses([]))
+  }, [profiles])
+
+  /** The pass that signs in to a profile here that lives on another drive. */
+  const passFor = (profile: ProfileView): ProfilePass | undefined =>
+    profile.home
+      ? passes.find((p) => p.hostId === profile.home?.hostId && p.profileId === profile.home?.profileId)
+      : undefined
+  // Passes not yet let in here: offered on their own.
+  const offered = passes.filter(
+    (pass) =>
+      !profiles.some((p) => p.home?.hostId === pass.hostId && p.home?.profileId === pass.profileId),
+  )
 
   // A phone's back gesture: out of a PIN or a new profile first, then to the
   // drive list. Nothing on a desktop, which has the button.
@@ -98,7 +128,13 @@ export function ProfileGate({
       )}
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
-          key={step.kind === 'pin' ? `pin-${step.profile.id}` : step.kind}
+          key={
+            step.kind === 'pin'
+              ? `pin-${step.profile.id}`
+              : step.kind === 'elsewhere'
+                ? `elsewhere-${step.pass.hostId}-${step.pass.profileId}`
+                : step.kind
+          }
           initial={{ opacity: 0, y: 10, scale: 0.99 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: -8, scale: 0.99 }}
@@ -114,8 +150,8 @@ export function ProfileGate({
                 </h1>
                 <p className="mt-2 max-w-[400px] text-[12.5px] leading-relaxed text-textDim">
                   {rules.requireProfile
-                    ? 'Choose your profile to continue. Your watch history and stars come with you, on any device.'
-                    : 'Choose your profile and your watch history and stars come with you, on any device. Or carry on as this device, straight in.'}
+                    ? 'Choose your profile to continue. Your watch history and stars come with you on every device.'
+                    : 'Choose your profile to keep your watch history and stars with you on every device. Or continue as this device.'}
                 </p>
                 {ended && (
                   <p className="mt-3 rounded-full bg-white/[0.05] px-3 py-1 text-[11.5px] text-textDim">
@@ -131,8 +167,21 @@ export function ProfileGate({
                     index={index}
                     name={profile.name}
                     color={profile.color}
-                    hint={profile.id === lastProfile ? 'Last used here' : undefined}
-                    onClick={() => setStep({ kind: 'pin', profile })}
+                    hint={
+                      profile.home
+                        ? `from ${profile.home.label}`
+                        : profile.id === lastProfile
+                          ? 'Last used here'
+                          : undefined
+                    }
+                    onClick={() => {
+                      if (!profile.home) {
+                        setStep({ kind: 'pin', profile })
+                        return
+                      }
+                      const pass = passFor(profile)
+                      setStep(pass ? { kind: 'elsewhere', pass } : { kind: 'away', profile })
+                    }}
                   />
                 ))}
                 {!rules.ownerAddsProfiles && (
@@ -154,6 +203,30 @@ export function ProfileGate({
                 </motion.button>
                 )}
               </div>
+
+              {offered.length > 0 && (
+                <div className="mt-8">
+                  <div className="mb-4 flex items-center gap-3">
+                    <span className="h-px flex-1 bg-line" />
+                    <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-textFaint">
+                      From your other drives
+                    </span>
+                    <span className="h-px flex-1 bg-line" />
+                  </div>
+                  <div className="flex flex-wrap justify-center gap-4">
+                    {offered.map((pass, index) => (
+                      <ProfileTile
+                        key={`${pass.hostId}-${pass.profileId}`}
+                        index={index}
+                        name={pass.name}
+                        color={pass.color}
+                        hint={pass.drive}
+                        onClick={() => setStep({ kind: 'elsewhere', pass })}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {(rules.requireProfile || rules.ownerAddsProfiles) && (
                 <motion.p
@@ -215,6 +288,31 @@ export function ProfileGate({
               onBack={() => setStep({ kind: 'choose' })}
               onDone={onDone}
             />
+          )}
+
+          {step.kind === 'elsewhere' && (
+            <ElsewhereStep
+              pass={step.pass}
+              vaultName={vaultName}
+              onBack={() => setStep({ kind: 'choose' })}
+              onDone={onDone}
+            />
+          )}
+
+          {step.kind === 'away' && (
+            <div className="mx-auto flex max-w-[400px] flex-col">
+              <BackButton onClick={() => setStep({ kind: 'choose' })} />
+              <div className="flex flex-col items-center text-center">
+                <Avatar name={step.profile.name} color={step.profile.color} size={76} />
+                <h2 className="mt-4 text-[18px] font-semibold text-text">
+                  {step.profile.name} signs in on {step.profile.home?.label}
+                </h2>
+                <p className="mt-2 text-[12.5px] leading-relaxed text-textDim">
+                  This profile lives on {step.profile.home?.label}. Sign in to it there on this
+                  device first; it then opens here without a PIN.
+                </p>
+              </div>
+            </div>
           )}
 
           {step.kind === 'create' && (
@@ -616,6 +714,93 @@ function Checkbox({
   )
 }
 
+/** How often a profile waiting to be let in asks again. */
+const LINK_RETRY_MS = 3000
+
+/**
+ * Using a profile from another drive here.
+ *
+ * Asked at once: a profile this drive let in before signs straight in, with
+ * no PIN (that is checked on its own drive). One it has not waits for someone
+ * who manages this drive to let it in, and carries on by itself when they do.
+ */
+function ElsewhereStep({
+  pass,
+  vaultName,
+  onBack,
+  onDone,
+}: {
+  pass: ProfilePass
+  vaultName: string
+  onBack: () => void
+  onDone: () => void
+}): React.JSX.Element {
+  const [waiting, setWaiting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // Kept current without asking again whenever the screen draws.
+  const done = useRef(onDone)
+  done.current = onDone
+
+  useEffect(() => {
+    let live = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const ask = async (): Promise<void> => {
+      try {
+        const outcome = await api.useProfileElsewhere(pass.hostId, pass.profileId, true)
+        if (!live) return
+        if (outcome.profile) {
+          done.current()
+          return
+        }
+        setWaiting(outcome.waiting)
+        timer = setTimeout(() => void ask(), LINK_RETRY_MS)
+      } catch (e) {
+        if (live) setError(e instanceof Error ? e.message : String(e))
+      }
+    }
+    void ask()
+    return () => {
+      live = false
+      if (timer) clearTimeout(timer)
+    }
+  }, [pass])
+
+  return (
+    <div className="mx-auto flex max-w-[420px] flex-col">
+      <BackButton onClick={onBack} />
+      <div className="flex flex-col items-center text-center">
+        <span className="relative">
+          <Avatar name={pass.name} color={pass.color} size={76} />
+          {!error && (
+            <span className="absolute -bottom-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full border-2 border-ink bg-panel2 text-textDim">
+              <Loader2 size={13} className="animate-spin" />
+            </span>
+          )}
+        </span>
+        <h2 className="mt-4 text-[18px] font-semibold tracking-tight text-text">
+          {error
+            ? `${pass.name} can’t be used here`
+            : waiting
+              ? `Waiting for ${vaultName} to let ${pass.name} in`
+              : `Signing in as ${pass.name}…`}
+        </h2>
+        <p className="mt-2 text-[12.5px] leading-relaxed text-textDim">
+          {error
+            ? error
+            : waiting
+              ? `${pass.name} is a profile from ${pass.drive}. Someone who manages ${vaultName} lets it in, once, from Manage host or on the host itself. This carries on by itself when they do.`
+              : `${pass.name} is a profile from ${pass.drive}. Its PIN is checked there, never here.`}
+        </p>
+        {waiting && !error && (
+          <p className="mt-4 rounded-full bg-white/[0.05] px-3 py-1 text-[11.5px] text-textFaint">
+            Here, {pass.name} keeps a history and stars of this drive’s own.
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function BackButton({ onClick }: { onClick: () => void }): React.JSX.Element {
   return (
     <button
@@ -650,8 +835,8 @@ function previewStep(profiles: ProfileView[]): Step {
 /** What a private drive's rules mean, in one line under the profiles. */
 function privateNote(rules: ProfileRules): string {
   if (rules.requireProfile && rules.ownerAddsProfiles) {
-    return 'A private drive. Profiles are added on the host.'
+    return 'A private drive. Only someone who manages this host can add profiles.'
   }
   if (rules.requireProfile) return 'This drive asks everyone to sign in to a profile.'
-  return 'New profiles are added on the host.'
+  return 'Only someone who manages this host can add profiles.'
 }

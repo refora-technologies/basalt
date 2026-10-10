@@ -56,6 +56,9 @@ export function PairingView({
   const [scanning, setScanning] = useState(false)
   const [chosen, setChosen] = useState<DiscoveredHost | null>(null)
   const [needsPin, setNeedsPin] = useState(false)
+  // The host has no screen and nobody managing it: what is typed is its
+  // setup code, and this device will manage it.
+  const [setup, setSetup] = useState(false)
   const [pin, setPin] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -70,24 +73,51 @@ export function PairingView({
     }
   }, [])
 
-  const scan = useCallback(async () => {
-    setScanning(true)
-    setError(null)
+  // How many looks in a row each host has been missing from: one that does
+  // not answer one look is kept, as a single look can miss a host on a busy
+  // network, and only one gone from two in a row leaves the list.
+  const missed = useRef(new Map<string, number>())
+
+  const look = useCallback(async (quietly: boolean) => {
+    if (!quietly) {
+      setScanning(true)
+      setError(null)
+    }
     try {
       const found = await api.discover()
+      if (!live.current) return
       // The previous list stays on screen until the new one arrives. Clearing
       // it first would make every rescan flash the empty state.
-      if (live.current) setHosts(found)
+      setHosts((before) => {
+        const seen = new Set(found.map((h) => h.hostId))
+        for (const id of seen) missed.current.delete(id)
+        const kept = (before ?? []).filter((h) => {
+          if (seen.has(h.hostId)) return false
+          const times = (missed.current.get(h.hostId) ?? 0) + 1
+          missed.current.set(h.hostId, times)
+          return times < 2
+        })
+        return [...found, ...kept]
+      })
     } catch (e) {
-      if (live.current) setError(e instanceof Error ? e.message : String(e))
+      if (live.current && !quietly) setError(e instanceof Error ? e.message : String(e))
     } finally {
-      if (live.current) setScanning(false)
+      if (live.current && !quietly) setScanning(false)
     }
   }, [])
+  const scan = useCallback(() => look(false), [look])
 
   useEffect(() => {
     void scan()
   }, [scan])
+
+  // Kept listening while the list is open: a host that missed the first
+  // look, or was started just now, appears without "Look again".
+  useEffect(() => {
+    if (chosen || busy) return undefined
+    const timer = setInterval(() => void look(true), 3500)
+    return () => clearInterval(timer)
+  }, [chosen, busy, look])
 
   /**
    * Picking a host opens a request on it, and asks whether it wants a PIN. A
@@ -117,15 +147,16 @@ export function PairingView({
         return
       }
       try {
-        const wantsPin = await api.beginPairing(host.address)
+        const start = await api.beginPairing(host.address)
         if (!live.current) return
         setChosen(host)
-        setNeedsPin(wantsPin)
+        setNeedsPin(start.requiresPin)
+        setSetup(start.setup)
         setPin('')
 
         // Nothing left to ask. Finish straight away rather than showing an
         // empty PIN screen with a button that only says "continue".
-        if (!wantsPin) {
+        if (!start.requiresPin) {
           onPaired(await api.finishPairing(''))
         }
       } catch (e) {
@@ -169,6 +200,7 @@ export function PairingView({
     void api.cancelPairing().catch(() => {})
     setChosen(null)
     setNeedsPin(false)
+    setSetup(false)
     setPin('')
     setError(null)
   }, [])
@@ -201,14 +233,22 @@ export function PairingView({
             <HexMark size={34} />
           </motion.span>
           <h1 className="mt-4 font-display text-[19px] font-semibold tracking-tighter text-text">
-            {picking ? (onBack ? 'Change drive' : 'Choose your vault') : 'Enter the PIN'}
+            {picking
+              ? onBack
+                ? 'Change drive'
+                : 'Choose your drive'
+              : setup
+                ? 'Set up this host'
+                : 'Enter the PIN'}
           </h1>
           <p className="mt-1.5 max-w-[320px] text-[12px] leading-relaxed text-textDim">
             {picking
               ? onBack
-                ? 'Every Basalt host on this network. One you have paired with opens straight away.'
-                : 'Every Basalt host on this network. Nothing to type.'
-              : `The six digits showing on ${chosen.hostName}. This happens once.`}
+                ? 'Basalt hosts on this network. One you’ve paired with opens straight away.'
+                : 'Basalt hosts on this network. Choose yours.'
+              : setup
+                ? `${chosen.hostName} has no screen. Type its setup code, and this device will manage it.`
+                : `Type the six digits shown on ${chosen.hostName}. You only do this once.`}
           </p>
         </div>
 
@@ -253,7 +293,9 @@ export function PairingView({
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
           >
-            {needsPin ? (
+            {needsPin && setup ? (
+              <SetupCodeInput value={pin} onChange={setPin} onSubmit={submitPin} busy={busy} />
+            ) : needsPin ? (
               <PinInput value={pin} onChange={setPin} onComplete={submitPin} busy={busy} />
             ) : (
               <div className="flex items-center justify-center gap-2 py-4 text-[12px] text-textDim">
@@ -273,9 +315,18 @@ export function PairingView({
                 </span>
               </div>
               <p className="mt-2 text-[11px] leading-relaxed text-textDim">
-                Sharing <span className="text-text">{chosen.vault}</span>. Check that
-                identity matches the one on the host before continuing — after this it
-                is trusted permanently and never asked about again.
+                {setup ? (
+                  <>
+                    A new host. Check that this identity matches the one the host shows.
+                    After this, this device trusts it and won’t ask again.
+                  </>
+                ) : (
+                  <>
+                    Sharing <span className="text-text">{chosen.vault}</span>. Check that this
+                    identity matches the one the host shows. After this, this device trusts
+                    it and won’t ask again.
+                  </>
+                )}
               </p>
             </div>
 
@@ -362,9 +413,8 @@ function HostList({
         <div className="rounded-lg border border-dashed border-white/[0.09] px-4 py-7 text-center">
           <p className="text-[12.5px] text-textDim">No hosts on this network.</p>
           <p className="mx-auto mt-2 max-w-[300px] text-[11px] leading-relaxed text-textFaint">
-            Check Basalt Host is running on the other machine — look in its
-            notification area, not just the taskbar — and that both machines are on
-            the same Wi-Fi.
+            Check that Basalt Host is running on the other computer (look for its
+            icon near the clock) and that both are on the same network.
           </p>
         </div>
       )}
@@ -427,6 +477,7 @@ function AddressEntry({
           requiresPin: true,
           hasVault: true,
           paired: false,
+          needsSetup: false,
         })
       }}
     >
@@ -467,8 +518,10 @@ function HostRow({
 }): React.JSX.Element {
   // A host with no drive chosen yet has nothing to offer. Listed anyway,
   // because seeing the machine and being told why it is unavailable beats an
-  // empty list and no explanation.
-  const ready = host.hasVault
+  // empty list and no explanation. One with no screen waiting to be set up
+  // is the exception: setting it up is done from here.
+  const setup = host.needsSetup && !host.paired
+  const ready = host.hasVault || setup
   const disabled = busy || !ready
 
   return (
@@ -490,8 +543,13 @@ function HostRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate text-[13px] font-medium text-text">
-            {ready ? host.vault : host.hostName}
+            {host.hasVault ? host.vault : host.hostName}
           </span>
+          {setup && (
+            <span className="shrink-0 rounded-[4px] border border-basalt/40 bg-basalt/10 px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.1em] text-basalt">
+              new
+            </span>
+          )}
           {(current || host.paired) && (
             <span className="shrink-0 rounded-[4px] border border-white/[0.12] px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.1em] text-textFaint">
               {current ? 'in use' : 'paired'}
@@ -499,7 +557,9 @@ function HostRow({
           )}
         </div>
         <div className="mt-0.5 flex items-center gap-2 font-mono text-[10.5px] text-textFaint">
-          <span className="truncate">{ready ? host.hostName : 'no drive shared yet'}</span>
+          <span className="truncate">
+            {setup ? 'set it up from here' : host.hasVault ? host.hostName : 'no drive shared yet'}
+          </span>
           <span className="shrink-0">·</span>
           <span className="shrink-0">{host.hostId.slice(0, 8)}</span>
         </div>
@@ -507,7 +567,9 @@ function HostRow({
 
       {ready && (
         <span className="shrink-0 text-textFaint">
-          {host.requiresPin && !host.paired ? (
+          {setup ? (
+            <ArrowRight size={14} />
+          ) : host.requiresPin && !host.paired ? (
             <span
               title="This host asks for a PIN"
               className="font-mono text-[9px] uppercase tracking-[0.1em]"
@@ -520,6 +582,81 @@ function HostRow({
         </span>
       )}
     </motion.button>
+  )
+}
+
+/** Letters and digits a setup code is made of: none that look alike. */
+const SETUP_ALPHABET = /[^23456789ABCDEFGHJKMNPQRSTUVWXYZ]/g
+const SETUP_LENGTH = 8
+
+/**
+ * A host's setup code: eight letters and digits, read off its log.
+ *
+ * One field rather than boxes: it is copied from a terminal as often as it
+ * is typed, and a paste must land whole. Shown as `K7QM-4XPR`, as the log
+ * writes it; what is kept is only the eight characters. Letters that are not
+ * in a code (O, I, L) are dropped as they are typed rather than refused at
+ * the end, and where to find the code is said beside it.
+ */
+function SetupCodeInput({
+  value,
+  onChange,
+  onSubmit,
+  busy,
+}: {
+  value: string
+  onChange: (value: string) => void
+  onSubmit: (value: string) => void
+  busy: boolean
+}): React.JSX.Element {
+  const shown = value.length > 4 ? `${value.slice(0, 4)}-${value.slice(4)}` : value
+  const complete = value.length === SETUP_LENGTH
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (complete && !busy) onSubmit(value)
+      }}
+    >
+      <input
+        autoFocus
+        value={shown}
+        onChange={(e) => {
+          const next = e.target.value.toUpperCase().replace(SETUP_ALPHABET, '').slice(0, SETUP_LENGTH)
+          onChange(next)
+        }}
+        disabled={busy}
+        autoCapitalize="characters"
+        autoCorrect="off"
+        autoComplete="one-time-code"
+        spellCheck={false}
+        placeholder="XXXX-XXXX"
+        aria-label="Setup code"
+        className="h-14 w-full rounded-lg border border-line bg-panel text-center font-mono text-[24px] tracking-[0.18em] text-text placeholder:text-white/15 focus:border-white/25 disabled:opacity-60"
+      />
+      <button
+        type="submit"
+        disabled={!complete || busy}
+        className="mt-3 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-basalt text-[13px] font-medium text-ink transition-opacity disabled:opacity-40"
+      >
+        {busy && <Loader2 size={14} className="animate-spin" />}
+        Set up and manage this host
+      </button>
+      <div className="mt-4 rounded-lg border border-white/[0.07] bg-panel/70 px-3.5 py-3 text-[11px] leading-relaxed text-textDim">
+        <div className="text-[11.5px] text-text">Where to find the code</div>
+        <div className="mt-1.5 space-y-1">
+          <div>
+            On the host, run{' '}
+            <span className="whitespace-nowrap font-mono text-[10.5px] text-textFaint">sudo basalt-host status</span>
+          </div>
+          <div>
+            With Docker:{' '}
+            <span className="whitespace-nowrap font-mono text-[10.5px] text-textFaint">docker logs basalt</span>
+          </div>
+        </div>
+      </div>
+    </form>
   )
 }
 

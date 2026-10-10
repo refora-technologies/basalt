@@ -1,0 +1,6 @@
+# Run on Linux, in packages and containers: Unix line endings, whatever the
+# checkout they were written in.
+*.sh text eol=lf
+packaging/** text eol=lf
+docker/** text eol=lf
+.dockerignore text eol=lf

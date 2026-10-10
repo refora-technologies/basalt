@@ -21,7 +21,11 @@
     ]
   },
   "bundle": {
-    "targets": ["deb", "rpm", "appimage"],
+    "targets": [
+      "deb",
+      "rpm",
+      "appimage"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -31,16 +35,32 @@
     "resources": [],
     "linux": {
       "deb": {
-        "recommends": ["ffmpeg", "libmpv2"],
+        "recommends": [
+          "ffmpeg",
+          "libmpv2"
+        ],
         "files": {
-          "/etc/ufw/applications.d/basalt-host": "linux/basalt-host.ufw"
-        }
+          "/etc/ufw/applications.d/basalt-host": "linux/basalt-host.ufw",
+          "/usr/lib/basalt-host/basalt-host-update": "linux/basalt-host-update",
+          "/usr/share/polkit-1/actions/com.reforatech.basalt.host.update.policy": "linux/com.reforatech.basalt.host.update.policy"
+        },
+        "depends": [
+          "ca-certificates"
+        ]
       },
       "rpm": {
-        "recommends": ["ffmpeg", "mpv-libs"],
+        "recommends": [
+          "ffmpeg",
+          "mpv-libs"
+        ],
         "files": {
-          "/usr/lib/firewalld/services/basalt-host.xml": "linux/basalt-host.firewalld.xml"
-        }
+          "/usr/lib/firewalld/services/basalt-host.xml": "linux/basalt-host.firewalld.xml",
+          "/usr/lib/basalt-host/basalt-host-update": "linux/basalt-host-update",
+          "/usr/share/polkit-1/actions/com.reforatech.basalt.host.update.policy": "linux/com.reforatech.basalt.host.update.policy"
+        },
+        "depends": [
+          "ca-certificates"
+        ]
       }
     }
   }

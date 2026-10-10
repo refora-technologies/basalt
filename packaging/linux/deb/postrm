@@ -1,0 +1,20 @@
+#!/bin/sh
+# Basalt Host (no screen): after removing.
+#
+# Removing keeps the host's settings, so installing it again keeps every
+# paired device. Purging deletes them, its identity included: every device
+# would have to pair again.
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+if [ "$1" = "purge" ]; then
+    rm -rf /var/lib/basalt-host
+    if getent passwd basalt >/dev/null 2>&1; then
+        userdel basalt >/dev/null 2>&1 || true
+    fi
+fi
+
+exit 0

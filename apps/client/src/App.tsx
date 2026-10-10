@@ -43,6 +43,7 @@ import {
 import { MusicList, PhotoGrid, VideoGrid, sortTracks } from '@/components/MediaViews'
 import { SettingsView } from '@/components/SettingsView'
 import { ManageHost } from '@/components/manage/ManageHost'
+import { NoDrive } from '@/components/NoDrive'
 import { TransfersPanel } from '@/components/TransfersPanel'
 import { PlayerOverlay } from '@/components/PlayerOverlay'
 import { ImageViewer } from '@/components/ImageViewer'
@@ -103,7 +104,7 @@ const LIBRARY_KEYS: NavKey[] = ['videos', 'music', 'photos']
 const MEDIA_KEYS: NavKey[] = ['movies', 'series']
 
 const TITLES: Record<NavKey, string> = {
-  files: 'Vault',
+  files: 'Files',
   recent: 'Recent',
   starred: 'Starred',
   movies: 'Movies',
@@ -560,7 +561,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     async (chosen: Entry[]) => {
       const files = chosen.filter((e) => e.kind === 'file')
       if (files.length === 0) {
-        setNotice('Folders cannot be downloaded yet — open one and take the files.')
+        setNotice('Folders can’t be downloaded yet. Open the folder and download the files inside it.')
         return
       }
       if (mobile) {
@@ -616,7 +617,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
 
       const fresh = paths.filter((local) => !inFlight.current.has(`${local}->${into}`))
       if (fresh.length === 0) {
-        setNotice('That is already uploading.')
+        setNotice('That file is already uploading.')
         return
       }
       for (const local of fresh) inFlight.current.add(`${local}->${into}`)
@@ -744,7 +745,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
       const preferred = preferredPlayer()
       try {
         const result = await api.openExternally(path, transferId(), preferred?.path)
-        setNotice(`Streaming to ${result.player}. Nothing is being downloaded.`)
+        setNotice(`Playing in ${result.player}. Nothing is saved to this device.`)
       } catch (e) {
         if (e instanceof ApiError && e.kind === 'noplayer') {
           // The chosen one is gone, or there never was one: ask.
@@ -753,7 +754,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
             path,
             name: nameOf(path),
             reason: preferred
-              ? `${preferred.name} is not on this computer any more. Choose another player.`
+              ? `${preferred.name} is no longer on this computer. Choose another player.`
               : undefined,
           })
           return
@@ -770,7 +771,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     if (always) preferPlayer(player)
     try {
       const result = await api.openExternally(path, transferId(), player.path)
-      setNotice(`Streaming to ${result.player}. Nothing is being downloaded.`)
+      setNotice(`Playing in ${result.player}. Nothing is saved to this device.`)
     } catch (e) {
       setNotice(e instanceof Error ? e.message : String(e))
     }
@@ -859,7 +860,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
           setPlaying({ ...item, ...namesByPath.get(path) })
         }
       } catch {
-        setNotice(`${nameOf(path)} is not on the drive any more.`)
+        setNotice(`${nameOf(path)} is no longer on the drive.`)
         media.refresh()
       }
     },
@@ -1278,7 +1279,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
       // twice, for two unrelated reasons, and both times the only symptom was
       // a click that produced nothing at all. Whatever goes wrong next, it
       // says so on screen.
-      setNotice('There is no paired vault to forget.')
+      setNotice('There’s no drive to forget.')
       return
     }
     // Inside the try, all of it. With the confirmation outside, anything that
@@ -1289,8 +1290,8 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         title: 'Forget this drive?',
         message: `This ${mobile ? 'phone' : 'computer'} will have to pair with ${
           vault.status?.hostName ?? 'the host'
-        } again before it can open the drive. Nothing on the drive is touched.`,
-        confirmLabel: 'Forget it',
+        } again to open the drive. Nothing on the drive changes.`,
+        confirmLabel: 'Forget drive',
         danger: true,
       })
       if (!ok) return
@@ -1518,6 +1519,8 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
 
   // "Manage host" is there only while the host lets this device manage it.
   const canManage = vault.status?.canManage === true
+  // A host just set up shares nothing until its manager chooses a drive.
+  const noDrive = connected && vault.status?.hasDrive === false
   useEffect(() => {
     if (!canManage && nav === 'manage') setNav('files')
   }, [canManage, nav, setNav])
@@ -1608,7 +1611,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
   }
 
   const path = vault.dir ? vault.dir.split('/') : []
-  const crumbs = [vault.status.vault ?? 'Vault', ...path]
+  const crumbs = [vault.status.vault ?? 'Drive', ...path]
   const chosenEntries = entries.filter((e) => selected.has(e.id))
 
   const viewProps = {
@@ -1652,7 +1655,14 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
         inert={playing !== null}
       >
       <div className="backdrop" />
-      <TitleBar vaultName={vault.status.vault ?? 'Vault'} connected={connected} />
+      <TitleBar
+        vaultName={
+          vault.status.hasDrive === false
+            ? (vault.status.hostName ?? 'Basalt')
+            : (vault.status.vault ?? 'Drive')
+        }
+        connected={connected}
+      />
 
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <Sidebar
@@ -1686,7 +1696,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
           driveUsed={vault.space ? vault.space[1] - vault.space[0] : 0}
           driveTotal={vault.space ? vault.space[1] : 0}
           connected={connected}
-          vaultName={vault.status.vault ?? 'Vault'}
+          vaultName={vault.status.vault ?? 'Drive'}
           onChangeDrive={() => setChangingDrive(true)}
         />
 
@@ -1813,6 +1823,12 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                 onForget={forgetVault}
                 onChangeDrive={() => setChangingDrive(true)}
               />
+            ) : noDrive ? (
+              <NoDrive
+                hostName={vault.status.hostName ?? 'This host'}
+                canManage={canManage}
+                onManage={() => setNav('manage')}
+              />
             ) : isMedia ? (
               <LibraryView
                 kind={nav === 'movies' ? 'film' : 'series'}
@@ -1833,7 +1849,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                 <EmptyState
                   label={
                     libraryScanning
-                      ? 'Looking through the drive…'
+                      ? 'Searching the drive…'
                       : query
                         ? `Nothing matches “${query}”`
                         : `No ${nav} found`
@@ -1983,7 +1999,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
 
       <PropertiesPanel
         entry={properties}
-        vaultName={vault.status.vault ?? 'Vault'}
+        vaultName={vault.status.vault ?? 'Drive'}
         onClose={() => setProperties(null)}
       />
 
@@ -2041,7 +2057,7 @@ function Splash({ failed }: { failed: boolean }): React.JSX.Element {
           >
             <p className="text-[12px] leading-relaxed text-textDim">
               {failed
-                ? 'Basalt is running but its backend is not answering. Still trying — if this does not clear, close the window and open it again.'
+                ? 'Basalt is taking longer than usual to start. If this doesn’t clear, close Basalt and open it again.'
                 : 'Starting…'}
             </p>
           </motion.div>
@@ -2075,7 +2091,7 @@ function DropOverlay({
           <div className="max-w-[80%] rounded-xl border border-white/[0.1] bg-panel/95 px-5 py-3.5 text-center shadow-lg shadow-black/40">
             <Upload size={20} className="mx-auto text-basaltDeep" />
             <p className="mt-2 text-sm text-text">
-              Drop to upload into {dir ? nameOf(dir) : 'the vault'}
+              Drop to upload into {dir ? nameOf(dir) : 'the drive'}
             </p>
             {/* The whole path, not just the last part of it.
                 A folder called `Season 1` is three of those on this drive, and
@@ -2113,16 +2129,17 @@ function ConnectionBanner({
   vault: ReturnType<typeof useVault>
 }): React.JSX.Element | null {
   const kind = vault.error?.kind
-  if (!kind) return null
+  // A host with no drive yet: the screen below says so, with what to do.
+  if (!kind || vault.status?.hasDrive === false) return null
 
   const offline = kind === 'offline'
   const waiting = kind === 'unavailable'
   const text = offline
     ? vault.reconnecting
       ? 'Reconnecting…'
-      : 'Lost the host. Trying again in the background.'
+      : 'Lost the connection to the host. Basalt keeps trying.'
     : waiting
-      ? `${capitalise(vault.error?.message ?? 'The drive is not connected')}. It will be back here as soon as it is plugged in again.`
+      ? `${capitalise(vault.error?.message ?? 'The drive isn’t connected')}. It appears here again as soon as it’s plugged back in.`
       : capitalise(vault.error?.message ?? 'Something went wrong')
 
   return (

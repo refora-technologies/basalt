@@ -13,6 +13,7 @@ import { ConversionGroup, LibraryGroup, SectionsGroup } from './Media'
 import { LayoutContext, type Layout } from './parts'
 import { Profiles } from './Profiles'
 import type { Tools } from './tools'
+import { UpdatesGroup } from './Updates'
 
 /**
  * Managing the host from this device: what the host's own window does, from
@@ -28,7 +29,8 @@ export function ManageHost({ layout, onClose }: { layout: Layout; onClose: () =>
   const { confirm, dialog } = useConfirm()
   const [prompt, setPrompt] = useState<PromptRequest | null>(null)
   const view = m.view
-  const lost = m.error !== null && /does not manage this host/i.test(m.error)
+  // Older hosts say "does not", newer ones "doesn’t".
+  const lost = m.error !== null && /(does not|doesn[’']t) manage this host/i.test(m.error)
 
   const tools: Tools | null = view
     ? { m, view, confirm, prompt: setPrompt, leave: onClose }
@@ -155,6 +157,7 @@ function PhoneBody({ tools }: { tools: Tools }): React.JSX.Element {
       <LibraryGroup {...tools} />
       <SectionsGroup {...tools} />
       <ConversionGroup {...tools} />
+      <UpdatesGroup {...tools} />
       <AboutHost {...tools} />
     </div>
   )
@@ -186,6 +189,7 @@ function DesktopBody({ tools }: { tools: Tools }): React.JSX.Element {
       <LibraryGroup {...tools} />
       <ConversionGroup {...tools} />
       <SectionsGroup {...tools} />
+      <UpdatesGroup {...tools} />
       <AboutHost {...tools} />
     </>
   )

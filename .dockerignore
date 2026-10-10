@@ -1,0 +1,10 @@
+# The Docker image builds the screenless host from the Rust workspace only.
+*
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!crates
+!tools/catalog-build
+!bench
+!docker
+**/target

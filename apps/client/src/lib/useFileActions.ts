@@ -143,7 +143,7 @@ export function useFileActions({
         const taken = await takenIn(dir)
         for (const source of clipboard.paths) {
           if (wouldNest(source, dir)) {
-            onError(`${nameOf(source)} cannot go inside itself`)
+            onError(`${nameOf(source)} can’t go inside itself`)
             continue
           }
           // A cut back into the same folder is a no-op, not an error.
@@ -156,7 +156,7 @@ export function useFileActions({
             if (clipboard.mode === 'copy') await api.copy(source, target)
             else await api.rename(source, target)
           } catch (e) {
-            fail(e, `Could not paste ${nameOf(source)}`)
+            fail(e, `Couldn’t paste ${nameOf(source)}`)
           }
         }
         // A cut is spent once pasted; a copy can be pasted again elsewhere,
@@ -178,7 +178,7 @@ export function useFileActions({
         const taken = await takenIn(dir)
         for (const source of paths) {
           if (wouldNest(source, dir)) {
-            onError(`${nameOf(source)} cannot go inside itself`)
+            onError(`${nameOf(source)} can’t go inside itself`)
             continue
           }
           if (parentOf(source) === dir) continue
@@ -188,7 +188,7 @@ export function useFileActions({
           try {
             await api.rename(source, joinPath(dir, name))
           } catch (e) {
-            fail(e, `Could not move ${nameOf(source)}`)
+            fail(e, `Couldn’t move ${nameOf(source)}`)
           }
         }
         onChanged()
@@ -207,7 +207,7 @@ export function useFileActions({
         await api.rename(path, joinPath(parentOf(path), trimmed))
         onChanged()
       } catch (e) {
-        fail(e, `Could not rename ${nameOf(path)}`)
+        fail(e, `Couldn’t rename ${nameOf(path)}`)
       }
     },
     [onChanged, fail],
@@ -221,18 +221,18 @@ export function useFileActions({
       let ok = false
       try {
         ok = await confirm({
-          title: 'This cannot be undone',
+          title: entries.length === 1 ? `Delete ${entries[0]!.name}?` : `Delete ${entries.length} items?`,
           message:
             entries.length === 1
-              ? `Delete ${entries[0]!.name}?${folders ? ' Everything inside it goes too.' : ''}`
-              : `Delete ${entries.length} items?${folders ? ` ${folders} are folders, and everything inside them goes too.` : ''}`,
+              ? `This can’t be undone.${folders ? ' Everything inside it is deleted too.' : ''}`
+              : `This can’t be undone.${folders ? ` ${folders} of them are folders, and everything inside them is deleted too.` : ''}`,
           confirmLabel: 'Delete',
           danger: true,
         })
       } catch (e) {
         // A confirmation that could not be asked for is not a yes, and it is
         // not silence either — say so rather than leaving a dead menu item.
-        fail(e, 'Could not delete')
+        fail(e, 'Couldn’t delete')
         return
       }
       if (!ok) return
@@ -243,7 +243,7 @@ export function useFileActions({
           try {
             await api.remove(entry.id, entry.kind === 'dir')
           } catch (e) {
-            fail(e, `Could not delete ${entry.name}`)
+            fail(e, `Couldn’t delete ${entry.name}`)
           }
         }
         onChanged()
@@ -263,7 +263,7 @@ export function useFileActions({
         await api.mkdir(joinPath(dir, uniqueName(trimmed, taken)))
         onChanged()
       } catch (e) {
-        fail(e, 'Could not create the folder')
+        fail(e, 'Couldn’t create the folder')
       }
     },
     [takenIn, onChanged, fail],
@@ -277,7 +277,7 @@ export function useFileActions({
         await api.copy(path, joinPath(dir, uniqueName(nameOf(path), taken)))
         onChanged()
       } catch (e) {
-        fail(e, `Could not duplicate ${nameOf(path)}`)
+        fail(e, `Couldn’t duplicate ${nameOf(path)}`)
       }
     },
     [takenIn, onChanged, fail],

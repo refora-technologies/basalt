@@ -73,6 +73,12 @@ pub struct HostConfig {
     #[serde(default)]
     pub tmdb_key: String,
 
+    /// Whether the host puts a new version in by itself, when nothing is
+    /// being watched or copied. On unless turned off: a host nobody looks at
+    /// is the one that falls behind. See [`crate::updates`].
+    #[serde(default = "on")]
+    pub automatic_updates: bool,
+
     /// No longer used: since profiles, a device keeps a history of its own and
     /// a profile's follows it. Still read, so an older config loads.
     #[serde(default, skip_serializing)]
@@ -151,6 +157,7 @@ impl HostConfig {
             library_enabled: false,
             posters: false,
             tmdb_key: String::new(),
+            automatic_updates: true,
             progress_per_device: false,
             profiles: Vec::new(),
             profile_tokens: Vec::new(),
@@ -215,8 +222,25 @@ impl HostConfig {
 
         let temp = path.with_extension("tmp");
         write_private(&temp, &json)?;
-        std::fs::rename(&temp, path)?;
+        replace(&temp, path)?;
         Ok(())
+    }
+}
+
+/// Moves `from` over `to`. On Windows a file just written is often held open
+/// for a moment by the antivirus or the search indexer, and the move is
+/// refused while it is; it is tried again for up to a second rather than
+/// losing the save.
+fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => return other,
+        }
     }
 }
 
@@ -330,6 +354,11 @@ pub fn machine_name() -> String {
         })
         .or_else(|| std::env::var("HOSTNAME").ok().and_then(named))
         .unwrap_or_else(|| "Basalt Host".to_string())
+}
+
+/// Serde's default for a setting that starts on.
+fn on() -> bool {
+    true
 }
 
 #[cfg(test)]

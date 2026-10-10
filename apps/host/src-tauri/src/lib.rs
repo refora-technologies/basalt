@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use basalt_host::rates::Rates;
 use basalt_host::ui::{DeviceView, DriveView, HostStatus, PairingView, UiError};
 use basalt_host::{Host, HostConfig, HostError};
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
 
 /// Every command answers with this: the value, or an error the interface can
 /// branch on. Both live in `basalt-host` so their JSON field names are covered
@@ -94,7 +94,7 @@ async fn allow_through_firewall(
     let port = state.host.port();
     let exe = std::env::current_exe().map_err(|e| UiError {
         kind: "error".into(),
-        message: format!("Basalt Host could not find itself: {e}"),
+        message: format!("Basalt Host couldn’t find its own program file: {e}"),
     })?;
     let result = tokio::task::spawn_blocking(move || basalt_host::firewall::allow(&exe, port))
         .await
@@ -152,17 +152,33 @@ async fn choose_vault(
     path: String,
     name: String,
 ) -> Answer<HostStatus> {
+    let first = !state.host.has_drive();
     // The same as a device that manages this host choosing one.
     state
         .host
         .choose_drive(std::path::Path::new(&path), &name)
         .await?;
+    // A host is there for devices to find whenever they look: set up for the
+    // first time, it starts when the computer does. Turned off in Settings,
+    // it stays off.
+    if first && !state.host.start_with_windows() {
+        if let Err(e) = state.host.set_start_with_windows(true) {
+            tracing::warn!("could not start with the computer: {e}");
+        }
+    }
     status(state).await
 }
 
 #[tauri::command]
 async fn set_host_name(state: State<'_, AppState>, name: String) -> Answer<HostStatus> {
     state.host.set_host_name(&name)?;
+    status(state).await
+}
+
+/// What devices call the shared drive. The same drive goes on being served.
+#[tauri::command]
+async fn rename_drive(state: State<'_, AppState>, name: String) -> Answer<HostStatus> {
+    state.host.rename_drive(&name).await?;
     status(state).await
 }
 
@@ -236,6 +252,22 @@ async fn deny_pairing(state: State<'_, AppState>, id: String) -> Answer<bool> {
     Ok(state.host.deny_pairing(&id))
 }
 
+/// Profiles from other drives waiting to be let in.
+#[tauri::command]
+async fn profile_links(state: State<'_, AppState>) -> Answer<Vec<basalt_host::ui::LinkView>> {
+    Ok(state.host.profile_links())
+}
+
+#[tauri::command]
+async fn approve_profile_link(state: State<'_, AppState>, id: String) -> Answer<()> {
+    Ok(state.host.approve_profile_link(&id)?)
+}
+
+#[tauri::command]
+async fn deny_profile_link(state: State<'_, AppState>, id: String) -> Answer<bool> {
+    Ok(state.host.deny_profile_link(&id))
+}
+
 #[tauri::command]
 async fn set_require_pin(state: State<'_, AppState>, require: bool) -> Answer<HostStatus> {
     state.host.set_require_pin(require)?;
@@ -292,13 +324,10 @@ async fn set_conversion_at_once(
 /// Measures again what this machine can convert, in the background.
 #[tauri::command]
 async fn measure_conversion(state: State<'_, AppState>) -> Answer<HostStatus> {
-    state
-        .host
-        .measure_conversion()
-        .map_err(|message| UiError {
-            kind: "error".into(),
-            message,
-        })?;
+    state.host.measure_conversion().map_err(|message| UiError {
+        kind: "error".into(),
+        message,
+    })?;
     status(state).await
 }
 
@@ -475,7 +504,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 .cloned()
                 .ok_or_else(|| tauri::Error::AssetNotFound("the bundled window icon".into()))?,
         )
-        .tooltip("Basalt Host — sharing a drive")
+        .tooltip("Basalt Host: sharing your drive")
         .menu(&menu)
         // The menu belongs on right-click only, so a left click can do the
         // obvious thing instead of opening a two-item list.
@@ -695,153 +724,109 @@ async fn open_log_folder(app: tauri::AppHandle) -> Answer<()> {
 // Updates
 // ---------------------------------------------------------------------------
 
-/// Which app this is, for picking the right installer out of a release.
-///
-/// Both apps are published from one repository, so a release carries two
-/// installers and each has to recognise its own.
-const PRODUCT: basalt_update::Product = basalt_update::Product::Host;
-
 /// What is running now, as the release tags spell it.
 #[tauri::command]
 async fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Whether a newer release exists. `None` means this is the newest.
-///
-/// A failure to reach GitHub is an error rather than "no update": the two
-/// mean different things to somebody who just pressed the button, and
-/// reporting the first as the second is how an app quietly stops updating.
+/// Where updates stand, as the host keeps them: the same state a device that
+/// manages this host sees in Manage host.
 #[tauri::command]
-async fn check_update() -> Answer<Option<basalt_update::Release>> {
-    basalt_update::check(PRODUCT, env!("CARGO_PKG_VERSION"))
-        .await
-        .map_err(|e| UiError {
-            kind: "error".into(),
-            message: e.to_string(),
-        })
+fn update_status(state: State<'_, AppState>) -> basalt_host::updates::UpdateView {
+    state.host.update_view()
 }
 
-/// Downloads an offered release, reporting progress, and returns its path.
-///
-/// The file is verified against the checksum published beside it before this
-/// returns; an installer that fails is deleted rather than handed back.
+/// Looks for a newer release now. A failure is in the answer's stage rather
+/// than an error: the screen says why where the result would be.
 #[tauri::command]
-async fn download_update(app: tauri::AppHandle, release: basalt_update::Release) -> Answer<String> {
-    let into = std::env::temp_dir().join("Basalt Updates");
-    let emitter = app.clone();
-    let path = basalt_update::fetch(&release, &into, move |had, total| {
-        let _ = emitter.emit("basalt://update-progress", (had, total));
-    })
-    .await
-    .map_err(|e| UiError {
-        kind: "error".into(),
-        message: e.to_string(),
-    })?;
-
-    Ok(path.to_string_lossy().into_owned())
+async fn check_update(state: State<'_, AppState>) -> Answer<basalt_host::updates::UpdateView> {
+    let _ = state.host.check_for_update(true).await;
+    Ok(state.host.update_view())
 }
 
-/// How an update goes in on this computer: `restart`, where the app puts the
-/// new version in and starts it (Windows, and an AppImage on Linux); or
-/// `package`, where the system's own software installer takes the package
-/// and asks for the password itself (a `.deb` or `.rpm` on Linux).
+/// Puts the newest release in: downloaded, checked against its published
+/// checksum, installed; then the app restarts as the new version.
 #[tauri::command]
-fn update_style() -> &'static str {
+async fn install_update(state: State<'_, AppState>) -> Answer<basalt_host::updates::UpdateView> {
+    state.host.install_update()?;
+    Ok(state.host.update_view())
+}
+
+#[tauri::command]
+async fn set_automatic_updates(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Answer<basalt_host::updates::UpdateView> {
+    state.host.set_automatic_updates(enabled)?;
+    Ok(state.host.update_view())
+}
+
+/// How this copy is updated: the Windows installer; on Linux, an AppImage
+/// replacing itself, or the package through the update helper (which needs
+/// `pkexec` to run it), or else by hand.
+fn update_method() -> basalt_host::updates::Method {
+    use basalt_host::updates::Method;
     #[cfg(target_os = "linux")]
     {
-        match basalt_update::LinuxPackage::here() {
-            basalt_update::LinuxPackage::AppImage => "restart",
-            _ => "package",
+        if std::env::var_os("APPIMAGE").is_some() {
+            return Method::AppImage;
+        }
+        let pkexec = ["/usr/bin/pkexec", "/bin/pkexec"]
+            .iter()
+            .any(|p| std::path::Path::new(p).exists());
+        if pkexec && std::path::Path::new(basalt_host::updates::HELPER).exists() {
+            return Method::Package;
+        }
+        Method::Manual
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Method::Installer
+    }
+}
+
+/// What the app does once the host has an update ready: run the Windows
+/// installer, or start the new version; then close, so nothing is left
+/// holding the old files.
+fn finish_update(app: &tauri::AppHandle, finish: basalt_host::updates::Finish) {
+    use basalt_host::updates::Finish;
+    match finish {
+        // As an update, not a first install: /UPDATE goes over the installed
+        // copy without uninstalling it or asking anything, and keeps the
+        // user's shortcuts as they are; /P shows only a progress bar, closing
+        // this app if it is still running; /R starts it again when the new
+        // version is in. NSIS silently skips the executable of a running
+        // program, so this app must be gone by then.
+        Finish::RunInstaller(path) => {
+            if let Err(e) = std::process::Command::new(&path)
+                .args(["/P", "/UPDATE", "/R"])
+                .spawn()
+            {
+                tracing::warn!("could not start the installer: {e}");
+                return;
+            }
+        }
+        // Started a moment after this one has gone, so the new copy is not
+        // handed straight back to this one as a second launch.
+        Finish::Restart => {
+            let program = std::env::var_os("APPIMAGE")
+                .map(std::path::PathBuf::from)
+                .or_else(|| std::env::current_exe().ok());
+            if let Some(program) = program {
+                let _ = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg("sleep 2; exec \"$0\"")
+                    .arg(program)
+                    .spawn();
+            }
         }
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        "restart"
-    }
-}
-
-/// Starts the installer and stands aside.
-///
-/// The app has to go: an installer cannot replace files that are open, and
-/// NSIS will silently skip the executable of a running program — which is
-/// exactly how somebody ends up "updating" and finding the same version.
-#[tauri::command]
-async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
-    #[cfg(target_os = "linux")]
-    {
-        return install_update_linux(app, path).await;
-    }
-    #[cfg(not(target_os = "linux"))]
-    install_update_windows(app, path).await
-}
-
-#[cfg(not(target_os = "linux"))]
-async fn install_update_windows(app: tauri::AppHandle, path: String) -> Answer<()> {
-    // As an update, not a first install: /UPDATE goes over the installed copy
-    // without uninstalling it or asking anything, and keeps the user's
-    // shortcuts as they are; /P shows only a progress bar, closing this app if
-    // it is still running; /R starts it again when the new version is in.
-    // One press of "Restart to update", and nothing else to click.
-    std::process::Command::new(&path)
-        .args(["/P", "/UPDATE", "/R"])
-        .spawn()
-        .map_err(|e| UiError {
-            kind: "error".into(),
-            message: format!("could not start the installer: {e}"),
-        })?;
-
-    // A moment for the installer to be up before this window disappears,
-    // so the screen is never empty with nothing apparently happening.
+    let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         app.exit(0);
     });
-    Ok(())
-}
-
-/// Puts a downloaded update in on Linux.
-///
-/// An AppImage is one file: the new one is written beside it, made runnable,
-/// and moved over it in one step, so a failure part-way leaves the old copy
-/// as it was; then it is started and this one leaves. A `.deb` or `.rpm`
-/// belongs to the system: it is opened in the software installer, which asks
-/// for the password and puts it in, and the new version starts next time.
-#[cfg(target_os = "linux")]
-async fn install_update_linux(app: tauri::AppHandle, path: String) -> Answer<()> {
-    let failed = |message: String| UiError {
-        kind: "error".into(),
-        message,
-    };
-    match basalt_update::LinuxPackage::here() {
-        basalt_update::LinuxPackage::AppImage => {
-            use std::os::unix::fs::PermissionsExt;
-            let current = std::env::var_os("APPIMAGE")
-                .map(std::path::PathBuf::from)
-                .ok_or_else(|| failed("this copy is not an AppImage".into()))?;
-            let incoming = current.with_extension("new");
-            std::fs::copy(&path, &incoming)
-                .map_err(|e| failed(format!("could not put the update in place: {e}")))?;
-            std::fs::set_permissions(&incoming, std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| failed(format!("could not make the update runnable: {e}")))?;
-            std::fs::rename(&incoming, &current)
-                .map_err(|e| failed(format!("could not replace the old version: {e}")))?;
-            std::process::Command::new(&current)
-                .spawn()
-                .map_err(|e| failed(format!("could not start the new version: {e}")))?;
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-                app.exit(0);
-            });
-            Ok(())
-        }
-        _ => {
-            use tauri_plugin_opener::OpenerExt;
-            app.opener()
-                .open_path(&path, None::<&str>)
-                .map_err(|e| failed(format!("could not open the software installer: {e}")))
-        }
-    }
 }
 
 pub fn run() {
@@ -945,6 +930,19 @@ pub fn run() {
                 problem: Arc::clone(&problem),
             });
 
+            // Updates: how this copy goes in, what to do once one is ready,
+            // and the host's own checks, which run whether or not the window
+            // is ever opened.
+            host.set_update_method(update_method());
+            {
+                let handle = app.handle().clone();
+                host.set_update_finisher(move |finish| finish_update(&handle, finish));
+            }
+            {
+                let host = Arc::clone(&host);
+                tauri::async_runtime::spawn(async move { host.start_updates() });
+            }
+
             // Serve on every interface, for as long as the app is open. The
             // beacon that lets clients find this machine is started by `serve`
             // itself, so there is nothing else to wire up here.
@@ -1020,16 +1018,20 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             firewall,
             allow_through_firewall,
+            profile_links,
+            approve_profile_link,
+            deny_profile_link,
             app_version,
+            update_status,
             check_update,
-            download_update,
             install_update,
-            update_style,
+            set_automatic_updates,
             release_pointer,
             status,
             list_drives,
             choose_vault,
             set_host_name,
+            rename_drive,
             devices,
             revoke_device,
             rename_device,

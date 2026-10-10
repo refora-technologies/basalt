@@ -85,6 +85,7 @@ pub fn allow(exe: &Path, port: u16) -> Result<Firewall, AllowError> {
 }
 
 /// A PowerShell string literal: single-quoted, with its quotes doubled.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn literal(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }
@@ -96,6 +97,7 @@ fn literal(text: &str) -> String {
 /// or lets everything in, is open; a rule turning the host away is blocked,
 /// whatever else allows it, as Windows itself decides; otherwise it needs a
 /// rule letting the host in, by its program or by its port.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn check_script(exe: &str, port: u16) -> String {
     format!(
         r#"$ErrorActionPreference = 'Stop'
@@ -128,6 +130,7 @@ try {{
 /// replaced by one that lets it in, on private networks and on whichever
 /// kinds the computer is on now. A rule left by an earlier answer of "no" is
 /// among those replaced, as it would otherwise win.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn allow_script(exe: &str) -> String {
     format!(
         r#"$ErrorActionPreference = 'Stop'
@@ -150,6 +153,7 @@ try {{
 /// The script run as the user: starts [`allow_script`] as administrator,
 /// which is where Windows asks, and waits for it. 1223 is Windows' own
 /// number for "the user said no".
+#[cfg_attr(not(windows), allow(dead_code))]
 fn elevate_script(inner: &str) -> String {
     format!(
         r#"try {{
@@ -164,11 +168,13 @@ fn elevate_script(inner: &str) -> String {
 
 /// What `-EncodedCommand` takes: the script as UTF-16LE, in base64. Passed
 /// that way, nothing in it needs quoting for the command line.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn encode_command(script: &str) -> String {
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     base64(&bytes)
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);

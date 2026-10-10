@@ -57,6 +57,19 @@ export interface ManagedProfile {
   createdAt: number
   lastUsed: number
   devices: { name: string; remembered: boolean; lastUsed: number }[]
+  /** A profile from another drive: that drive's name. No PIN here. */
+  home?: string | null
+}
+
+/** A profile from another drive asking to be let in. */
+export interface ProfileLinkRequest {
+  id: string
+  deviceName: string
+  name: string
+  color: number
+  /** Its home drive's name. */
+  home: string
+  secondsLeft: number
 }
 
 export interface LibrarySections {
@@ -120,6 +133,8 @@ export interface ManagedHostStatus {
   }
   endorsement: { by: string; until: number } | null
   platform: 'windows' | 'linux' | 'macos' | 'other'
+  /** Running with no screen: a service, or in Docker. Absent from older hosts. */
+  headless?: boolean
 }
 
 /** The host after an action: the window's views, and which device is this one. */
@@ -129,8 +144,32 @@ export interface ManageView {
   pairings: PairingRequest[]
   /** Only when asked for: the drives the host's computer could share. */
   drives: HostDrive[] | null
+  /** Only when asked for: the folders in one place on the host's computer. */
+  folders?: HostFolders | null
   /** This device's id in `devices`. */
   you: string
+  /** Profiles from other drives waiting to be let in. Absent from older hosts. */
+  profileLinks?: ProfileLinkRequest[]
+  /** Its version and updates. Absent from hosts before 1.5. */
+  update?: HostUpdate
+}
+
+/** Mirrors `basalt_host::updates::UpdateView`. */
+export interface HostUpdate {
+  version: string
+  method: 'installer' | 'appImage' | 'package' | 'service' | 'container' | 'manual'
+  canInstall: boolean
+  automatic: boolean
+  available: { version: string; notes: string; pageUrl: string } | null
+  stage:
+    | { kind: 'idle' }
+    | { kind: 'checking' }
+    | { kind: 'downloading'; percent: number }
+    | { kind: 'installing' }
+    | { kind: 'failed'; why: string }
+  checkedAt: number | null
+  command: string | null
+  outcome: { version: string; ok: boolean; message: string; at: number } | null
 }
 
 /** What can be asked of the host. Mirrors `ManageAction` in basalt-proto. */
@@ -158,6 +197,27 @@ export type ManageAction =
   | { do: 'setOwnerAddsProfiles'; ownerOnly: boolean }
   | { do: 'listDrives' }
   | { do: 'chooseDrive'; path: string; name: string }
+  | { do: 'renameDrive'; name: string }
+  | { do: 'listFolders'; path: string }
+  | { do: 'checkForUpdate' }
+  | { do: 'installUpdate' }
+  | { do: 'setAutomaticUpdates'; enabled: boolean }
+  | { do: 'approveProfileLink'; id: string }
+  | { do: 'denyProfileLink'; id: string }
+
+/** The folders in one place on the host's computer, to choose one to share. */
+export interface HostFolders {
+  /** Where this is; empty for the list of drives. */
+  path: string
+  /** One level up: null at the top, empty for the list of drives. */
+  parent: string | null
+  folders: Array<{ name: string; path: string }>
+}
+
+/** The host's answer, with what it only says when asked kept from before. */
+function keepAsked(next: ManageView, old: ManageView | null): ManageView {
+  return { ...next, drives: next.drives ?? old?.drives ?? null, folders: next.folders ?? old?.folders ?? null }
+}
 
 /** How often the screen asks again while it is open: the window's own pace. */
 const REFRESH_MS = 3000
@@ -194,8 +254,9 @@ export function useManage(): Manage {
       try {
         const next = await api.manage({ do: 'view' })
         if (live.current && changing.current === before) {
-          // Drives are asked for only now and then; kept until asked again.
-          setView((old) => ({ ...next, drives: next.drives ?? old?.drives ?? null }))
+          // Drives and folders are asked for only now and then; kept until
+          // asked again.
+          setView((old) => keepAsked(next, old))
         }
       } catch (e) {
         if (live.current) setError(said(e))
@@ -215,7 +276,7 @@ export function useManage(): Manage {
     try {
       const next = await api.manage(action)
       if (live.current) {
-        setView((old) => ({ ...next, drives: next.drives ?? old?.drives ?? null }))
+        setView((old) => keepAsked(next, old))
         setError(null)
       }
       return true
@@ -235,17 +296,16 @@ function said(e: unknown): string {
   return message.charAt(0).toUpperCase() + message.slice(1) + (message.endsWith('.') ? '' : '.')
 }
 
-/** How a device signs in, in a few words. */
+/** How a device signs in, in a few words, for a list. */
 export function signsIn(device: ManagedDevice): string {
-  if (!device.keyed) return 'pairing code'
-  switch (device.keyKind) {
-    case 'chip':
-      return 'chip key'
-    case 'system':
-      return 'system key'
-    default:
-      return 'key'
-  }
+  if (!device.keyed) return 'older sign-in'
+  return device.keyKind === 'chip' ? 'security chip' : 'secure key'
+}
+
+/** How a device signs in, as a sentence's end: "signs in with …". */
+export function signsInWith(device: ManagedDevice): string {
+  if (!device.keyed) return 'the older way, until Basalt on it is updated'
+  return device.keyKind === 'chip' ? 'a key in its security chip' : 'a secure key of its own'
 }
 
 /** The number to type, said in two halves: "482 915". */

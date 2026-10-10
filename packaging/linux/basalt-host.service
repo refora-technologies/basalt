@@ -1,0 +1,35 @@
+[Unit]
+Description=Basalt Host: shares a drive with your devices on this network
+Documentation=https://github.com/refora-technologies/basalt
+After=network-online.target local-fs.target remote-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Its own user, which owns nothing but the host's settings. Give it access to
+# the folders it shares (see the README), or run it as yourself with
+# `sudo systemctl edit basalt-host` and a `User=` line.
+User=basalt
+Group=basalt
+Environment=BASALT_HOST_CONFIG=/var/lib/basalt-host/host.json
+ExecStart=/usr/bin/basalt-host serve
+# The host's identity, its paired devices and its caches. Readable by the
+# host's user only: the identity is what devices trust.
+StateDirectory=basalt-host
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# Not ProtectHome: people share folders in their home folder.
+
+[Install]
+WantedBy=multi-user.target

@@ -26,6 +26,7 @@ impl Host {
         by: &str,
     ) -> Result<serde_json::Value> {
         let mut drives = false;
+        let mut folders = None;
         match action {
             ManageAction::View => {}
             ManageAction::RenameDevice { id, name } => {
@@ -76,8 +77,42 @@ impl Host {
             ManageAction::ChooseDrive { path, name } => {
                 self.choose_drive(Path::new(&path), &name).await?;
             }
+            ManageAction::RenameDrive { name } => self.rename_drive(&name).await?,
+            ManageAction::ListFolders { path } => {
+                let listed = tokio::task::spawn_blocking(move || {
+                    crate::drives::list_folders(&path).map_err(|e| {
+                        let place = if path.trim().is_empty() {
+                            "the top"
+                        } else {
+                            path.trim()
+                        };
+                        let why = match e.kind() {
+                            std::io::ErrorKind::NotFound => "it isn’t there".to_string(),
+                            std::io::ErrorKind::PermissionDenied => {
+                                "the host isn’t allowed to open it".to_string()
+                            }
+                            _ => basalt_net::describe_io(&e),
+                        };
+                        HostError::BadRequest(format!("can’t open {place}: {why}"))
+                    })
+                })
+                .await
+                .map_err(|e| HostError::Unavailable(format!("listing folders: {e}")))??;
+                folders = Some(listed);
+            }
+            ManageAction::CheckForUpdate => self.check_for_update(true).await?,
+            ManageAction::InstallUpdate => self.install_update()?,
+            ManageAction::SetAutomaticUpdates { enabled } => self.set_automatic_updates(enabled)?,
+            ManageAction::ApproveProfileLink { id } => self.approve_profile_link(&id)?,
+            ManageAction::DenyProfileLink { id } => {
+                self.deny_profile_link(&id);
+            }
         }
-        Ok(self.view(drives, by).await)
+        let mut view = self.view(drives, by).await;
+        if let Some(folders) = folders {
+            view["folders"] = serde_json::to_value(folders).unwrap_or_default();
+        }
+        Ok(view)
     }
 
     /// Shares the drive or folder at `path`, called `name` (or by its path,
@@ -85,14 +120,12 @@ impl Host {
     pub async fn choose_drive(self: &Arc<Self>, path: &Path, name: &str) -> Result<()> {
         if !crate::drives::is_available(path) {
             return Err(HostError::NotFound(format!(
-                "{} is not there any more. Plug it back in, or pick another drive.",
+                "{} is no longer there. Plug it back in, or choose another drive.",
                 path.display()
             )));
         }
         let name = if name.trim().is_empty() {
-            path.to_string_lossy()
-                .trim_end_matches(['\\', '/'])
-                .to_string()
+            crate::drives::default_name(path)
         } else {
             name.trim().to_string()
         };
@@ -153,6 +186,8 @@ impl Host {
             "devices": devices,
             "pairings": pairings,
             "drives": drives,
+            "profileLinks": self.profile_links(),
+            "update": self.update_view(),
             "you": by,
         })
     }

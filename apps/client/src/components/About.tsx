@@ -204,8 +204,8 @@ function HostBlock({ phone }: { phone: boolean }): React.JSX.Element {
         Get Basalt Host for your computer
       </div>
       <p className="mt-1.5 text-[12px] leading-relaxed text-textDim">
-        The host runs on the computer that has your files and shares them with your devices. It is
-        free, like this app.
+        Basalt Host runs on the computer that has your files and shares them with your devices.
+        It’s free, like this app.
       </p>
       {phone ? (
         <div className="mt-3.5 flex flex-col gap-2">

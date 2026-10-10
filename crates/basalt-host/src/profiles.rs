@@ -61,6 +61,24 @@ pub struct Profile {
     /// Kept on the host only, and sealed when written down.
     #[serde(default, skip_serializing_if = "crate::sealed::Secret::is_empty")]
     pub person_key: crate::sealed::Secret,
+    /// A profile made on another drive and used here too: no PIN and no key
+    /// here; it signs in with the statement its home drive gave the device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<Home>,
+}
+
+/// Where a profile from another drive lives, and the key that speaks for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Home {
+    /// The home host's id.
+    pub host_id: String,
+    /// Its drive's name, for "Maya from Living Room Drive".
+    pub label: String,
+    /// The profile's id there.
+    pub profile_id: String,
+    /// The person's public key, hex: what signs the statements this drive
+    /// believes. Its private half never leaves the home host.
+    pub person: String,
 }
 
 impl Profile {
@@ -71,6 +89,14 @@ impl Profile {
             color: self.color,
             has_pin: self.pin_hash.is_some(),
             last_used: self.last_used,
+            home: self
+                .home
+                .as_ref()
+                .map(|home| basalt_proto::msg::ProfileHome {
+                    host_id: home.host_id.clone(),
+                    label: home.label.clone(),
+                    profile_id: home.profile_id.clone(),
+                }),
         }
     }
 }
@@ -87,6 +113,11 @@ pub struct ProfileToken {
     pub remembered: bool,
     pub created_at: i64,
     pub last_used: i64,
+    /// For a profile from another drive: the sign-in ends when the statement
+    /// it was made with does, so a device its home drive stops vouching for
+    /// stops here within the statement's life.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<i64>,
 }
 
 /// Wrong PINs for one profile, kept in memory only: a restart forgetting them
@@ -152,7 +183,7 @@ fn pin_matches(pin: &str, hash: &str) -> bool {
     })
 }
 
-fn clean_name(name: &str) -> Result<String, HostError> {
+pub(crate) fn clean_name(name: &str) -> Result<String, HostError> {
     let name: String = name.split_whitespace().collect::<Vec<_>>().join(" ");
     if name.is_empty() {
         return Err(HostError::BadRequest("a profile needs a name".into()));
@@ -260,9 +291,80 @@ impl ProfileBook {
             created_at: now,
             last_used: now,
             person_key: new_person_key(),
+            home: None,
         };
         self.profiles.push(profile.clone());
         Ok(profile)
+    }
+
+    /// The profile from another drive that `person`, at host `host_id`, is
+    /// here, once someone who manages this drive approved it.
+    pub fn find_linked(&self, host_id: &str, person: &str) -> Option<&Profile> {
+        self.profiles.iter().find(|p| {
+            p.home
+                .as_ref()
+                .is_some_and(|home| home.host_id == host_id && home.person == person)
+        })
+    }
+
+    /// Takes in a profile from another drive, approved by someone who manages
+    /// this one. Its name may match one of this drive's: "from Living Room
+    /// Drive" tells them apart.
+    pub fn add_linked(
+        &mut self,
+        name: &str,
+        color: u8,
+        home: Home,
+        now: i64,
+    ) -> Result<Profile, HostError> {
+        if let Some(existing) = self.find_linked(&home.host_id, &home.person) {
+            return Ok(existing.clone());
+        }
+        let name = clean_name(name)?;
+        if self.profiles.len() >= MAX_PROFILES {
+            return Err(HostError::BadRequest(format!(
+                "a host keeps up to {MAX_PROFILES} profiles"
+            )));
+        }
+        let id = basalt_net::pairing::random_token()
+            .map_err(|e| HostError::BadRequest(format!("no randomness available: {e}")))?[..16]
+            .to_string();
+        let profile = Profile {
+            id,
+            name,
+            color: color % COLORS,
+            pin_hash: None,
+            created_at: now,
+            last_used: 0,
+            person_key: crate::sealed::Secret::default(),
+            home: Some(home),
+        };
+        self.profiles.push(profile.clone());
+        Ok(profile)
+    }
+
+    /// Signs a device in to a profile from another drive, its statement
+    /// already checked. The sign-in lasts no longer than `until`.
+    pub fn sign_in_linked(
+        &mut self,
+        id: &str,
+        device_key: &str,
+        remember: bool,
+        until: i64,
+        now: i64,
+    ) -> Result<(Profile, String), HostError> {
+        let index = self
+            .profiles
+            .iter()
+            .position(|p| p.id == id && p.home.is_some())
+            .ok_or_else(|| HostError::NotFound("that profile".into()))?;
+        self.profiles[index].last_used = now;
+        let profile = self.profiles[index].clone();
+        let token = self.issue(id, device_key, remember, now)?;
+        if let Some(entry) = self.tokens.last_mut() {
+            entry.until = Some(until);
+        }
+        Ok((profile, token))
     }
 
     /// Checks a PIN and signs the device in. Returns the token.
@@ -280,7 +382,7 @@ impl ProfileBook {
         if failures.locked_until > now {
             let wait = failures.locked_until - now;
             return Err(HostError::Denied(format!(
-                "too many wrong PINs; try again in {}",
+                "too many wrong PINs. Try again in {}",
                 if wait >= 60 {
                     format!("{} minutes", (wait + 59) / 60)
                 } else {
@@ -293,6 +395,12 @@ impl ProfileBook {
             .iter()
             .position(|p| p.id == id)
             .ok_or_else(|| HostError::NotFound("that profile".into()))?;
+        if let Some(home) = &self.profiles[index].home {
+            return Err(HostError::Denied(format!(
+                "{} signs in from {}, with no PIN here",
+                self.profiles[index].name, home.label
+            )));
+        }
 
         match self.profiles[index].pin_hash.clone() {
             Some(hash) => {
@@ -304,7 +412,7 @@ impl ProfileBook {
                         let lock = (FIRST_LOCK_SECS << doublings).min(LONGEST_LOCK_SECS);
                         failures.locked_until = now + lock;
                     }
-                    return Err(HostError::Denied("that PIN is not right".into()));
+                    return Err(HostError::Denied("that PIN isn’t right".into()));
                 }
             }
             None => {
@@ -340,6 +448,7 @@ impl ProfileBook {
             remembered: remember,
             created_at: now,
             last_used: now,
+            until: None,
         });
         Ok(token)
     }
@@ -360,7 +469,7 @@ impl ProfileBook {
         } else {
             SESSION_IDLE_SECS
         };
-        if now - entry.last_used > limit {
+        if now - entry.last_used > limit || entry.until.is_some_and(|until| now > until) {
             return None;
         }
         entry.last_used = now;
@@ -373,7 +482,8 @@ impl ProfileBook {
     /// Gives every profile without a key one. Returns whether any were made.
     pub fn ensure_person_keys(&mut self) -> bool {
         let mut made = false;
-        for profile in &mut self.profiles {
+        // A profile from another drive has its key at home, never here.
+        for profile in self.profiles.iter_mut().filter(|p| p.home.is_none()) {
             if profile.person_key.is_empty() || person_signer(&profile.person_key).is_none() {
                 profile.person_key = new_person_key();
                 made |= !profile.person_key.is_empty();
@@ -438,7 +548,12 @@ impl ProfileBook {
     /// Clears a profile's PIN and signs it out everywhere. The next sign-in
     /// on any device chooses a new PIN.
     pub fn reset_pin(&mut self, id: &str) -> bool {
-        let Some(profile) = self.profiles.iter_mut().find(|p| p.id == id) else {
+        // A profile from another drive has no PIN here to reset.
+        let Some(profile) = self
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == id && p.home.is_none())
+        else {
             return false;
         };
         profile.pin_hash = None;
@@ -558,7 +673,7 @@ mod tests {
         // The next wrong one locks it; now even the right PIN waits.
         assert!(b.sign_in(&p.id, "0000", "d", false, 10).is_err());
         let err = b.sign_in(&p.id, "4821", "d", false, 20).unwrap_err();
-        assert!(err.to_string().contains("try again"), "{err}");
+        assert!(err.to_string().contains("Try again"), "{err}");
 
         // Another wrong one once the lock is over locks it for twice as long.
         let after_first = 10 + FIRST_LOCK_SECS + 1;

@@ -33,10 +33,13 @@ use crate::vault::Vault;
 /// Everything shared between connections.
 pub struct Host {
     identity: HostIdentity,
-    config_path: std::path::PathBuf,
-    config: std::sync::Mutex<HostConfig>,
+    pub(crate) config_path: std::path::PathBuf,
+    pub(crate) config: std::sync::Mutex<HostConfig>,
     vault: tokio::sync::RwLock<Option<Arc<Vault>>>,
-    registry: std::sync::Mutex<Registry>,
+    pub(crate) registry: std::sync::Mutex<Registry>,
+    /// Running with no screen: set up from a device with a setup code. See
+    /// [`crate::setup`].
+    pub(crate) headless: std::sync::atomic::AtomicBool,
     uploads: Uploads,
     traffic: Traffic,
     /// Watching the drive. Replaced whenever the vault is.
@@ -98,9 +101,13 @@ pub struct Host {
     /// profile's, own history.
     progress: std::sync::Mutex<crate::media::Progress>,
     /// The household's profiles and who is signed in to them.
-    profiles: std::sync::Mutex<crate::profiles::ProfileBook>,
+    pub(crate) profiles: std::sync::Mutex<crate::profiles::ProfileBook>,
+    /// Profiles from other drives waiting to be approved: see [`crate::links`].
+    pub(crate) profile_links: std::sync::Mutex<Vec<crate::links::LinkRequest>>,
     /// Each profile's starred files, by profile id.
     stars: std::sync::Mutex<std::collections::HashMap<String, Vec<Star>>>,
+    /// Finding and putting in new versions: see [`crate::updates`].
+    pub(crate) updates: crate::updates::Updates,
 }
 
 impl Host {
@@ -228,6 +235,7 @@ impl Host {
             config: std::sync::Mutex::new(config),
             vault: tokio::sync::RwLock::new(vault),
             registry: std::sync::Mutex::new(registry),
+            headless: std::sync::atomic::AtomicBool::new(false),
             uploads: Uploads::default(),
             traffic: Traffic::default(),
             watch: tokio::sync::RwLock::new(watch),
@@ -257,7 +265,9 @@ impl Host {
             last_scan: std::sync::Mutex::new(None),
             progress: std::sync::Mutex::new(progress),
             profiles: std::sync::Mutex::new(profiles),
+            profile_links: std::sync::Mutex::new(Vec::new()),
             stars: std::sync::Mutex::new(stars),
+            updates: crate::updates::Updates::default(),
         });
         if abandoned > 0 {
             tracing::info!("let go of {abandoned} devices that never came back");
@@ -648,7 +658,7 @@ impl Host {
 
     /// Tells every device watching that the profiles or the rules changed.
     /// Nobody listening is not an error.
-    fn profiles_changed(&self) {
+    pub(crate) fn profiles_changed(&self) {
         let _ = self.profile_changes.send(());
     }
 
@@ -691,6 +701,7 @@ impl Host {
                     created_at: profile.created_at,
                     last_used: profile.last_used,
                     devices: signed_in,
+                    home: profile.home.as_ref().map(|home| home.label.clone()),
                 }
             })
             .collect()
@@ -908,7 +919,7 @@ impl Host {
     fn accept_endorsement(&self, device: &Device, statement: SignedStatement) -> Result<()> {
         let denied = |why: String| HostError::Denied(why);
         if !device.owner {
-            return Err(denied("this device does not manage this host".into()));
+            return Err(denied("this device doesn’t manage this host".into()));
         }
         let owner = basalt_trust::PublicKey::from_hex(&device.public_key)
             .map_err(|e| denied(e.to_string()))?;
@@ -1754,6 +1765,15 @@ impl Host {
         self.config.lock().expect("config lock").vault_name.clone()
     }
 
+    /// Whether a drive or folder has been chosen to share.
+    pub fn has_drive(&self) -> bool {
+        self.config
+            .lock()
+            .expect("config lock")
+            .vault_path
+            .is_some()
+    }
+
     pub async fn vault(&self) -> Option<Arc<Vault>> {
         self.vault.read().await.clone()
     }
@@ -1794,10 +1814,9 @@ impl Host {
         /// Enough to choose from by hand; a drive can hold thousands.
         const OTHERS: usize = 100;
 
-        let vault = self
-            .vault()
-            .await
-            .ok_or_else(|| HostError::Unavailable("no drive is being served".into()))?;
+        let vault = self.vault().await.ok_or_else(|| {
+            HostError::Unavailable("this host isn’t sharing a drive right now".into())
+        })?;
         // Through the vault, so a path from the wire cannot reach outside it.
         vault.resolve(path)?;
         let drive = self.drive_subtitles();
@@ -1863,6 +1882,28 @@ impl Host {
         self.persist()?;
         self.attach(vault).await;
         Ok(())
+    }
+
+    /// Renames the drive being shared. Only what devices call it: the same
+    /// drive goes on being served, with its library and history.
+    pub async fn rename_drive(&self, name: &str) -> Result<()> {
+        let name: String = name.trim().chars().take(64).collect();
+        if name.is_empty() {
+            return Err(HostError::BadRequest("a drive needs a name".into()));
+        }
+        {
+            let mut slot = self.vault.write().await;
+            let Some(current) = slot.as_ref() else {
+                return Err(HostError::BadRequest(
+                    "no drive is shared yet, so there is nothing to rename".into(),
+                ));
+            };
+            let mut renamed = (**current).clone();
+            renamed.set_name(&name);
+            *slot = Some(Arc::new(renamed));
+        }
+        self.config.lock().expect("config lock").vault_name = name;
+        self.persist()
     }
 
     /// Starts serving an opened drive: watcher, library and history.
@@ -2088,6 +2129,7 @@ impl Host {
             conversion: self.conversion_status(),
             endorsement: self.endorsement_view(),
             platform: crate::ui::platform(),
+            headless: self.is_headless(),
         }
     }
 
@@ -2324,6 +2366,8 @@ impl Host {
 
     /// What this host broadcasts about itself.
     pub fn beacon(&self) -> basalt_net::discovery::Beacon {
+        // Asked before the config is locked: it looks at the device list.
+        let needs_setup = self.in_setup();
         let config = self.config.lock().expect("config lock");
         basalt_net::discovery::Beacon {
             host_id: self.identity.host_id.clone(),
@@ -2332,6 +2376,7 @@ impl Host {
             port: config.port,
             requires_pin: config.require_pin,
             has_vault: config.vault_path.is_some(),
+            needs_setup,
         }
     }
 
@@ -2421,7 +2466,7 @@ impl Host {
     }
 
     /// Copies the live device list into the config and writes it out.
-    fn persist(&self) -> Result<()> {
+    pub(crate) fn persist(&self) -> Result<()> {
         let snapshot = {
             let devices = self
                 .registry
@@ -2478,7 +2523,7 @@ impl Host {
             .unwrap_or(false);
         if gone {
             HostError::Unavailable(format!(
-                "{} is not connected to the host right now",
+                "{} isn’t connected to the host right now",
                 vault.name()
             ))
         } else {
@@ -2493,10 +2538,10 @@ impl Host {
         let config = self.config.lock().expect("config lock");
         Err(match config.vault_path {
             Some(_) => HostError::Unavailable(format!(
-                "{} is not connected to the host right now",
+                "{} isn’t connected to the host right now",
                 config.vault_name
             )),
-            None => HostError::Denied("this host has not been given a drive to share yet".into()),
+            None => HostError::Denied("this host isn’t sharing a drive yet".into()),
         })
     }
 }
@@ -2517,7 +2562,7 @@ fn load_stars(path: &std::path::Path) -> std::collections::HashMap<String, Vec<S
         .unwrap_or_default()
 }
 
-fn unix_now() -> i64 {
+pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -2950,6 +2995,7 @@ where
                     host_name: host.host_name(),
                     keys: true,
                     manage: true,
+                    has_vault: host.has_drive(),
                 },
             )
             .await?;
@@ -2969,16 +3015,46 @@ where
                 "" => hello.map_or("", |h| h.device_id.as_str()),
                 id => id,
             };
+            // A host with no screen that nobody manages yet asks for its setup
+            // code instead of a PIN: see `crate::setup`.
+            let setup_code = host.setup_code()?;
             let request = {
                 let mut registry = host.registry.lock().expect("registry lock");
-                registry.begin_pairing_for(Instant::now(), name, device_id, &req.client_nonce)?
+                match &setup_code {
+                    Some(code) => registry.begin_setup_pairing(
+                        Instant::now(),
+                        name,
+                        device_id,
+                        &req.client_nonce,
+                        code,
+                    )?,
+                    None => registry.begin_pairing_for(
+                        Instant::now(),
+                        name,
+                        device_id,
+                        &req.client_nonce,
+                    )?,
+                }
             };
+            if !request.setup && host.is_headless() {
+                // No window to show it in: the log has it, for whoever reads
+                // the machine, and Manage host shows it on managers' devices.
+                match &request.pin {
+                    Some(pin) => tracing::info!(
+                        "{} wants to join. PIN: {}",
+                        request.device_name,
+                        basalt_net::pairing::format_pin(pin)
+                    ),
+                    None => tracing::info!("{} is joining", request.device_name),
+                }
+            }
             reply(
                 stream,
                 &PairBeginResponse {
                     server_nonce: request.server_nonce.clone(),
                     request: request.id.clone(),
                     requires_pin: request.pin.is_some(),
+                    setup: request.setup,
                 },
             )
             .await?;
@@ -2986,6 +3062,19 @@ where
 
         Op::PairFinish => {
             let req: PairFinishRequest = decode(payload)?;
+            let setup = host
+                .registry
+                .lock()
+                .expect("registry lock")
+                .is_setup_request(&req.request);
+            // The first manager signs in with a key of its own, as every
+            // manager must: a device on an older Basalt pairs once it is
+            // updated.
+            if setup && req.key.is_none() {
+                return Err(HostError::PairingRefused(
+                    "update Basalt on this device to set up this host".into(),
+                ));
+            }
             if let Some(key) = req.key.as_deref() {
                 // Checked before the request is touched, so a device whose
                 // signature is wrong has not used up a PIN attempt on it.
@@ -2995,18 +3084,39 @@ where
                     key,
                     req.key_signature.as_deref(),
                 )?;
-                let device = {
+                let finished = {
                     let mut registry = host.registry.lock().expect("registry lock");
-                    registry.finish_pairing_with_key(
-                        Instant::now(),
-                        host.host_id(),
-                        &req.request,
-                        req.proof.as_deref(),
-                        &key,
-                        req.key_kind,
-                    )?
+                    registry
+                        .finish_pairing_with_key(
+                            Instant::now(),
+                            host.host_id(),
+                            &req.request,
+                            req.proof.as_deref(),
+                            &key,
+                            req.key_kind,
+                        )
+                        .and_then(|mut device| {
+                            if setup {
+                                registry.set_owner(&device.token_hash, true)?;
+                                device.owner = true;
+                            }
+                            Ok(device)
+                        })
+                };
+                let device = match finished {
+                    Ok(device) => device,
+                    Err(e) => {
+                        if setup {
+                            host.check_setup_guesses();
+                        }
+                        return Err(e);
+                    }
                 };
                 host.persist()?;
+                if setup {
+                    host.setup_done(&device.name);
+                }
+                let manages = device.owner;
                 host.forget_old_keys(&device);
                 session.signed_key = Some(device.public_key.clone());
                 session.device = Some(device);
@@ -3016,6 +3126,7 @@ where
                     &PairFinishResponse {
                         token: String::new(),
                         vault: host.vault_name(),
+                        manages,
                     },
                 )
                 .await?;
@@ -3055,6 +3166,7 @@ where
                 &PairFinishResponse {
                     token,
                     vault: host.vault_name(),
+                    manages: false,
                 },
             )
             .await?;
@@ -3431,7 +3543,7 @@ where
             let (profile, token) = if op == Op::ProfileCreate {
                 if host.profile_rules().owner_adds_profiles {
                     return Err(HostError::Denied(
-                        "profiles on this drive are added on the host".into(),
+                        "only someone who manages this host can add profiles".into(),
                     ));
                 }
                 host.create_profile(decode(payload)?, &device_key)?
@@ -3481,6 +3593,45 @@ where
             reply(stream, &ProfileUseResponse { profile, member }).await?;
         }
 
+        Op::ProfileLink => {
+            let req: basalt_proto::msg::ProfileLinkRequest = decode(payload)?;
+            let device = session.device.clone().ok_or(HostError::Unauthenticated)?;
+            // The statement is about a key: the one this connection proved.
+            let signed_key = match (session.by_key, &session.signed_key) {
+                (true, Some(key)) => key.clone(),
+                _ => {
+                    return Err(HostError::Denied(
+                        "update Basalt on this device to use a profile from another drive".into(),
+                    ));
+                }
+            };
+            let answer = match host.link_profile(
+                req,
+                &signed_key,
+                device.key(),
+                &device.name,
+                device.owner,
+            )? {
+                crate::links::Linked::SignedIn(profile, token) => {
+                    session.profile =
+                        Some((profile.id.clone(), crate::profiles::hash_token(&token)));
+                    basalt_proto::msg::ProfileLinkResponse {
+                        session: Some(ProfileSession {
+                            profile,
+                            token,
+                            member: None,
+                        }),
+                        waiting: false,
+                    }
+                }
+                crate::links::Linked::Waiting => basalt_proto::msg::ProfileLinkResponse {
+                    session: None,
+                    waiting: true,
+                },
+            };
+            reply(stream, &answer).await?;
+        }
+
         Op::ProfileSignOut => {
             let req: ProfileSignOutRequest = decode(payload)?;
             host.sign_out_profile(&req.token)?;
@@ -3511,10 +3662,9 @@ where
 
         Op::Convert => {
             let req: ConvertRequest = decode(payload)?;
-            let vault = host
-                .vault()
-                .await
-                .ok_or_else(|| HostError::Unavailable("no drive is being served".into()))?;
+            let vault = host.vault().await.ok_or_else(|| {
+                HostError::Unavailable("this host isn’t sharing a drive right now".into())
+            })?;
             // Through the vault, so a path from the wire cannot reach outside.
             let file = vault.resolve(&req.path)?;
             let refused = |e: crate::convert::ConvertError| match e {
@@ -3666,7 +3816,7 @@ where
         Some(watch) => watch.subscribe(),
         None => {
             return Err(HostError::Denied(
-                "this host has not been given a drive to share yet".into(),
+                "this host isn’t sharing a drive yet".into(),
             ));
         }
     };
@@ -3749,7 +3899,7 @@ fn manager(session: &Session) -> Result<(String, String)> {
     let keyed = session.by_key && session.signed_key.as_deref() == Some(device.public_key.as_str());
     if !keyed || !device.owner {
         return Err(HostError::Denied(
-            "this device does not manage this host".into(),
+            "this device doesn’t manage this host".into(),
         ));
     }
     Ok((device.name.clone(), device.token_hash.clone()))
@@ -3760,7 +3910,7 @@ fn require_write(session: &Session) -> Result<()> {
         Ok(())
     } else {
         Err(HostError::Denied(
-            "this device is paired read-only".to_string(),
+            "this device can only read this drive".to_string(),
         ))
     }
 }

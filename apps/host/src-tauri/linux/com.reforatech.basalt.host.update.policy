@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Lets Basalt Host update itself for the person signed in at this computer.
+  The helper takes no arguments and no files: it can only download, check and
+  install the newest official Basalt Host release.
+-->
+<policyconfig>
+  <vendor>Refora Technologies</vendor>
+  <vendor_url>https://github.com/refora-technologies/basalt</vendor_url>
+  <action id="com.reforatech.basalt.host.update">
+    <description>Update Basalt Host</description>
+    <message>Basalt Host wants to install its newest version.</message>
+    <icon_name>basalt-host</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/basalt-host/basalt-host-update</annotate>
+  </action>
+</policyconfig>

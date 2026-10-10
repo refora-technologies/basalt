@@ -67,7 +67,7 @@ export function ConversionPanel({
           </div>
           <p className="mt-1 text-[11px] leading-snug text-textFaint">
             {conversion.measuring
-              ? 'Measuring now: converting a 4K sample, one at a time, then more.'
+              ? 'Measuring: converting a 4K sample to see how many devices this computer can keep up with…'
               : measured
                 ? `Measured: ${measured.atOnce} at once, one at ${measured.speed}× real time, on ${measured.by}${
                     measured.memory ? ', as many as memory allows' : ''
@@ -101,7 +101,7 @@ export function ConversionPanel({
           {auto
             ? 'As many as this computer was measured to keep up with.'
             : measured && conversion.byHand !== null && conversion.byHand > measured.atOnce
-              ? 'More than it was measured to keep up with: pictures may stutter when that many watch at once.'
+              ? 'More than it was measured to keep up with: video may stutter when that many watch at once.'
               : 'Chosen by hand. Fewer leaves this computer freer for other things.'}
         </p>
       </div>

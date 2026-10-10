@@ -282,7 +282,7 @@ function Finding({
       <>
         <Eyebrow>Looking on this network</Eyebrow>
         <Title>Looking for your computer…</Title>
-        <Body>Basalt Host answers on your Wi-Fi when it is running. This takes a second.</Body>
+        <Body>Basalt Host answers on your Wi-Fi when it’s running. This takes a second.</Body>
       </>
     )
   }
@@ -317,7 +317,7 @@ function Finding({
       <Body>
         {phone
           ? 'Install Basalt Host on the computer with your files. Keep this open: it appears here by itself once the host starts.'
-          : 'Install Basalt Host on the computer with your files, this one if they are here. It appears on this page by itself once it starts.'}
+          : 'Install Basalt Host on the computer with your files, or on this one if they’re here. It appears on this page as soon as it starts.'}
       </Body>
       <div className="mt-5 flex flex-col gap-2">
         {phone ? (
@@ -347,7 +347,7 @@ function Finding({
           className="mt-1 flex items-center justify-center gap-1.5 py-2 text-[12.5px] text-textFaint transition-colors hover:text-textDim"
         >
           <Keyboard size={13} />
-          It is running, but not found: enter its address
+          It’s running but not found? Enter its address
         </button>
       </div>
     </>

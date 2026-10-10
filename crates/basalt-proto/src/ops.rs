@@ -139,6 +139,9 @@ pub enum Op {
     /// see [`crate::msg::ManageRequest`]. Answered with the host as its window
     /// shows it, after the change.
     Manage = 36,
+    /// Signs in to a profile made on another drive, with the statement its
+    /// home host signed for this device: see [`crate::msg::ProfileLinkRequest`].
+    ProfileLink = 37,
 }
 
 impl Op {
@@ -147,7 +150,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::Manage as u8;
+    pub const LAST: u8 = Op::ProfileLink as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -187,6 +190,7 @@ impl Op {
             34 => Op::Enrol,
             35 => Op::Endorse,
             36 => Op::Manage,
+            37 => Op::ProfileLink,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -229,6 +233,7 @@ impl Op {
                     | Op::ProfileSignIn
                     | Op::ProfileUse
                     | Op::ProfileSignOut
+                    | Op::ProfileLink
             )
     }
 }

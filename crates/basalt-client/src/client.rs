@@ -418,9 +418,23 @@ impl Basalt {
     /// Resolution lives here rather than in the Tauri shell so the shell needs
     /// no knowledge of the network layer at all — and so that turning a bad
     /// address into a sensible error is covered by a test.
-    pub async fn begin_pairing_at(&self, address: &str) -> Result<bool> {
+    pub async fn begin_pairing_at(&self, address: &str) -> Result<crate::ui::PairingStart> {
         let addr = basalt_net::socket::resolve(address, basalt_net::DEFAULT_PORT).await?;
-        self.begin_pairing(addr).await
+        let requires_pin = self.begin_pairing(addr).await?;
+        Ok(crate::ui::PairingStart {
+            requires_pin,
+            setup: self.pairing_is_setup().await,
+        })
+    }
+
+    /// Whether the pairing begun asks for the host's setup code rather than a
+    /// PIN: a host with no screen, being set up by this device.
+    pub async fn pairing_is_setup(&self) -> bool {
+        self.pending
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|(_, challenge)| challenge.setup)
     }
 
     /// Asks a host to pair, and says whether it wants a PIN.
@@ -495,6 +509,7 @@ impl Basalt {
                 identity: Default::default(),
                 key: key_hex,
                 members: Vec::new(),
+                profiles: Vec::new(),
             });
             store.device_name = Some(self.me.name.clone());
         }
@@ -510,7 +525,15 @@ impl Basalt {
             key_expected: keyed,
         };
         let pool = Pool::with_session(addr, &info.host_id, credentials, &self.me, session);
-        *self.pool.write().await = Some(pool);
+        // A new host has nobody signed in yet: the last host's profile is not
+        // this one's, and the app asks who is using the device.
+        *self.identity.lock().expect("identity lock") = Current {
+            host: Some(info.host_id.clone()),
+            ..Current::default()
+        };
+        if let Some(old) = self.pool.write().await.replace(pool) {
+            self.keep_pool_statements(&old);
+        }
         *self.info.lock().expect("info lock") = Some(info.clone());
         Ok(info)
     }
@@ -672,6 +695,8 @@ impl Basalt {
             let mut store = self.store.lock().expect("store lock");
             store.note_address(host_id, &addr.to_string());
             store.note_used(host_id, unix_now());
+            let named = proven.as_ref().unwrap_or(&session).info();
+            store.note_names(host_id, &named.vault, &named.host_name);
         }
         // A failure to write the address cache must not fail the connection —
         // it is an optimisation, and the client works without it.
@@ -707,6 +732,7 @@ impl Basalt {
                         color: saved.color,
                         has_pin: true,
                         last_used: 0,
+                        home: None,
                     }),
                     chosen: true,
                     token: Some(saved.token.clone()),
@@ -1018,14 +1044,159 @@ impl Basalt {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
         let result = lease.manage(action).await;
-        Ok(lease.check(result)?.view)
+        let view = lease.check(result)?.view;
+        // The drive as the host has it now. A manager choosing one here is
+        // what a host just set up is waiting for, and the rest of the app
+        // shows it at once rather than at the next connection.
+        let drive = view.get("status").and_then(|s| s.get("vault"));
+        let has_vault = drive.is_some_and(|v| !v.is_null());
+        let name = drive
+            .and_then(|v| v.get("name"))
+            .and_then(|n| n.as_str())
+            .map(str::to_string);
+        if let Some(name) = &name {
+            let host_id = pool.host_id().to_string();
+            self.store
+                .lock()
+                .expect("store lock")
+                .note_names(&host_id, name, "");
+            let _ = self.save_store();
+        }
+        if let Some(info) = self.info.lock().expect("info lock").as_mut() {
+            info.has_vault = has_vault;
+            if let Some(name) = name {
+                info.vault = name;
+            }
+        }
+        Ok(view)
     }
 
     pub async fn profiles(&self) -> Result<Vec<ProfileView>> {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
         let result = lease.profiles().await;
-        Ok(lease.check(result)?.profiles)
+        let profiles = lease.check(result)?.profiles;
+        drop(lease);
+        self.remember_profiles(pool.host_id(), &profiles);
+        Ok(profiles)
+    }
+
+    /// Keeps the names and colours of a host's own profiles, for offering
+    /// them on other drives.
+    fn remember_profiles(&self, host_id: &str, profiles: &[ProfileView]) {
+        let labels: Vec<crate::store::ProfileLabel> = profiles
+            .iter()
+            .filter(|p| p.home.is_none())
+            .map(|p| crate::store::ProfileLabel {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                color: p.color,
+            })
+            .collect();
+        let changed = {
+            let mut store = self.store.lock().expect("store lock");
+            match store.find_mut(host_id) {
+                Some(known) if known.profiles != labels => {
+                    known.profiles = labels;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed && let Err(e) = self.save_store() {
+            tracing::warn!("could not keep the profiles' names: {e}");
+        }
+    }
+
+    /// Profiles this device is signed in to on its other drives, which it can
+    /// offer on this one: each with its home drive's statement about this
+    /// device, in date, and a name remembered from there.
+    pub fn profiles_elsewhere(&self) -> Vec<crate::ui::ProfilePass> {
+        let here = self.status().map(|i| i.host_id);
+        let now = unix_now();
+        let store = self.store.lock().expect("store lock");
+        let mut passes = Vec::new();
+        for known in &store.hosts {
+            if here.as_deref() == Some(known.host_id.as_str()) {
+                continue;
+            }
+            for member in &known.members {
+                let Ok(payload) = basalt_trust::statement::read_offer(&member.payload) else {
+                    continue;
+                };
+                if payload.profile.is_empty() || payload.exp <= now {
+                    continue;
+                }
+                let Some(label) = known.profiles.iter().find(|l| l.id == payload.profile) else {
+                    continue;
+                };
+                passes.push(crate::ui::ProfilePass {
+                    host_id: known.host_id.clone(),
+                    drive: if known.vault.trim().is_empty() {
+                        known.host_name.clone()
+                    } else {
+                        known.vault.clone()
+                    },
+                    profile_id: payload.profile.clone(),
+                    name: label.name.clone(),
+                    color: label.color,
+                });
+            }
+        }
+        passes
+    }
+
+    /// Uses a profile from another drive here: signed in at once if this
+    /// drive let it in before, or waiting for someone who manages it.
+    pub async fn use_profile_elsewhere(
+        &self,
+        host_id: &str,
+        profile_id: &str,
+        remember: bool,
+    ) -> Result<crate::ui::ProfileLinkOutcome> {
+        let pass = self
+            .profiles_elsewhere()
+            .into_iter()
+            .find(|p| p.host_id == host_id && p.profile_id == profile_id)
+            .ok_or_else(|| {
+                ClientError::Protocol("sign in to that profile on its own drive first".into())
+            })?;
+        let statement = {
+            let store = self.store.lock().expect("store lock");
+            store
+                .find(host_id)
+                .and_then(|known| {
+                    known.members.iter().find(|m| {
+                        basalt_trust::statement::read_offer(&m.payload)
+                            .is_ok_and(|p| p.profile == profile_id)
+                    })
+                })
+                .cloned()
+                .ok_or_else(|| ClientError::Protocol("that profile's sign-in is gone".into()))?
+        };
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease
+            .profile_link(&basalt_proto::msg::ProfileLinkRequest {
+                statement,
+                name: pass.name,
+                color: pass.color,
+                home: pass.drive,
+                remember,
+            })
+            .await;
+        let answer = lease.check(result)?;
+        drop(lease);
+        match answer.session {
+            Some(session) => Ok(crate::ui::ProfileLinkOutcome {
+                profile: Some(self.adopt_profile(&pool, session, remember)?),
+                waiting: false,
+            }),
+            None => Ok(crate::ui::ProfileLinkOutcome {
+                profile: None,
+                waiting: answer.waiting,
+            }),
+        }
     }
 
     /// Makes a profile and signs in to it.
@@ -1083,6 +1254,28 @@ impl Basalt {
         }
         pool.set_profile(Some(session.token.clone()));
         let profile = session.profile;
+        // Its name, for offering it on this device's other drives.
+        if profile.home.is_none() {
+            let changed = {
+                let mut store = self.store.lock().expect("store lock");
+                store.find_mut(pool.host_id()).is_some_and(|known| {
+                    let label = crate::store::ProfileLabel {
+                        id: profile.id.clone(),
+                        name: profile.name.clone(),
+                        color: profile.color,
+                    };
+                    if known.profiles.contains(&label) {
+                        return false;
+                    }
+                    known.profiles.retain(|l| l.id != label.id);
+                    known.profiles.push(label);
+                    true
+                })
+            };
+            if changed {
+                let _ = self.save_store();
+            }
+        }
         *self.identity.lock().expect("identity lock") = Current {
             profile: Some(profile.clone()),
             chosen: true,
@@ -1466,16 +1659,21 @@ impl Basalt {
         }
         // What the host says about access now, which is newer than what the
         // rest of the app was told when it connected.
-        let (writable, manage) = (session.info().writable, session.info().manage);
+        let now = session.info();
         let changed = {
             let mut info = self.info.lock().expect("info lock");
             match info.as_mut() {
                 Some(info)
                     if info.host_id == host_id
-                        && (info.writable != writable || info.manage != manage) =>
+                        && (info.writable != now.writable
+                            || info.manage != now.manage
+                            || info.has_vault != now.has_vault
+                            || info.vault != now.vault) =>
                 {
-                    info.writable = writable;
-                    info.manage = manage;
+                    info.writable = now.writable;
+                    info.manage = now.manage;
+                    info.has_vault = now.has_vault;
+                    info.vault = now.vault.clone();
                     true
                 }
                 _ => false,

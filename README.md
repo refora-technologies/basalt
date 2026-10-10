@@ -4,6 +4,7 @@
   <p><b>Your home drive, on every screen in the house.<br/>No cloud, no subscription, no account.</b></p>
   <p>
     <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-blue?style=flat-square" alt="Windows 10/11" />
+    <img src="https://img.shields.io/badge/Linux-host-f0b400?style=flat-square" alt="Linux host" />
     <img src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square" alt="Android 8.0+" />
     <img src="https://img.shields.io/github/license/refora-technologies/basalt?style=flat-square" alt="License" />
     <img src="https://img.shields.io/github/v/release/refora-technologies/basalt?style=flat-square" alt="Release" />
@@ -11,6 +12,7 @@
   </p>
   <p>
     <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Setup.exe"><b>Host for Windows</b></a> &nbsp;·&nbsp;
+    <a href="#installation"><b>Host for Linux</b></a> &nbsp;·&nbsp;
     <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Setup.exe"><b>Basalt for Windows</b></a> &nbsp;·&nbsp;
     <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk"><b>Basalt for Android</b></a>
   </p>
@@ -29,22 +31,23 @@
 
 ## Overview
 
-**Basalt** by Refora Technologies turns one Windows PC into a private drive
-for the whole household. **Basalt Host** runs on the machine with the drive;
-**Basalt** runs everywhere else, on Windows PCs and on Android phones and
-tablets. Every device browses the same files, watches the same library, and
-picks up where the last one left off.
+**Basalt** by Refora Technologies turns one computer into a private drive for
+the whole household. **Basalt Host** runs on the computer with the drive:
+Windows or Linux, with a screen or without one, such as a home server, a NAS or
+a Raspberry Pi. **Basalt** runs everywhere else, on Windows computers and on
+Android phones and tablets. Every device browses the same files, watches the
+same library, and picks up where the last one left off.
 
-There is nothing to configure. You pick a drive on the host; on another device
-you pick the host from a list and type the PIN it shows. That is the whole
-setup. No IP address is ever typed, no account is made, and no Windows sharing
-settings are touched. Devices find the host by themselves and keep finding it
-when the router hands it a different address, because what they trust is its
-pinned identity rather than where it happens to be today.
+There is nothing to configure. You choose a drive on the host; on another
+device you choose the host from a list and type the PIN it shows. That is the
+whole setup. No address is ever typed and no account is made. Devices find the
+host by themselves, and keep finding it when the router gives it a different
+address, because they recognise the host itself rather than where it happens to
+be today.
 
-Nothing leaves your home. There is no Basalt server and no cloud in the
-design: the host serves your files to your devices over your own network,
-encrypted, and that is all it does.
+Nothing leaves your home. There is no Basalt server and no cloud in the design:
+the host serves your files to your devices over your own network, encrypted,
+and that is all it does.
 
 ## Screenshots
 
@@ -75,30 +78,38 @@ encrypted, and that is all it does.
 
 ### Set up once, then forget it
 
-- **Finds itself.** The host announces itself on the local network and every
-  device lists what it finds. If a network blocks that, a device can be given
-  the host's address instead.
-- **Nobody joins without your say-so.** A new device shows up on the host with
-  a PIN to type on that device, once. After that it simply connects, and the
-  host can make any device read-only or let it go.
+- **Finds itself.** The host announces itself on your network and every device
+  lists what it finds. If a network blocks that, a device can be given the
+  host's address instead.
+- **Nobody joins without your say-so.** A new device shows a PIN to type,
+  once. After that it simply connects, and the host can make any device read
+  only or remove it.
+- **Manage it from your phone.** Let a device manage the host, and it can do
+  everything the host's own window does: choose or rename the drive, browse the
+  host's folders to share one, let devices in, add profiles and change
+  settings.
+- **Hosts with no screen.** On a server, a NAS or a Raspberry Pi, Basalt Host
+  runs as a background service or in Docker. It shows a one-time setup code;
+  the first device to type it manages the host from then on.
 - **A drive that comes and goes.** Unplug the host's drive and every device
   says so; plug it back in and it is shared again, with nothing to redo.
-- **Keeps itself up to date.** Every app checks for new versions, shows what
-  changed, and installs only after checking the download against its published
-  checksum.
+- **Keeps itself up to date.** The host installs new versions by itself when
+  nothing is playing, and the apps show what changed before they update. Every
+  download is checked against its published checksum first.
 
 ### Private by design
 
-- **Encrypted and pinned.** Every connection is TLS 1.3, and each device pins
-  the host's key when it pairs, so a different machine at the same address is
-  refused rather than trusted.
-- **Local only.** No account, no cloud, no telemetry. Files travel between your
+- **Encrypted, and sure of the host.** Every connection is encrypted, and each
+  device remembers the host it paired with, so a different computer at the
+  same address is refused rather than trusted.
+- **A key for every device.** Each device signs in with its own key, created
+  on the device and kept in its security chip when it has one. It never leaves
+  the device, so a copy of its settings can't open your drive.
+- **Local only.** No account, no cloud, no tracking. Files travel between your
   own devices and nowhere else. The only requests that leave your network are
   the update check, to GitHub, and poster lookups if you turn them on.
 - **Careful with what it keeps.** Profile PINs are stored only as slow, salted
   hashes, and repeated wrong guesses lock a profile for longer each time.
-  Sign-ins kept on a Windows PC are encrypted for that Windows account, and on
-  Android they stay in the app's private storage, out of phone backups.
 
 ### The whole drive, from anywhere in the house
 
@@ -107,8 +118,9 @@ encrypted, and that is all it does.
 - **Upload the easy way.** Drop files or whole folders onto the folder you
   want. On a phone, upload from the gallery, any file or a folder, or share to
   Basalt from any other app.
-- **Fast and verified.** Transfers are compressed where that helps, batched
-  for small files, and checked with BLAKE3 end to end.
+- **Fast and checked.** Transfers are compressed where that helps, batched
+  for small files, and checked end to end so every file arrives exactly as it
+  was.
 - **Live.** A file added, renamed or deleted on the host, by Basalt or anything
   else, reaches every connected device at once.
 
@@ -131,7 +143,7 @@ encrypted, and that is all it does.
   inside them. Thumbnails are made once, on the host, and shared by every
   device.
 - **Choose what devices show.** The host decides which sections appear on
-  your devices. Hiding one only tidies the sidebar; every file stays in Files.
+  your devices. Hiding one only tidies the list; every file is still in Files.
 
 ### A real player
 
@@ -161,6 +173,9 @@ encrypted, and that is all it does.
 - **Or skip it.** Carry on as the device, with a history of its own.
 - **Managed from the host.** See who is signed in where, reset a forgotten PIN,
   or remove a profile along with its history.
+- **Bring your profile.** A profile made on one drive can be used on another
+  host too, once someone who manages that host lets it in. Its PIN stays on its
+  own drive.
 
 ### On your phone and tablet
 
@@ -196,41 +211,77 @@ nothing more, so more viewers cost it almost nothing.
 
 ## Installation
 
-Download the latest version:
+Download the latest version. These links always give the newest release, and
+each file has a `.sha256` beside it on the
+[releases page](https://github.com/refora-technologies/basalt/releases/latest)
+if you want to check what you downloaded.
+
+**Basalt**, on every device that should reach the drive:
 
 | Download | Install on |
 |---|---|
-| **[`Basalt-Host-Setup.exe`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Setup.exe)** | The Windows PC with the drive |
-| **[`Basalt-Client-Setup.exe`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Setup.exe)** | Every Windows PC that should reach it |
+| **[`Basalt-Client-Setup.exe`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Setup.exe)** | Windows computers |
 | **[`Basalt-Android.apk`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk)** | Android phones and tablets (Android 8.0 or later, 64-bit) |
 
-These links always give the newest release. Each file has a `.sha256` beside
-it on the [releases page](https://github.com/refora-technologies/basalt/releases/latest)
-if you want to check what you downloaded.
+**Basalt Host**, on the computer with the drive:
 
-Both Windows installers install per user and need no administrator rights.
-They update an existing installation in place and keep its pairing and
-settings.
+| Download | Install on |
+|---|---|
+| **[`Basalt-Host-Setup.exe`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Setup.exe)** | Windows |
+| **[`Basalt-Host-Linux-amd64.deb`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Linux-amd64.deb)** | Ubuntu 22.04 or later, Debian 12, Linux Mint 21 or later |
+| **[`Basalt-Host-Linux-x86_64.rpm`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Linux-x86_64.rpm)** | Fedora and similar |
+| **[`Basalt-Host-Linux-x86_64.AppImage`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Linux-x86_64.AppImage)** | Any other Linux desktop |
 
-The Android app is not on the Play Store. Open the `.apk` on the phone and
+**Basalt Host with no screen**, for a home server, a NAS or a Raspberry Pi:
+
+| Download | Install on |
+|---|---|
+| **[`Basalt-Host-Server-Linux-amd64.deb`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-amd64.deb)** | Debian 11 or later, Ubuntu 20.04 or later |
+| **[`Basalt-Host-Server-Linux-arm64.deb`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-arm64.deb)** | Raspberry Pi OS (64-bit) and other ARM boards |
+| **[`Basalt-Host-Server-Linux-x86_64.rpm`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-x86_64.rpm)**, **[`aarch64.rpm`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-aarch64.rpm)** | Fedora, Rocky and similar |
+| **[`Basalt-Host-Server-Linux-x86_64.tar.gz`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-x86_64.tar.gz)**, **[`aarch64.tar.gz`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-aarch64.tar.gz)** | Anything else, installed by hand |
+
+**With Docker**, for a NAS or a home server (amd64 and arm64):
+
+```sh
+docker pull ghcr.io/refora-technologies/basalt-host:latest
+```
+
+The compose file and settings are in [`docker/README.md`](docker/README.md).
+
+The Windows installers install per user and need no administrator rights. They
+update an existing installation in place and keep its pairing and settings.
+
+The Android app is not on the Play Store yet. Open the `.apk` on the phone and
 allow your browser or file manager to install it when Android asks; that
-permission is only for installing, and can be switched off again afterwards.
+permission is only for installing, and can be turned off again afterwards.
 
 **Getting started:**
 
-1. Install Basalt Host on the PC with the drive, open it, and choose the drive
-   to share.
-2. Open Basalt on another device. It lists the host; select it.
+1. Install Basalt Host on the computer with the drive, open it, and choose the
+   drive to share.
+2. Open Basalt on another device. It lists the host; choose it.
 3. Type the PIN the host shows. Done.
 
-All three apps check for updates on their own and show what is in the new
-version before you install it. On Android the update is downloaded, checked
-against its published checksum, and handed to Android's own installer; the
-first time, Android asks you to allow Basalt to install it.
+**With no screen:** install the package, for example with
+`sudo apt install ./Basalt-Host-Server-Linux-amd64.deb`. It finishes by showing
+the host's address and a setup code. Open Basalt on your phone or computer,
+choose the host marked **new**, and type the code. That device then manages the
+host: choose what it shares in **Manage host**. Run `sudo basalt-host status`
+to see it all again; the full guide is in
+[`packaging/linux/README.md`](packaging/linux/README.md).
+
+Basalt Host updates itself when nothing is playing; you can turn that off in
+its settings or in Manage host. The apps check for updates on their own and
+show what is in the new version before you install it. On Android the update is
+downloaded, checked against its published checksum, and handed to Android's own
+installer; the first time, Android asks you to allow Basalt to install it.
 
 ## Configuration & Usage
 
-Everything Basalt keeps on Windows lives in `%APPDATA%\Basalt\`:
+Everything Basalt keeps lives in `%APPDATA%\Basalt\` on Windows,
+`~/.config/basalt/` on a Linux desktop, and `/var/lib/basalt-host/` for the
+host with no screen:
 
 | File | What it is |
 |---|---|
@@ -252,8 +303,9 @@ Clearing the app's storage, or **Forget this drive** under **More**, means
 pairing again.
 
 **Optional, and off by default:** recognising films and series reads the whole
-drive, and downloading posters sends each recognised title to a lookup service.
-Neither happens until you turn it on in Basalt Host.
+drive, and downloading posters sends the titles of recognised films and series
+to an online service to find their posters. Neither happens until you turn it
+on, in Basalt Host or in Manage host.
 
 ## Building from source
 
@@ -284,6 +336,19 @@ cargo run -p catalog-build --release
 ```
 
 `cargo test --all` runs the Rust suite; `npm test` in either app runs its own.
+
+### Linux packages
+
+On Linux with Docker:
+
+```
+packaging/build-desktop-linux.sh OUT_DIR   # Basalt Host with a window: .deb, .rpm, AppImage
+packaging/build-server.sh OUT_DIR          # with no screen: .deb, .rpm, .tar.gz, amd64 and arm64
+docker build -f docker/Dockerfile -t basalt-host .
+```
+
+Each builds inside an older system's container, so what it makes runs on
+Ubuntu 22.04, Debian 11 and everything newer.
 
 ### The Android app
 

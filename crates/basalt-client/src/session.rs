@@ -42,6 +42,9 @@ pub struct SessionInfo {
     /// This device may manage the host from here: the host can be managed
     /// from a device, and this one manages it, signed in with its key.
     pub manage: bool,
+    /// The host shares a drive. False on a host just set up, until its
+    /// manager chooses one.
+    pub has_vault: bool,
 }
 
 pub struct Session {
@@ -134,6 +137,9 @@ impl Me {
 pub struct PairChallenge {
     pub request: String,
     pub requires_pin: bool,
+    /// What the host checks is its setup code: it has no screen, and the
+    /// device that pairs becomes its first manager.
+    pub setup: bool,
     pub client_nonce: String,
     pub server_nonce: String,
     /// The key the host actually presented, not anything it claimed.
@@ -444,6 +450,7 @@ impl Session {
                 by_key,
                 owner: auth.owner,
                 manage: hello.manage && by_key && auth.owner,
+                has_vault: hello.has_vault,
             },
         }
     }
@@ -552,6 +559,7 @@ impl Session {
         let challenge = PairChallenge {
             request: begin.request,
             requires_pin: begin.requires_pin,
+            setup: begin.setup,
             client_nonce,
             server_nonce: begin.server_nonce,
             host_id: presented.clone(),
@@ -577,6 +585,7 @@ impl Session {
                     by_key: false,
                     owner: false,
                     manage: false,
+                    has_vault: hello.has_vault,
                 },
             },
             challenge,
@@ -657,6 +666,10 @@ impl Session {
         if key.is_some() {
             self.signed_in.by_key = true;
             self.info.by_key = true;
+            // Set a host with no screen up: it manages it from now, and the
+            // app shows Manage host without signing in again first.
+            self.info.owner = finish.manages;
+            self.info.manage = finish.manages;
             // Paired with a key: there never was a token to keep.
             return Ok(String::new());
         }
@@ -808,6 +821,17 @@ impl Session {
         request: &basalt_proto::msg::ProfileSignInRequest,
     ) -> Result<basalt_proto::msg::ProfileSession> {
         call_json(&mut self.stream, Op::ProfileSignIn, request)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Asks to use a profile from another drive here: see
+    /// [`basalt_proto::msg::ProfileLinkRequest`].
+    pub async fn profile_link(
+        &mut self,
+        request: &basalt_proto::msg::ProfileLinkRequest,
+    ) -> Result<basalt_proto::msg::ProfileLinkResponse> {
+        call_json(&mut self.stream, Op::ProfileLink, request)
             .await
             .map_err(Into::into)
     }

@@ -12,6 +12,25 @@ const now = (): number => Math.floor(Date.now() / 1000)
 const GB = 1024 ** 3
 
 const sample: ManageView = {
+  // `?update`: a new version waiting; `?docker`: a host that cannot update itself.
+  update: {
+    version: '1.5.0',
+    method:
+      typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('docker') ? 'container' : 'service',
+    canInstall: !(typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('docker')),
+    automatic: true,
+    available:
+      typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('update')
+        ? { version: '1.5.1', notes: '## Fixed\n\n* Posters for films with a year in brackets.', pageUrl: '' }
+        : null,
+    stage: { kind: 'idle' },
+    checkedAt: now() - 2 * 3600,
+    command:
+      typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('docker')
+        ? 'docker compose pull && docker compose up -d'
+        : null,
+    outcome: null,
+  },
   // Whichever of the two the preview is: `?mobile` is the phone.
   you:
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('mobile')
@@ -149,6 +168,20 @@ const sample: ManageView = {
   ],
   pairings: [{ id: 'r-1', deviceName: 'Sam’s phone', pin: '482915', secondsLeft: 104 }],
   drives: null,
+  // `?link`: a profile from another drive asking to be let in.
+  profileLinks:
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('link')
+      ? [
+          {
+            id: 'l-1',
+            deviceName: 'Nina’s phone',
+            name: 'Nina',
+            color: 6,
+            home: 'Study Drive',
+            secondsLeft: 540,
+          },
+        ]
+      : [],
 }
 
 // This device is here: it is the one asking.
@@ -296,6 +329,50 @@ function apply(action: ManageAction): boolean {
       break
     case 'listDrives':
       return true
+    case 'listFolders': {
+      const listed = MOCK_FOLDERS[action.path || '/']
+      if (!listed) throw new ApiError('notfound', `${action.path}: the host can't open it (no such folder)`)
+      const path = action.path || '/'
+      const up = path === '/' ? null : path.slice(0, path.lastIndexOf('/')) || '/'
+      sample.folders = {
+        path,
+        parent: up,
+        folders: listed.map((name) => ({ name, path: `${path === '/' ? '' : path}/${name}` })),
+      }
+      return false
+    }
+    case 'checkForUpdate':
+      if (sample.update) sample.update.checkedAt = now()
+      break
+    case 'installUpdate':
+      if (sample.update?.available) sample.update.stage = { kind: 'downloading', percent: 35 }
+      break
+    case 'setAutomaticUpdates':
+      if (sample.update) sample.update.automatic = action.enabled
+      break
+    case 'renameDrive':
+      if (!action.name.trim()) throw new ApiError('error', 'a drive needs a name')
+      if (status.vault) status.vault.name = action.name.trim()
+      break
+    case 'approveProfileLink': {
+      const link = sample.profileLinks?.find((l) => l.id === action.id)
+      if (!link) throw new ApiError('notfound', 'that request (it may have lapsed) was not found')
+      sample.profileLinks = sample.profileLinks?.filter((l) => l.id !== action.id)
+      status.profiles.push({
+        id: `p-${Date.now()}`,
+        name: link.name,
+        color: link.color,
+        hasPin: false,
+        createdAt: now(),
+        lastUsed: now(),
+        devices: [{ name: link.deviceName, remembered: true, lastUsed: now() }],
+        home: link.home,
+      })
+      break
+    }
+    case 'denyProfileLink':
+      sample.profileLinks = sample.profileLinks?.filter((l) => l.id !== action.id)
+      break
     case 'chooseDrive': {
       const drive = drives.find((d) => d.path === action.path)
       if (!drive || !drive.ready) {
@@ -306,6 +383,25 @@ function apply(action: ManageAction): boolean {
     }
   }
   return false
+}
+
+/** A small file system for the preview's folder browser. */
+const MOCK_FOLDERS: Record<string, string[]> = {
+  '/': ['home', 'media', 'mnt', 'srv'],
+  '/home': ['maya'],
+  '/home/maya': ['Documents', 'Pictures', 'Videos'],
+  '/home/maya/Documents': [],
+  '/home/maya/Pictures': [],
+  '/home/maya/Videos': [],
+  '/media': [],
+  '/mnt': ['backup'],
+  '/mnt/backup': [],
+  '/srv': ['media'],
+  '/srv/media': ['Films', 'Music', 'Photos', 'TV'],
+  '/srv/media/Films': [],
+  '/srv/media/Music': [],
+  '/srv/media/Photos': [],
+  '/srv/media/TV': [],
 }
 
 export function mockManage(action: ManageAction): ManageView {

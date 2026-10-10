@@ -51,6 +51,12 @@ export interface Status {
   /** This device can manage the host from here: it manages the host, signed
    *  in with its key, and the host can be managed from a device. */
   canManage?: boolean
+  /**
+   * The host shares a drive. False only while connected to a host that has
+   * none yet, such as one just set up from this device. Absent from an older
+   * app shell.
+   */
+  hasDrive?: boolean
 }
 
 /** Where a device keeps its key: a security chip, sealed by its system, or a file. */
@@ -73,6 +79,19 @@ export interface DiscoveredHost {
   hasVault: boolean
   /** Whether this device has already paired with it. */
   paired: boolean
+  /**
+   * A host with no screen that nobody manages yet: set up from this device
+   * with the setup code read on that machine. Absent from older apps' hosts.
+   */
+  needsSetup: boolean
+}
+
+/** What a host said when asked to pair. Mirrors `basalt_client::ui::PairingStart`. */
+export interface PairingStart {
+  /** A PIN, or the setup code, has to be typed. */
+  requiresPin: boolean
+  /** What is typed is the host's setup code, and this device will manage it. */
+  setup: boolean
 }
 
 export interface TransferEvent {
@@ -190,6 +209,41 @@ export interface ProfileView {
   /** False after the host reset the PIN: signing in chooses a new one. */
   hasPin: boolean
   lastUsed: number
+  /**
+   * A profile from another drive, used here too: it signs in with what its
+   * home drive gave this device, never a PIN here. Absent otherwise.
+   */
+  home?: ProfileHome
+}
+
+/** Where a profile from another drive lives. Mirrors `basalt_proto::msg::ProfileHome`. */
+export interface ProfileHome {
+  hostId: string
+  /** Its drive's name: "Living Room Drive". */
+  label: string
+  /** Its id there. */
+  profileId: string
+}
+
+/**
+ * A profile this device is signed in to on another drive, which it can use
+ * here. Mirrors `basalt_client::ui::ProfilePass`.
+ */
+export interface ProfilePass {
+  hostId: string
+  /** Its home drive's name. */
+  drive: string
+  profileId: string
+  name: string
+  color: number
+}
+
+/** Mirrors `basalt_client::ui::ProfileLinkOutcome`. */
+export interface ProfileLinkOutcome {
+  /** Signed in as it. */
+  profile: ProfileView | null
+  /** Waiting for someone who manages this drive to approve it. */
+  waiting: boolean
 }
 
 /** Who is using this device. */
@@ -425,7 +479,7 @@ export const api = {
   /** Every host answering on this network. Takes about a second. */
   discover: () => call<DiscoveredHost[]>('discover'),
   /** Asks a host to pair. Resolves to whether it wants a PIN. */
-  beginPairing: (address: string) => call<boolean>('begin_pairing', { address }),
+  beginPairing: (address: string) => call<PairingStart>('begin_pairing', { address }),
   /** Completes it. Pass an empty string when no PIN was asked for. */
   finishPairing: (pin: string) => call<Status>('finish_pairing', { pin }),
   cancelPairing: () => call<void>('cancel_pairing'),
@@ -450,6 +504,11 @@ export const api = {
     call<ProfileView>('sign_in_profile', { id, pin, remember }),
   signOutProfile: () => call<void>('sign_out_profile'),
   continueAsDevice: (always: boolean) => call<void>('continue_as_device', { always }),
+  /** Profiles this device is signed in to on its other drives. */
+  profilesElsewhere: () => call<ProfilePass[]>('profiles_elsewhere'),
+  /** Uses one here: signed in, or waiting for someone who manages this drive. */
+  useProfileElsewhere: (hostId: string, profileId: string, remember: boolean) =>
+    call<ProfileLinkOutcome>('use_profile_elsewhere', { hostId, profileId, remember }),
   /**
    * The subtitles for one video, wherever they are on the drive, and others
    * that might be meant for it. A host too old to know answers with an
@@ -685,6 +744,10 @@ const MOCK_STATUS: Status = {
   // `?owner` is also a device that can manage the host, as an up-to-date one is.
   canManage:
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('owner'),
+  // `?nodrive`: connected to a host just set up, with no drive chosen yet.
+  hasDrive: !(
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('nodrive')
+  ),
 }
 
 /**
@@ -810,6 +873,7 @@ const MOCK_HOSTS: DiscoveredHost[] = [
     requiresPin: false,
     hasVault: true,
     paired: true,
+    needsSetup: false,
   },
   {
     hostId: '5c1e8d2a9b7f4e03c6a1f2e3d4c5b6a7',
@@ -819,6 +883,7 @@ const MOCK_HOSTS: DiscoveredHost[] = [
     requiresPin: true,
     hasVault: true,
     paired: false,
+    needsSetup: false,
   },
   {
     hostId: 'e27b94f0c3a15d68e9f0a1b2c3d4e5f6',
@@ -828,8 +893,31 @@ const MOCK_HOSTS: DiscoveredHost[] = [
     requiresPin: true,
     hasVault: false,
     paired: false,
+    needsSetup: false,
   },
 ]
+
+/**
+ * The hosts the preview finds. `?setup` adds a host with no screen waiting to
+ * be set up, as a Raspberry Pi or a Docker container is before its first
+ * device; its setup code in the preview is K7QM-4XPR.
+ */
+function mockHosts(): DiscoveredHost[] {
+  if (!previewFlag('setup')) return MOCK_HOSTS
+  return [
+    ...MOCK_HOSTS,
+    {
+      hostId: '9d41c7e2b8a05f36d1e2f3a4b5c6d7e8',
+      hostName: 'basement-pi',
+      vault: '',
+      address: '192.168.1.31:7742',
+      requiresPin: true,
+      hasVault: false,
+      paired: false,
+      needsSetup: true,
+    },
+  ]
+}
 
 /** The showcase library: invented films and series. See `showcase.ts`. */
 const MOCK_LIBRARY: LibraryItem[] = showcase.library()
@@ -887,11 +975,14 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       // would hide whatever the waiting state looks like.
       await new Promise((resolve) => setTimeout(resolve, 900))
       // `?nohosts`: a network with no host on it, as a newcomer's is.
-      return (previewFlag('nohosts') ? [] : MOCK_HOSTS) as T
-    case 'begin_pairing':
-      return MOCK_HOSTS.some(
-        (host) => host.address === args?.address && host.requiresPin,
-      ) as T
+      return (previewFlag('nohosts') ? [] : mockHosts()) as T
+    case 'begin_pairing': {
+      const host = mockHosts().find((h) => h.address === args?.address)
+      return {
+        requiresPin: host ? host.requiresPin || host.needsSetup : true,
+        setup: host?.needsSetup ?? false,
+      } as T
+    }
     case 'finish_pairing':
       return MOCK_STATUS as T
     case 'cancel_pairing':
@@ -984,7 +1075,7 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return mockManage(args?.action as ManageAction) as T
     case 'create_profile': {
       if (mockRules.ownerAddsProfiles) {
-        throw new ApiError('denied', 'profiles on this drive are added on the host')
+        throw new ApiError('denied', 'only someone who manages this host can add profiles')
       }
       const profile: ProfileView = {
         id: `p${mockProfiles.length + 1}`,
@@ -1003,7 +1094,7 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       const pin = String(args?.pin ?? '')
       if (!profile) throw new ApiError('notfound', 'that profile is not there any more')
       if (profile.hasPin && mockPins.get(profile.id) !== pin) {
-        throw new ApiError('denied', 'that PIN is not right')
+        throw new ApiError('denied', 'that PIN isn’t right')
       }
       if (!profile.hasPin) {
         mockPins.set(profile.id, pin)
@@ -1011,6 +1102,24 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       }
       mockIdentity = { rules: mockRules, profile, choose: false, ended: false, lastProfile: profile.id }
       return profile as T
+    }
+    case 'profiles_elsewhere':
+      // `?elsewhere`: Nina, signed in on another drive, not yet let in here.
+      return (previewFlag('elsewhere') ? [MOCK_PASS] : []) as T
+    case 'use_profile_elsewhere': {
+      // Waits twice, as for a manager to approve, then is let in.
+      mockLinkAsked += 1
+      if (mockLinkAsked < 3) return { profile: null, waiting: true } as T
+      const profile: ProfileView = {
+        id: 'p-nina',
+        name: MOCK_PASS.name,
+        color: MOCK_PASS.color,
+        hasPin: false,
+        lastUsed: Math.floor(Date.now() / 1000),
+        home: { hostId: MOCK_PASS.hostId, label: MOCK_PASS.drive, profileId: MOCK_PASS.profileId },
+      }
+      mockIdentity = { rules: mockRules, profile, choose: false, ended: false, lastProfile: profile.id }
+      return { profile, waiting: false } as T
     }
     case 'sign_out_profile':
       mockIdentity = { rules: mockRules, profile: null, choose: true, ended: false, lastProfile: mockIdentity.lastProfile }
@@ -1051,6 +1160,16 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 // Preview profiles, from the showcase. Maya's PIN is 1234; Sam and Leo have
 // none yet, so signing in as either chooses one. `?device` opens as the
 // device, skipping the choice.
+/** The preview's profile from another drive. */
+const MOCK_PASS: ProfilePass = {
+  hostId: 'a83f0c6d21e94b7a5f1c2d3e4b5a6978',
+  drive: 'Living Room Drive',
+  profileId: '0a1b2c3d4e5f6071',
+  name: 'Nina',
+  color: 5,
+}
+let mockLinkAsked = 0
+
 const mockProfiles: ProfileView[] = [
   ...showcase.profiles(),
   // On a private drive the owner adds people: one not signed in yet.

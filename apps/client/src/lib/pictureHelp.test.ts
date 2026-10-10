@@ -74,7 +74,7 @@ describe('the note', () => {
   it('says why it is playing lighter instead', () => {
     const [title, text] = pictureNote({ mode: 'lighter', size: fourK, why: 'busy' }, 'phone')
     expect(title).toBe('Playing in a lighter mode')
-    expect(text).toContain('decode 4K video in hardware')
+    expect(text).toContain('play 4K video smoothly')
     expect(text).toContain('already converting for other devices')
     const [, outdated] = pictureNote({ mode: 'lighter', size: fourK, why: 'outdated' }, 'computer')
     expect(outdated).toContain('This computer')
@@ -144,7 +144,7 @@ describe('a device that struggled with a picture size', () => {
 
 describe('the quality menu', () => {
   it('says briefly why the optimized picture cannot be had', () => {
-    expect(whyNotOptimized('off')).toContain('Switched off')
+    expect(whyNotOptimized('off')).toContain('Turned off')
     expect(whyNotOptimized('slow')).toContain('too slow')
     expect(whyNotOptimized('busy')).toBeNull()
     expect(whyNotOptimized(null)).toBeNull()

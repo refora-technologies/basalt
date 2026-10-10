@@ -45,7 +45,7 @@ export function entryToMedia(entry: Entry): MediaItem {
     // The vault path, so opening a tile knows exactly which file it is.
     id: entry.id,
     title: stripExtension(entry.name),
-    subtitle: folder || 'Vault',
+    subtitle: folder || 'Drive',
     size: entry.size,
     tone: tonePair(hash(entry.id)),
   }

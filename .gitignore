@@ -38,3 +38,6 @@ apps/*/src-tauri/lib/
 # and the working plans the project was built from
 .claude/
 /docs/phase-*-plan.md
+
+# Built by packaging/build-desktop-linux.sh before the bundle, from crates/basalt-host.
+apps/host/src-tauri/linux/basalt-host-update

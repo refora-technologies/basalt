@@ -58,6 +58,23 @@ export interface ProfileSummary {
   createdAt: number
   lastUsed: number
   devices: ProfileDevice[]
+  /** A profile from another drive: that drive's name. It signs in from there, with no PIN here. */
+  home: string | null
+}
+
+/**
+ * A profile from another drive asking to be let in here. Mirrors
+ * `basalt_host::ui::LinkView`.
+ */
+export interface LinkView {
+  id: string
+  /** The device asking. */
+  deviceName: string
+  name: string
+  color: number
+  /** Its home drive's name. */
+  home: string
+  secondsLeft: number
 }
 
 /**
@@ -112,6 +129,8 @@ export interface HostStatus {
   endorsement: EndorsementView | null
   /** The system the host runs on, for the window to use its words. */
   platform: 'windows' | 'linux' | 'macos' | 'other'
+  /** Running with no screen: never true for this window's own host. */
+  headless: boolean
 }
 
 /** What a machine was measured to manage. */
@@ -194,9 +213,11 @@ export interface EndorsementView {
 export interface PairingView {
   id: string
   deviceName: string
-  /** Null when the host is not asking for a PIN. */
+  /** Null when the host is not asking for a PIN, or for a setup code. */
   pin: string | null
   secondsLeft: number
+  /** Pairing with the setup code of a host with no screen. */
+  setup: boolean
 }
 
 export type ErrorKind = 'notfound' | 'denied' | 'pairing' | 'exists' | 'declined' | 'error'
@@ -243,31 +264,42 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
  */
 export type Firewall = 'open' | 'blocked' | 'unknown'
 
-/** A release newer than the one running. Mirrors `basalt_update::Release`. */
-export interface Release {
+/**
+ * Updates, as the host keeps them. Mirrors `basalt_host::updates::UpdateView`:
+ * the same state the screenless host and a device that manages the host see.
+ */
+export interface UpdateView {
+  /** The version running. */
   version: string
-  /** The release notes, as written on GitHub. */
-  notes: string
-  pageUrl: string
-  installerName: string
-  installerUrl: string
-  installerBytes: number
-  checksumUrl: string | null
+  /** How this copy is updated. */
+  method: 'installer' | 'appImage' | 'package' | 'service' | 'container' | 'manual'
+  canInstall: boolean
+  automatic: boolean
+  available: { version: string; notes: string; pageUrl: string } | null
+  stage:
+    | { kind: 'idle' }
+    | { kind: 'checking' }
+    | { kind: 'downloading'; percent: number }
+    | { kind: 'installing' }
+    | { kind: 'failed'; why: string }
+  checkedAt: number | null
+  /** What to run, where the host cannot update itself. */
+  command: string | null
+  outcome: { version: string; ok: boolean; message: string; at: number } | null
 }
 
 export const api = {
   /** Which version this is, as the release tags spell it. */
   appVersion: (): Promise<string> => call('app_version'),
-  /** A newer release, or null when this is the newest. */
-  checkUpdate: (): Promise<Release | null> => call('check_update'),
-  /** Fetches and verifies an installer, returning where it landed. */
-  downloadUpdate: (release: Release): Promise<string> =>
-    call('download_update', { release }),
-  /** Runs the installer and closes this app so it can be replaced. */
-  installUpdate: (path: string): Promise<void> => call('install_update', { path }),
-  /** `restart`: the app puts the update in and restarts; `package`: the
-   *  system's software installer takes it (a .deb or .rpm on Linux). */
-  updateStyle: (): Promise<'restart' | 'package'> => call('update_style'),
+  /** Where updates stand. */
+  updateStatus: (): Promise<UpdateView> => call('update_status'),
+  /** Looks for a newer release now. */
+  checkUpdate: (): Promise<UpdateView> => call('check_update'),
+  /** Puts the newest release in: downloads, checks and installs it, then
+   *  the host restarts by itself. */
+  installUpdate: (): Promise<UpdateView> => call('install_update'),
+  setAutomaticUpdates: (enabled: boolean): Promise<UpdateView> =>
+    call('set_automatic_updates', { enabled }),
   /** Tells the page the mouse button was let go, after the window was handed
    *  to the system to move or resize: on Linux it is never told otherwise. */
   releasePointer: (): Promise<void> => call('release_pointer'),
@@ -277,6 +309,7 @@ export const api = {
   chooseVault: (path: string, name: string): Promise<HostStatus> =>
     call('choose_vault', { path, name }),
   setHostName: (name: string): Promise<HostStatus> => call('set_host_name', { name }),
+  renameDrive: (name: string): Promise<HostStatus> => call('rename_drive', { name }),
 
   devices: (): Promise<DeviceView[]> => call('devices'),
   revokeDevice: (id: string): Promise<boolean> => call('revoke_device', { id }),
@@ -320,6 +353,10 @@ export const api = {
   /** Which build this is — the commit and the day it was made. */
   buildInfo: (): Promise<string> => call('build_info'),
   openLogFolder: (): Promise<void> => call('open_log_folder'),
+  /** Profiles from other drives waiting to be let in. */
+  profileLinks: (): Promise<LinkView[]> => call('profile_links'),
+  approveProfileLink: (id: string): Promise<void> => call('approve_profile_link', { id }),
+  denyProfileLink: (id: string): Promise<boolean> => call('deny_profile_link', { id }),
   /** Whether the computer's firewall lets other devices reach this host. */
   firewall: (): Promise<Firewall> => call('firewall'),
   /** Lets them, once Windows has asked for an administrator. */
@@ -405,6 +442,7 @@ const sample: {
           { name: "Maya's laptop", remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 120 },
           { name: "Maya's phone", remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 5400 },
         ],
+        home: null,
       },
       {
         id: 'p2',
@@ -414,6 +452,7 @@ const sample: {
         createdAt: Math.floor(Date.now() / 1000) - 86400 * 12,
         lastUsed: Math.floor(Date.now() / 1000) - 86400,
         devices: [{ name: "Sam's tablet", remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 86400 }],
+        home: null,
       },
       {
         id: 'p3',
@@ -423,6 +462,7 @@ const sample: {
         createdAt: Math.floor(Date.now() / 1000) - 86400 * 4,
         lastUsed: Math.floor(Date.now() / 1000) - 86400 * 3,
         devices: [],
+        home: null,
       },
     ],
     sections: { movies: true, series: true, videos: true, music: true, photos: true },
@@ -434,6 +474,7 @@ const sample: {
       typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('linux')
         ? 'linux'
         : 'windows',
+    headless: false,
   },
   devices: [
     {
@@ -491,6 +532,7 @@ const sample: {
       deviceName: 'Kitchen tablet',
       pin: '482915',
       secondsLeft: 104,
+      setup: false,
     },
   ],
   drives: [
@@ -501,17 +543,13 @@ const sample: {
   ],
 }
 
+/** `?link` in the preview, until the request is let in or turned away. */
+let mockLinkSettled = false
+
 /** `?blocked` in the preview, until "Allow" is clicked. */
 let mockFirewallOpened = false
 
 function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  // The one command that does not resolve at once in the app either: it
-  // resolves when the download has finished, having reported progress along
-  // the way. Handled here rather than in `answer` so the preview keeps that
-  // shape, because a bar that never fills is not a bar anybody can review.
-  if (command === 'download_update') {
-    return mockDownload(args?.release as Release) as Promise<T>
-  }
   // Windows asking for an administrator, and someone answering.
   if (command === 'allow_through_firewall') {
     return new Promise<T>((resolve, reject) =>
@@ -565,6 +603,9 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
       }
       case 'set_host_name':
         sample.status.hostName = String(args?.name ?? '')
+        return sample.status
+      case 'rename_drive':
+        if (sample.status.vault) sample.status.vault.name = String(args?.name ?? '')
         return sample.status
       case 'devices':
         return sample.devices
@@ -710,6 +751,7 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
             createdAt: Date.now() / 1000,
             lastUsed: 0,
             devices: [],
+            home: null,
           },
         ]
         return sample.status
@@ -733,14 +775,49 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return 'preview · not a real build'
       case 'app_version':
         return MOCK_VERSION
+      case 'update_status':
+        return mockUpdate()
       case 'check_update':
-        return previewFlag('update') ? MOCK_RELEASE : null
+        mockUpdateChecked = true
+        return mockUpdate()
       case 'install_update':
-        return undefined
-      case 'update_style':
-        return previewFlag('package') ? 'package' : 'restart'
+        mockUpdateStarted = Date.now()
+        return mockUpdate()
+      case 'set_automatic_updates':
+        mockAutomatic = Boolean(args?.enabled)
+        return mockUpdate()
       case 'open_log_folder':
         return undefined
+      case 'profile_links':
+        // `?link`: Nina, from another drive, asking to be let in.
+        return previewFlag('link') && !mockLinkSettled
+          ? [
+              {
+                id: 'link-1',
+                deviceName: 'Nina’s phone',
+                name: 'Nina',
+                color: 5,
+                home: 'Living Room Drive',
+                secondsLeft: 540,
+              },
+            ]
+          : []
+      case 'approve_profile_link':
+        mockLinkSettled = true
+        sample.status.profiles.push({
+          id: 'p-nina-linked',
+          name: 'Nina',
+          color: 5,
+          hasPin: false,
+          createdAt: Math.floor(Date.now() / 1000),
+          lastUsed: Math.floor(Date.now() / 1000),
+          devices: [{ name: 'Nina’s phone', remembered: true, lastUsed: Math.floor(Date.now() / 1000) }],
+          home: 'Living Room Drive',
+        })
+        return undefined
+      case 'deny_profile_link':
+        mockLinkSettled = true
+        return true
       case 'firewall':
         return previewFlag('blocked') && !mockFirewallOpened ? 'blocked' : 'open'
 
@@ -783,23 +860,52 @@ const MOCK_VERSION: string = packageInfo.version
  * chose, so without this the panel could only ever be reviewed by publishing
  * a release — which is a poor moment to discover the notes do not fit.
  */
-const MOCK_RELEASE: Release = {
-  version: '9.9.0',
-  notes: [
-    '## New',
-    '',
-    '* **Two drives at once**, shared as one.',
-    '* **Per-device access**, so a device can be given read-only.',
-    '',
-    '## Fixed',
-    '',
-    '* A scan no longer stalls on a folder the drive refuses to list.',
-  ].join('\n'),
-  pageUrl: 'https://example.test/releases/v9.9.0',
-  installerName: 'Basalt-Host-9.9.0-setup.exe',
-  installerUrl: 'https://example.test/Basalt-Host-9.9.0-setup.exe',
-  installerBytes: 5_200_000,
-  checksumUrl: 'https://example.test/Basalt-Host-9.9.0-setup.exe.sha256',
+const MOCK_NOTES = [
+  '## New',
+  '',
+  '* **Two drives at once**, shared as one.',
+  '* **Per-device access**, so a device can be given read-only.',
+  '',
+  '## Fixed',
+  '',
+  '* A scan no longer stalls on a folder the drive refuses to list.',
+].join('\n')
+
+let mockAutomatic = true
+let mockUpdateChecked = false
+let mockUpdateStarted = 0
+
+/**
+ * Updates in the preview. `?update` offers 9.9.0; pressing Update now walks
+ * through downloading and installing in a few seconds. `?package` is a Linux
+ * package, `?docker` a container, which cannot update itself.
+ */
+function mockUpdate(): UpdateView {
+  const method: UpdateView['method'] = previewFlag('docker')
+    ? 'container'
+    : previewFlag('package')
+      ? 'package'
+      : 'installer'
+  const since = mockUpdateStarted ? Date.now() - mockUpdateStarted : -1
+  const stage: UpdateView['stage'] =
+    since < 0
+      ? { kind: 'idle' }
+      : since < 3000
+        ? { kind: 'downloading', percent: Math.min(100, Math.round(since / 30)) }
+        : { kind: 'installing' }
+  return {
+    version: MOCK_VERSION,
+    method,
+    canInstall: method !== 'container',
+    automatic: mockAutomatic,
+    available: previewFlag('update')
+      ? { version: '9.9.0', notes: MOCK_NOTES, pageUrl: 'https://example.test/releases/v9.9.0' }
+      : null,
+    stage,
+    checkedAt: mockUpdateChecked || previewFlag('update') ? Math.floor(Date.now() / 1000) - 300 : null,
+    command: method === 'container' ? 'docker compose pull && docker compose up -d' : null,
+    outcome: null,
+  }
 }
 
 function previewFlag(name: string): boolean {
@@ -810,16 +916,3 @@ function previewFlag(name: string): boolean {
 }
 
 /** Fills the bar over a couple of seconds, then resolves like the real one. */
-async function mockDownload(release: Release): Promise<string> {
-  const total = release.installerBytes
-  const steps = 12
-  for (let tick = 1; tick <= steps; tick += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 160))
-    window.dispatchEvent(
-      new CustomEvent('basalt://update-progress', {
-        detail: [Math.min(Math.ceil((total / steps) * tick), total), total],
-      }),
-    )
-  }
-  return `C:\Users\preview\Downloads\${release.installerName}`
-}

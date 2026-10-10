@@ -1,0 +1,13 @@
+[Unit]
+Description=Basalt Host update: puts the newest release in
+Documentation=https://github.com/refora-technologies/basalt
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Started by basalt-host-update.path when the host asks. Runs as root to
+# install a package, and takes nothing from the host but the request itself:
+# it finds, downloads and checks the newest official release on its own.
+ExecStart=/usr/lib/basalt-host/basalt-host-update --service
+PrivateTmp=yes

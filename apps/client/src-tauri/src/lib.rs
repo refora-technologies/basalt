@@ -99,7 +99,10 @@ async fn discover(state: State<'_, AppState>) -> Answer<Vec<DiscoveredHost>> {
 /// against the number to read across — so the interface can show a PIN field
 /// knowing one is on screen at the other end.
 #[tauri::command]
-async fn begin_pairing(state: State<'_, AppState>, address: String) -> Answer<bool> {
+async fn begin_pairing(
+    state: State<'_, AppState>,
+    address: String,
+) -> Answer<basalt_client::ui::PairingStart> {
     Ok(state.client.begin_pairing_at(&address).await?)
 }
 
@@ -215,11 +218,17 @@ struct PhoneKeyStore(tauri::AppHandle);
 impl basalt_client::keys::PhoneKeys for PhoneKeyStore {
     fn create(&self, alias: &str) -> Result<Vec<u8>, String> {
         use tauri_plugin_basalt_android::BasaltAndroidExt;
-        self.0.basalt_android().key_create(alias).map_err(|e| e.to_string())
+        self.0
+            .basalt_android()
+            .key_create(alias)
+            .map_err(|e| e.to_string())
     }
     fn public(&self, alias: &str) -> Result<Option<Vec<u8>>, String> {
         use tauri_plugin_basalt_android::BasaltAndroidExt;
-        self.0.basalt_android().key_public(alias).map_err(|e| e.to_string())
+        self.0
+            .basalt_android()
+            .key_public(alias)
+            .map_err(|e| e.to_string())
     }
     fn sign(&self, alias: &str, message: &[u8]) -> Result<Vec<u8>, String> {
         use tauri_plugin_basalt_android::BasaltAndroidExt;
@@ -230,7 +239,10 @@ impl basalt_client::keys::PhoneKeys for PhoneKeyStore {
     }
     fn delete(&self, alias: &str) -> Result<(), String> {
         use tauri_plugin_basalt_android::BasaltAndroidExt;
-        self.0.basalt_android().key_delete(alias).map_err(|e| e.to_string())
+        self.0
+            .basalt_android()
+            .key_delete(alias)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -416,9 +428,16 @@ async fn identity(state: State<'_, AppState>) -> Answer<basalt_client::IdentityS
 #[tauri::command]
 async fn manage(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     action: basalt_proto::msg::ManageAction,
 ) -> Answer<serde_json::Value> {
-    Ok(state.client.manage(action).await?)
+    let before = state.client.status().map(|i| (i.has_vault, i.vault));
+    let view = state.client.manage(action).await?;
+    // A drive chosen, or another: the rest of the window follows at once.
+    if state.client.status().map(|i| (i.has_vault, i.vault)) != before {
+        let _ = app.emit("basalt://status", status_of(&state.client));
+    }
+    Ok(view)
 }
 
 #[tauri::command]
@@ -448,6 +467,28 @@ async fn sign_in_profile(
     remember: bool,
 ) -> Answer<basalt_proto::msg::ProfileView> {
     Ok(state.client.sign_in_profile(&id, &pin, remember).await?)
+}
+
+/// Profiles this device is signed in to on its other drives.
+#[tauri::command]
+async fn profiles_elsewhere(
+    state: State<'_, AppState>,
+) -> Answer<Vec<basalt_client::ui::ProfilePass>> {
+    Ok(state.client.profiles_elsewhere())
+}
+
+/// Uses one of them here: signed in, or waiting for approval.
+#[tauri::command]
+async fn use_profile_elsewhere(
+    state: State<'_, AppState>,
+    host_id: String,
+    profile_id: String,
+    remember: bool,
+) -> Answer<basalt_client::ui::ProfileLinkOutcome> {
+    Ok(state
+        .client
+        .use_profile_elsewhere(&host_id, &profile_id, remember)
+        .await?)
 }
 
 #[tauri::command]
@@ -872,7 +913,7 @@ async fn download_to_phone(
         })?
         .map_err(|e| UiError {
             kind: "error".into(),
-            message: format!("could not save to Downloads: {e}"),
+            message: format!("couldn’t save to Downloads: {e}"),
         })?;
 
         let cancel = Cancel::new();
@@ -942,7 +983,7 @@ async fn open_externally(
         Some(path) => Some(
             basalt_client::players::chosen(std::path::Path::new(&path)).ok_or_else(|| UiError {
                 kind: "noplayer".into(),
-                message: "That player is not on this computer any more.".into(),
+                message: "That player is no longer on this computer.".into(),
             })?,
         ),
         None => basalt_client::players::installed(extension_of(&remote))
@@ -952,7 +993,7 @@ async fn open_externally(
     let Some(player) = chosen else {
         return Err(UiError {
             kind: "noplayer".into(),
-            message: "No player that can stream was found on this computer.".into(),
+            message: "No player that can stream was found on this computer. Install VLC, then try again.".into(),
         });
     };
 
@@ -964,7 +1005,7 @@ async fn open_externally(
         .insert(remote.clone());
     basalt_client::players::launch(&player, &url).map_err(|e| UiError {
         kind: "error".into(),
-        message: format!("could not start {}: {e}", player.name),
+        message: format!("couldn’t start {}: {e}", player.name),
     })?;
     Ok(OpenResult {
         player: player.name,
@@ -1013,7 +1054,7 @@ async fn copy_and_open(
         .open_path(shown.clone(), None::<&str>)
         .map_err(|e| UiError {
             kind: "error".into(),
-            message: format!("could not open {shown}: {e}"),
+            message: format!("couldn’t open {shown}: {e}"),
         })?;
     Ok(OpenResult {
         player: "the default app".into(),
@@ -1182,7 +1223,7 @@ async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
         .spawn()
         .map_err(|e| UiError {
             kind: "error".into(),
-            message: format!("could not start the installer: {e}"),
+            message: format!("couldn’t start the installer: {e}"),
         })?;
 
     // A moment for the installer to be up before this window disappears,
@@ -1360,6 +1401,8 @@ pub fn run() {
             status,
             discover,
             begin_pairing,
+            profiles_elsewhere,
+            use_profile_elsewhere,
             finish_pairing,
             cancel_pairing,
             connect_saved,

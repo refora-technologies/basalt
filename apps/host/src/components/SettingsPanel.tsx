@@ -68,8 +68,8 @@ export function SettingsPanel({
         title="Ask for a PIN when pairing"
         detail={
           status.requirePin
-            ? 'A new device shows up here with a number to type. Nobody joins without someone at this machine.'
-            : 'Anyone on this network who finds this machine can read the drive without being let in.'
+            ? 'A new device shows up here with a number to type. Nobody joins without being let in.'
+            : 'Any device on this network can join and open the drive without a PIN.'
         }
         warn={!status.requirePin}
         control={
@@ -139,7 +139,7 @@ export function SettingsPanel({
 
       <Row
         title="Sections on your devices"
-        detail="What each device lists under Library. Hiding a section only tidies the sidebar; every file stays reachable under Files."
+        detail="What each device shows under Library. Hiding a section only tidies the list. Every file is still in Files."
         extra={
           <SectionPicker
             sections={status.sections}
@@ -167,7 +167,7 @@ export function SettingsPanel({
       />
 
       <Row
-        title="This machine's name"
+        title="This host’s name"
         detail="What your devices see in their list, before they pair."
         control={
           editingName ? (
@@ -213,7 +213,7 @@ export function SettingsPanel({
 
       <div className="px-5 py-3.5">
         <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
-          Reachable at
+          Address
         </div>
         <div className="tnum mt-1.5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11.5px] text-textDim">
           {status.addresses.length > 0 ? (
@@ -230,14 +230,14 @@ export function SettingsPanel({
               )}
             </>
           ) : (
-            <span className="text-textFaint">no network connection</span>
+            <span className="text-textFaint">No network connection</span>
           )}
         </div>
         <p className="mt-2 text-[11px] leading-relaxed text-textFaint">
           {/* Shown because it is occasionally useful to know, and never
               because anyone has to type it. */}
-          For your information only — your devices find this machine by themselves, and keep
-          finding it when the address changes.
+          Only for reference. Your devices find this host by themselves, even when its
+          address changes.
         </p>
 
         {/* Which build this is, and where it writes its log. Both exist
@@ -320,8 +320,8 @@ function Artwork({
             {/* Said plainly, because this is the actual cost of the switch and
                 no key is required any more to make somebody think about it. */}
             {posters
-              ? `Sending each recognised title to a lookup service. ${withArt} of ${total} have artwork.`
-              : 'Off. Covers are drawn from the title. Turning this on sends each recognised title to a lookup service.'}
+              ? `Each recognised title is looked up online for its poster. ${withArt} of ${total} have one.`
+              : 'Off. Covers are made from the title. When on, the titles of recognised films and series are sent to an online service to find their posters.'}
           </p>
         </div>
         <div className="mt-0.5 shrink-0">
@@ -338,7 +338,7 @@ function Artwork({
           className="mt-1.5 flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] text-textFaint transition-colors hover:bg-panel2 hover:text-textDim"
         >
           <ImageIcon size={11} />
-          {hasKey ? 'A TMDb key is saved' : 'Add a TMDb key for more coverage…'}
+          {hasKey ? 'A TMDb key is saved' : 'Add a TMDb key to find more posters…'}
         </button>
       ) : (
         <motion.div
@@ -361,7 +361,7 @@ function Artwork({
                 autoFocus
                 type="password"
                 value={draft}
-                placeholder={hasKey ? 'a key is saved — paste a new one to replace it' : 'TMDb API key'}
+                placeholder={hasKey ? 'A key is saved. Paste a new one to replace it.' : 'TMDb API key'}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {

@@ -51,7 +51,7 @@ export function ProfileAccess({
                 cannotRequire
                   ? 'Add a profile first. With none, nobody could sign in.'
                   : rules.requireProfile
-                    ? 'Every device signs in to a profile. Nobody uses the drive as just a device.'
+                    ? 'Everyone signs in to a profile to use the drive.'
                     : 'Devices can also continue as themselves, keeping their own history and stars.'
               }
             />
@@ -76,8 +76,8 @@ export function ProfileAccess({
               <Segmented
                 value={rules.ownerAddsProfiles ? 'host' : 'anyone'}
                 options={[
-                  { value: 'anyone', label: 'Anyone using the drive' },
-                  { value: 'host', label: 'Only this host' },
+                  { value: 'anyone', label: 'Anyone' },
+                  { value: 'host', label: 'Managers only' },
                 ]}
                 onChange={(value) => onOwnerAddsProfiles(value === 'host')}
               />
@@ -85,7 +85,7 @@ export function ProfileAccess({
             <Detail
               text={
                 rules.ownerAddsProfiles
-                  ? 'Profiles are added here. Each person chooses their own PIN the first time they sign in.'
+                  ? 'Profiles are added here, or from a device that manages this host. Each person chooses their own PIN the first time they sign in.'
                   : 'A new profile can be made from any paired device, by whoever is using it.'
               }
             />

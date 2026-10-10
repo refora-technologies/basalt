@@ -293,7 +293,7 @@ export function PlayerOverlay({
       .then(async (url) => {
         if (cancelled) return
         if (!url) {
-          setFailed('This file could not be opened for streaming.')
+          setFailed('This file couldn’t be opened.')
           return
         }
         const at = resumeAt > 0 ? resumeAt : 0
@@ -984,7 +984,7 @@ export function PlayerOverlay({
           if (!refused && status?.kind === 'offline') {
             setReconnecting(null)
             setLost(at)
-            setFailed('Lost the connection to Basalt Host. Check that it is running, then try again.')
+            setFailed('Lost the connection to Basalt Host. Check that it’s running, then try again.')
             return
           }
           // The host will not, or keeps failing: the file itself, from here.
@@ -1383,7 +1383,7 @@ export function PlayerOverlay({
                 </div>
                 <div className="mt-1 text-sm text-textDim">{item.subtitle}</div>
                 <div className="mt-6 font-mono text-[11px] text-textFaint">
-                  streaming from the vault · nothing downloaded
+                  streaming from the drive · nothing downloaded
                 </div>
               </div>
             )}
@@ -1911,7 +1911,7 @@ function QualityMenu({
       <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
         <QualityChoice
           icon={Sparkles}
-          label="Optimized for this device"
+          label="Optimised for this device"
           detail={unavailable ?? `1080p, converted by Basalt Host${by}. Smooth.`}
           active={converted}
           disabled={unavailable !== null}

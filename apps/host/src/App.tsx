@@ -7,6 +7,7 @@ import { DeviceList, OwnerLine } from './components/DeviceList'
 import { PairingRequests } from './components/PairingRequests'
 import { SettingsPanel } from './components/SettingsPanel'
 import { UpdateBanner } from './components/UpdateBanner'
+import { ProfileLinks } from './components/ProfileLinks'
 import { FirewallNotice } from './components/FirewallNotice'
 import { ProfileList } from './components/ProfileList'
 import { ProfileAccess } from './components/ProfileAccess'
@@ -29,12 +30,13 @@ const PAIRING_INTERVAL = 900
 const SLOW_START = 10_000
 /** Said plainly, with somewhere to go next. */
 const STUCK =
-  'This is taking longer than it should. The drive may be slow to wake, or something is stuck — the log will say which.'
+  'This is taking longer than usual. The drive may be slow to wake up. If it doesn’t clear, the log says why.'
 
 export function App(): React.JSX.Element {
   const status = usePoll<HostStatus>(useCallback(() => api.status(), []), STATUS_INTERVAL)
   const devices = usePoll<DeviceView[]>(useCallback(() => api.devices(), []), DEVICE_INTERVAL)
   const pairings = usePoll(useCallback(() => api.pendingPairings(), []), PAIRING_INTERVAL)
+  const links = usePoll(useCallback(() => api.profileLinks(), []), PAIRING_INTERVAL)
 
   const [prompt, setPrompt] = useState<PromptRequest | null>(null)
   const [message, setMessage] = useState<MessageRequest | null>(null)
@@ -158,6 +160,17 @@ export function App(): React.JSX.Element {
                   status={current}
                   onChange={() => setReconfiguring(true)}
                   onOpen={() => void api.openVaultFolder().catch(() => {})}
+                  onRename={() =>
+                    setPrompt({
+                      title: 'Name this drive',
+                      value: current.vault?.name ?? '',
+                      confirmLabel: 'Rename',
+                      select: 'all',
+                      onConfirm: (name) => {
+                        void api.renameDrive(name).then(apply)
+                      },
+                    })
+                  }
                 />
 
                 <section>
@@ -250,6 +263,21 @@ export function App(): React.JSX.Element {
                       Add profile
                     </motion.button>
                   </div>
+                  <ProfileLinks
+                    links={links.data ?? []}
+                    onApprove={(link) => {
+                      void api
+                        .approveProfileLink(link.id)
+                        .then(() => {
+                          links.refresh()
+                          status.refresh()
+                        })
+                        .catch((e: unknown) => setRulesError(reason(e)))
+                    }}
+                    onDeny={(link) => {
+                      void api.denyProfileLink(link.id).then(() => links.refresh())
+                    }}
+                  />
                   <ProfileAccess
                     rules={current.profileRules}
                     profileCount={current.profiles.length}
@@ -332,7 +360,7 @@ export function App(): React.JSX.Element {
                         .measureConversion()
                         .then(apply)
                         .catch((e: unknown) =>
-                          setMessage({ title: 'Cannot measure right now', message: reason(e) }),
+                          setMessage({ title: 'Can’t measure right now', message: reason(e) }),
                         )
                     }}
                     onRescan={() => {
