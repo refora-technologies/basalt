@@ -224,7 +224,7 @@ async fn a_folder_is_found_by_browsing_shared_by_its_name_and_renamed() {
             })
             .await,
     );
-    assert!(why.contains("can't open"), "{why}");
+    assert!(why.contains("can’t open"), "{why}");
 
     // Shared with no name given: called by its own name, not its path.
     let view = phone
@@ -258,13 +258,13 @@ async fn a_device_that_does_not_manage_the_host_is_refused() {
     let (phone, _) = fixture.paired("phone").await;
     assert!(!phone.status().unwrap().manage);
     let why = refused(phone.manage(ManageAction::View).await);
-    assert!(why.contains("does not manage this host"), "{why}");
+    assert!(why.contains("doesn’t manage this host"), "{why}");
     let why = refused(
         phone
             .manage(ManageAction::SetRequirePin { require: false })
             .await,
     );
-    assert!(why.contains("does not manage this host"), "{why}");
+    assert!(why.contains("doesn’t manage this host"), "{why}");
     assert!(fixture.host.status(true).await.require_pin);
 }
 
@@ -285,7 +285,7 @@ async fn a_device_on_a_pairing_code_cannot_manage() {
     let id = fixture.host.devices()[0].token_hash.clone();
     assert!(fixture.host.set_owner(&id, true).is_err());
     let why = refused(old.manage(ManageAction::View).await);
-    assert!(why.contains("does not manage this host"), "{why}");
+    assert!(why.contains("doesn’t manage this host"), "{why}");
 }
 
 #[tokio::test]
@@ -300,7 +300,7 @@ async fn a_device_no_longer_managing_is_stopped_at_its_next_request() {
     // Taken away at the host while the phone's connection is still open.
     fixture.host.set_owner(&phone_id, false).unwrap();
     let why = refused(phone.manage(ManageAction::View).await);
-    assert!(why.contains("does not manage this host"), "{why}");
+    assert!(why.contains("doesn’t manage this host"), "{why}");
 }
 
 #[tokio::test]

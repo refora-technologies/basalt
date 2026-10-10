@@ -148,7 +148,7 @@ impl Host {
         {
             if waiting.refused {
                 return Err(HostError::Denied(format!(
-                    "someone who manages this drive turned {} from {} away",
+                    "someone who manages this drive declined {} from {}",
                     waiting.name, waiting.home.label
                 )));
             }
@@ -208,7 +208,9 @@ impl Host {
             let index = links
                 .iter()
                 .position(|l| l.id == id && !l.refused)
-                .ok_or_else(|| HostError::NotFound("that request (it may have lapsed)".into()))?;
+                .ok_or_else(|| {
+                    HostError::BadRequest("that request has expired or was already answered".into())
+                })?;
             links.remove(index)
         };
         self.profiles.lock().expect("profiles lock").add_linked(

@@ -218,11 +218,17 @@ struct PhoneKeyStore(tauri::AppHandle);
 impl basalt_client::keys::PhoneKeys for PhoneKeyStore {
     fn create(&self, alias: &str) -> Result<Vec<u8>, String> {
         use tauri_plugin_basalt_android::BasaltAndroidExt;
-        self.0.basalt_android().key_create(alias).map_err(|e| e.to_string())
+        self.0
+            .basalt_android()
+            .key_create(alias)
+            .map_err(|e| e.to_string())
     }
     fn public(&self, alias: &str) -> Result<Option<Vec<u8>>, String> {
         use tauri_plugin_basalt_android::BasaltAndroidExt;
-        self.0.basalt_android().key_public(alias).map_err(|e| e.to_string())
+        self.0
+            .basalt_android()
+            .key_public(alias)
+            .map_err(|e| e.to_string())
     }
     fn sign(&self, alias: &str, message: &[u8]) -> Result<Vec<u8>, String> {
         use tauri_plugin_basalt_android::BasaltAndroidExt;
@@ -233,7 +239,10 @@ impl basalt_client::keys::PhoneKeys for PhoneKeyStore {
     }
     fn delete(&self, alias: &str) -> Result<(), String> {
         use tauri_plugin_basalt_android::BasaltAndroidExt;
-        self.0.basalt_android().key_delete(alias).map_err(|e| e.to_string())
+        self.0
+            .basalt_android()
+            .key_delete(alias)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -462,7 +471,9 @@ async fn sign_in_profile(
 
 /// Profiles this device is signed in to on its other drives.
 #[tauri::command]
-async fn profiles_elsewhere(state: State<'_, AppState>) -> Answer<Vec<basalt_client::ui::ProfilePass>> {
+async fn profiles_elsewhere(
+    state: State<'_, AppState>,
+) -> Answer<Vec<basalt_client::ui::ProfilePass>> {
     Ok(state.client.profiles_elsewhere())
 }
 

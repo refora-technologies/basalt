@@ -835,8 +835,8 @@ function previewStep(profiles: ProfileView[]): Step {
 /** What a private drive's rules mean, in one line under the profiles. */
 function privateNote(rules: ProfileRules): string {
   if (rules.requireProfile && rules.ownerAddsProfiles) {
-    return 'A private drive. Profiles are added on the host.'
+    return 'A private drive. Only someone who manages this host can add profiles.'
   }
   if (rules.requireProfile) return 'This drive asks everyone to sign in to a profile.'
-  return 'New profiles are added on the host.'
+  return 'Only someone who manages this host can add profiles.'
 }

@@ -194,7 +194,7 @@ async fn a_profile_turned_away_stays_away() {
         .unwrap_err();
     assert!(
         err.to_string()
-            .contains("turned Maya from Living Room Drive away"),
+            .contains("declined Maya from Living Room Drive"),
         "{err}"
     );
     assert!(w.other.host.profile_views().is_empty());

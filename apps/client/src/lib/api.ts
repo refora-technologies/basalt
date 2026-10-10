@@ -1075,7 +1075,7 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return mockManage(args?.action as ManageAction) as T
     case 'create_profile': {
       if (mockRules.ownerAddsProfiles) {
-        throw new ApiError('denied', 'profiles on this drive are added on the host')
+        throw new ApiError('denied', 'only someone who manages this host can add profiles')
       }
       const profile: ProfileView = {
         id: `p${mockProfiles.length + 1}`,
@@ -1094,7 +1094,7 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       const pin = String(args?.pin ?? '')
       if (!profile) throw new ApiError('notfound', 'that profile is not there any more')
       if (profile.hasPin && mockPins.get(profile.id) !== pin) {
-        throw new ApiError('denied', 'that PIN is not right')
+        throw new ApiError('denied', 'that PIN isn’t right')
       }
       if (!profile.hasPin) {
         mockPins.set(profile.id, pin)

@@ -266,9 +266,9 @@ paired with {} ({})",
                     println!("{} at {}{default}", player.name, player.path.display());
                 }
             }
-            _ => println!(
-                "none found. Install VLC or mpv to stream files the window                      cannot decode."
-            ),
+            _ => {
+                println!("none found. Install VLC or mpv to stream files the window cannot decode.")
+            }
         },
 
         Command::Status => {

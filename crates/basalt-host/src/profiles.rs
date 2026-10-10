@@ -382,7 +382,7 @@ impl ProfileBook {
         if failures.locked_until > now {
             let wait = failures.locked_until - now;
             return Err(HostError::Denied(format!(
-                "too many wrong PINs; try again in {}",
+                "too many wrong PINs. Try again in {}",
                 if wait >= 60 {
                     format!("{} minutes", (wait + 59) / 60)
                 } else {
@@ -412,7 +412,7 @@ impl ProfileBook {
                         let lock = (FIRST_LOCK_SECS << doublings).min(LONGEST_LOCK_SECS);
                         failures.locked_until = now + lock;
                     }
-                    return Err(HostError::Denied("that PIN is not right".into()));
+                    return Err(HostError::Denied("that PIN isn’t right".into()));
                 }
             }
             None => {
@@ -673,7 +673,7 @@ mod tests {
         // The next wrong one locks it; now even the right PIN waits.
         assert!(b.sign_in(&p.id, "0000", "d", false, 10).is_err());
         let err = b.sign_in(&p.id, "4821", "d", false, 20).unwrap_err();
-        assert!(err.to_string().contains("try again"), "{err}");
+        assert!(err.to_string().contains("Try again"), "{err}");
 
         // Another wrong one once the lock is over locks it for twice as long.
         let after_first = 10 + FIRST_LOCK_SECS + 1;

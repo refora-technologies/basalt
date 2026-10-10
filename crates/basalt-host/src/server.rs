@@ -919,7 +919,7 @@ impl Host {
     fn accept_endorsement(&self, device: &Device, statement: SignedStatement) -> Result<()> {
         let denied = |why: String| HostError::Denied(why);
         if !device.owner {
-            return Err(denied("this device does not manage this host".into()));
+            return Err(denied("this device doesn’t manage this host".into()));
         }
         let owner = basalt_trust::PublicKey::from_hex(&device.public_key)
             .map_err(|e| denied(e.to_string()))?;
@@ -1814,10 +1814,9 @@ impl Host {
         /// Enough to choose from by hand; a drive can hold thousands.
         const OTHERS: usize = 100;
 
-        let vault = self
-            .vault()
-            .await
-            .ok_or_else(|| HostError::Unavailable("no drive is being served".into()))?;
+        let vault = self.vault().await.ok_or_else(|| {
+            HostError::Unavailable("this host isn’t sharing a drive right now".into())
+        })?;
         // Through the vault, so a path from the wire cannot reach outside it.
         vault.resolve(path)?;
         let drive = self.drive_subtitles();
@@ -1895,8 +1894,8 @@ impl Host {
         {
             let mut slot = self.vault.write().await;
             let Some(current) = slot.as_ref() else {
-                return Err(HostError::NotFound(
-                    "a drive to rename: none is shared yet".into(),
+                return Err(HostError::BadRequest(
+                    "no drive is shared yet, so there is nothing to rename".into(),
                 ));
             };
             let mut renamed = (**current).clone();
@@ -2524,7 +2523,7 @@ impl Host {
             .unwrap_or(false);
         if gone {
             HostError::Unavailable(format!(
-                "{} is not connected to the host right now",
+                "{} isn’t connected to the host right now",
                 vault.name()
             ))
         } else {
@@ -2539,10 +2538,10 @@ impl Host {
         let config = self.config.lock().expect("config lock");
         Err(match config.vault_path {
             Some(_) => HostError::Unavailable(format!(
-                "{} is not connected to the host right now",
+                "{} isn’t connected to the host right now",
                 config.vault_name
             )),
-            None => HostError::Denied("this host has not been given a drive to share yet".into()),
+            None => HostError::Denied("this host isn’t sharing a drive yet".into()),
         })
     }
 }
@@ -3073,8 +3072,7 @@ where
             // updated.
             if setup && req.key.is_none() {
                 return Err(HostError::PairingRefused(
-                    "setting up this host needs an up-to-date Basalt on this device. Update it                      and try again."
-                        .into(),
+                    "update Basalt on this device to set up this host".into(),
                 ));
             }
             if let Some(key) = req.key.as_deref() {
@@ -3545,7 +3543,7 @@ where
             let (profile, token) = if op == Op::ProfileCreate {
                 if host.profile_rules().owner_adds_profiles {
                     return Err(HostError::Denied(
-                        "profiles on this drive are added on the host".into(),
+                        "only someone who manages this host can add profiles".into(),
                     ));
                 }
                 host.create_profile(decode(payload)?, &device_key)?
@@ -3603,8 +3601,7 @@ where
                 (true, Some(key)) => key.clone(),
                 _ => {
                     return Err(HostError::Denied(
-                        "using a profile from another drive needs this device to sign in with                          its own key: update Basalt on it"
-                            .into(),
+                        "update Basalt on this device to use a profile from another drive".into(),
                     ));
                 }
             };
@@ -3665,10 +3662,9 @@ where
 
         Op::Convert => {
             let req: ConvertRequest = decode(payload)?;
-            let vault = host
-                .vault()
-                .await
-                .ok_or_else(|| HostError::Unavailable("no drive is being served".into()))?;
+            let vault = host.vault().await.ok_or_else(|| {
+                HostError::Unavailable("this host isn’t sharing a drive right now".into())
+            })?;
             // Through the vault, so a path from the wire cannot reach outside.
             let file = vault.resolve(&req.path)?;
             let refused = |e: crate::convert::ConvertError| match e {
@@ -3820,7 +3816,7 @@ where
         Some(watch) => watch.subscribe(),
         None => {
             return Err(HostError::Denied(
-                "this host has not been given a drive to share yet".into(),
+                "this host isn’t sharing a drive yet".into(),
             ));
         }
     };
@@ -3903,7 +3899,7 @@ fn manager(session: &Session) -> Result<(String, String)> {
     let keyed = session.by_key && session.signed_key.as_deref() == Some(device.public_key.as_str());
     if !keyed || !device.owner {
         return Err(HostError::Denied(
-            "this device does not manage this host".into(),
+            "this device doesn’t manage this host".into(),
         ));
     }
     Ok((device.name.clone(), device.token_hash.clone()))
@@ -3914,7 +3910,7 @@ fn require_write(session: &Session) -> Result<()> {
         Ok(())
     } else {
         Err(HostError::Denied(
-            "this device is paired read-only".to_string(),
+            "this device can only read this drive".to_string(),
         ))
     }
 }

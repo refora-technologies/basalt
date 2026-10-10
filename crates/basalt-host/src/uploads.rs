@@ -101,7 +101,7 @@ impl Uploads {
             return Err(HostError::Exists(rel.to_string()));
         }
         if target.is_dir() {
-            return Err(HostError::Denied(format!("{rel} is a directory")));
+            return Err(HostError::Denied(format!("{rel} is a folder")));
         }
 
         let id = match resume {
@@ -117,7 +117,7 @@ impl Uploads {
 
         let parent = target
             .parent()
-            .ok_or_else(|| HostError::BadRequest(format!("{rel} has no parent directory")))?;
+            .ok_or_else(|| HostError::BadRequest(format!("{rel} has no folder above it")))?;
         let temp = parent.join(temp_name(&id));
 
         // Resuming reads the length off disk rather than trusting anything
@@ -283,7 +283,7 @@ impl Uploads {
             // intact is the entire reason for the temporary file.
             tokio::fs::remove_file(&upload.temp).await.ok();
             return Err(HostError::BadRequest(format!(
-                "{} did not survive the transfer intact",
+                "{} was damaged on the way. Try again.",
                 upload.rel
             )));
         }

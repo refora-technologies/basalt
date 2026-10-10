@@ -712,11 +712,11 @@ fn update(config_path: &Path) -> Result<()> {
     use basalt_host::updates::{HELPER, Method};
     match basalt_host::updates::headless_method(config_path) {
         Method::Container => bail!(
-            "in Docker, update by pulling the new image: docker compose pull && docker compose              up -d"
+            "in Docker, update by pulling the new image: docker compose pull && docker compose up -d"
         ),
         Method::Service => {}
         _ => bail!(
-            "this copy was put in place by hand. Get the new version from              https://github.com/refora-technologies/basalt/releases/latest"
+            "this copy was put in place by hand. Get the new version from https://github.com/refora-technologies/basalt/releases/latest"
         ),
     }
     #[cfg(unix)]

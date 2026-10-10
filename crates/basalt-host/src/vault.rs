@@ -47,7 +47,7 @@ impl Vault {
             .map_err(|e| from_io(&root.display().to_string(), e))?;
         if !canonical.is_dir() {
             return Err(HostError::BadRequest(format!(
-                "{} is not a directory",
+                "{} isn’t a folder",
                 root.display()
             )));
         }
@@ -83,7 +83,7 @@ impl Vault {
         if self.writable {
             Ok(())
         } else {
-            Err(HostError::Denied("this vault is read-only".into()))
+            Err(HostError::Denied("this drive is read only".into()))
         }
     }
 
@@ -139,7 +139,7 @@ impl Vault {
             Ok(())
         } else {
             Err(HostError::Denied(format!(
-                "{label} resolves outside the vault"
+                "{label} points outside the drive"
             )))
         }
     }
@@ -325,7 +325,9 @@ impl Vault {
         // Removing the vault root would delete the share itself. Nothing in
         // the client offers it, which is exactly why the guard belongs here.
         if path == self.root {
-            return Err(HostError::Denied("the vault root cannot be removed".into()));
+            return Err(HostError::Denied(
+                "the top of the drive can’t be removed".into(),
+            ));
         }
 
         let meta = std::fs::metadata(&path).map_err(|e| from_io(rel, e))?;

@@ -86,10 +86,14 @@ impl Host {
                         } else {
                             path.trim()
                         };
-                        HostError::NotFound(format!(
-                            "{place}: the host can't open it ({})",
-                            basalt_net::describe_io(&e)
-                        ))
+                        let why = match e.kind() {
+                            std::io::ErrorKind::NotFound => "it isn’t there".to_string(),
+                            std::io::ErrorKind::PermissionDenied => {
+                                "the host isn’t allowed to open it".to_string()
+                            }
+                            _ => basalt_net::describe_io(&e),
+                        };
+                        HostError::BadRequest(format!("can’t open {place}: {why}"))
                     })
                 })
                 .await
@@ -116,7 +120,7 @@ impl Host {
     pub async fn choose_drive(self: &Arc<Self>, path: &Path, name: &str) -> Result<()> {
         if !crate::drives::is_available(path) {
             return Err(HostError::NotFound(format!(
-                "{} is not there any more. Plug it back in, or pick another drive.",
+                "{} is no longer there. Plug it back in, or choose another drive.",
                 path.display()
             )));
         }

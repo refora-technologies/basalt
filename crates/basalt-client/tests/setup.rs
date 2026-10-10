@@ -141,7 +141,7 @@ async fn a_wrong_code_is_refused_and_the_right_one_still_works() {
         "AAAAAAAA"
     };
     let err = phone.finish_pairing(Some(wrong)).await.unwrap_err();
-    assert!(err.to_string().contains("setup code is not right"), "{err}");
+    assert!(err.to_string().contains("setup code isn’t right"), "{err}");
     assert!(fixture.host.devices().is_empty());
 
     phone.begin_pairing(fixture.addr).await.unwrap();
@@ -246,7 +246,10 @@ async fn an_app_without_keys_is_asked_to_update_first() {
     let old = Basalt::open_without_keys(fixture.dir.join("old.json")).unwrap();
     old.begin_pairing(fixture.addr).await.unwrap();
     let err = old.finish_pairing(Some(&code)).await.unwrap_err();
-    assert!(err.to_string().contains("up-to-date Basalt"), "{err}");
+    assert!(
+        err.to_string().contains("update Basalt on this device"),
+        "{err}"
+    );
     assert!(fixture.host.devices().is_empty());
     assert!(
         fixture.host.in_setup(),

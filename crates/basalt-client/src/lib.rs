@@ -207,10 +207,14 @@ mod tests {
     fn a_host_that_is_not_running_is_said_plainly() {
         use std::io::{Error, ErrorKind};
         let refused = ClientError::Io(Error::from(ErrorKind::ConnectionRefused)).to_string();
-        assert!(refused.contains("isn't running"), "{refused}");
+        assert!(refused.contains("isn’t running"), "{refused}");
+        assert!(
+            !refused.contains("  "),
+            "one space between words: {refused}"
+        );
         assert!(!refused.contains("os error"), "{refused}");
         let net = ClientError::Net(basalt_net::NetError::Io(Error::from(ErrorKind::TimedOut)));
-        assert!(net.to_string().contains("isn't answering"), "{net}");
+        assert!(net.to_string().contains("isn’t answering"), "{net}");
         // Not a network failure: said as it is.
         let file = ClientError::Io(Error::new(ErrorKind::NotFound, "no such file"));
         assert_eq!(file.to_string(), "no such file");

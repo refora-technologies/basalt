@@ -295,7 +295,7 @@ impl Registry {
 
         if self.pending.len() >= MAX_PENDING {
             return Err(HostError::PairingRefused(
-                "too many devices are trying to pair at once".into(),
+                "too many devices are trying to pair at once. Try again in a minute.".into(),
             ));
         }
 
@@ -432,11 +432,15 @@ impl Registry {
                     self.pending.remove(index);
                 }
                 return Err(HostError::PairingRefused(match (setup, spent) {
-                    (true, true) => "too many wrong codes. Check the setup code on the host                                      and try again."
-                        .into(),
-                    (true, false) => "that setup code is not right".into(),
-                    (false, true) => "too many wrong PINs. Try connecting again for a new one.".into(),
-                    (false, false) => "that PIN is not right".into(),
+                    (true, true) => {
+                        "too many wrong codes. Check the setup code on the host and try again."
+                            .into()
+                    }
+                    (true, false) => "that setup code isn’t right".into(),
+                    (false, true) => {
+                        "too many wrong PINs. Try connecting again for a new one.".into()
+                    }
+                    (false, false) => "that PIN isn’t right".into(),
                 }));
             }
         }

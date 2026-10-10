@@ -28,16 +28,18 @@ pub fn describe_io(e: &std::io::Error) -> String {
     use std::io::ErrorKind as K;
     match e.kind() {
         // Something answered at that address, and it was not Basalt Host.
-        K::ConnectionRefused => "Basalt Host isn't running on the drive's computer. It may be                                  stopped or restarting."
-            .into(),
+        K::ConnectionRefused => {
+            "Basalt Host isn’t running on the drive’s computer. It may be stopped or restarting."
+                .into()
+        }
         K::TimedOut | K::HostUnreachable | K::NetworkUnreachable | K::AddrNotAvailable => {
-            "The drive's computer isn't answering. Check that it is on, awake and on this              network."
+            "The drive’s computer isn’t answering. Check that it’s on, awake and on this network."
                 .into()
         }
         K::ConnectionReset | K::ConnectionAborted | K::BrokenPipe | K::UnexpectedEof => {
             "The connection to the drive dropped.".into()
         }
-        K::NetworkDown => "This device isn't connected to a network.".into(),
+        K::NetworkDown => "This device isn’t connected to a network.".into(),
         _ => e.to_string(),
     }
 }

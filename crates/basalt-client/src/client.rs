@@ -1159,10 +1159,7 @@ impl Basalt {
             .into_iter()
             .find(|p| p.host_id == host_id && p.profile_id == profile_id)
             .ok_or_else(|| {
-                ClientError::Protocol(
-                    "that profile's sign-in is not on this device any more: sign in to it on                      its own drive again"
-                        .into(),
-                )
+                ClientError::Protocol("sign in to that profile on its own drive first".into())
             })?;
         let statement = {
             let store = self.store.lock().expect("store lock");

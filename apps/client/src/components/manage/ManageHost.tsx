@@ -29,7 +29,8 @@ export function ManageHost({ layout, onClose }: { layout: Layout; onClose: () =>
   const { confirm, dialog } = useConfirm()
   const [prompt, setPrompt] = useState<PromptRequest | null>(null)
   const view = m.view
-  const lost = m.error !== null && /does not manage this host/i.test(m.error)
+  // Older hosts say "does not", newer ones "doesn’t".
+  const lost = m.error !== null && /(does not|doesn[’']t) manage this host/i.test(m.error)
 
   const tools: Tools | null = view
     ? { m, view, confirm, prompt: setPrompt, leave: onClose }
