@@ -5,6 +5,7 @@
   <p>
     <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-blue?style=flat-square" alt="Windows 10/11" />
     <img src="https://img.shields.io/badge/Linux-host-f0b400?style=flat-square" alt="Linux host" />
+    <img src="https://img.shields.io/badge/Docker-amd64%20%7C%20arm64-2496ed?style=flat-square" alt="Docker: amd64 and arm64" />
     <img src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square" alt="Android 8.0+" />
     <img src="https://img.shields.io/github/license/refora-technologies/basalt?style=flat-square" alt="License" />
     <img src="https://img.shields.io/github/v/release/refora-technologies/basalt?style=flat-square" alt="Release" />
@@ -18,6 +19,7 @@
   </p>
   <p>
     <a href="https://basalt.reforatech.com">basalt.reforatech.com</a> &nbsp;·&nbsp;
+    <a href="https://basalt.reforatech.com/docs/">Docs</a> &nbsp;·&nbsp;
     <a href="https://github.com/refora-technologies/basalt/releases/latest">Release notes</a> &nbsp;·&nbsp;
     <a href="https://reforatech.com">Refora Technologies</a>
   </p>
@@ -222,6 +224,7 @@ if you want to check what you downloaded.
 |---|---|
 | **[`Basalt-Client-Setup.exe`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Setup.exe)** | Windows computers |
 | **[`Basalt-Android.apk`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk)** | Android phones and tablets (Android 8.0 or later, 64-bit) |
+| Basalt for Linux | Coming soon. Until then, open a Linux host's drive from Windows or Android |
 
 **Basalt Host**, on the computer with the drive:
 
@@ -247,7 +250,10 @@ if you want to check what you downloaded.
 docker pull ghcr.io/refora-technologies/basalt-host:latest
 ```
 
-The compose file and settings are in [`docker/README.md`](docker/README.md).
+The compose file and settings are in [`docker/README.md`](docker/README.md). Every image is
+signed and carries a record of the workflow that built it, which
+`gh attestation verify oci://ghcr.io/refora-technologies/basalt-host:latest --owner refora-technologies`
+checks.
 
 The Windows installers install per user and need no administrator rights. They
 update an existing installation in place and keep its pairing and settings.
@@ -270,6 +276,10 @@ choose the host marked **new**, and type the code. That device then manages the
 host: choose what it shares in **Manage host**. Run `sudo basalt-host status`
 to see it all again; the full guide is in
 [`packaging/linux/README.md`](packaging/linux/README.md).
+
+Step-by-step guides for every kind of host, pairing, the library, the player,
+profiles, Manage host and troubleshooting are in the
+**[docs](https://basalt.reforatech.com/docs/)**.
 
 Basalt Host updates itself when nothing is playing; you can turn that off in
 its settings or in Manage host. The apps check for updates on their own and
