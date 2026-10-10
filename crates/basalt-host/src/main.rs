@@ -106,7 +106,18 @@ async fn main() {
         .or_else(|| std::env::var_os("BASALT_HOST_CONFIG").map(PathBuf::from))
         .unwrap_or_else(default_config_path);
 
-    let outcome = match cli.command.unwrap_or(Command::Serve { port: None }) {
+    let command = cli.command.unwrap_or(Command::Serve { port: None });
+    // Piped into `head` or a pager that stops reading, a command stops quietly,
+    // as command-line tools do, rather than panicking over the closed pipe.
+    // Not `serve`: there a closed socket must stay an error to handle.
+    #[cfg(unix)]
+    if !matches!(command, Command::Serve { .. }) {
+        // SAFETY: restoring a signal's default action has no preconditions.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
+    }
+    let outcome = match command {
         Command::Serve { port } => serve(config_path, port).await,
         Command::SetupCode { reset } => setup_code(&config_path, reset),
         Command::Share { path, name } => share(&config_path, &path, name),
