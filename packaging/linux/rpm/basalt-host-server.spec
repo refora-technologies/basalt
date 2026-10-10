@@ -15,6 +15,8 @@ URL:            https://github.com/refora-technologies/basalt
 Conflicts:      basalt-host
 Recommends:     ffmpeg
 Requires(pre):  shadow-utils
+# For checking and downloading its updates over HTTPS.
+Requires:       ca-certificates
 
 %description
 Basalt Host for a computer with no screen: a home server, a Raspberry Pi, a

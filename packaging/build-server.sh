@@ -74,7 +74,7 @@ Version: $version
 Architecture: $arch
 Maintainer: Refora Technologies
 Installed-Size: $(du -sk "$root" | cut -f1)
-Depends: libc6 (>= 2.31), passwd
+Depends: libc6 (>= 2.31), passwd, ca-certificates
 Recommends: ffmpeg, libmpv2 | libmpv1
 Conflicts: basalt-host
 Section: net

@@ -43,7 +43,10 @@
           "/etc/ufw/applications.d/basalt-host": "linux/basalt-host.ufw",
           "/usr/lib/basalt-host/basalt-host-update": "linux/basalt-host-update",
           "/usr/share/polkit-1/actions/com.reforatech.basalt.host.update.policy": "linux/com.reforatech.basalt.host.update.policy"
-        }
+        },
+        "depends": [
+          "ca-certificates"
+        ]
       },
       "rpm": {
         "recommends": [
@@ -54,7 +57,10 @@
           "/usr/lib/firewalld/services/basalt-host.xml": "linux/basalt-host.firewalld.xml",
           "/usr/lib/basalt-host/basalt-host-update": "linux/basalt-host-update",
           "/usr/share/polkit-1/actions/com.reforatech.basalt.host.update.policy": "linux/com.reforatech.basalt.host.update.policy"
-        }
+        },
+        "depends": [
+          "ca-certificates"
+        ]
       }
     }
   }
