@@ -91,16 +91,16 @@ export function Setup({
               Choose a drive to share
             </h1>
             <p className="mt-1.5 text-[13px] leading-relaxed text-textDim">
-              Your other devices will find{' '}
+              Your other devices find{' '}
               <span className="font-mono text-textDim">{hostName}</span> on this network by
-              themselves. There is nothing else to set up — no addresses, no accounts.
+              themselves. There’s nothing else to set up: no addresses, no accounts.
             </p>
           </div>
         </header>
 
         <div className="mb-3 flex items-center justify-between">
           <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
-            Drives on this machine
+            Drives on this computer
           </span>
           <button
             onClick={() => void load()}
@@ -136,7 +136,7 @@ export function Setup({
           className="mt-3 flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-line py-3 text-[12px] text-textFaint transition-colors hover:border-lineBright hover:text-textDim"
         >
           <FolderOpen size={13} />
-          Or pick a single folder instead
+          Or choose a single folder instead
         </button>
 
         <AnimatePresence>
@@ -159,7 +159,7 @@ export function Setup({
                   className="mt-2 w-full rounded-sm border border-line bg-ink2 px-3 py-2 text-[14px] text-text outline-none transition-colors focus:border-lineBright"
                 />
                 <p className="mt-2 text-[11px] text-textFaint">
-                  Shown on every paired device instead of the drive letter.
+                  The name your devices see for this drive.
                 </p>
               </div>
 
@@ -242,7 +242,7 @@ function DriveCard({
         <div className="mt-3 font-mono text-[10px] text-textFaint">
           {/* An empty card reader slot is worth listing: a user who expects to
               see E: and does not would otherwise have no idea why. */}
-          nothing in this slot
+          Nothing in this slot
         </div>
       )}
     </button>

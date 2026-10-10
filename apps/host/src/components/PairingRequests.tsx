@@ -44,7 +44,7 @@ export function PairingRequests({
               <div className="mt-0.5 text-[11px] text-textDim">
                 {request.pin
                   ? 'wants to connect. Type this on that device:'
-                  : 'wants to connect, and no PIN is being asked for.'}
+                  : 'wants to connect. No PIN is needed.'}
               </div>
             </div>
 
@@ -65,7 +65,7 @@ export function PairingRequests({
 
             <button
               onClick={() => onDeny(request.id)}
-              title="Refuse this device"
+              title="Decline this device"
               aria-label={`Refuse ${request.deviceName}`}
               className="shrink-0 rounded-sm p-1.5 text-textFaint transition-colors hover:bg-dangerBg hover:text-danger"
             >

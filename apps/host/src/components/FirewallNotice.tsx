@@ -49,7 +49,7 @@ export function FirewallNotice(): React.JSX.Element {
       const now = await api.allowThroughFirewall()
       setState(now)
       if (now === 'blocked') {
-        setError('A rule letting Basalt Host in was added, but something else still turns devices away.')
+        setError('Basalt Host was allowed through Windows Firewall, but something else is still blocking devices.')
       }
     } catch (e) {
       setError(e instanceof ApiError || e instanceof Error ? e.message : String(e))
@@ -75,9 +75,9 @@ export function FirewallNotice(): React.JSX.Element {
                 Your other devices can’t reach this computer
               </div>
               <p className="mt-1 text-[11.5px] leading-relaxed text-textDim">
-                Windows Firewall is turning away connections to Basalt Host on this network, so
-                phones and other computers see it in their list but can’t open the drive. Allow it
-                once and they can. Windows will ask for an administrator.
+                Windows Firewall is blocking Basalt Host on this network, so phones and computers
+                can see this host but can’t open the drive. Allow it once to fix this. Windows asks
+                for an administrator.
               </p>
               {error && <p className="mt-1.5 text-[11.5px] leading-relaxed text-danger">{error}</p>}
             </div>

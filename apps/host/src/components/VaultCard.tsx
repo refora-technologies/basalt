@@ -73,8 +73,8 @@ export function VaultCard({
         // choice to move on is offered, not forced.
         <div className="mt-4 rounded-sm bg-dangerBg px-3.5 py-3">
           <p className="text-[12px] leading-relaxed text-danger">
-            This drive is not connected. Devices can still find this machine, and the
-            drive will be shared again on its own as soon as it is plugged back in.
+            This drive isn’t connected. Devices can still find this host, and the drive
+            is shared again as soon as it’s plugged back in.
           </p>
           <button
             onClick={onChange}
@@ -102,7 +102,7 @@ export function VaultCard({
         <p className="mt-5 font-mono text-[11px] text-textFaint">
           {/* Some USB enclosures decline to report a size. Not worth an error —
               the share works regardless — but the gauge would be a lie. */}
-          this volume does not report its size
+          This drive doesn’t report its size
         </p>
       )}
     </div>

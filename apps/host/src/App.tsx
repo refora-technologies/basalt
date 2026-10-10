@@ -30,7 +30,7 @@ const PAIRING_INTERVAL = 900
 const SLOW_START = 10_000
 /** Said plainly, with somewhere to go next. */
 const STUCK =
-  'This is taking longer than it should. The drive may be slow to wake, or something is stuck — the log will say which.'
+  'This is taking longer than usual. The drive may be slow to wake up. If it doesn’t clear, the log says why.'
 
 export function App(): React.JSX.Element {
   const status = usePoll<HostStatus>(useCallback(() => api.status(), []), STATUS_INTERVAL)
@@ -360,7 +360,7 @@ export function App(): React.JSX.Element {
                         .measureConversion()
                         .then(apply)
                         .catch((e: unknown) =>
-                          setMessage({ title: 'Cannot measure right now', message: reason(e) }),
+                          setMessage({ title: 'Can’t measure right now', message: reason(e) }),
                         )
                     }}
                     onRescan={() => {

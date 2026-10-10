@@ -40,8 +40,8 @@ export function DeviceList({
       <div className="rounded-md border border-dashed border-line px-4 py-10 text-center">
         <p className="text-[13px] text-textDim">No devices yet.</p>
         <p className="mx-auto mt-1.5 max-w-[360px] text-[11.5px] leading-relaxed text-textFaint">
-          Open Basalt on another machine on this network. It will list this drive by name —
-          there is no address to type.
+          Open Basalt on a phone or computer on this network. It lists this host by name,
+          with nothing to type.
         </p>
       </div>
     )
@@ -92,11 +92,11 @@ export function OwnerLine({
     })
     return (
       <p
-        title="A device that manages this computer signs for its key each week, so it can always be told apart from a copy."
+        title="A device that manages this host confirms its identity every week, so a copy of this host can always be told apart."
         className="mb-2.5 flex items-center gap-1.5 text-[11.5px] text-textDim"
       >
         <ShieldCheck size={13} className="shrink-0 text-basalt" />
-        Vouched for by {endorsement.by} until {until}
+        Confirmed by {endorsement.by} until {until}
       </p>
     )
   }
@@ -104,7 +104,7 @@ export function OwnerLine({
     return (
       <p className="mb-2.5 flex items-center gap-1.5 text-[11.5px] text-textFaint">
         <ShieldCheck size={13} className="shrink-0" />
-        Waiting for a device that manages this computer to connect and vouch for it
+        Waiting for a device that manages this host to connect and confirm it
       </p>
     )
   }
@@ -112,7 +112,7 @@ export function OwnerLine({
   return (
     <p className="mb-2.5 flex items-center gap-1.5 text-[11.5px] text-textFaint">
       <ShieldCheck size={13} className="shrink-0" />
-      Let one of your own devices manage this computer, and it vouches for it every week
+      Let one of your devices manage this host, and it confirms this host’s identity every week
     </p>
   )
 }
@@ -121,14 +121,14 @@ export function OwnerLine({
 function KeyNote({ device }: { device: DeviceView }): React.JSX.Element {
   const [label, title] = !device.keyed
     ? [
-        'pairing code',
-        'Signs in with the code it was given when it paired. It moves to a key of its own the next time it connects with an up-to-date Basalt.',
+        'older sign-in',
+        'Signs in the older way. It moves to a secure key of its own once Basalt on it is updated.',
       ]
     : device.keyKind === 'chip'
-      ? ['chip key', 'Signs in with a key kept in its security chip, which never leaves it.']
+      ? ['security chip', 'Signs in with a key kept in its security chip, which never leaves it.']
       : device.keyKind === 'system'
-        ? ['key', 'Signs in with a key of its own, kept sealed by its system.']
-        : ['key', 'Signs in with a key of its own.']
+        ? ['secure key', 'Signs in with a key of its own, protected by its system.']
+        : ['secure key', 'Signs in with a key of its own.']
   return (
     <span title={title} className="flex items-center gap-1">
       <KeyRound size={10} />
@@ -201,7 +201,7 @@ function DeviceRow({
 
           {device.owner && (
             <span
-              title="Manages this host, and vouches for this computer"
+              title="Manages this host and confirms its identity"
               className="flex items-center gap-1 rounded-[4px] border border-white/15 bg-white/[0.04] px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.1em] text-textDim"
             >
               <ShieldCheck size={9} />
