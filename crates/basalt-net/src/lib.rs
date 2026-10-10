@@ -22,9 +22,29 @@ pub use identity::HostIdentity;
 pub use socket::DEFAULT_PORT;
 pub use tls::Trust;
 
+/// A failure to reach or keep talking to the other end, as a person would
+/// say it. Anything else (a file that could not be read, say) as it stands.
+pub fn describe_io(e: &std::io::Error) -> String {
+    use std::io::ErrorKind as K;
+    match e.kind() {
+        // Something answered at that address, and it was not Basalt Host.
+        K::ConnectionRefused => "Basalt Host isn't running on the drive's computer. It may be                                  stopped or restarting."
+            .into(),
+        K::TimedOut | K::HostUnreachable | K::NetworkUnreachable | K::AddrNotAvailable => {
+            "The drive's computer isn't answering. Check that it is on, awake and on this              network."
+                .into()
+        }
+        K::ConnectionReset | K::ConnectionAborted | K::BrokenPipe | K::UnexpectedEof => {
+            "The connection to the drive dropped.".into()
+        }
+        K::NetworkDown => "This device isn't connected to a network.".into(),
+        _ => e.to_string(),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum NetError {
-    #[error("io: {0}")]
+    #[error("{}", describe_io(.0))]
     Io(#[from] std::io::Error),
 
     /// The peer answered, and said no.

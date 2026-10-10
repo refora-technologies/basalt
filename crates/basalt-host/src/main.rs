@@ -82,6 +82,16 @@ enum Command {
         #[arg(long, default_value_t = basalt_net::DEFAULT_PORT)]
         port: u16,
     },
+
+    /// Start the basalt-host service, and say when it is running.
+    Start,
+
+    /// Stop the basalt-host service until it is started again or the
+    /// computer restarts.
+    Stop,
+
+    /// Restart the basalt-host service, and say when it is back.
+    Restart,
 }
 
 #[tokio::main]
@@ -98,6 +108,9 @@ async fn main() {
         Command::Share { path, name } => share(&config_path, &path, name),
         Command::Status { wait } => status(&config_path, wait),
         Command::Health { port } => health(port).await,
+        Command::Start => service(&config_path, Action::Start),
+        Command::Stop => service(&config_path, Action::Stop),
+        Command::Restart => service(&config_path, Action::Restart),
     };
     if let Err(e) = outcome {
         eprintln!("basalt-host: {e:#}");
@@ -558,6 +571,101 @@ impl Style {
     fn cyan(&self, text: &str) -> String {
         self.paint("36", text)
     }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Action {
+    Start,
+    Stop,
+    Restart,
+}
+
+/// `systemctl` says nothing when it works, which leaves a person wondering
+/// whether it did. This does the same through it, then waits to see the
+/// host answer (or stop answering) and says so.
+fn service(config_path: &Path, action: Action) -> Result<()> {
+    let verb = match action {
+        Action::Start => "start",
+        Action::Stop => "stop",
+        Action::Restart => "restart",
+    };
+    if in_container() {
+        bail!(
+            "in Docker, the container is the service: `docker {verb} basalt` (or your \
+             container's name)."
+        );
+    }
+    if !Path::new("/run/systemd/system").exists() {
+        bail!(
+            "there is no service manager here to {verb} it with. Run `basalt-host serve` \
+             yourself instead."
+        );
+    }
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    #[cfg(unix)]
+    if unsafe { libc::geteuid() } != 0 {
+        bail!("only root can {verb} the service. Run it with sudo.");
+    }
+    let style = Style::new();
+    let port = existing(config_path)
+        .map(|c| c.port)
+        .unwrap_or(basalt_net::DEFAULT_PORT);
+    let was_running = answers(port);
+    if action == Action::Stop && !was_running {
+        println!("  {} Basalt Host is already stopped.", style.dim("●"));
+        return Ok(());
+    }
+    if action == Action::Start && was_running {
+        println!("  {} Basalt Host is already running.", style.green("●"));
+        return Ok(());
+    }
+
+    let ran = std::process::Command::new("systemctl")
+        .args([verb, "basalt-host"])
+        .status()
+        .context("could not run systemctl")?;
+    if !ran.success() {
+        bail!("systemctl could not {verb} it. `journalctl -u basalt-host -n 30` says why.");
+    }
+
+    let until = std::time::Instant::now() + Duration::from_secs(15);
+    if action == Action::Stop {
+        while answers(port) && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        println!("  {} Basalt Host stopped.", style.red("●"));
+        println!(
+            "    Your devices show it as offline until it starts again: {}",
+            style.cyan("sudo basalt-host start")
+        );
+        println!(
+            "    It starts by itself when this computer restarts. To keep it off: {}",
+            style.cyan("sudo systemctl disable basalt-host")
+        );
+        return Ok(());
+    }
+
+    while !answers(port) && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    if !answers(port) {
+        bail!("it did not come up within 15 seconds. `journalctl -u basalt-host -n 30` says why.");
+    }
+    let done = if action == Action::Start {
+        "started"
+    } else {
+        "restarted"
+    };
+    let address = basalt_net::discovery::local_addresses()
+        .first()
+        .map(|ip| format!(" on {ip}:{port}"))
+        .unwrap_or_default();
+    println!(
+        "  {} Basalt Host {done}, and is running{address}.",
+        style.green("●")
+    );
+    println!("    Your devices reconnect by themselves.");
+    Ok(())
 }
 
 async fn health(port: u16) -> Result<()> {

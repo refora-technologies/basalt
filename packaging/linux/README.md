@@ -95,8 +95,9 @@ with it manages the host too; remove the lost device in Manage host afterwards.
 | Command | What it does |
 |---|---|
 | `basalt-host serve` | Runs the host (what the service does) |
+| `basalt-host start`, `stop`, `restart` | The service, saying when it is done |
 | `basalt-host setup-code [--reset]` | Shows the setup code |
-| `basalt-host status` | Name, what it shares, devices, who manages it |
+| `basalt-host status` | Running or not, address, what it shares, devices, the setup code |
 | `basalt-host share PATH [--name NAME]` | Chooses what it shares, while the service is stopped |
 | `basalt-host health` | Exits 0 if the host answers |
 
