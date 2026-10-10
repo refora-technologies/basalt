@@ -335,21 +335,42 @@ pub fn local_addresses() -> Vec<IpAddr> {
     let Ok(interfaces) = if_addrs::get_if_addrs() else {
         return Vec::new();
     };
-    let mut addresses: Vec<IpAddr> = interfaces
+    let usable: Vec<(String, IpAddr)> = interfaces
         .into_iter()
         .filter(|i| !is_loopback(i))
         .filter_map(|i| match i.addr {
-            if_addrs::IfAddr::V4(v4) => Some(IpAddr::V4(v4.ip)),
+            if_addrs::IfAddr::V4(v4) => Some((i.name, IpAddr::V4(v4.ip))),
             _ => None,
         })
         // A link-local address means the adapter never got a lease; showing one
         // would send somebody chasing an address that cannot work.
-        .filter(|ip| !matches!(ip, IpAddr::V4(v4) if v4.is_link_local()))
+        .filter(|(_, ip)| !matches!(ip, IpAddr::V4(v4) if v4.is_link_local()))
         .collect();
+    // Networks that containers and virtual machines make inside this computer:
+    // no other device can reach them. Kept only if there is nothing else.
+    let outside: Vec<IpAddr> = usable
+        .iter()
+        .filter(|(name, _)| !is_internal_bridge(name))
+        .map(|(_, ip)| *ip)
+        .collect();
+    let mut addresses = if outside.is_empty() {
+        usable.into_iter().map(|(_, ip)| ip).collect()
+    } else {
+        outside
+    };
     if let Some(main) = main_address() {
         addresses.sort_by_key(|ip| *ip != main);
     }
     addresses
+}
+
+/// An interface Docker, Podman, LXD, libvirt or Kubernetes makes for its own
+/// containers or virtual machines.
+fn is_internal_bridge(name: &str) -> bool {
+    name == "docker0"
+        || ["br-", "veth", "virbr", "lxdbr", "podman", "cni", "flannel"]
+            .iter()
+            .any(|start| name.starts_with(start))
 }
 
 /// The local address this machine's route out leaves from, if it has one.
@@ -375,6 +396,23 @@ fn rand_nonce() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_and_vm_bridges_are_not_addresses_to_give_out() {
+        for name in [
+            "docker0",
+            "br-5f2a91c0d3e4",
+            "veth1a2b3c",
+            "virbr0",
+            "lxdbr0",
+            "podman0",
+        ] {
+            assert!(is_internal_bridge(name), "{name}");
+        }
+        for name in ["eth0", "enp3s0", "wlan0", "wlp2s0", "Wi-Fi", "Ethernet"] {
+            assert!(!is_internal_bridge(name), "{name}");
+        }
+    }
 
     // A computer with VirtualBox or WSL listed their adapters' addresses
     // before the one its devices could reach.

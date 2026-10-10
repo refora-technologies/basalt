@@ -222,8 +222,25 @@ impl HostConfig {
 
         let temp = path.with_extension("tmp");
         write_private(&temp, &json)?;
-        std::fs::rename(&temp, path)?;
+        replace(&temp, path)?;
         Ok(())
+    }
+}
+
+/// Moves `from` over `to`. On Windows a file just written is often held open
+/// for a moment by the antivirus or the search indexer, and the move is
+/// refused while it is; it is tried again for up to a second rather than
+/// losing the save.
+fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => return other,
+        }
     }
 }
 
