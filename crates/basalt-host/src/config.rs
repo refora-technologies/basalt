@@ -73,6 +73,12 @@ pub struct HostConfig {
     #[serde(default)]
     pub tmdb_key: String,
 
+    /// Whether the host puts a new version in by itself, when nothing is
+    /// being watched or copied. On unless turned off: a host nobody looks at
+    /// is the one that falls behind. See [`crate::updates`].
+    #[serde(default = "on")]
+    pub automatic_updates: bool,
+
     /// No longer used: since profiles, a device keeps a history of its own and
     /// a profile's follows it. Still read, so an older config loads.
     #[serde(default, skip_serializing)]
@@ -151,6 +157,7 @@ impl HostConfig {
             library_enabled: false,
             posters: false,
             tmdb_key: String::new(),
+            automatic_updates: true,
             progress_per_device: false,
             profiles: Vec::new(),
             profile_tokens: Vec::new(),
@@ -330,6 +337,11 @@ pub fn machine_name() -> String {
         })
         .or_else(|| std::env::var("HOSTNAME").ok().and_then(named))
         .unwrap_or_else(|| "Basalt Host".to_string())
+}
+
+/// Serde's default for a setting that starts on.
+fn on() -> bool {
+    true
 }
 
 #[cfg(test)]

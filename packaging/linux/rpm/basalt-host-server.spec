@@ -25,13 +25,19 @@ network, and is set up and managed from the Basalt app.
 mkdir -p %{buildroot}/usr/bin %{buildroot}/usr/lib/systemd/system \
     %{buildroot}/usr/lib/firewalld/services %{buildroot}/usr/share/doc/basalt-host-server
 install -m 0755 %{_sourcedir}/basalt-host %{buildroot}/usr/bin/basalt-host
+install -D -m 0755 %{_sourcedir}/basalt-host-update %{buildroot}/usr/lib/basalt-host/basalt-host-update
 install -m 0644 %{_sourcedir}/basalt-host.service %{buildroot}/usr/lib/systemd/system/basalt-host.service
+install -m 0644 %{_sourcedir}/basalt-host-update.service %{buildroot}/usr/lib/systemd/system/basalt-host-update.service
+install -m 0644 %{_sourcedir}/basalt-host-update.path %{buildroot}/usr/lib/systemd/system/basalt-host-update.path
 install -m 0644 %{_sourcedir}/basalt-host.firewalld.xml %{buildroot}/usr/lib/firewalld/services/basalt-host.xml
 install -m 0644 %{_sourcedir}/README.md %{buildroot}/usr/share/doc/basalt-host-server/README.md
 
 %files
 /usr/bin/basalt-host
+/usr/lib/basalt-host/basalt-host-update
 /usr/lib/systemd/system/basalt-host.service
+/usr/lib/systemd/system/basalt-host-update.service
+/usr/lib/systemd/system/basalt-host-update.path
 /usr/lib/firewalld/services/basalt-host.xml
 /usr/share/doc/basalt-host-server/README.md
 
@@ -46,6 +52,7 @@ if [ -d /run/systemd/system ]; then
     systemctl daemon-reload >/dev/null 2>&1 || :
     if [ $1 -eq 1 ]; then
         systemctl enable --now basalt-host.service >/dev/null 2>&1 || :
+        systemctl enable --now basalt-host-update.path >/dev/null 2>&1 || :
     else
         systemctl try-restart basalt-host.service >/dev/null 2>&1 || :
     fi
@@ -56,6 +63,7 @@ fi
 %preun
 if [ $1 -eq 0 ] && [ -d /run/systemd/system ]; then
     systemctl disable --now basalt-host.service >/dev/null 2>&1 || :
+    systemctl disable --now basalt-host-update.path >/dev/null 2>&1 || :
 fi
 
 %postun

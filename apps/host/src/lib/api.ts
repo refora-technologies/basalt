@@ -264,31 +264,42 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
  */
 export type Firewall = 'open' | 'blocked' | 'unknown'
 
-/** A release newer than the one running. Mirrors `basalt_update::Release`. */
-export interface Release {
+/**
+ * Updates, as the host keeps them. Mirrors `basalt_host::updates::UpdateView`:
+ * the same state the screenless host and a device that manages the host see.
+ */
+export interface UpdateView {
+  /** The version running. */
   version: string
-  /** The release notes, as written on GitHub. */
-  notes: string
-  pageUrl: string
-  installerName: string
-  installerUrl: string
-  installerBytes: number
-  checksumUrl: string | null
+  /** How this copy is updated. */
+  method: 'installer' | 'appImage' | 'package' | 'service' | 'container' | 'manual'
+  canInstall: boolean
+  automatic: boolean
+  available: { version: string; notes: string; pageUrl: string } | null
+  stage:
+    | { kind: 'idle' }
+    | { kind: 'checking' }
+    | { kind: 'downloading'; percent: number }
+    | { kind: 'installing' }
+    | { kind: 'failed'; why: string }
+  checkedAt: number | null
+  /** What to run, where the host cannot update itself. */
+  command: string | null
+  outcome: { version: string; ok: boolean; message: string; at: number } | null
 }
 
 export const api = {
   /** Which version this is, as the release tags spell it. */
   appVersion: (): Promise<string> => call('app_version'),
-  /** A newer release, or null when this is the newest. */
-  checkUpdate: (): Promise<Release | null> => call('check_update'),
-  /** Fetches and verifies an installer, returning where it landed. */
-  downloadUpdate: (release: Release): Promise<string> =>
-    call('download_update', { release }),
-  /** Runs the installer and closes this app so it can be replaced. */
-  installUpdate: (path: string): Promise<void> => call('install_update', { path }),
-  /** `restart`: the app puts the update in and restarts; `package`: the
-   *  system's software installer takes it (a .deb or .rpm on Linux). */
-  updateStyle: (): Promise<'restart' | 'package'> => call('update_style'),
+  /** Where updates stand. */
+  updateStatus: (): Promise<UpdateView> => call('update_status'),
+  /** Looks for a newer release now. */
+  checkUpdate: (): Promise<UpdateView> => call('check_update'),
+  /** Puts the newest release in: downloads, checks and installs it, then
+   *  the host restarts by itself. */
+  installUpdate: (): Promise<UpdateView> => call('install_update'),
+  setAutomaticUpdates: (enabled: boolean): Promise<UpdateView> =>
+    call('set_automatic_updates', { enabled }),
   /** Tells the page the mouse button was let go, after the window was handed
    *  to the system to move or resize: on Linux it is never told otherwise. */
   releasePointer: (): Promise<void> => call('release_pointer'),
@@ -539,13 +550,6 @@ let mockLinkSettled = false
 let mockFirewallOpened = false
 
 function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  // The one command that does not resolve at once in the app either: it
-  // resolves when the download has finished, having reported progress along
-  // the way. Handled here rather than in `answer` so the preview keeps that
-  // shape, because a bar that never fills is not a bar anybody can review.
-  if (command === 'download_update') {
-    return mockDownload(args?.release as Release) as Promise<T>
-  }
   // Windows asking for an administrator, and someone answering.
   if (command === 'allow_through_firewall') {
     return new Promise<T>((resolve, reject) =>
@@ -771,12 +775,17 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return 'preview · not a real build'
       case 'app_version':
         return MOCK_VERSION
+      case 'update_status':
+        return mockUpdate()
       case 'check_update':
-        return previewFlag('update') ? MOCK_RELEASE : null
+        mockUpdateChecked = true
+        return mockUpdate()
       case 'install_update':
-        return undefined
-      case 'update_style':
-        return previewFlag('package') ? 'package' : 'restart'
+        mockUpdateStarted = Date.now()
+        return mockUpdate()
+      case 'set_automatic_updates':
+        mockAutomatic = Boolean(args?.enabled)
+        return mockUpdate()
       case 'open_log_folder':
         return undefined
       case 'profile_links':
@@ -851,23 +860,52 @@ const MOCK_VERSION: string = packageInfo.version
  * chose, so without this the panel could only ever be reviewed by publishing
  * a release — which is a poor moment to discover the notes do not fit.
  */
-const MOCK_RELEASE: Release = {
-  version: '9.9.0',
-  notes: [
-    '## New',
-    '',
-    '* **Two drives at once**, shared as one.',
-    '* **Per-device access**, so a device can be given read-only.',
-    '',
-    '## Fixed',
-    '',
-    '* A scan no longer stalls on a folder the drive refuses to list.',
-  ].join('\n'),
-  pageUrl: 'https://example.test/releases/v9.9.0',
-  installerName: 'Basalt-Host-9.9.0-setup.exe',
-  installerUrl: 'https://example.test/Basalt-Host-9.9.0-setup.exe',
-  installerBytes: 5_200_000,
-  checksumUrl: 'https://example.test/Basalt-Host-9.9.0-setup.exe.sha256',
+const MOCK_NOTES = [
+  '## New',
+  '',
+  '* **Two drives at once**, shared as one.',
+  '* **Per-device access**, so a device can be given read-only.',
+  '',
+  '## Fixed',
+  '',
+  '* A scan no longer stalls on a folder the drive refuses to list.',
+].join('\n')
+
+let mockAutomatic = true
+let mockUpdateChecked = false
+let mockUpdateStarted = 0
+
+/**
+ * Updates in the preview. `?update` offers 9.9.0; pressing Update now walks
+ * through downloading and installing in a few seconds. `?package` is a Linux
+ * package, `?docker` a container, which cannot update itself.
+ */
+function mockUpdate(): UpdateView {
+  const method: UpdateView['method'] = previewFlag('docker')
+    ? 'container'
+    : previewFlag('package')
+      ? 'package'
+      : 'installer'
+  const since = mockUpdateStarted ? Date.now() - mockUpdateStarted : -1
+  const stage: UpdateView['stage'] =
+    since < 0
+      ? { kind: 'idle' }
+      : since < 3000
+        ? { kind: 'downloading', percent: Math.min(100, Math.round(since / 30)) }
+        : { kind: 'installing' }
+  return {
+    version: MOCK_VERSION,
+    method,
+    canInstall: method !== 'container',
+    automatic: mockAutomatic,
+    available: previewFlag('update')
+      ? { version: '9.9.0', notes: MOCK_NOTES, pageUrl: 'https://example.test/releases/v9.9.0' }
+      : null,
+    stage,
+    checkedAt: mockUpdateChecked || previewFlag('update') ? Math.floor(Date.now() / 1000) - 300 : null,
+    command: method === 'container' ? 'docker compose pull && docker compose up -d' : null,
+    outcome: null,
+  }
 }
 
 function previewFlag(name: string): boolean {
@@ -878,16 +916,3 @@ function previewFlag(name: string): boolean {
 }
 
 /** Fills the bar over a couple of seconds, then resolves like the real one. */
-async function mockDownload(release: Release): Promise<string> {
-  const total = release.installerBytes
-  const steps = 12
-  for (let tick = 1; tick <= steps; tick += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 160))
-    window.dispatchEvent(
-      new CustomEvent('basalt://update-progress', {
-        detail: [Math.min(Math.ceil((total / steps) * tick), total), total],
-      }),
-    )
-  }
-  return `C:\Users\preview\Downloads\${release.installerName}`
-}

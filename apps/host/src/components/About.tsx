@@ -1,34 +1,21 @@
-import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertCircle, ArrowUpCircle, Check, ExternalLink, Github, Loader2 } from 'lucide-react'
-import { api, inTauri, type HostStatus, type Release } from '@/lib/api'
+import { inTauri, type HostStatus, type UpdateView } from '@/lib/api'
 import { parseNotes } from '@/lib/notes'
-import {
-  checkForUpdate,
-  downloadUpdate,
-  installLabel,
-  installUpdate,
-  offered,
-  useUpdate,
-  type UpdateState,
-} from '@/lib/updates'
-import { cn, formatBytes } from '@/lib/utils'
+import { checkForUpdate, installUpdate, moving, progressLabel, setAutomaticUpdates, useUpdate } from '@/lib/updates'
+import { cn } from '@/lib/utils'
+import { Switch } from './ui/Switch'
 
 export const WEBSITE = 'https://basalt.reforatech.com'
 export const REPO = 'https://github.com/refora-technologies/basalt'
 export const ISSUES = `${REPO}/issues/new`
 
 /**
- * Who made this, which version it is, and whether there is a newer one.
+ * Who made this, which version it is, and keeping it up to date.
  *
- * The check itself lives in `lib/updates`, shared with the banner at the top
- * of the window, and runs on its own when the host opens; this is where the
- * whole offer is, release notes and all, and where to check by hand.
- *
- * Downloading and installing are separate presses. The download is verified
- * against the checksum published beside it, and only then is there anything
- * to install; running an installer is the last thing this app does before it
- * closes, so it should never happen as a side effect of a check.
+ * The host itself looks for new versions and, with automatic updates on,
+ * puts them in when nothing is playing (see `lib/updates`). This is where to
+ * check by hand, read what is new, update now, or turn automatic updates off.
  */
 export function About({
   product,
@@ -37,14 +24,8 @@ export function About({
   product: string
   platform: HostStatus['platform']
 }): React.JSX.Element {
-  const [version, setVersion] = useState('')
-  const state = useUpdate()
-
-  useEffect(() => {
-    void api.appVersion().then(setVersion).catch(() => {})
-  }, [])
-
-  const check = (quiet: boolean): Promise<void> => checkForUpdate(quiet)
+  const view = useUpdate()
+  const busy = moving(view)
 
   return (
     <div className="px-4 py-3.5">
@@ -52,49 +33,60 @@ export function About({
         <div className="min-w-0">
           <div className="text-[13px] font-semibold text-text">{product}</div>
           <div className="tnum mt-0.5 font-mono text-[11px] text-textFaint">
-            {version ? `v${version}` : '—'}
+            {view ? `Version ${view.version}` : '—'}
           </div>
         </div>
 
         <button
-          onClick={() => void check(false)}
-          disabled={state.kind === 'checking' || state.kind === 'downloading'}
+          onClick={() => void checkForUpdate()}
+          disabled={!view || busy}
           className="shrink-0 rounded-md border border-line bg-ink2 px-3 py-1.5 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text disabled:opacity-40"
         >
-          {state.kind === 'checking' ? 'Checking…' : 'Check for updates'}
+          {view?.stage.kind === 'checking' ? 'Checking…' : 'Check for updates'}
         </button>
       </div>
 
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={state.kind}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.14 }}
-        >
-          {state.kind === 'current' && (
-            <Line icon={<Check size={12} className="text-textFaint" />}>
-              You’re on the latest version.
-            </Line>
-          )}
+      {view && (
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={`${view.stage.kind}-${view.available?.version ?? ''}`}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.14 }}
+          >
+            {view.stage.kind === 'failed' && (
+              <Line icon={<AlertCircle size={12} className="text-danger" />} danger>
+                {view.stage.why}
+              </Line>
+            )}
+            {view.available ? (
+              <Offer view={view} />
+            ) : (
+              view.checkedAt !== null &&
+              view.stage.kind === 'idle' && (
+                <Line icon={<Check size={12} className="text-textFaint" />}>You have the newest version.</Line>
+              )
+            )}
+          </motion.div>
+        </AnimatePresence>
+      )}
 
-          {state.kind === 'failed' && (
-            <Line icon={<AlertCircle size={12} className="text-danger" />} danger>
-              {state.why}
-            </Line>
-          )}
-
-          {offered(state) && (
-            <Offer
-              release={state.release}
-              state={state}
-              onDownload={() => void downloadUpdate()}
-              onInstall={() => void installUpdate()}
-            />
-          )}
-        </motion.div>
-      </AnimatePresence>
+      {view?.canInstall && (
+        <div className="mt-3.5 flex items-start justify-between gap-4 border-t border-line pt-3">
+          <div className="min-w-0">
+            <div className="text-[12.5px] text-text">Update automatically</div>
+            <div className="mt-0.5 text-[11px] leading-relaxed text-textFaint">
+              New versions go in by themselves when nothing is playing.
+            </div>
+          </div>
+          <Switch
+            checked={view.automatic}
+            onChange={(next) => void setAutomaticUpdates(next)}
+            label="Update automatically"
+          />
+        </div>
+      )}
 
       <div className="mt-3.5 border-t border-line pt-3">
         <div className="flex flex-wrap gap-2">
@@ -121,26 +113,11 @@ export function About({
   )
 }
 
-type State = UpdateState
-
 /** The offer itself: what is new, and what to do about it. */
-function Offer({
-  release,
-  state,
-  onDownload,
-  onInstall,
-}: {
-  release: Release
-  state: State
-  onDownload: () => void
-  onInstall: () => void
-}): React.JSX.Element {
-  const busy = state.kind === 'downloading'
-  const done = state.kind === 'ready'
-  const percent =
-    state.kind === 'downloading' && state.total > 0
-      ? Math.round((state.had / state.total) * 100)
-      : 0
+function Offer({ view }: { view: UpdateView }): React.JSX.Element {
+  const offer = view.available!
+  const busy = moving(view)
+  const percent = view.stage.kind === 'downloading' ? view.stage.percent : null
 
   return (
     <div className="mt-3 rounded-md border border-basalt/25 bg-basalt/[0.06] p-3">
@@ -148,33 +125,30 @@ function Offer({
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 text-[12.5px] text-text">
             <ArrowUpCircle size={13} className="shrink-0 text-basalt" />
-            Version {release.version} is available
+            Version {offer.version} is available
           </div>
-          <div className="tnum mt-0.5 font-mono text-[10px] text-textFaint">
-            {formatBytes(release.installerBytes)}
+          <div className="mt-0.5 text-[10.5px] text-textFaint">
+            {view.canInstall
+              ? 'Basalt Host closes, updates and opens again by itself.'
+              : view.command
+                ? `Update with: ${view.command}`
+                : 'Update it the way you installed it.'}
           </div>
         </div>
 
-        {done ? (
+        {view.canInstall && (
           <button
-            onClick={onInstall}
-            className="shrink-0 rounded-md border border-basalt/40 bg-basalt/15 px-3 py-1.5 text-[11.5px] text-text transition-colors hover:bg-basalt/25"
-          >
-            {installLabel()}
-          </button>
-        ) : (
-          <button
-            onClick={onDownload}
+            onClick={() => void installUpdate()}
             disabled={busy}
-            className="flex shrink-0 items-center gap-1.5 rounded-md border border-line bg-ink2 px-3 py-1.5 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text disabled:opacity-60"
+            className="flex shrink-0 items-center gap-1.5 rounded-md border border-basalt/40 bg-basalt/15 px-3 py-1.5 text-[11.5px] text-text transition-colors hover:bg-basalt/25 disabled:opacity-60"
           >
             {busy && <Loader2 size={11} className="animate-spin" />}
-            {busy ? `${percent}%` : 'Download'}
+            {progressLabel(view) ?? 'Update now'}
           </button>
         )}
       </div>
 
-      {busy && (
+      {percent !== null && (
         <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-white/10">
           <div
             className="h-full rounded-full bg-basalt transition-[width] duration-200"
@@ -186,9 +160,9 @@ function Offer({
       {/* What changed, straight from the release. Shown here rather than
           behind a link, because "there is an update" without "and here is
           what it does" is not enough to decide on. */}
-      {release.notes && (
+      {offer.notes && (
         <div className="mt-3 max-h-[180px] overflow-y-auto border-t border-white/[0.07] pt-2.5">
-          <Notes notes={release.notes} />
+          <Notes notes={offer.notes} />
         </div>
       )}
     </div>

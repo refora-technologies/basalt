@@ -96,6 +96,9 @@ impl Host {
                 .map_err(|e| HostError::Unavailable(format!("listing folders: {e}")))??;
                 folders = Some(listed);
             }
+            ManageAction::CheckForUpdate => self.check_for_update(true).await?,
+            ManageAction::InstallUpdate => self.install_update()?,
+            ManageAction::SetAutomaticUpdates { enabled } => self.set_automatic_updates(enabled)?,
             ManageAction::ApproveProfileLink { id } => self.approve_profile_link(&id)?,
             ManageAction::DenyProfileLink { id } => {
                 self.deny_profile_link(&id);
@@ -180,6 +183,7 @@ impl Host {
             "pairings": pairings,
             "drives": drives,
             "profileLinks": self.profile_links(),
+            "update": self.update_view(),
             "you": by,
         })
     }

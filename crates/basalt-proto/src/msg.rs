@@ -324,6 +324,15 @@ pub enum ManageAction {
     ListFolders {
         path: String,
     },
+    /// Looks for a new version of the host now.
+    CheckForUpdate,
+    /// Puts the newest official release in now. Never a chosen version: see
+    /// `basalt_host::updates`.
+    InstallUpdate,
+    /// Whether the host updates itself when nothing is being watched.
+    SetAutomaticUpdates {
+        enabled: bool,
+    },
     /// Lets a profile from another drive in: see [`ProfileLinkRequest`].
     ApproveProfileLink {
         id: String,

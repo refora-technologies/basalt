@@ -34,6 +34,7 @@ pub mod setup;
 pub mod space;
 pub mod traffic;
 pub mod ui;
+pub mod updates;
 pub mod uploads;
 pub mod vault;
 pub mod watch;

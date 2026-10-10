@@ -13,6 +13,8 @@ if [ "$1" = "configure" ]; then
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload >/dev/null 2>&1 || true
         systemctl enable basalt-host.service >/dev/null 2>&1 || true
+        # Lets the host ask for its own updates: see basalt-host-update.path.
+        systemctl enable --now basalt-host-update.path >/dev/null 2>&1 || true
         systemctl restart basalt-host.service >/dev/null 2>&1 || true
     fi
 

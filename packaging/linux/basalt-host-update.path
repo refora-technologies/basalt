@@ -1,0 +1,10 @@
+[Unit]
+Description=Basalt Host update: waits for the host to ask for one
+
+[Path]
+# The host, running as its own user, leaves this file to ask for an update.
+PathExists=/var/lib/basalt-host/update-request
+Unit=basalt-host-update.service
+
+[Install]
+WantedBy=multi-user.target

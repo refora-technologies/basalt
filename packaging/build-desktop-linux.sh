@@ -35,6 +35,11 @@ docker run --rm \
             curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal >/dev/null
         fi
         . /root/.cargo/env
+        # The update helper goes into the packages beside the app: see
+        # crates/basalt-host/src/bin/basalt-host-update.rs.
+        cd /src
+        cargo build --release --locked -p basalt-host --bin basalt-host-update
+        install -m 0755 /target/release/basalt-host-update apps/host/src-tauri/linux/basalt-host-update
         cd /src/apps/host
         npm ci --silent >/dev/null
         npx tauri build

@@ -33,10 +33,13 @@ docker run --rm \
         apt-get install -y -qq gcc-aarch64-linux-gnu libc6-dev-arm64-cross >/dev/null
         rustup target add aarch64-unknown-linux-gnu >/dev/null 2>&1
         for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-            cargo build --release --locked -p basalt-host --bin basalt-host --target "$target"
+            cargo build --release --locked -p basalt-host                 --bin basalt-host --bin basalt-host-update --target "$target"
         done
-        cp /target/x86_64-unknown-linux-gnu/release/basalt-host /out/basalt-host-amd64
-        cp /target/aarch64-unknown-linux-gnu/release/basalt-host /out/basalt-host-arm64
+        for pair in x86_64-unknown-linux-gnu:amd64 aarch64-unknown-linux-gnu:arm64; do
+            target=${pair%%:*}; arch=${pair##*:}
+            cp /target/$target/release/basalt-host /out/basalt-host-$arch
+            cp /target/$target/release/basalt-host-update /out/basalt-host-update-$arch
+        done
         chmod 0755 /out/basalt-host-*
     '
 
@@ -49,11 +52,15 @@ for arch in amd64 arm64; do
         arm64) rpmarch=aarch64 ;;
     esac
     binary="$work/basalt-host-$arch"
+    helper="$work/basalt-host-update-$arch"
 
     # --- .deb ---------------------------------------------------------------
     root="$work/deb-$arch"
     install -D -m 0755 "$binary" "$root/usr/bin/basalt-host"
+    install -D -m 0755 "$helper" "$root/usr/lib/basalt-host/basalt-host-update"
     install -D -m 0644 "$linux/basalt-host.service" "$root/usr/lib/systemd/system/basalt-host.service"
+    install -D -m 0644 "$linux/basalt-host-update.service" "$root/usr/lib/systemd/system/basalt-host-update.service"
+    install -D -m 0644 "$linux/basalt-host-update.path" "$root/usr/lib/systemd/system/basalt-host-update.path"
     install -D -m 0644 "$firewall/basalt-host.ufw" "$root/etc/ufw/applications.d/basalt-host"
     install -D -m 0644 "$linux/README.md" "$root/usr/share/doc/basalt-host-server/README.md"
     install -d "$root/DEBIAN"
@@ -86,7 +93,8 @@ EOF
     sources="$work/rpm-sources-$arch"
     mkdir -p "$sources"
     cp "$binary" "$sources/basalt-host"
-    cp "$linux/basalt-host.service" "$linux/README.md" "$sources/"
+    cp "$helper" "$sources/basalt-host-update"
+    cp "$linux/basalt-host.service" "$linux/basalt-host-update.service" "$linux/basalt-host-update.path"         "$linux/README.md" "$sources/"
     cp "$firewall/basalt-host.firewalld.xml" "$sources/"
     sed -e "s/@VERSION@/$version/" -e "s/@RPMARCH@/$rpmarch/" \
         "$linux/rpm/basalt-host-server.spec" > "$work/basalt-host-server-$arch.spec"
@@ -100,7 +108,8 @@ EOF
     bundle="$work/basalt-host-server-$version-linux-$rpmarch"
     mkdir -p "$bundle"
     install -m 0755 "$binary" "$bundle/basalt-host"
-    cp "$linux/basalt-host.service" "$linux/README.md" "$bundle/"
+    install -m 0755 "$helper" "$bundle/basalt-host-update"
+    cp "$linux/basalt-host.service" "$linux/basalt-host-update.service" "$linux/basalt-host-update.path"         "$linux/README.md" "$bundle/"
     cp "$firewall/basalt-host.ufw" "$firewall/basalt-host.firewalld.xml" "$bundle/"
     tar -C "$work" -czf "$out/Basalt-Host-Server-Linux-$rpmarch.tar.gz" "$(basename "$bundle")"
 done

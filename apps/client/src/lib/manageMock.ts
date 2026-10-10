@@ -12,6 +12,25 @@ const now = (): number => Math.floor(Date.now() / 1000)
 const GB = 1024 ** 3
 
 const sample: ManageView = {
+  // `?update`: a new version waiting; `?docker`: a host that cannot update itself.
+  update: {
+    version: '1.5.0',
+    method:
+      typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('docker') ? 'container' : 'service',
+    canInstall: !(typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('docker')),
+    automatic: true,
+    available:
+      typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('update')
+        ? { version: '1.5.1', notes: '## Fixed\n\n* Posters for films with a year in brackets.', pageUrl: '' }
+        : null,
+    stage: { kind: 'idle' },
+    checkedAt: now() - 2 * 3600,
+    command:
+      typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('docker')
+        ? 'docker compose pull && docker compose up -d'
+        : null,
+    outcome: null,
+  },
   // Whichever of the two the preview is: `?mobile` is the phone.
   you:
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('mobile')
@@ -322,6 +341,15 @@ function apply(action: ManageAction): boolean {
       }
       return false
     }
+    case 'checkForUpdate':
+      if (sample.update) sample.update.checkedAt = now()
+      break
+    case 'installUpdate':
+      if (sample.update?.available) sample.update.stage = { kind: 'downloading', percent: 35 }
+      break
+    case 'setAutomaticUpdates':
+      if (sample.update) sample.update.automatic = action.enabled
+      break
     case 'renameDrive':
       if (!action.name.trim()) throw new ApiError('error', 'a drive needs a name')
       if (status.vault) status.vault.name = action.name.trim()

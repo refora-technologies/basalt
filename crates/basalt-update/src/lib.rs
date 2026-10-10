@@ -23,7 +23,10 @@ pub use version::{Version, is_newer};
 /// Which installer out of a release belongs to this app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Product {
+    /// The host with a window: Windows, and Linux desktops.
     Host,
+    /// The host with no screen: the Linux server packages.
+    HostServer,
     Client,
 }
 
@@ -36,7 +39,21 @@ impl Product {
     fn marker(self) -> &'static str {
         match self {
             Product::Host => "host",
+            Product::HostServer => "host-server",
             Product::Client => "client",
+        }
+    }
+
+    /// Whether a file with this (lowercased) name is this product's. The
+    /// host with a window and the one without both say "host": the window's
+    /// never takes a server or Docker file, whatever order a release lists
+    /// them in.
+    fn owns(self, name: &str) -> bool {
+        match self {
+            Product::Host => {
+                name.contains("host") && !name.contains("server") && !name.contains("docker")
+            }
+            other => name.contains(other.marker()),
         }
     }
 }
@@ -59,6 +76,8 @@ pub enum LinuxPackage {
     AppImage,
     Deb,
     Rpm,
+    /// The screenless host's `.tar.gz`, copied into place by hand.
+    Tarball,
 }
 
 impl LinuxPackage {
@@ -88,6 +107,7 @@ impl LinuxPackage {
             LinuxPackage::AppImage => ".appimage",
             LinuxPackage::Deb => ".deb",
             LinuxPackage::Rpm => ".rpm",
+            LinuxPackage::Tarball => ".tar.gz",
         }
     }
 }
@@ -106,11 +126,11 @@ impl Platform {
 
 /// The marker and extension of this app's file on a platform. The Android
 /// app is the client; there is no Android host.
-fn wanted(product: Product, platform: Platform) -> (&'static str, &'static str) {
+fn wanted(platform: Platform) -> &'static str {
     match platform {
-        Platform::Windows => (product.marker(), ".exe"),
-        Platform::Android => ("android", ".apk"),
-        Platform::Linux(package) => (product.marker(), package.extension()),
+        Platform::Windows => ".exe",
+        Platform::Android => ".apk",
+        Platform::Linux(package) => package.extension(),
     }
 }
 
@@ -228,6 +248,21 @@ fn client() -> Result<reqwest::Client> {
 
 /// The newest published release, or `None` when it is not newer than `current`.
 pub async fn check(product: Product, current: &str) -> Result<Option<Release>> {
+    check_on(product, current, Platform::here()).await
+}
+
+/// [`check`], for a Linux copy installed as `package`: for the update helper,
+/// which knows how the host it updates was installed rather than guessing it
+/// from how it was itself started.
+pub async fn check_linux(
+    product: Product,
+    current: &str,
+    package: LinuxPackage,
+) -> Result<Option<Release>> {
+    check_on(product, current, Platform::Linux(package)).await
+}
+
+async fn check_on(product: Product, current: &str, platform: Platform) -> Result<Option<Release>> {
     let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/releases/latest");
     let response = client()?
         .get(&url)
@@ -245,7 +280,7 @@ pub async fn check(product: Product, current: &str) -> Result<Option<Release>> {
         .await
         .map_err(|e| UpdateError::Malformed(e.to_string()))?;
 
-    Ok(newer_than(release, product, current))
+    Ok(newer_than_on(release, product, current, platform))
 }
 
 /// The release notes of one published version, or `None` when GitHub has no
@@ -286,10 +321,6 @@ pub async fn notes_for(version: &str) -> Result<Option<String>> {
 /// Separated from the request so the decision is testable without a network:
 /// which release counts, which asset belongs to this app, and whether the
 /// version is actually an advance.
-fn newer_than(release: GhRelease, product: Product, current: &str) -> Option<Release> {
-    newer_than_on(release, product, current, Platform::here())
-}
-
 fn newer_than_on(
     release: GhRelease,
     product: Product,
@@ -349,7 +380,12 @@ fn android_roots() -> Vec<reqwest::Certificate> {
 
 /// The installer in this release that belongs to this app on `platform`.
 fn pick_for(assets: &[GhAsset], product: Product, platform: Platform) -> Option<&GhAsset> {
-    let (marker, extension) = wanted(product, platform);
+    let extension = wanted(platform);
+    let owns = |name: &str| match platform {
+        // The Android app is the client; there is no Android host.
+        Platform::Android => name.contains("android"),
+        _ => product.owns(name),
+    };
     assets.iter().find(|asset| {
         let name = asset.name.to_ascii_lowercase();
         let linux_fits = match platform {
@@ -359,7 +395,7 @@ fn pick_for(assets: &[GhAsset], product: Product, platform: Platform) -> Option<
             }
             _ => true,
         };
-        name.ends_with(extension) && name.contains(marker) && linux_fits
+        name.ends_with(extension) && owns(&name) && linux_fits
     })
 }
 
@@ -601,6 +637,50 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// The host with a window and the one without both carry "Host" in their
+    /// names. Each takes only its own, whatever order the release lists them.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn the_screenless_host_and_the_desktop_host_never_take_each_others_files() {
+        // Server files first, so order alone would hand the desktop the wrong one.
+        let names = [
+            "Basalt-Host-Docker-amd64.tar.gz",
+            "Basalt-Host-Server-Linux-amd64.deb",
+            "Basalt-Host-Server-Linux-x86_64.rpm",
+            "Basalt-Host-Server-Linux-x86_64.tar.gz",
+            "Basalt-Host-Server-Linux-aarch64.tar.gz",
+            "Basalt-Host-Linux-amd64.deb",
+            "Basalt-Host-Linux-x86_64.rpm",
+            "Basalt-Host-Linux-x86_64.AppImage",
+        ];
+        let assets: Vec<GhAsset> = names.iter().map(|name| asset(name)).collect();
+        let found = |product, package| {
+            pick_for(&assets, product, Platform::Linux(package)).map(|a| a.name.clone())
+        };
+        assert_eq!(
+            found(Product::Host, LinuxPackage::Deb).as_deref(),
+            Some("Basalt-Host-Linux-amd64.deb")
+        );
+        assert_eq!(
+            found(Product::Host, LinuxPackage::Rpm).as_deref(),
+            Some("Basalt-Host-Linux-x86_64.rpm")
+        );
+        assert_eq!(found(Product::Host, LinuxPackage::Tarball), None);
+        assert_eq!(
+            found(Product::HostServer, LinuxPackage::Deb).as_deref(),
+            Some("Basalt-Host-Server-Linux-amd64.deb")
+        );
+        assert_eq!(
+            found(Product::HostServer, LinuxPackage::Rpm).as_deref(),
+            Some("Basalt-Host-Server-Linux-x86_64.rpm")
+        );
+        assert_eq!(
+            found(Product::HostServer, LinuxPackage::Tarball).as_deref(),
+            Some("Basalt-Host-Server-Linux-x86_64.tar.gz")
+        );
+        assert_eq!(found(Product::HostServer, LinuxPackage::AppImage), None);
     }
 
     /// Releases name their files without a version, so a download link to the

@@ -92,6 +92,9 @@ enum Command {
 
     /// Restart the basalt-host service, and say when it is back.
     Restart,
+
+    /// Update to the newest version now, where this host can update itself.
+    Update,
 }
 
 #[tokio::main]
@@ -111,6 +114,7 @@ async fn main() {
         Command::Start => service(&config_path, Action::Start),
         Command::Stop => service(&config_path, Action::Stop),
         Command::Restart => service(&config_path, Action::Restart),
+        Command::Update => update(&config_path),
     };
     if let Err(e) = outcome {
         eprintln!("basalt-host: {e:#}");
@@ -185,6 +189,7 @@ async fn serve(config_path: PathBuf, port: Option<u16>) -> Result<()> {
 
     let host = Host::new(config, config_path.clone())?;
     host.set_headless(true);
+    host.start_updates();
     // The system's ffmpeg converts video for devices that cannot play it.
     if let Some(dir) = config_path.parent()
         && let Some(ffmpeg) = basalt_host::convert::find_ffmpeg(dir)
@@ -370,6 +375,24 @@ fn status(config_path: &Path, wait: bool) -> Result<()> {
     row("Name", &config.host_name);
     row("Address", &address);
     row("Identity", &short_id(&config.identity()?.host_id));
+    let method = basalt_host::updates::headless_method(config_path);
+    let newer = basalt_host::updates::read_saved(config_path).available;
+    let version = match &newer {
+        Some(newer) if method.can_install() && config.automatic_updates => format!(
+            "{}  {}",
+            env!("CARGO_PKG_VERSION"),
+            style.dim(&format!(
+                "{newer} is out, and goes in by itself when nothing is playing"
+            ))
+        ),
+        Some(newer) => format!(
+            "{}  {}",
+            env!("CARGO_PKG_VERSION"),
+            style.dim(&format!("{newer} is out"))
+        ),
+        None => env!("CARGO_PKG_VERSION").to_string(),
+    };
+    row("Version", &version);
     row("Sharing", &sharing);
     if config.devices.is_empty() {
         row("Devices", "none yet");
@@ -409,13 +432,28 @@ fn status(config_path: &Path, wait: bool) -> Result<()> {
     let mut next: Vec<(&str, String)> = Vec::new();
     if !running {
         if service {
-            next.push(("Start it", "sudo systemctl start basalt-host".into()));
+            next.push(("Start it", "sudo basalt-host start".into()));
         } else if !container {
             next.push(("Start it", "basalt-host serve".into()));
         }
     }
     if !container && let Some(command) = firewall_closed(config.port) {
         next.push(("Open the firewall", command));
+    }
+    if newer.is_some() {
+        match method {
+            basalt_host::updates::Method::Service => {
+                next.push(("Update now", "sudo basalt-host update".into()))
+            }
+            basalt_host::updates::Method::Container => next.push((
+                "Update",
+                "docker compose pull && docker compose up -d".into(),
+            )),
+            _ => next.push((
+                "Get the new version",
+                "https://github.com/refora-technologies/basalt/releases/latest".into(),
+            )),
+        }
     }
     if config.vault_path.is_none() {
         if container {
@@ -666,6 +704,45 @@ fn service(config_path: &Path, action: Action) -> Result<()> {
     );
     println!("    Your devices reconnect by themselves.");
     Ok(())
+}
+
+/// Runs the update helper now, where the packaged service can update
+/// itself; says what to do instead everywhere else.
+fn update(config_path: &Path) -> Result<()> {
+    use basalt_host::updates::{HELPER, Method};
+    match basalt_host::updates::headless_method(config_path) {
+        Method::Container => bail!(
+            "in Docker, update by pulling the new image: docker compose pull && docker compose              up -d"
+        ),
+        Method::Service => {}
+        _ => bail!(
+            "this copy was put in place by hand. Get the new version from              https://github.com/refora-technologies/basalt/releases/latest"
+        ),
+    }
+    #[cfg(unix)]
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } != 0 {
+        bail!("only root can update Basalt Host. Run it with sudo.");
+    }
+    let style = Style::new();
+    println!("  Looking for a new version…");
+    let ran = std::process::Command::new(HELPER)
+        .arg("--service")
+        .output()
+        .context("could not run the update helper")?;
+    let said = String::from_utf8_lossy(&ran.stdout);
+    let message = said
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    if ran.status.success() {
+        println!("  {} {message}", style.green("●"));
+        Ok(())
+    } else {
+        bail!("{message}")
+    }
 }
 
 async fn health(port: u16) -> Result<()> {

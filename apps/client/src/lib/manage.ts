@@ -150,6 +150,26 @@ export interface ManageView {
   you: string
   /** Profiles from other drives waiting to be let in. Absent from older hosts. */
   profileLinks?: ProfileLinkRequest[]
+  /** Its version and updates. Absent from hosts before 1.5. */
+  update?: HostUpdate
+}
+
+/** Mirrors `basalt_host::updates::UpdateView`. */
+export interface HostUpdate {
+  version: string
+  method: 'installer' | 'appImage' | 'package' | 'service' | 'container' | 'manual'
+  canInstall: boolean
+  automatic: boolean
+  available: { version: string; notes: string; pageUrl: string } | null
+  stage:
+    | { kind: 'idle' }
+    | { kind: 'checking' }
+    | { kind: 'downloading'; percent: number }
+    | { kind: 'installing' }
+    | { kind: 'failed'; why: string }
+  checkedAt: number | null
+  command: string | null
+  outcome: { version: string; ok: boolean; message: string; at: number } | null
 }
 
 /** What can be asked of the host. Mirrors `ManageAction` in basalt-proto. */
@@ -179,6 +199,9 @@ export type ManageAction =
   | { do: 'chooseDrive'; path: string; name: string }
   | { do: 'renameDrive'; name: string }
   | { do: 'listFolders'; path: string }
+  | { do: 'checkForUpdate' }
+  | { do: 'installUpdate' }
+  | { do: 'setAutomaticUpdates'; enabled: boolean }
   | { do: 'approveProfileLink'; id: string }
   | { do: 'denyProfileLink'; id: string }
 

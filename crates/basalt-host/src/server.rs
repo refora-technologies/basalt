@@ -34,7 +34,7 @@ use crate::vault::Vault;
 pub struct Host {
     identity: HostIdentity,
     pub(crate) config_path: std::path::PathBuf,
-    config: std::sync::Mutex<HostConfig>,
+    pub(crate) config: std::sync::Mutex<HostConfig>,
     vault: tokio::sync::RwLock<Option<Arc<Vault>>>,
     pub(crate) registry: std::sync::Mutex<Registry>,
     /// Running with no screen: set up from a device with a setup code. See
@@ -106,6 +106,8 @@ pub struct Host {
     pub(crate) profile_links: std::sync::Mutex<Vec<crate::links::LinkRequest>>,
     /// Each profile's starred files, by profile id.
     stars: std::sync::Mutex<std::collections::HashMap<String, Vec<Star>>>,
+    /// Finding and putting in new versions: see [`crate::updates`].
+    pub(crate) updates: crate::updates::Updates,
 }
 
 impl Host {
@@ -265,6 +267,7 @@ impl Host {
             profiles: std::sync::Mutex::new(profiles),
             profile_links: std::sync::Mutex::new(Vec::new()),
             stars: std::sync::Mutex::new(stars),
+            updates: crate::updates::Updates::default(),
         });
         if abandoned > 0 {
             tracing::info!("let go of {abandoned} devices that never came back");

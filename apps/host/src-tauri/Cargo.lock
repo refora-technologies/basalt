@@ -340,6 +340,7 @@ dependencies = [
  "basalt-net",
  "basalt-proto",
  "basalt-trust",
+ "basalt-update",
  "blake3",
  "clap",
  "image",
