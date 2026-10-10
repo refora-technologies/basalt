@@ -1,4 +1,4 @@
-# Publishes Basalt Host's Docker image when a release is tagged.
+# Publishes Basalt Host's Docker image when a release is published.
 #
 #   ghcr.io/refora-technologies/basalt-host:1.5.0, :1.5 and :latest
 #
@@ -9,8 +9,9 @@
 name: Docker image
 
 on:
-  push:
-    tags: ["v*"]
+  # Publishing a release on GitHub: the image follows it, with its version.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
