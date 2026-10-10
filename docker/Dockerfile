@@ -29,6 +29,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp "/target/$target/release/basalt-host" /basalt-host
 
 FROM debian:bookworm-slim
+LABEL org.opencontainers.image.title="Basalt Host" \n      org.opencontainers.image.description="Shares a drive with your phones and computers on your network, set up and managed from the Basalt app." \n      org.opencontainers.image.vendor="Refora Technologies" \n      org.opencontainers.image.licenses="GPL-3.0-only" \n      org.opencontainers.image.source="https://github.com/refora-technologies/basalt" \n      org.opencontainers.image.documentation="https://github.com/refora-technologies/basalt/blob/main/docker/README.md" \n      org.opencontainers.image.url="https://basalt.reforatech.com"
 # ffmpeg converts video for devices that cannot play it; libmpv draws video
 # thumbnails; tini passes Docker's stop on and reaps what ffmpeg leaves.
 RUN apt-get update \

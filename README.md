@@ -241,7 +241,13 @@ if you want to check what you downloaded.
 | **[`Basalt-Host-Server-Linux-x86_64.rpm`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-x86_64.rpm)**, **[`aarch64.rpm`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-aarch64.rpm)** | Fedora, Rocky and similar |
 | **[`Basalt-Host-Server-Linux-x86_64.tar.gz`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-x86_64.tar.gz)**, **[`aarch64.tar.gz`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-aarch64.tar.gz)** | Anything else, installed by hand |
 
-For Docker, see [`docker/README.md`](docker/README.md).
+**With Docker**, for a NAS or a home server (amd64 and arm64):
+
+```sh
+docker pull ghcr.io/refora-technologies/basalt-host:latest
+```
+
+The compose file and settings are in [`docker/README.md`](docker/README.md).
 
 The Windows installers install per user and need no administrator rights. They
 update an existing installation in place and keep its pairing and settings.

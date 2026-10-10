@@ -7,29 +7,29 @@ managed from the Basalt app.
 
 ## Run it
 
-With a saved image (`Basalt-Host-Docker-amd64.tar.gz`, or `-arm64` for a
-Raspberry Pi or other ARM machine), load it first:
+The image is `ghcr.io/refora-technologies/basalt-host`, for 64-bit PCs and
+NAS boxes (amd64) and for the Raspberry Pi and other ARM boards (arm64). Docker
+picks the right one by itself.
 
-```sh
-docker load -i Basalt-Host-Docker-amd64.tar.gz
-```
-
-With Docker Compose, from this folder:
+With Docker Compose: save [`compose.yaml`](compose.yaml) in a folder of its
+own, change `/srv/media` to the folder with your files, then:
 
 ```sh
 docker compose up -d
-docker compose logs basalt
 ```
 
-Or with `docker run`, after building the image (below):
+Or with `docker run`:
 
 ```sh
 docker run -d --name basalt --network host \
   -e PUID=1000 -e PGID=1000 \
   -v /srv/basalt/config:/config \
   -v /srv/media:/media/Media \
-  --restart unless-stopped basalt-host
+  --restart unless-stopped ghcr.io/refora-technologies/basalt-host:latest
 ```
+
+On a NAS, add a container from the image `ghcr.io/refora-technologies/basalt-host:latest`
+with the same settings: host networking, `/config` and a folder under `/media`.
 
 ## Set it up
 
@@ -63,7 +63,16 @@ docker compose pull && docker compose up -d
 
 The settings in `/config` carry over.
 
-## Build the image
+## Check where the image came from
+
+Every published image is signed and carries a record of the GitHub workflow
+that built it:
+
+```sh
+gh attestation verify oci://ghcr.io/refora-technologies/basalt-host:latest --owner refora-technologies
+```
+
+## Build the image yourself
 
 From the root of the source:
 

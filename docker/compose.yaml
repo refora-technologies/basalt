@@ -1,17 +1,16 @@
 # Basalt Host with no screen, with Docker Compose.
 #
 #   docker compose up -d
-#   docker compose logs basalt      # the setup code is here
+#   docker exec basalt basalt-host status     # the setup code and address
 #
 # Then open Basalt on your phone or computer, on the same network, choose the
-# new host and type the code.
+# new host and type the code. To update later:
+#
+#   docker compose pull && docker compose up -d
 
 services:
   basalt:
-    image: basalt-host
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
+    image: ghcr.io/refora-technologies/basalt-host:latest
     container_name: basalt
     # So phones and computers on your network find it by themselves. Without
     # it, map the ports below and use "Enter the address" in the app.
