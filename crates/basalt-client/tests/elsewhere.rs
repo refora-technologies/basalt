@@ -98,6 +98,12 @@ async fn world() -> World {
 #[tokio::test]
 async fn a_profile_from_another_drive_is_used_once_approved() {
     let w = world().await;
+    // Just paired with the other drive: Maya, signed in on the home drive, is
+    // not shown as signed in here, and the app asks who is using the device.
+    let identity = w.device.identity().await;
+    assert!(identity.profile.is_none(), "{:?}", identity.profile);
+    assert!(identity.choose);
+
     let passes = w.device.profiles_elsewhere();
     assert_eq!(passes.len(), 1, "{passes:?}");
     let pass = &passes[0];

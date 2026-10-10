@@ -525,7 +525,15 @@ impl Basalt {
             key_expected: keyed,
         };
         let pool = Pool::with_session(addr, &info.host_id, credentials, &self.me, session);
-        *self.pool.write().await = Some(pool);
+        // A new host has nobody signed in yet: the last host's profile is not
+        // this one's, and the app asks who is using the device.
+        *self.identity.lock().expect("identity lock") = Current {
+            host: Some(info.host_id.clone()),
+            ..Current::default()
+        };
+        if let Some(old) = self.pool.write().await.replace(pool) {
+            self.keep_pool_statements(&old);
+        }
         *self.info.lock().expect("info lock") = Some(info.clone());
         Ok(info)
     }
