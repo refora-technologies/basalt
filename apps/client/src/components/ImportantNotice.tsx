@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion } from 'framer-motion'
-import { KeyRound } from 'lucide-react'
+import { KeyRound, Server, Sparkles } from 'lucide-react'
 import { useBack } from '@/mobile/useBack'
 
 /** Which notice this is. A later one gets a new id and shows once in turn. */
-const NOTICE = 'device-keys'
+const NOTICE = 'basalt-1.5'
 const KEY = 'basalt.notice'
 
 function seen(): boolean {
@@ -58,6 +58,27 @@ export function ImportantNotice(): React.JSX.Element | null {
   )
 }
 
+/** One of the notice's two parts: a heading with its icon, and a few lines. */
+function Part({
+  icon,
+  title,
+  children,
+}: {
+  icon: React.ReactNode
+  title: string
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <section className="mt-4">
+      <h3 className="flex items-center gap-2 text-[13.5px] font-semibold text-text">
+        <span className="text-basalt">{icon}</span>
+        {title}
+      </h3>
+      <div className="mt-1.5 space-y-2 text-[13px] leading-relaxed text-textDim">{children}</div>
+    </section>
+  )
+}
+
 function Card({ onOkay }: { onOkay: () => void }): React.JSX.Element {
   const okay = useRef<HTMLButtonElement>(null)
 
@@ -90,28 +111,36 @@ function Card({ onOkay }: { onOkay: () => void }): React.JSX.Element {
       className="max-h-[calc(100vh-48px)] w-[min(460px,calc(100vw-32px))] overflow-y-auto rounded-xl border border-white/10 bg-panel2 p-6 shadow-lift"
     >
       <div className="flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.18em] text-basalt">
-        <KeyRound size={13} />
+        <Sparkles size={13} />
         Basalt 1.5
       </div>
       <h2 id="notice-title" className="mt-2 text-[20px] font-semibold tracking-tight text-text">
-        Update Basalt on every device
+        Update Basalt on all your devices
       </h2>
 
-      <div className="mt-3 space-y-3 text-[13px] leading-relaxed text-textDim">
+      <Part icon={<KeyRound size={14} />} title="Safer sign-in">
         <p>
-          Basalt now signs this device in with a key of its own, made here and kept in its security
-          chip where it has one. It never leaves the device and cannot be copied, so a copy of its
-          settings is no longer enough to open your drive.
+          This device now signs in with its own key, created here and kept in its security chip when
+          it has one. The key never leaves the device, so a copy of its settings can no longer open
+          your drive.
         </p>
         <p>
-          Update Basalt on your other devices too, starting with the computer that shares your
-          drive. This device moves to its key once that computer is updated. Devices still on an
-          older Basalt keep working, but sign in the old way until they are updated.
+          Update your other devices too, starting with the computer that shares your drive. Until
+          then, they keep working as before.
         </p>
-      </div>
+      </Part>
+
+      <Part icon={<Server size={14} />} title="Basalt Host for Linux">
+        <p>
+          Share your drive from a Linux computer, a home server, a NAS or a Raspberry Pi, with or
+          without a screen, or with Docker. You set it up and manage it from this app. Get it at
+          basalt.reforatech.com.
+        </p>
+      </Part>
 
       <p className="mt-4 text-[12px] leading-relaxed text-textFaint">
-        Once this device is updated, going back to an older Basalt on it means pairing it again.
+        After this update, going back to an older version of Basalt on this device means pairing it
+        again.
       </p>
 
       <button
