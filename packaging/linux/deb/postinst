@@ -16,38 +16,13 @@ if [ "$1" = "configure" ]; then
         systemctl restart basalt-host.service >/dev/null 2>&1 || true
     fi
 
-    if [ -z "$2" ]; then
-        cat <<'EOF'
-
-  Basalt Host is running.
-
-  To set it up, open Basalt on your phone or computer, on this network, and
-  choose this host. It asks for the setup code, which this shows:
-
-      sudo basalt-host setup-code
-
-  Give it access to the folders it shares: see /usr/share/doc/basalt-host-server/README.md
-
-EOF
-        # A firewall that is on keeps every device out, and a host with no
-        # screen has nowhere to say so. Not opened here: that is the
-        # computer owner's call.
-        if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-            cat <<'EOF'
-  The firewall (ufw) is on. Let your devices reach the host:
-
-      sudo ufw allow "Basalt Host"
-
-EOF
-        elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-            cat <<'EOF'
-  The firewall (firewalld) is on. Let your devices reach the host:
-
-      sudo firewall-cmd --permanent --add-service=basalt-host
-      sudo firewall-cmd --reload
-
-EOF
-        fi
+    # The last word of the install: whether it runs, where devices find it,
+    # the setup code, and what is left to do on this machine, firewall
+    # included (never opened here: that is the computer owner's call).
+    if [ -d /run/systemd/system ]; then
+        basalt-host --config /var/lib/basalt-host/host.json status --wait || true
+    else
+        echo "Basalt Host is installed. Start it with: sudo systemctl enable --now basalt-host"
     fi
 fi
 

@@ -68,8 +68,14 @@ enum Command {
         name: Option<String>,
     },
 
-    /// How the host stands: its name, drive, devices and who manages it.
-    Status,
+    /// How the host stands: its name, address, drive, devices, and the setup
+    /// code while it waits to be set up.
+    Status {
+        /// Wait a few seconds for a host just started to answer: for the
+        /// package's install script, which shows this as its last word.
+        #[arg(long, hide = true)]
+        wait: bool,
+    },
 
     /// Exit 0 if the host answers on its port; for Docker's healthcheck.
     Health {
@@ -90,7 +96,7 @@ async fn main() {
         Command::Serve { port } => serve(config_path, port).await,
         Command::SetupCode { reset } => setup_code(&config_path, reset),
         Command::Share { path, name } => share(&config_path, &path, name),
-        Command::Status => status(&config_path),
+        Command::Status { wait } => status(&config_path, wait),
         Command::Health { port } => health(port).await,
     };
     if let Err(e) = outcome {
@@ -293,39 +299,251 @@ fn share(config_path: &Path, path: &Path, name: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn status(config_path: &Path) -> Result<()> {
+/// What a person at the machine needs at a glance: whether the host runs,
+/// where devices find it, the setup code while it waits for one, and what is
+/// left to do here. Also the last thing installing the package shows.
+fn status(config_path: &Path, wait: bool) -> Result<()> {
+    if wait {
+        wait_until_ready(config_path);
+    }
     let config = existing(config_path)?;
-    let identity = config.identity()?;
-    println!("  Basalt Host {}", env!("CARGO_PKG_VERSION"));
-    println!("  name      {}", config.host_name);
-    println!("  identity  {}", short_id(&identity.host_id));
-    println!("  port      {}", config.port);
-    match &config.vault_path {
-        Some(path) => println!("  sharing   {} ({})", config.vault_name, path.display()),
-        None => println!("  sharing   nothing yet"),
+    let style = Style::new();
+    let running = answers(config.port);
+    let set_up = config.devices.iter().any(|d| d.owner);
+    let waiting = !set_up || setup::read_code(config_path).is_some();
+    let service = config_path.starts_with("/var/lib/basalt-host");
+    let container = in_container();
+
+    println!();
+    let (dot, state) = if running {
+        (style.green("●"), "is running")
+    } else {
+        (style.red("●"), "is not running")
+    };
+    println!(
+        "  {dot} {}",
+        style.bold(&format!(
+            "Basalt Host {} {state}",
+            env!("CARGO_PKG_VERSION")
+        ))
+    );
+    println!();
+
+    let address = basalt_net::discovery::local_addresses()
+        .first()
+        .map(|ip| format!("{ip}:{}", config.port))
+        .unwrap_or_else(|| "no network yet".into());
+    let sharing = match &config.vault_path {
+        Some(path) => format!("{} ({})", config.vault_name, path.display()),
+        None => "nothing yet".into(),
+    };
+    let row = |label: &str, value: &str| {
+        println!("    {}  {value}", style.dim(&format!("{label:<10}")));
+    };
+    row("Name", &config.host_name);
+    row("Address", &address);
+    row("Identity", &short_id(&config.identity()?.host_id));
+    row("Sharing", &sharing);
+    if config.devices.is_empty() {
+        row("Devices", "none yet");
     }
-    let managers: Vec<&str> = config
-        .devices
-        .iter()
-        .filter(|d| d.owner)
-        .map(|d| d.name.as_str())
-        .collect();
-    println!("  devices   {}", config.devices.len());
-    for device in &config.devices {
-        println!(
-            "            {}{}",
-            device.name,
-            if device.owner {
-                "  (manages the host)"
-            } else {
-                ""
-            }
-        );
+    for (i, device) in config.devices.iter().enumerate() {
+        let label = if i == 0 { "Devices" } else { "" };
+        let manages = if device.owner {
+            style.dim("  manages the host")
+        } else {
+            String::new()
+        };
+        row(label, &format!("{}{manages}", device.name));
     }
-    if managers.is_empty() || setup::read_code(config_path).is_some() {
-        println!("\n  Waiting to be set up: run `basalt-host setup-code` for the code.");
+
+    if waiting {
+        println!();
+        let code =
+            setup::read_code(config_path).map(|c| basalt_net::pairing::format_setup_code(&c));
+        let lines = [
+            String::new(),
+            match &code {
+                Some(code) => format!("Setup code   {code}"),
+                None => "Setup code   sudo basalt-host setup-code".into(),
+            },
+            String::new(),
+            "Open Basalt on your phone or computer, on this".into(),
+            format!(
+                "network, choose \"{}\" and type the code.",
+                config.host_name
+            ),
+            "That device will manage the host.".into(),
+            String::new(),
+        ];
+        boxed(&style, "Set it up", &lines, code.as_deref());
     }
+
+    let mut next: Vec<(&str, String)> = Vec::new();
+    if !running {
+        if service {
+            next.push(("Start it", "sudo systemctl start basalt-host".into()));
+        } else if !container {
+            next.push(("Start it", "basalt-host serve".into()));
+        }
+    }
+    if !container && let Some(command) = firewall_closed(config.port) {
+        next.push(("Open the firewall", command));
+    }
+    if config.vault_path.is_none() {
+        if container {
+            next.push(("Folders it can share", "those mounted under /media".into()));
+        } else if service {
+            next.push((
+                "Let it read a folder",
+                "sudo setfacl -R -m u:basalt:rwX -m d:u:basalt:rwX /srv/media".into(),
+            ));
+        }
+    }
+    if container {
+        next.push(("Follow the log", "docker logs -f basalt".into()));
+    } else if service {
+        next.push(("Follow the log", "journalctl -u basalt-host -f".into()));
+        next.push(("Help", "/usr/share/doc/basalt-host-server/README.md".into()));
+    }
+    if !next.is_empty() {
+        println!();
+        println!("  {}", style.bold("Next"));
+        let width = next.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+        for (label, command) in &next {
+            println!("    {label:<width$}   {}", style.cyan(command));
+        }
+    }
+    println!();
     Ok(())
+}
+
+/// Until a host just started answers, and has written its setup code if it
+/// needs one: the install script asks before the service is quite up.
+fn wait_until_ready(config_path: &Path) {
+    let until = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < until {
+        if let Ok(config) = existing(config_path)
+            && answers(config.port)
+            && (config.devices.iter().any(|d| d.owner) || setup::read_code(config_path).is_some())
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+fn answers(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok()
+}
+
+fn in_container() -> bool {
+    std::env::var_os("BASALT_CONTAINER").is_some() || Path::new("/.dockerenv").exists()
+}
+
+/// The command that lets devices through the firewall, when one is on and has
+/// no rule for the host yet. Only root can ask the firewall, so for anyone
+/// else this says nothing rather than guess.
+#[cfg(target_os = "linux")]
+fn firewall_closed(port: u16) -> Option<String> {
+    use std::process::{Command, Stdio};
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } != 0 {
+        return None;
+    }
+    let run = |program: &str, args: &[&str]| {
+        Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    let port = port.to_string();
+    if let Some(ufw) = run("ufw", &["status"]) {
+        let closed =
+            ufw.contains("Status: active") && !ufw.contains("Basalt Host") && !ufw.contains(&port);
+        return closed.then(|| "sudo ufw allow \"Basalt Host\"".into());
+    }
+    if run("firewall-cmd", &["--state"]).is_some() {
+        let open = run("firewall-cmd", &["--list-all"]).unwrap_or_default();
+        if !open.contains("basalt-host") && !open.contains(&port) {
+            return Some(
+                "sudo firewall-cmd --permanent --add-service=basalt-host && sudo firewall-cmd \
+                 --reload"
+                    .into(),
+            );
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn firewall_closed(_port: u16) -> Option<String> {
+    None
+}
+
+/// Lines in a box under a title, with `highlight` drawn out wherever it is.
+fn boxed(style: &Style, title: &str, lines: &[String], highlight: Option<&str>) {
+    let widest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let inner = widest.max(title.chars().count() + 4) + 6;
+    let rule = inner - title.chars().count() - 3;
+    println!("  ┌─ {} {}┐", style.bold(title), "─".repeat(rule));
+    for line in lines {
+        let pad = inner - 3 - line.chars().count();
+        let shown = match highlight {
+            Some(h) if line.contains(h) => line.replace(h, &style.bold(&style.green(h))),
+            _ => line.clone(),
+        };
+        println!("  │   {shown}{}│", " ".repeat(pad));
+    }
+    println!("  └{}┘", "─".repeat(inner));
+}
+
+/// Colour for a person at a terminal; plain text for logs, pipes, and anyone
+/// who set NO_COLOR.
+struct Style {
+    on: bool,
+}
+
+impl Style {
+    fn new() -> Self {
+        Style {
+            on: std::io::IsTerminal::is_terminal(&std::io::stdout())
+                && std::env::var_os("NO_COLOR").is_none(),
+        }
+    }
+
+    fn paint(&self, code: &str, text: &str) -> String {
+        if self.on {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_string()
+        }
+    }
+
+    fn bold(&self, text: &str) -> String {
+        self.paint("1", text)
+    }
+
+    fn dim(&self, text: &str) -> String {
+        self.paint("2", text)
+    }
+
+    fn green(&self, text: &str) -> String {
+        self.paint("32", text)
+    }
+
+    fn red(&self, text: &str) -> String {
+        self.paint("31", text)
+    }
+
+    fn cyan(&self, text: &str) -> String {
+        self.paint("36", text)
+    }
 }
 
 async fn health(port: u16) -> Result<()> {

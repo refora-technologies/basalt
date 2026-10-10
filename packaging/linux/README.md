@@ -41,10 +41,11 @@ sudo firewall-cmd --permanent --add-service=basalt-host && sudo firewall-cmd --r
 
 1. On a phone or computer on the same network, open Basalt. The host shows in the
    list as **new**. Choose it.
-2. Type its setup code. The code is in the host's log, or ask for it:
+2. Type its setup code. Installing shows it, with the host's name and address
+   and what is left to do; this shows it all again:
 
    ```sh
-   sudo basalt-host setup-code
+   sudo basalt-host status
    journalctl -u basalt-host       # the code is in the log too
    ```
 

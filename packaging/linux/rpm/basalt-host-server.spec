@@ -46,14 +46,11 @@ if [ -d /run/systemd/system ]; then
     systemctl daemon-reload >/dev/null 2>&1 || :
     if [ $1 -eq 1 ]; then
         systemctl enable --now basalt-host.service >/dev/null 2>&1 || :
-        echo "Basalt Host is running. Set it up from the Basalt app; the setup code: sudo basalt-host setup-code"
-        if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-            echo "The firewall is on. Let your devices reach the host:"
-            echo "  sudo firewall-cmd --permanent --add-service=basalt-host && sudo firewall-cmd --reload"
-        fi
     else
         systemctl try-restart basalt-host.service >/dev/null 2>&1 || :
     fi
+    # Whether it runs, where devices find it, the setup code, what is left.
+    basalt-host --config /var/lib/basalt-host/host.json status --wait || :
 fi
 
 %preun
