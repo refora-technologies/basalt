@@ -42,6 +42,8 @@ docker run --rm \
         install -m 0755 /target/release/basalt-host-update apps/host/src-tauri/linux/basalt-host-update
         cd /src/apps/host
         npm ci --silent >/dev/null
+        # Only the packages of this build: the cache keeps older ones too.
+        rm -rf /target/release/bundle
         npx tauri build
     '
 
