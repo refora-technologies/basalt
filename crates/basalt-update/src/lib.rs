@@ -145,6 +145,25 @@ fn arch_names() -> &'static [&'static str] {
 
 /// Where releases are published.
 pub const OWNER: &str = "refora-technologies";
+
+/// GitHub's API, or for testing an update end to end, a release server on
+/// this same machine named in `BASALT_RELEASES_API`. Nothing else is taken
+/// from it: an address anywhere but this machine is ignored, so it can never
+/// send a real install somewhere else. (The root update helper never sees
+/// it anyway: pkexec and systemd start it with an environment of their own.)
+fn api_base() -> String {
+    std::env::var("BASALT_RELEASES_API")
+        .ok()
+        .filter(|url| on_this_machine(url))
+        .map(|url| url.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| "https://api.github.com".to_string())
+}
+
+fn on_this_machine(url: &str) -> bool {
+    ["http://127.0.0.1:", "http://localhost:", "http://[::1]:"]
+        .iter()
+        .any(|start| url.starts_with(start))
+}
 pub const REPO: &str = "basalt";
 
 /// How long any one request may take to begin answering.
@@ -263,7 +282,7 @@ pub async fn check_linux(
 }
 
 async fn check_on(product: Product, current: &str, platform: Platform) -> Result<Option<Release>> {
-    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/releases/latest");
+    let url = format!("{}/repos/{OWNER}/{REPO}/releases/latest", api_base());
     let response = client()?
         .get(&url)
         .header("Accept", "application/vnd.github+json")
@@ -291,7 +310,7 @@ async fn check_on(product: Product, current: &str, platform: Platform) -> Result
 /// carries that was never released on GitHub (a test step) simply has none.
 pub async fn notes_for(version: &str) -> Result<Option<String>> {
     let tag = format!("v{}", version.trim_start_matches('v'));
-    let url = format!("https://api.github.com/repos/{OWNER}/{REPO}/releases/tags/{tag}");
+    let url = format!("{}/repos/{OWNER}/{REPO}/releases/tags/{tag}", api_base());
     let response = client()?
         .get(&url)
         .header("Accept", "application/vnd.github+json")
@@ -783,6 +802,15 @@ mod tests {
         )
         .expect("an update");
         assert!(found.checksum_url.unwrap().contains("Client"));
+    }
+
+    #[test]
+    fn only_a_release_server_on_this_machine_can_stand_in_for_github() {
+        assert!(on_this_machine("http://127.0.0.1:8080"));
+        assert!(on_this_machine("http://localhost:9000/"));
+        assert!(!on_this_machine("http://127.0.0.1.example.com:80"));
+        assert!(!on_this_machine("https://evil.example"));
+        assert!(!on_this_machine("http://192.168.1.5:80"));
     }
 
     #[test]
