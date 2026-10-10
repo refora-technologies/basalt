@@ -7,6 +7,13 @@ managed from the Basalt app.
 
 ## Run it
 
+With a saved image (`Basalt-Host-Docker-amd64.tar.gz`, or `-arm64` for a
+Raspberry Pi or other ARM machine), load it first:
+
+```sh
+docker load -i Basalt-Host-Docker-amd64.tar.gz
+```
+
 With Docker Compose, from this folder:
 
 ```sh

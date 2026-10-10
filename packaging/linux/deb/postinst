@@ -29,6 +29,25 @@ if [ "$1" = "configure" ]; then
   Give it access to the folders it shares: see /usr/share/doc/basalt-host-server/README.md
 
 EOF
+        # A firewall that is on keeps every device out, and a host with no
+        # screen has nowhere to say so. Not opened here: that is the
+        # computer owner's call.
+        if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+            cat <<'EOF'
+  The firewall (ufw) is on. Let your devices reach the host:
+
+      sudo ufw allow "Basalt Host"
+
+EOF
+        elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+            cat <<'EOF'
+  The firewall (firewalld) is on. Let your devices reach the host:
+
+      sudo firewall-cmd --permanent --add-service=basalt-host
+      sudo firewall-cmd --reload
+
+EOF
+        fi
     fi
 fi
 

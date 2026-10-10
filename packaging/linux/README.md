@@ -12,13 +12,13 @@ For Docker, see `docker/README.md` in the source.
 Debian, Ubuntu, Raspberry Pi OS:
 
 ```sh
-sudo apt install ./basalt-host-server_<version>_amd64.deb     # or _arm64.deb
+sudo apt install ./Basalt-Host-Server-Linux-amd64.deb     # or -arm64.deb
 ```
 
 Fedora and similar:
 
 ```sh
-sudo dnf install ./basalt-host-server-<version>-1.x86_64.rpm   # or .aarch64.rpm
+sudo dnf install ./Basalt-Host-Server-Linux-x86_64.rpm    # or -aarch64.rpm
 ```
 
 The package installs `/usr/bin/basalt-host`, a `basalt-host` service that starts
@@ -28,6 +28,14 @@ file to `/etc/systemd/system`, then `sudo systemctl enable --now basalt-host`.
 
 The desktop Basalt Host and this one can't be installed together: both use the
 same ports.
+
+If the computer's firewall is on, let your devices through. The package says so
+when it is:
+
+```sh
+sudo ufw allow "Basalt Host"                                   # Ubuntu, Debian
+sudo firewall-cmd --permanent --add-service=basalt-host && sudo firewall-cmd --reload   # Fedora
+```
 
 ## Set it up
 
