@@ -163,7 +163,7 @@ export function VideoGrid({
                         {stemOf(file.path)}
                       </div>
                       <div className="mt-0.5 flex gap-2 font-mono text-[10.5px] text-textFaint">
-                        <span className="min-w-0 truncate">{folderOf(file.path) || 'Vault'}</span>
+                        <span className="min-w-0 truncate">{folderOf(file.path) || 'Drive'}</span>
                         <span className="ml-auto shrink-0">{formatBytes(file.size)}</span>
                       </div>
                     </div>

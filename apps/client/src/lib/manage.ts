@@ -296,17 +296,16 @@ function said(e: unknown): string {
   return message.charAt(0).toUpperCase() + message.slice(1) + (message.endsWith('.') ? '' : '.')
 }
 
-/** How a device signs in, in a few words. */
+/** How a device signs in, in a few words, for a list. */
 export function signsIn(device: ManagedDevice): string {
-  if (!device.keyed) return 'pairing code'
-  switch (device.keyKind) {
-    case 'chip':
-      return 'chip key'
-    case 'system':
-      return 'system key'
-    default:
-      return 'key'
-  }
+  if (!device.keyed) return 'older sign-in'
+  return device.keyKind === 'chip' ? 'security chip' : 'secure key'
+}
+
+/** How a device signs in, as a sentence's end: "signs in with …". */
+export function signsInWith(device: ManagedDevice): string {
+  if (!device.keyed) return 'the older way, until Basalt on it is updated'
+  return device.keyKind === 'chip' ? 'a key in its security chip' : 'a secure key of its own'
 }
 
 /** The number to type, said in two halves: "482 915". */

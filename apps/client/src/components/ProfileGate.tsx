@@ -150,8 +150,8 @@ export function ProfileGate({
                 </h1>
                 <p className="mt-2 max-w-[400px] text-[12.5px] leading-relaxed text-textDim">
                   {rules.requireProfile
-                    ? 'Choose your profile to continue. Your watch history and stars come with you, on any device.'
-                    : 'Choose your profile and your watch history and stars come with you, on any device. Or carry on as this device, straight in.'}
+                    ? 'Choose your profile to continue. Your watch history and stars come with you on every device.'
+                    : 'Choose your profile to keep your watch history and stars with you on every device. Or continue as this device.'}
                 </p>
                 {ended && (
                   <p className="mt-3 rounded-full bg-white/[0.05] px-3 py-1 text-[11.5px] text-textDim">

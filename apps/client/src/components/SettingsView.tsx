@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
-  FolderOpen, HardDrive, Info, Laptop, Shield, Volume2, Wifi, Zap } from 'lucide-react'
+  FolderOpen, HardDrive, Info, Laptop, Shield, Volume2, Wifi } from 'lucide-react'
 import { Switch } from './Switch'
 import { setShowHidden, useShowHidden } from '@/lib/showHidden'
 import type { KeyKind, Status } from '@/lib/api'
@@ -79,25 +79,23 @@ export function SettingsView({
   return (
     <div className="h-full overflow-y-auto px-8 py-6">
       <div className="mx-auto max-w-[640px] space-y-6">
-        <Section icon={HardDrive} title="Vault" hint="The drive this app connects to">
+        <Section icon={HardDrive} title="Drive" hint="The drive this app opens">
           <Row label="Name" value={status?.vault ?? '—'} />
           <Row label="Host" value={status?.hostName ?? '—'} />
-          <Row label="Address" value={status?.address ?? 'not connected'} mono />
+          <Row label="Address" value={status?.address ?? 'Not connected'} mono />
           <Row
             label="Space"
             value={total > 0 ? `${formatBytes(free)} free of ${formatBytes(total)}` : '—'}
             mono
           />
-          <Row label="Access" value={status?.writable ? 'read and write' : 'read only'} />
+          <Row label="Access" value={status?.writable ? 'Can change files' : 'Read only'} />
           <Note>
-            The address is where the host answered today, not something this app
-            remembers and depends on. When the router gives it a different one,
-            this app finds it again by its pinned identity — which is why you
-            were never asked to type one. To use another drive, change drive:
-            this one stays paired, so coming back to it is a click.
+            Basalt finds the host on your network by itself, even when its address
+            changes. To use another drive, choose Change drive. This one stays paired,
+            so you can come back to it in one click.
           </Note>
           <Action label="Change drive" onClick={onChangeDrive} />
-          <Action label="Forget this vault" danger onClick={onForget} />
+          <Action label="Forget this drive" danger onClick={onForget} />
         </Section>
 
         <Section icon={Info} title="About" hint="Basalt, by Refora Technologies">
@@ -107,7 +105,7 @@ export function SettingsView({
         <Section icon={FolderOpen} title="Files" hint="What folders show">
           <Switch
             label="Show hidden files"
-            description="Items Windows keeps out of sight, such as desktop.ini and the Recycle Bin. Off, as in Explorer."
+            description="Files the host’s computer normally hides, such as desktop.ini and the Recycle Bin."
             checked={showHidden}
             onChange={setShowHidden}
             // The same inset as every other row in Settings.
@@ -118,44 +116,29 @@ export function SettingsView({
         <Section icon={Volume2} title="Playback" hint="Where the sound goes">
           <AudioOutput />
           <Note>
-            {/* Worth saying, because the list is mpv's and not Windows's, and
+            {/* Worth saying, because the list is mpv's and not the system's, and
                 the names differ enough to be confusing. */}
-            Chosen for this app only — it does not change what anything else on
-            this machine plays through. <span className="text-textDim">Automatic</span>{' '}
-            follows whatever Windows is using at the time.
+            Only for Basalt: other apps keep their own choice.{' '}
+            <span className="text-textDim">Automatic</span> follows your computer’s
+            sound setting.
           </Note>
         </Section>
 
-        <Section icon={Wifi} title="Connection" hint="How this link behaves">
-          <Row label="Transport" value="TCP · single connection" mono />
-          <Row label="Encryption" value="TLS 1.3 · always on" mono />
-          <Row label="Receive buffer" value="2 MiB" mono />
+        <Section icon={Wifi} title="Connection" hint="Between this computer and the host">
+          <Row label="Encryption" value="Always on" />
+          <Row label="Files" value="Checked as they arrive" />
           <Note>
-            Both machines are on Wi-Fi, so every byte crosses the air twice —
-            once to the router and once back out. A cable to the host would
-            roughly double throughput, which is more than any software change
-            can offer.
+            Everything between this computer and the host is encrypted, and every
+            file is checked so it arrives exactly as it was. On Wi-Fi, connecting
+            the host with a cable makes the biggest difference to speed.
           </Note>
         </Section>
 
-        <Section icon={Zap} title="Transfers" hint="Measured on this hardware">
-          <Row label="Compression" value="zstd level 1 · 2.2x on documents" mono />
-          <Row label="Small files" value="batched · 7.6x faster" mono />
-          <Row label="Verification" value="BLAKE3, every transfer" mono />
-          <Row label="Chunk size" value="4 MiB" mono />
-          <Note>
-            None of these are switches. Compression is skipped automatically for
-            anything already compressed, level 9 was measured slower than the
-            link itself, and an unverified transfer has no advantage worth
-            having.
-          </Note>
-        </Section>
-
-        <Section icon={Laptop} title="This device" hint="How the host sees you">
+        <Section icon={Laptop} title="This device" hint="How the host knows it">
           <Row label="Name" value={status?.deviceName ?? '—'} />
           <Note>
-            Shown in the host&rsquo;s device list, where this device can be
-            revoked at any time.
+            Shown in the host&rsquo;s device list, where it can be removed at any
+            time.
           </Note>
         </Section>
 
@@ -165,24 +148,21 @@ export function SettingsView({
             value={status?.hostId ? formatIdentity(status.hostId) : '—'}
             mono
           />
-          <Row label="This device's key" value={keyPlace(status?.key ?? null)} />
+          <Row label="Security key" value={keyPlace(status?.key ?? null)} />
           <Row
             label="Signs in with"
             value={
               !status?.connected
                 ? '—'
                 : status.signsInWithKey
-                  ? 'its key'
-                  : 'its pairing code'
+                  ? 'Its security key'
+                  : 'Its pairing code'
             }
           />
-          {status?.owner && <Row label="Manages this host" value="vouches for it every week" />}
+          {status?.owner && <Row label="Manages this host" value="Yes" />}
           <Note>
-            The host&rsquo;s public key, pinned when you paired. Every connection
-            since has had to present exactly this key — a different machine at
-            the same address is refused rather than trusted. This device proves
-            itself the same way, by signing with a key of its own that never
-            leaves it, so nothing sent over the network can be used again.
+            This computer only connects to the host it paired with, and proves who
+            it is with its own key, which never leaves it.
           </Note>
         </Section>
       </div>
@@ -194,13 +174,13 @@ export function SettingsView({
 function keyPlace(key: KeyKind | null): string {
   switch (key) {
     case 'chip':
-      return "in this computer's security chip"
+      return 'In this computer’s security chip'
     case 'system':
-      return 'sealed by Windows for you'
+      return 'Protected by Windows'
     case 'file':
-      return 'in a file only Basalt reads'
+      return 'In a file only Basalt can read'
     default:
-      return 'made the first time it is needed'
+      return 'Created when first needed'
   }
 }
 

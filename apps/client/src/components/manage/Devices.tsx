@@ -16,7 +16,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react'
-import { signsIn, spacedPin, type ManagedDevice, type PairingRequest } from '@/lib/manage'
+import { signsIn, signsInWith, spacedPin, type ManagedDevice, type PairingRequest } from '@/lib/manage'
 import { cn, formatBytes } from '@/lib/utils'
 import { Card, Group, Pill, Presence, Row, Rows, Tag, Toggle, ago, useLayout } from './parts'
 import { Surface } from './Surface'
@@ -67,8 +67,8 @@ function PairingCard({ request, onDeny }: { request: PairingRequest; onDeny: () 
           <div className="truncate text-[13px] font-medium text-text">{request.deviceName}</div>
           <div className="text-[11.5px] text-textDim">
             {request.pin
-              ? 'wants to join this host. Type this number on it to let it in:'
-              : 'wants to join. No PIN is asked for on this host, so it joins by itself.'}
+              ? 'wants to join. Type this number on it to let it in:'
+              : 'wants to join. This host doesn’t ask for a PIN, so it joins by itself.'}
           </div>
         </div>
         {request.pin && (
@@ -80,7 +80,7 @@ function PairingCard({ request, onDeny }: { request: PairingRequest; onDeny: () 
           </div>
         )}
         <Pill onClick={onDeny} icon={<X size={13} />}>
-          Turn away
+          Decline
         </Pill>
       </div>
     )
@@ -126,13 +126,13 @@ function PairingCard({ request, onDeny }: { request: PairingRequest; onDeny: () 
         </div>
       ) : (
         <p className={cn('mt-3 text-textFaint', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
-          No PIN is asked for on this host, so it joins by itself.
+          This host doesn’t ask for a PIN, so it joins by itself.
         </p>
       )}
 
       <div className="mt-3 flex justify-end">
         <Pill onClick={onDeny} icon={<X size={14} />}>
-          Turn away
+          Decline
         </Pill>
       </div>
     </div>
@@ -195,7 +195,7 @@ export function Devices(tools: Tools): React.JSX.Element {
 
   return (
     <>
-      <Group icon={MonitorSmartphone} title="Devices" aside={`${online} of ${devices.length} here now`}>
+      <Group icon={MonitorSmartphone} title="Devices" aside={`${online} of ${devices.length} connected`}>
         <Rows>
           {devices.map((device) => {
             const you = device.id === view.you
@@ -220,7 +220,7 @@ export function Devices(tools: Tools): React.JSX.Element {
                 sub={
                   <>
                     {you && <span className="text-textDim">{thisOne(layout)} · </span>}
-                    {device.online ? 'here now' : `seen ${ago(device.lastSeen)}`} · {signsIn(device)}
+                    {device.online ? 'connected' : `seen ${ago(device.lastSeen)}`} · {signsIn(device)}
                   </>
                 }
                 end={
@@ -265,7 +265,7 @@ function DeviceDetail({
       return confirm({
         title: `Let ${device.name} manage this host?`,
         message:
-          'Whoever uses it can change everything here: the drive, who joins, the profiles and their PINs, from anywhere it connects.',
+          'Whoever uses it can change everything here, including the drive, who can join and the profiles.',
         confirmLabel: 'Let it manage',
       })
     }
@@ -289,8 +289,8 @@ function DeviceDetail({
     const ok = await confirm({
       title: you ? `Remove ${phone ? 'this phone' : 'this computer'}?` : `Remove ${device.name}?`,
       message: you
-        ? 'It stops connecting at once. To come back, it pairs again.'
-        : 'It stops connecting at once. To come back, it pairs again, with a PIN if this host asks for one.',
+        ? 'It’s disconnected right away. To use the drive again, it has to pair again.'
+        : 'It’s disconnected right away. To use the drive again, it has to pair again.',
       confirmLabel: 'Remove',
       danger: true,
     })
@@ -316,11 +316,11 @@ function DeviceDetail({
           <div className={cn('flex items-center gap-2 text-textDim', phone ? 'text-[13px]' : 'text-[12px]')}>
             <Presence on={device.online} />
             {device.online
-              ? `Here now${device.connections > 1 ? ` · ${device.connections} connections` : ''}`
+              ? `Connected${device.connections > 1 ? ` · ${device.connections} connections` : ''}`
               : `Last seen ${ago(device.lastSeen)}`}
           </div>
           <div className={cn('mt-0.5 text-textFaint', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
-            Paired {ago(device.pairedAt)} · signs in with {signsIn(device) === 'pairing code' ? 'its pairing code' : `a ${signsIn(device)}`}
+            Paired {ago(device.pairedAt)} · signs in with {signsInWith(device)}
           </div>
           <div className="tnum mt-1.5 flex gap-3 font-mono text-[11px] text-textFaint">
             <span className="flex items-center gap-1" title="Sent to this device">
@@ -340,7 +340,7 @@ function DeviceDetail({
           <Row
             icon={<Pencil size={phone ? 17 : 14} />}
             title="Rename"
-            sub="What this host calls it in every list"
+            sub="The name shown for this device"
             chevron
             onClick={() =>
               prompt({
@@ -366,12 +366,12 @@ function DeviceDetail({
             title="Manages this host"
             description={
               !device.keyed && !device.owner
-                ? 'It signs in with a pairing code. Once an up-to-date Basalt on it signs in with a key of its own, it can manage the host.'
+                ? 'Update Basalt on this device first. Then it can manage the host.'
                 : only
                   ? 'The only device that manages this host. Let another device manage it first.'
                   : device.owner
                     ? 'Can change everything on this screen, from anywhere it connects.'
-                    : 'Off. It uses the drive, and leaves the settings alone.'
+                    : 'Off. It can use the drive, but not change these settings.'
             }
             checked={device.owner}
             disabled={(!device.keyed && !device.owner) || only}

@@ -102,7 +102,7 @@ function Card({
     if (!path) return
     const name = await api.playerName(path).catch(() => null)
     if (!name) {
-      setProblem('That is not a program Basalt can start.')
+      setProblem('Basalt can’t open that program.')
       return
     }
     play({ name, path })

@@ -108,7 +108,7 @@ export function LibraryView({
     return (
       <Centered>
         <Loader2 size={16} className="animate-spin text-textFaint" />
-        <p className="text-[12px] text-textFaint">Asking the host…</p>
+        <p className="text-[12px] text-textFaint">Loading…</p>
       </Centered>
     )
   }
@@ -117,7 +117,7 @@ export function LibraryView({
     return scanning ? (
       <Centered>
         <Loader2 size={16} className="animate-spin text-textFaint" />
-        <p className="text-[12px] text-textFaint">Looking through the drive…</p>
+        <p className="text-[12px] text-textFaint">Finding films and series on the drive…</p>
       </Centered>
     ) : (
       <Centered>
@@ -204,12 +204,12 @@ function Unavailable({ kind }: { kind: 'film' | 'series' }): React.JSX.Element {
       <span className="text-textFaint">
         {kind === 'film' ? <Clapperboard size={20} /> : <Tv size={20} />}
       </span>
-      <p className="text-[13px] text-textDim">Not switched on.</p>
+      <p className="text-[13px] text-textDim">This is turned off.</p>
       <p className="max-w-[340px] text-center text-[11.5px] leading-relaxed text-textFaint">
         {/* Said plainly, because it is not this app's decision to make: the
             host is the machine whose drive would be read. */}
         Turn on <span className="text-textDim">Recognise films and series</span> in
-        Basalt Host on the machine with the drive.
+        Manage host, or in Basalt Host on the computer with the drive.
       </p>
     </Centered>
   )
@@ -323,7 +323,7 @@ function Card({
             <QualityTag quality={quality} />
             {item.confidence < CONFIDENT && (
               <span
-                title="Recognised from the filename, but not confidently"
+                title="Matched by its file name, so it may be wrong"
                 className="rounded-[4px] bg-black/70 px-1.5 py-[2px] font-mono text-[8.5px] uppercase tracking-[0.1em] text-textDim"
               >
                 a guess

@@ -135,7 +135,7 @@ export function whyNotOptimized(why: NotConverted | null): string | null {
     case 'unable':
       return 'Basalt Host can’t convert on its computer'
     case 'off':
-      return 'Switched off in Basalt Host'
+      return 'Turned off in Basalt Host'
     case 'slow':
       return 'Basalt Host’s computer is too slow for it'
     case 'outdated':
@@ -162,7 +162,7 @@ export function pictureNote(help: PictureHelp, device: 'phone' | 'computer'): [s
   }
   const because: Record<NotConverted, string> = {
     unable: ', and Basalt Host can’t convert video on its computer',
-    off: ', and video conversion is switched off in Basalt Host',
+    off: ', and video conversion is turned off in Basalt Host',
     slow: ', and Basalt Host’s computer is too slow to convert it as you watch',
     busy: ', and Basalt Host is already converting for other devices',
     outdated: ', and Basalt Host needs updating to convert video',
@@ -170,6 +170,6 @@ export function pictureNote(help: PictureHelp, device: 'phone' | 'computer'): [s
   }
   return [
     'Playing in a lighter mode',
-    `This ${device} can’t decode ${size} video in hardware${help.why ? because[help.why] : ''}, so Basalt plays it lighter to keep the picture in step with the sound.`,
+    `This ${device} can’t play ${size} video smoothly${help.why ? because[help.why] : ''}, so Basalt plays it lighter to keep the picture in step with the sound.`,
   ]
 }

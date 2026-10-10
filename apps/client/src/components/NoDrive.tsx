@@ -44,8 +44,8 @@ export function NoDrive({
         </h2>
         <p className={cn('mt-2 leading-relaxed text-textDim', large ? 'text-[14px]' : 'text-[12.5px]')}>
           {canManage
-            ? 'Choose the drive or folder it shares. Everything on it then opens here, on every device you pair.'
-            : 'The device that manages it chooses what it shares. This opens by itself as soon as it does.'}
+            ? 'Choose the drive or folder to share. Its files then open here, and on every device you pair.'
+            : 'The device that manages this host chooses what it shares. This screen opens the drive as soon as it does.'}
         </p>
         {canManage && (
           <button

@@ -46,7 +46,7 @@ export function Profiles(tools: Tools): React.JSX.Element {
                 </p>
                 <div className="mt-3 flex justify-end gap-2">
                   <Pill onClick={() => void m.act({ do: 'denyProfileLink', id: link.id })} icon={<X size={14} />}>
-                    Turn away
+                    Decline
                   </Pill>
                   <Pill
                     onClick={() => void m.act({ do: 'approveProfileLink', id: link.id })}
@@ -97,7 +97,7 @@ export function Profiles(tools: Tools): React.JSX.Element {
               profiles.length === 0
                 ? 'Add a profile first. With none, nobody could sign in.'
                 : rules.requireProfile
-                  ? 'Every device signs in to a profile. Nobody uses the drive as just a device.'
+                  ? 'Everyone signs in to a profile to use the drive.'
                   : 'Devices can also continue as themselves, keeping their own history and stars.'
             }
             checked={rules.requireProfile}
@@ -111,7 +111,7 @@ export function Profiles(tools: Tools): React.JSX.Element {
               value={rules.ownerAddsProfiles ? 'managers' : 'anyone'}
               options={[
                 { value: 'anyone', label: 'Anyone' },
-                { value: 'managers', label: 'Only who manages' },
+                { value: 'managers', label: 'Managers only' },
               ]}
               onChange={(value) => void m.act({ do: 'setOwnerAddsProfiles', ownerOnly: value === 'managers' })}
             />
@@ -167,7 +167,7 @@ function ProfileDetail({
   const resetPin = async (): Promise<void> => {
     const ok = await confirm({
       title: `Reset the PIN for ${profile.name}?`,
-      message: `The next sign-in to ${profile.name} chooses a new PIN, and every device that remembered the old one asks again.`,
+      message: `${profile.name} chooses a new PIN at the next sign-in. Devices that remembered the old PIN ask for the new one.`,
       confirmLabel: 'Reset PIN',
     })
     if (ok) await m.act({ do: 'resetProfilePin', id: profile.id })
@@ -176,7 +176,7 @@ function ProfileDetail({
   const remove = async (): Promise<void> => {
     const ok = await confirm({
       title: `Remove ${profile.name}?`,
-      message: `The history and stars of ${profile.name} on this host go with it. Nothing on the drive is touched.`,
+      message: `The history and stars of ${profile.name} on this host go with it. Nothing on the drive changes.`,
       confirmLabel: 'Remove profile',
       danger: true,
     })

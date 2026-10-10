@@ -1217,7 +1217,7 @@ function TransfersSheet({
   return (
     <Sheet open={open} onClose={onClose} title="Transfers" tall>
       {transfers.transfers.length === 0 ? (
-        <p className="px-5 pb-6 pt-2 text-[13.5px] text-textFaint">Nothing moving, and nothing moved yet.</p>
+        <p className="px-5 pb-6 pt-2 text-[13.5px] text-textFaint">No downloads or uploads yet.</p>
       ) : (
         <div className="pb-2">
           {transfers.transfers.map((t) => {
@@ -1258,7 +1258,7 @@ function TransfersSheet({
                     )}
                   >
                     {t.status === 'failed'
-                      ? (t.error ?? 'Did not finish')
+                      ? (t.error ?? 'Didn’t finish')
                       : t.status === 'cancelled'
                         ? 'Cancelled'
                         : saved
@@ -1381,7 +1381,7 @@ function LibraryScreen({
     return (
       <div className="flex h-full items-center justify-center px-10 text-center text-[14px] text-textFaint">
         {libraryScanning
-          ? 'Looking through the drive…'
+          ? 'Searching the drive…'
           : query
             ? `Nothing matches “${query}”`
             : `No ${section} on the drive yet`}
@@ -1532,7 +1532,7 @@ function MoreScreen({
               <KeyRound size={12} className="shrink-0" />
               {vault.status?.signsInWithKey
                 ? vault.status.key === 'chip'
-                  ? "Signs in with a key in this phone's security chip"
+                  ? 'Signs in with a key in this phone’s security chip'
                   : 'Signs in with a key of its own'
                 : 'Signs in with its pairing code'}
               {vault.status?.owner && ' · manages host'}
@@ -1567,7 +1567,7 @@ function MoreScreen({
         <Card>
           <Switch
             label="Show hidden files"
-            description="Items Windows keeps out of sight on the host, such as desktop.ini and the Recycle Bin."
+            description="Files the host’s computer normally hides, such as desktop.ini and the Recycle Bin."
             checked={showHidden}
             onChange={setShowHidden}
             className="py-0"

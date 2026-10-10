@@ -138,7 +138,7 @@ export function HostHero(tools: Tools): React.JSX.Element {
           ) : (
             <p className={cn('mt-3 flex items-start gap-2 leading-snug text-danger', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
               <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-              The drive is unplugged. Your devices see it again as soon as it is back.
+              The drive is unplugged. Your devices see it again as soon as it’s back.
             </p>
           )}
         </>
@@ -289,7 +289,7 @@ function DrivePicker({ tools, onDone }: { tools: Tools; onDone: () => void }): R
                 title={drive.name}
                 sub={
                   !drive.ready
-                    ? 'Not ready: nothing in it, or locked'
+                    ? 'Not ready: empty or locked'
                     : drive.total > 0
                       ? `${formatBytes(drive.free)} free of ${formatBytes(drive.total)}`
                       : drive.path
@@ -321,7 +321,7 @@ function DrivePicker({ tools, onDone }: { tools: Tools; onDone: () => void }): R
       </Card>
       <p className={cn('mt-3 px-1 leading-snug text-textFaint', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
         {view.status.headless
-          ? 'What the host can see. In Docker, that is the folders mounted under /media.'
+          ? 'Drives the host can see. In Docker, these are the folders mounted under /media.'
           : 'Drives on the host’s computer.'}
       </p>
     </div>
@@ -442,8 +442,8 @@ function FolderBrowser({
       </div>
       <p className={cn('mt-3 px-1 leading-snug text-textFaint', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
         {view.status.headless
-          ? 'Open the folder to share, then share it. In Docker, the folders mounted under /media are the ones it can see.'
-          : 'Open the folder to share, then share it. Nothing in it is moved or changed.'}
+          ? 'Open the folder you want, then choose Share this folder. In Docker, only the folders mounted under /media are available.'
+          : 'Open the folder you want, then choose Share this folder. Nothing in it is moved or changed.'}
       </p>
     </div>
   )
@@ -459,7 +459,7 @@ export function Joining({ m, view, confirm }: Tools): React.JSX.Element {
         description={
           requirePin
             ? 'A new device shows up on this screen with a number to type. Nobody joins without being let in.'
-            : 'Anyone on the host’s network who finds it can read the drive without being let in.'
+            : 'Any device on the host’s network can join and open the drive without a PIN.'
         }
         warn={!requirePin}
         checked={requirePin}
@@ -468,7 +468,7 @@ export function Joining({ m, view, confirm }: Tools): React.JSX.Element {
           confirm({
             title: 'Let devices join without a PIN?',
             message:
-              'Anyone on the same network who finds this host could read the drive. Turn it back on once the device you are adding has joined.',
+              'Any device on the same network could join and open the drive. Turn it back on once your new device has joined.',
             confirmLabel: 'Turn off',
             danger: true,
           })
@@ -486,7 +486,7 @@ export function AboutHost({ view }: Tools): React.JSX.Element {
     <Group icon={Info} title="About this host">
       <Rows>
         <Fact
-          label="Reachable at"
+          label="Address"
           mono
           value={
             status.addresses.length > 0 ? (
@@ -501,7 +501,7 @@ export function AboutHost({ view }: Tools): React.JSX.Element {
                 ))}
               </span>
             ) : (
-              <span className="text-textFaint">no network</span>
+              <span className="text-textFaint">No network</span>
             )
           }
         />
@@ -509,7 +509,7 @@ export function AboutHost({ view }: Tools): React.JSX.Element {
         <Fact label="Identity" mono value={(status.hostId.match(/.{1,4}/g) ?? []).slice(0, 4).join(' ') + ' …'} />
         {status.endorsement && (
           <Fact
-            label="Vouched for by"
+            label="Confirmed by"
             value={status.endorsement.by}
           />
         )}

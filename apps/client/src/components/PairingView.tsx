@@ -236,7 +236,7 @@ export function PairingView({
             {picking
               ? onBack
                 ? 'Change drive'
-                : 'Choose your vault'
+                : 'Choose your drive'
               : setup
                 ? 'Set up this host'
                 : 'Enter the PIN'}
@@ -244,11 +244,11 @@ export function PairingView({
           <p className="mt-1.5 max-w-[320px] text-[12px] leading-relaxed text-textDim">
             {picking
               ? onBack
-                ? 'Every Basalt host on this network. One you have paired with opens straight away.'
-                : 'Every Basalt host on this network. Nothing to type.'
+                ? 'Basalt hosts on this network. One you’ve paired with opens straight away.'
+                : 'Basalt hosts on this network. Choose yours.'
               : setup
                 ? `${chosen.hostName} has no screen. Type its setup code, and this device will manage it.`
-                : `The six digits showing on ${chosen.hostName}. This happens once.`}
+                : `Type the six digits shown on ${chosen.hostName}. You only do this once.`}
           </p>
         </div>
 
@@ -317,15 +317,14 @@ export function PairingView({
               <p className="mt-2 text-[11px] leading-relaxed text-textDim">
                 {setup ? (
                   <>
-                    A new host. Check that identity matches the one in its log before
-                    continuing — after this it is trusted permanently and never asked
-                    about again.
+                    A new host. Check that this identity matches the one the host shows.
+                    After this, this device trusts it and won’t ask again.
                   </>
                 ) : (
                   <>
-                    Sharing <span className="text-text">{chosen.vault}</span>. Check that
-                    identity matches the one on the host before continuing — after this it
-                    is trusted permanently and never asked about again.
+                    Sharing <span className="text-text">{chosen.vault}</span>. Check that this
+                    identity matches the one the host shows. After this, this device trusts
+                    it and won’t ask again.
                   </>
                 )}
               </p>
@@ -414,9 +413,8 @@ function HostList({
         <div className="rounded-lg border border-dashed border-white/[0.09] px-4 py-7 text-center">
           <p className="text-[12.5px] text-textDim">No hosts on this network.</p>
           <p className="mx-auto mt-2 max-w-[300px] text-[11px] leading-relaxed text-textFaint">
-            Check Basalt Host is running on the other machine — look in its
-            notification area, not just the taskbar — and that both machines are on
-            the same Wi-Fi.
+            Check that Basalt Host is running on the other computer (look for its
+            icon near the clock) and that both are on the same network.
           </p>
         </div>
       )}
@@ -646,16 +644,15 @@ function SetupCodeInput({
         Set up and manage this host
       </button>
       <div className="mt-4 rounded-lg border border-white/[0.07] bg-panel/70 px-3.5 py-3 text-[11px] leading-relaxed text-textDim">
-        <div className="text-[11.5px] text-text">Where the code is</div>
+        <div className="text-[11.5px] text-text">Where to find the code</div>
         <div className="mt-1.5 space-y-1">
           <div>
-            In the host’s log:{' '}
-            <span className="whitespace-nowrap font-mono text-[10.5px] text-textFaint">journalctl -u basalt-host</span>, or{' '}
-            <span className="whitespace-nowrap font-mono text-[10.5px] text-textFaint">docker logs basalt</span>
+            On the host, run{' '}
+            <span className="whitespace-nowrap font-mono text-[10.5px] text-textFaint">sudo basalt-host status</span>
           </div>
           <div>
-            Or run <span className="whitespace-nowrap font-mono text-[10.5px] text-textFaint">basalt-host setup-code</span> on
-            that machine.
+            With Docker:{' '}
+            <span className="whitespace-nowrap font-mono text-[10.5px] text-textFaint">docker logs basalt</span>
           </div>
         </div>
       </div>

@@ -48,7 +48,7 @@ export function LibraryGroup({ m, view, prompt, confirm }: Tools): React.JSX.Ele
             sub={
               scanning
                 ? 'New films and series show up on your devices as they are found.'
-                : 'For something just copied on that has not shown up yet.'
+                : 'For files just copied to the drive that haven’t appeared yet.'
             }
             disabled={scanning}
             onClick={() => void m.act({ do: 'rescan' })}
@@ -60,7 +60,7 @@ export function LibraryGroup({ m, view, prompt, confirm }: Tools): React.JSX.Ele
             description={
               library.posters
                 ? `Each recognised title is looked up for its artwork. ${library.withArt} of ${library.films + library.series} have it.`
-                : 'Off. Covers are drawn from the title. On, each recognised title is sent to a lookup service.'
+                : 'Off. Covers are made from the title. When on, the titles of recognised films and series are sent to an online service to find their posters.'
             }
             checked={library.posters}
             onChange={(enabled) => m.act({ do: 'setPosters', enabled })}
@@ -70,7 +70,7 @@ export function LibraryGroup({ m, view, prompt, confirm }: Tools): React.JSX.Ele
           <Row
             icon={<KeyRound size={phone ? 17 : 14} />}
             title="TMDb key"
-            sub={library.hasKey ? 'Saved. It is never shown again.' : 'Optional: your own key finds artwork for more titles.'}
+            sub={library.hasKey ? 'Saved. It is never shown again.' : 'Optional: a TMDb key of your own finds posters for more titles.'}
             end={
               <span className="flex shrink-0 gap-1.5">
                 {library.hasKey && (
@@ -78,7 +78,7 @@ export function LibraryGroup({ m, view, prompt, confirm }: Tools): React.JSX.Ele
                     onClick={() =>
                       void confirm({
                         title: 'Remove the TMDb key?',
-                        message: 'Posters carry on, found the built-in way.',
+                        message: 'Posters still work without it, for fewer titles.',
                         confirmLabel: 'Remove',
                         danger: true,
                       }).then((ok) => ok && m.act({ do: 'setTmdbKey', key: '' }))
@@ -201,7 +201,7 @@ export function SectionsGroup({ m, view }: Tools): React.JSX.Element {
           })}
         </div>
         <p className={cn('mt-3 px-1 leading-snug text-textFaint', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
-          Hiding a section only tidies the list. Every file stays reachable under Files.
+          Hiding a section only tidies the list. Every file is still in Files.
         </p>
       </div>
     </Group>
@@ -256,7 +256,7 @@ export function ConversionGroup({ m, view }: Tools): React.JSX.Element {
                   </div>
                   <p className={cn('mt-1 leading-snug text-textFaint', phone ? 'text-[12px]' : 'text-[11px]')}>
                     {measuring
-                      ? 'Measuring: converting a 4K sample, one at a time, then more.'
+                      ? 'Measuring: converting a 4K sample to see how many devices this host can keep up with…'
                       : c.measured
                         ? `Measured ${ago(c.measured.at)} on ${c.measured.by}: one at ${c.measured.speed}× real time${
                             c.measured.memory ? ', as many as memory allows' : ''
@@ -285,7 +285,7 @@ export function ConversionGroup({ m, view }: Tools): React.JSX.Element {
                   {c.byHand === null
                     ? `As many as the host was measured to keep up with${c.measured ? `: ${c.measured.atOnce}` : ''}.`
                     : c.measured && c.byHand > c.measured.atOnce
-                      ? 'More than it was measured to keep up with: pictures may stutter when that many watch at once.'
+                      ? 'More than it was measured to keep up with: video may stutter when that many watch at once.'
                       : 'Chosen by hand. Fewer leaves the host’s computer freer for other things.'}
                 </p>
               </div>

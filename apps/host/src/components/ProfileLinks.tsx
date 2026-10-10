@@ -48,7 +48,7 @@ export function ProfileLinks({
               className="flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11.5px] text-textFaint transition-colors hover:bg-dangerBg hover:text-danger"
             >
               <X size={12} />
-              Turn away
+              Decline
             </button>
             <button
               onClick={() => onApprove(link)}

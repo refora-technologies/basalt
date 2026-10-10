@@ -215,7 +215,7 @@ export function useVault(): Vault {
       // good, even once the host was sharing again.
       if (isWaiting(next)) {
         setError((was) =>
-          was?.kind === 'offline' ? was : new ApiError('offline', 'the host is not answering'),
+          was?.kind === 'offline' ? was : new ApiError('offline', 'the host isn’t answering'),
         )
       }
       // Connected from anywhere, such as another drive chosen while this one

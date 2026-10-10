@@ -22,8 +22,8 @@ describe('entryToMedia', () => {
     expect(media.size).toBe(4242)
   })
 
-  it('labels a file at the root as being in the vault', () => {
-    expect(entryToMedia(file('a.mp4')).subtitle).toBe('Vault')
+  it('labels a file at the root as being on the drive', () => {
+    expect(entryToMedia(file('a.mp4')).subtitle).toBe('Drive')
   })
 
   it('keeps the full path as the id, so opening knows which file it is', () => {
