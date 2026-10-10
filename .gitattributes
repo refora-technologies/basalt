@@ -4,3 +4,7 @@
 packaging/** text eol=lf
 docker/** text eol=lf
 .dockerignore text eol=lf
+# Rewritten by the Tauri build with Unix line endings: kept that way, so a
+# build leaves the tree clean and its commit stamp has no "+".
+apps/*/src-tauri/Cargo.toml text eol=lf
+apps/client/src-tauri/plugins/basalt-android/permissions/** text eol=lf
