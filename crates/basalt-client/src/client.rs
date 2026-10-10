@@ -17,8 +17,9 @@ use basalt_proto::msg::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::keys::{DeviceKey, KeyError, KeyRing, PhoneKeys, Policy};
 use crate::pool::Pool;
-use crate::session::{Me, PairChallenge, Session, SessionInfo};
+use crate::session::{Credentials, Me, PairChallenge, Session, SessionInfo};
 use crate::store::{ClientStore, KnownHost};
 use crate::{ClientError, Result};
 
@@ -102,6 +103,13 @@ pub struct Basalt {
     bytes_moved: std::sync::atomic::AtomicU64,
     /// Connections being attempted now. See [`Basalt::is_connecting`].
     connecting: std::sync::atomic::AtomicUsize,
+    /// Where this device may keep its key: see [`crate::keys`].
+    keys: Policy,
+    /// This device's key, once loaded or made. Behind an async lock so two
+    /// connections starting at once cannot each make one.
+    device_key: tokio::sync::Mutex<Option<Arc<KeyRing>>>,
+    /// Where that key is kept, for the window to say without waiting.
+    key_kind: std::sync::Mutex<Option<basalt_proto::msg::KeyKind>>,
 }
 
 /// Counts one connection attempt for as long as it lasts, however it ends.
@@ -130,22 +138,53 @@ impl Basalt {
     /// what tests and the command line want: several clients on one machine,
     /// each its own device.
     pub fn open_as_this_device(store_path: PathBuf, hint: Option<&str>) -> Result<Self> {
+        Self::open_as_this_device_with_keys(store_path, hint, None)
+    }
+
+    /// [`Basalt::open_as_this_device`], keeping the device's key in the best
+    /// place it has: `phone` is a phone's key store, which only the app can
+    /// reach; without one, a computer's TPM, or a key sealed by Windows.
+    pub fn open_as_this_device_with_keys(
+        store_path: PathBuf,
+        hint: Option<&str>,
+        phone: Option<Arc<dyn PhoneKeys>>,
+    ) -> Result<Self> {
+        Self::open_as_this_device_with_policy(store_path, hint, Policy::Platform(phone))
+    }
+
+    /// [`Basalt::open_as_this_device`] with the device's lasting id and the
+    /// key policy given: tests ask for [`Policy::Software`], so that running
+    /// them leaves nothing in this computer's TPM.
+    pub fn open_as_this_device_with_policy(
+        store_path: PathBuf,
+        hint: Option<&str>,
+        keys: Policy,
+    ) -> Result<Self> {
         let client = Self::open(store_path)?;
-        if let Some(id) = crate::store::lasting_device_id(hint) {
-            let mut store = client.store.lock().expect("store lock");
-            if store.device_id.as_deref() != Some(id.as_str()) {
-                // A copy that paired with a random id moves to the lasting one;
-                // the host learns it on the next connection.
-                store.device_id = Some(id.clone());
-                store.save(&client.store_path)?;
+        let me = match crate::store::lasting_device_id(hint) {
+            Some(id) => {
+                let mut store = client.store.lock().expect("store lock");
+                if store.device_id.as_deref() != Some(id.as_str()) {
+                    // A copy that paired with a random id moves to the lasting
+                    // one; the host learns it on the next connection.
+                    store.device_id = Some(id.clone());
+                    store.save(&client.store_path)?;
+                }
+                Me::new(client.me.name.clone(), id)
             }
-            drop(store);
-            return Ok(Self {
-                me: Me::new(client.me.name.clone(), id),
-                ..client
-            });
-        }
-        Ok(client)
+            None => client.me.clone(),
+        };
+        Ok(Self { me, keys, ..client })
+    }
+
+    /// A client that never makes a key: how a device from before keys
+    /// behaves, for the tests that move one across.
+    #[doc(hidden)]
+    pub fn open_without_keys(store_path: PathBuf) -> Result<Self> {
+        Ok(Self {
+            keys: Policy::Off,
+            ..Self::open(store_path)?
+        })
     }
 
     pub fn open(store_path: PathBuf) -> Result<Self> {
@@ -175,7 +214,80 @@ impl Basalt {
             identity: std::sync::Mutex::new(Current::default()),
             bytes_moved: std::sync::atomic::AtomicU64::new(0),
             connecting: std::sync::atomic::AtomicUsize::new(0),
+            keys: Policy::Software,
+            device_key: tokio::sync::Mutex::new(None),
+            key_kind: std::sync::Mutex::new(None),
         })
+    }
+
+    /// This device's key, loaded the first time it is asked for, or made if
+    /// there is none yet.
+    ///
+    /// A key that is gone (its chip reset, or the files copied from another
+    /// computer) is replaced by a new one: hosts that knew only the old one
+    /// will ask for the device to pair again. A key that is there and cannot
+    /// be used just now is an error, and is tried again next time; it is never
+    /// replaced, or a busy chip would cost every pairing.
+    pub async fn device_key(&self) -> Result<Arc<KeyRing>> {
+        let mut slot = self.device_key.lock().await;
+        if let Some(key) = slot.as_ref() {
+            return Ok(Arc::clone(key));
+        }
+        let stored = self.store.lock().expect("store lock").device_key.clone();
+        let policy = self.keys.clone();
+        let (key, made) = tokio::task::spawn_blocking(move || match stored {
+            Some(stored) => match DeviceKey::load(&stored, &policy) {
+                Ok(key) => Ok((key, false)),
+                Err(KeyError::Lost(why)) => {
+                    tracing::warn!("this device's key is gone ({why}); making a new one");
+                    DeviceKey::create(&policy).map(|key| (key, true))
+                }
+                Err(e) => Err(e),
+            },
+            None => DeviceKey::create(&policy).map(|key| (key, true)),
+        })
+        .await
+        .map_err(|e| ClientError::Key(format!("opening this device's key stopped: {e}")))?
+        .map_err(|e| ClientError::Key(e.to_string()))?;
+
+        if made {
+            self.store.lock().expect("store lock").device_key = Some(key.stored().clone());
+            self.save_store()?;
+        }
+        let key = Arc::new(KeyRing::new(key).map_err(|e| ClientError::Key(e.to_string()))?);
+        *self.key_kind.lock().expect("key kind lock") = Some(key.kind());
+        *slot = Some(Arc::clone(&key));
+        Ok(key)
+    }
+
+    /// Where this device's key is kept, once it has one.
+    pub fn key_kind(&self) -> Option<basalt_proto::msg::KeyKind> {
+        *self.key_kind.lock().expect("key kind lock")
+    }
+
+    /// What to sign in to a known host with.
+    ///
+    /// Without a usable key the token is all there is, and that is not an
+    /// error here: a host older than keys, or a chip that is busy, still
+    /// lets a device with a token in.
+    async fn credentials(&self, known: &KnownHost) -> Credentials {
+        let (key, key_problem) = match self.device_key().await {
+            Ok(key) => (Some(key), None),
+            Err(e) => {
+                tracing::warn!("signing in without this device's key: {e}");
+                (None, Some(e.to_string()))
+            }
+        };
+        let key_on_host = key
+            .as_ref()
+            .is_some_and(|key| !known.key.is_empty() && known.key == key.public_key().to_hex());
+        Credentials {
+            token: known.token.clone(),
+            key,
+            key_on_host,
+            key_problem,
+            key_expected: !known.key.is_empty(),
+        }
     }
 
     /// Whether a connection to a host is being attempted right now.
@@ -312,7 +424,21 @@ impl Basalt {
             .take()
             .ok_or(ClientError::NotConnected)?;
 
-        let token = match session.finish_pair(&challenge, pin).await {
+        // A device pairs with its key when the host takes one. Without a key
+        // to hand it pairs with a token as before, and moves to a key later.
+        let key = if challenge.host_keys {
+            match self.device_key().await {
+                Ok(key) => Some(key),
+                Err(e) => {
+                    tracing::warn!("pairing without this device's key: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let token = match session.finish_pair(&challenge, pin, key.as_ref()).await {
             Ok(token) => token,
             Err(e) => {
                 // A wrong PIN is worth another go against the same request —
@@ -326,6 +452,12 @@ impl Basalt {
 
         let info = session.info().clone();
         let addr = info.address;
+        let keyed = session.signed_in.by_key;
+        let key_hex = key
+            .as_ref()
+            .filter(|_| keyed)
+            .map(|key| key.public_key().to_hex())
+            .unwrap_or_default();
 
         {
             let mut store = self.store.lock().expect("store lock");
@@ -338,6 +470,8 @@ impl Basalt {
                 paired_at: unix_now(),
                 used_at: unix_now(),
                 identity: Default::default(),
+                key: key_hex,
+                members: Vec::new(),
             });
             store.device_name = Some(self.me.name.clone());
         }
@@ -345,7 +479,14 @@ impl Basalt {
 
         // The connection pairing opened is already authenticated, so it goes
         // straight into the pool rather than being thrown away and redialled.
-        let pool = Pool::with_session(addr, &info.host_id, &token, &self.me, session);
+        let credentials = Credentials {
+            token: token.clone(),
+            key: key.filter(|_| keyed),
+            key_on_host: keyed,
+            key_problem: None,
+            key_expected: keyed,
+        };
+        let pool = Pool::with_session(addr, &info.host_id, credentials, &self.me, session);
         *self.pool.write().await = Some(pool);
         *self.info.lock().expect("info lock") = Some(info.clone());
         Ok(info)
@@ -377,7 +518,22 @@ impl Basalt {
         let _attempt = Attempt::begin(&self.connecting);
         match self.connect_known(host_id, address).await {
             Err(e) if e.kind() == "unpaired" => Err(self.removed(host_id).await),
+            Err(ClientError::KeyGone) => Err(self.key_reset(host_id).await),
             other => other,
+        }
+    }
+
+    /// Drops a host that knows only a key this device no longer has, and
+    /// says which it was.
+    pub async fn key_reset(&self, host_id: &str) -> ClientError {
+        match self.drop_removed(host_id).await {
+            Some(ClientError::Removed { host_name, vault }) => {
+                ClientError::KeyReset { host_name, vault }
+            }
+            _ => ClientError::KeyReset {
+                host_name: "The host".into(),
+                vault: "the drive".into(),
+            },
         }
     }
 
@@ -432,9 +588,10 @@ impl Basalt {
             None => None,
         };
 
+        let mut credentials = self.credentials(&known).await;
         let mut session = None;
         if let Some(addr) = hint {
-            match Session::connect(addr, &known.host_id, &known.token, &self.me).await {
+            match Session::connect(addr, &known.host_id, &credentials, &self.me).await {
                 Ok(open) => session = Some(open),
                 // Only a transport failure is worth looking elsewhere for. A
                 // host that answered and said no — a revoked token, a key that
@@ -459,11 +616,34 @@ impl Basalt {
                 .await?
                 .ok_or(ClientError::HostNotFound)?;
 
-                Session::connect(found.address, &known.host_id, &known.token, &self.me).await?
+                Session::connect(found.address, &known.host_id, &credentials, &self.me).await?
             }
         };
+        let mut session = session;
         let addr = session.info().address;
         let info = session.info().clone();
+        let proven = self
+            .settle_key(host_id, addr, &mut session, &mut credentials)
+            .await;
+        let mut proven = proven;
+        // Moved to its key just now: what the window says is the proving
+        // connection's, signed in with the key, not the token session's.
+        let info = proven.as_ref().map(|p| p.info().clone()).unwrap_or(info);
+        if let Some(key) = &credentials.key {
+            session.answer_endorsement(key).await;
+            if let Some(proven) = proven.as_mut() {
+                proven.answer_endorsement(key).await;
+            }
+        }
+        let members: Vec<_> = std::iter::once(&session)
+            .chain(proven.as_ref())
+            .filter_map(|s| s.signed_in.member.clone())
+            .collect();
+        for member in members {
+            if let Some(key) = &credentials.key {
+                self.keep_member(host_id, member, key);
+            }
+        }
 
         {
             let mut store = self.store.lock().expect("store lock");
@@ -474,7 +654,11 @@ impl Basalt {
         // it is an optimisation, and the client works without it.
         let _ = self.save_store();
 
-        let pool = Pool::with_session(addr, &known.host_id, &known.token, &self.me, session);
+        // Moved to the key just now: the token connection is let go, since
+        // the host no longer serves a connection signed in with a retired
+        // token, and the one that proved the key goes into the pool instead.
+        let first = proven.unwrap_or(session);
+        let pool = Pool::with_session(addr, &known.host_id, credentials, &self.me, first);
         // The same host again, after a dropped connection or the host
         // restarting: whoever was using the device still is. It used to start
         // over from what was saved, so somebody who had chosen "this device"
@@ -513,9 +697,184 @@ impl Basalt {
         };
         current.host = Some(host_id.to_string());
         *self.identity.lock().expect("identity lock") = current;
-        *self.pool.write().await = Some(pool);
+        if let Some(old) = self.pool.write().await.replace(pool) {
+            self.keep_pool_statements(&old);
+        }
         *self.info.lock().expect("info lock") = Some(info.clone());
         Ok(info)
+    }
+
+    /// Keeps a member statement a host gave this device, once it checks out:
+    /// about this device's key, at this host, in date. One from the household
+    /// and one per profile, the newest; expired ones go. Nothing at home relies
+    /// on them yet, so one that does not check out is noted and dropped.
+    fn keep_member(
+        &self,
+        host_id: &str,
+        member: basalt_proto::msg::SignedStatement,
+        key: &KeyRing,
+    ) {
+        // Handed over again on every sign-in: one already kept is let be.
+        let already = self
+            .store
+            .lock()
+            .expect("store lock")
+            .find(host_id)
+            .is_some_and(|known| known.members.iter().any(|m| m.payload == member.payload));
+        if already {
+            return;
+        }
+        let now = unix_now();
+        let opened = basalt_trust::Statement {
+            payload: member.payload.clone(),
+            signature: member.signature.clone(),
+        };
+        let payload = match basalt_trust::statement::verify(
+            &opened,
+            basalt_trust::statement::Expect {
+                kind: basalt_trust::Kind::Member,
+                issuer: None,
+                subject: Some(key.public_key()),
+                host: Some(host_id),
+                now,
+            },
+        ) {
+            Ok(payload) => payload,
+            Err(e) => {
+                tracing::warn!("a member statement from the host did not check out: {e}");
+                return;
+            }
+        };
+        {
+            let mut store = self.store.lock().expect("store lock");
+            let Some(known) = store.find_mut(host_id) else {
+                return;
+            };
+            known.members.retain(|kept| {
+                basalt_trust::statement::read_offer(&kept.payload)
+                    .is_ok_and(|p| p.profile != payload.profile && p.exp > now)
+            });
+            known.members.push(member);
+        }
+        if let Err(e) = self.save_store() {
+            tracing::warn!("could not keep a member statement: {e}");
+        }
+    }
+
+    /// Keeps the statements a pool's connections were handed. Asked often,
+    /// and before a pool is let go: the host counts them as given.
+    fn keep_pool_statements(&self, pool: &Pool) {
+        // A background connection was told the token is retired: let it go
+        // here as well, so it is never offered again.
+        if pool.take_token_retired() {
+            let mut credentials = pool.credentials();
+            self.forget_token(pool.host_id(), &mut credentials);
+        }
+        let Some(key) = pool.credentials().key else {
+            return;
+        };
+        for member in pool.take_statements() {
+            self.keep_member(pool.host_id(), member, &key);
+        }
+    }
+
+    /// Lets go of a profile's statement, on signing out of it.
+    fn drop_member(&self, host_id: &str, profile: &str) {
+        {
+            let mut store = self.store.lock().expect("store lock");
+            let Some(known) = store.find_mut(host_id) else {
+                return;
+            };
+            known.members.retain(|kept| {
+                basalt_trust::statement::read_offer(&kept.payload)
+                    .is_ok_and(|p| p.profile != profile)
+            });
+        }
+        let _ = self.save_store();
+    }
+
+    /// Moves this device from its token to its key at a host, once.
+    ///
+    /// Signed in with the key, and told the token is retired: the token is
+    /// forgotten. Signed in with the token, at a host that takes keys: the
+    /// host is given the key, and a second connection proves the key works
+    /// before the token is let go. Any failure leaves the token as it was, so
+    /// nothing here can lock the device out; the next connection tries again.
+    /// Returns the proving connection, for the pool.
+    async fn settle_key(
+        &self,
+        host_id: &str,
+        addr: SocketAddr,
+        session: &mut Session,
+        credentials: &mut Credentials,
+    ) -> Option<Session> {
+        if session.signed_in.by_key {
+            if session.signed_in.retire_token && !credentials.token.is_empty() {
+                self.forget_token(host_id, credentials);
+            }
+            return None;
+        }
+        if !session.signed_in.host_keys {
+            return None;
+        }
+        // The host has the key and it was only unusable for a moment: nothing
+        // to give again, and the chip not asked twice.
+        if credentials.key_on_host && !session.signed_in.key_unknown {
+            return None;
+        }
+        let key = credentials.key.clone()?;
+        if key.enrol_refused_at(host_id) {
+            return None;
+        }
+
+        if let Err(e) = session.enrol(&key).await {
+            tracing::warn!("could not give the host this device's key: {e}");
+            if e.code().is_some() {
+                key.enrol_refused(host_id);
+            }
+            return None;
+        }
+        {
+            let mut store = self.store.lock().expect("store lock");
+            if let Some(known) = store.find_mut(host_id) {
+                known.key = key.public_key().to_hex();
+            }
+        }
+        let _ = self.save_store();
+        credentials.key_on_host = true;
+
+        match Session::connect(addr, host_id, credentials, &self.me).await {
+            Ok(proven) if proven.signed_in.by_key => {
+                if proven.signed_in.retire_token {
+                    self.forget_token(host_id, credentials);
+                }
+                Some(proven)
+            }
+            Ok(_) => {
+                tracing::warn!("the host took this device's key and then did not accept it");
+                None
+            }
+            Err(e) => {
+                tracing::warn!("could not prove this device's key at the host: {e}");
+                None
+            }
+        }
+    }
+
+    /// Lets go of a host's token, now that the host signs this device in with
+    /// its key and no longer takes the token.
+    fn forget_token(&self, host_id: &str, credentials: &mut Credentials) {
+        credentials.token.clear();
+        {
+            let mut store = self.store.lock().expect("store lock");
+            if let Some(known) = store.find_mut(host_id) {
+                known.token.clear();
+            }
+        }
+        if let Err(e) = self.save_store() {
+            // Kept in memory as forgotten; the host has retired it anyway.
+            tracing::warn!("could not save that the token is retired: {e}");
+        }
     }
 
     /// Reconnects to the host used last. What the app does on start.
@@ -534,6 +893,7 @@ impl Basalt {
     /// unless remembered: only a connection that dropped carries them over.
     pub async fn disconnect(&self) {
         if let Some(pool) = self.pool.write().await.take() {
+            self.keep_pool_statements(&pool);
             pool.clear();
         }
         *self.info.lock().expect("info lock") = None;
@@ -585,8 +945,13 @@ impl Basalt {
                 && let Ok(mut lease) = pool.acquire().await
             {
                 let result = lease.profile_use(Some(&token)).await;
-                let _ = lease.check(result);
+                if let Ok(answer) = lease.check(result)
+                    && let (Some(member), Some(key)) = (answer.member, pool.credentials().key)
+                {
+                    self.keep_member(pool.host_id(), member, &key);
+                }
             }
+            self.keep_pool_statements(&pool);
             if let Ok(mut lease) = pool.acquire().await {
                 let result = lease.profiles().await;
                 if let Ok(response) = lease.check(result) {
@@ -677,6 +1042,9 @@ impl Basalt {
         session: basalt_proto::msg::ProfileSession,
         remember: bool,
     ) -> Result<ProfileView> {
+        if let (Some(member), Some(key)) = (session.member.clone(), pool.credentials().key) {
+            self.keep_member(pool.host_id(), member, &key);
+        }
         pool.set_profile(Some(session.token.clone()));
         let profile = session.profile;
         *self.identity.lock().expect("identity lock") = Current {
@@ -711,6 +1079,16 @@ impl Basalt {
             let result = lease.profile_sign_out(&token).await;
             // Best effort: signed out here whatever the host said.
             let _ = lease.check(result);
+        }
+        let signed_out = self
+            .identity
+            .lock()
+            .expect("identity lock")
+            .profile
+            .as_ref()
+            .map(|p| p.id.clone());
+        if let Some(profile) = signed_out {
+            self.drop_member(pool.host_id(), &profile);
         }
         pool.set_profile(None);
         *self.identity.lock().expect("identity lock") = Current::default();
@@ -753,18 +1131,14 @@ impl Basalt {
     /// conversion holds it for as long as it runs, and the pool's
     /// connections stay free for everything else meanwhile.
     pub async fn convert(&self, path: &str, start: f64) -> Result<Converting> {
-        let (addr, host_id, token) = {
-            let pool = self.pool().await?;
-            let known = self
-                .store
-                .lock()
-                .expect("store lock")
-                .find(pool.host_id())
-                .cloned()
-                .ok_or(ClientError::NotConnected)?;
-            (pool.address(), known.host_id, known.token)
-        };
-        let mut session = Session::connect(addr, &host_id, &token, &self.me).await?;
+        let pool = self.pool().await?;
+        let mut session = Session::connect(
+            pool.address(),
+            pool.host_id(),
+            &pool.credentials(),
+            &self.me,
+        )
+        .await?;
         let started = session.convert_begin(path, start).await?;
         Ok(Converting {
             by: started.by,
@@ -975,6 +1349,12 @@ impl Basalt {
                         }
                         return;
                     }
+                    Err(ClientError::KeyGone) => {
+                        if let Some(host_id) = client.status().map(|i| i.host_id) {
+                            on_notice(WatchNotice::Removed(client.key_reset(&host_id).await));
+                        }
+                        return;
+                    }
                     Err(_) => {}
                 }
                 reconnecting = true;
@@ -1010,23 +1390,18 @@ impl Basalt {
         F: Fn(Change) + Send + Sync,
         N: Fn(WatchNotice) + Send + Sync,
     {
-        let (pool, host_id, token) = {
-            let pool = self.pool().await?;
-            let known = self
-                .store
-                .lock()
-                .expect("store lock")
-                .find(pool.host_id())
-                .cloned()
-                .ok_or(ClientError::NotConnected)?;
-            (pool, known.host_id, known.token)
-        };
+        let pool = self.pool().await?;
+        let host_id = pool.host_id().to_string();
         // Subscribed before the choice is read, so a change in between is
         // still seen.
         let mut profile_changes = pool.profile_changes();
         let (_, profile) = pool.profile_choice();
 
-        let mut session = Session::connect(pool.address(), &host_id, &token, &self.me).await?;
+        let mut session =
+            Session::connect(pool.address(), &host_id, &pool.credentials(), &self.me).await?;
+        if let Some(member) = session.signed_in.member.take() {
+            pool.hand_over(member);
+        }
         if let Some(profile) = profile.as_deref() {
             match session.profile_use(Some(profile)).await {
                 Ok(_) => {}

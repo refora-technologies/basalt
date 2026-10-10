@@ -35,6 +35,15 @@ pub struct KnownHost {
     /// one signed in to, or the device on its own.
     #[serde(default)]
     pub identity: Identity,
+    /// The public key this host has on record for this device, hex: tried
+    /// first when signing in. Empty while the host knows only the token.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
+    /// The host's member statements about this device: one from the
+    /// household, one from each profile signed in to here. See
+    /// `basalt_trust::statement`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<basalt_proto::msg::SignedStatement>,
 }
 
 /// Who this device signs in as, per host.
@@ -76,6 +85,9 @@ pub struct ClientStore {
     /// back. Made the first time the app opens and never changed.
     #[serde(default)]
     pub device_id: Option<String>,
+    /// Where this device's key is, once it has one: see `crate::keys`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_key: Option<crate::keys::StoredKey>,
 }
 
 impl ClientStore {
@@ -329,8 +341,13 @@ mod android {
 }
 
 /// Tokens at rest, encrypted with Windows' own per-user protection (DPAPI).
-mod secret {
+pub(crate) mod secret {
     const PREFIX: &str = "dpapi:";
+
+    /// Whether `stored` is sealed, rather than kept as it is.
+    pub fn is_sealed(stored: &str) -> bool {
+        stored.starts_with(PREFIX)
+    }
 
     pub fn seal(plain: &str) -> String {
         if plain.is_empty() || plain.starts_with(PREFIX) {
@@ -511,6 +528,8 @@ mod tests {
             paired_at,
             used_at: 0,
             identity: Default::default(),
+            key: String::new(),
+            members: Vec::new(),
         }
     }
 

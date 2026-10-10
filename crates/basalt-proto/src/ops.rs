@@ -129,6 +129,12 @@ pub enum Op {
     /// pieces, then an empty piece at the end. The connection is the
     /// conversion's for as long as it lasts.
     Convert = 33,
+    /// A device signed in with its token gives the host a key, and signs in
+    /// with that from then on.
+    Enrol = 34,
+    /// An owner's device returns the endorsement of the host's key it was
+    /// offered when it signed in.
+    Endorse = 35,
 }
 
 impl Op {
@@ -137,7 +143,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::Convert as u8;
+    pub const LAST: u8 = Op::Endorse as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -174,6 +180,8 @@ impl Op {
             31 => Op::Stars,
             32 => Op::Subtitles,
             33 => Op::Convert,
+            34 => Op::Enrol,
+            35 => Op::Endorse,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -198,13 +206,16 @@ impl Op {
     ///
     /// Watching is: it is how the host tells the device at once that its
     /// rules changed. The host keeps the drive's own changes off a watch
-    /// until the device signs in.
+    /// until the device signs in. So are giving the host a key and an owner's
+    /// endorsement: both are about the device and the host, not the drive.
     pub fn open_without_profile(self) -> bool {
         self.allowed_unauthenticated()
             || matches!(
                 self,
                 Op::Unpair
                     | Op::Watch
+                    | Op::Enrol
+                    | Op::Endorse
                     | Op::Profiles
                     | Op::ProfileCreate
                     | Op::ProfileSignIn
@@ -338,6 +349,8 @@ mod tests {
             Op::Stars,
             Op::Subtitles,
             Op::Convert,
+            Op::Enrol,
+            Op::Endorse,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

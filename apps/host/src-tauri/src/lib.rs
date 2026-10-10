@@ -157,6 +157,13 @@ async fn rename_device(state: State<'_, AppState>, id: String, name: String) -> 
     Ok(state.host.rename_device(&id, &name)?)
 }
 
+/// Makes a device an owner of this host, or not. Only a device signing in
+/// with a key can be one.
+#[tauri::command]
+async fn set_device_owner(state: State<'_, AppState>, id: String, owner: bool) -> Answer<bool> {
+    Ok(state.host.set_owner(&id, owner)?)
+}
+
 #[tauri::command]
 async fn set_device_writable(
     state: State<'_, AppState>,
@@ -746,6 +753,7 @@ pub fn run() {
             revoke_device,
             rename_device,
             set_device_writable,
+            set_device_owner,
             pending_pairings,
             deny_pairing,
             set_require_pin,

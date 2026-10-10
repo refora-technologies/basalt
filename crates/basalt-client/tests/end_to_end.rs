@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use basalt_client::keys::Policy;
 use basalt_client::{Basalt, ClientError};
 use basalt_host::config::HostConfig;
 use basalt_host::server::{self, Host};
@@ -1169,14 +1170,20 @@ async fn a_reinstalled_phone_is_still_one_device() {
     let hint = "3f2a9c0d1b7e4a55";
 
     let store = unique("phone-store").with_extension("json");
-    let phone = Arc::new(Basalt::open_as_this_device(store.clone(), Some(hint)).unwrap());
+    let phone = Arc::new(
+        Basalt::open_as_this_device_with_policy(store.clone(), Some(hint), Policy::Software)
+            .unwrap(),
+    );
     fixture.pair(&phone).await.expect("the phone pairs");
     phone.disconnect().await;
     drop(phone);
     std::fs::remove_file(&store).expect("the uninstall takes the app's storage");
 
     let reinstalled = unique("phone-store-again").with_extension("json");
-    let again = Arc::new(Basalt::open_as_this_device(reinstalled.clone(), Some(hint)).unwrap());
+    let again = Arc::new(
+        Basalt::open_as_this_device_with_policy(reinstalled.clone(), Some(hint), Policy::Software)
+            .unwrap(),
+    );
     fixture
         .pair(&again)
         .await

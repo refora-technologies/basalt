@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ArrowLeftRight,
+  KeyRound,
   ArrowUpCircle,
   ArrowLeft,
   CheckSquare,
@@ -44,6 +45,7 @@ import { PromptDialog } from '@/components/ui/PromptDialog'
 import { PropertiesDetails } from '@/components/PropertiesPanel'
 import { About } from '@/components/About'
 import { WhatsNew } from '@/components/WhatsNew'
+import { ImportantNotice } from '@/components/ImportantNotice'
 import type { NavKey } from '@/components/Sidebar'
 import type { Entry } from '@/components/FileList'
 import { api, isFinished, parentOf } from '@/lib/api'
@@ -180,6 +182,7 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
               setChangingDrive(true)
             }}
           />
+          <ImportantNotice />
         </div>
       </Safe>
     )
@@ -518,6 +521,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       </div>
 
       <WhatsNew />
+      <ImportantNotice />
 
       <Rise
         show={notice !== null}
@@ -1327,6 +1331,9 @@ function LibraryScreen({
           kind={section === 'movies' ? 'film' : 'series'}
           items={mediaItems}
           enabled={media.enabled}
+          known={media.known}
+          error={media.error}
+          onRetry={media.refresh}
           scanning={media.scanning}
           watched={watchedByPath}
           continueWatching={watched.continueWatching}
@@ -1484,6 +1491,17 @@ function MoreScreen({
                 {formatBytes(total - used)} free of {formatBytes(total)}
               </div>
             </>
+          )}
+          {model.connected && (
+            <div className="mt-2.5 flex items-center gap-1.5 text-[12px] text-textFaint">
+              <KeyRound size={12} className="shrink-0" />
+              {vault.status?.signsInWithKey
+                ? vault.status.key === 'chip'
+                  ? "Signs in with a key in this phone's security chip"
+                  : 'Signs in with a key of its own'
+                : 'Signs in with its pairing code'}
+              {vault.status?.owner && ' · owner'}
+            </div>
           )}
           <button
             onClick={onChangeDrive}

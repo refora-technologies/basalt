@@ -14,7 +14,7 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use crate::session::{Me, Session};
+use crate::session::{Credentials, Me, Session};
 use crate::{ClientError, Result};
 
 const MAX_IDLE: usize = 4;
@@ -41,13 +41,20 @@ struct Idle {
 struct Inner {
     addr: SocketAddr,
     host_id: String,
-    token: String,
+    /// What a new connection signs in with: settled before the pool is made.
+    credentials: Credentials,
     me: Me,
     idle: Mutex<Vec<Idle>>,
     profile: Mutex<ProfileChoice>,
     /// The choice's generation, for a watch to follow: see
     /// [`Pool::profile_changes`].
     changes: tokio::sync::watch::Sender<u64>,
+    /// Statements the host handed over while a connection was being told
+    /// its profile, for the client to keep: see [`Pool::take_statements`].
+    statements: Mutex<Vec<basalt_proto::msg::SignedStatement>>,
+    /// A new connection signed in with the key and was told the token is
+    /// retired: see [`Pool::take_token_retired`].
+    token_retired: std::sync::atomic::AtomicBool,
 }
 
 /// Which profile every connection in the pool should act for.
@@ -73,16 +80,18 @@ pub struct Pool {
 }
 
 impl Pool {
-    pub fn new(addr: SocketAddr, host_id: &str, token: &str, me: &Me) -> Self {
+    pub fn new(addr: SocketAddr, host_id: &str, credentials: Credentials, me: &Me) -> Self {
         Self {
             inner: Arc::new(Inner {
                 addr,
                 host_id: host_id.to_string(),
-                token: token.to_string(),
+                credentials,
                 me: me.clone(),
                 idle: Mutex::new(Vec::new()),
                 profile: Mutex::new(ProfileChoice::default()),
                 changes: tokio::sync::watch::Sender::new(0),
+                statements: Mutex::new(Vec::new()),
+                token_retired: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -91,11 +100,11 @@ impl Pool {
     pub fn with_session(
         addr: SocketAddr,
         host_id: &str,
-        token: &str,
+        credentials: Credentials,
         me: &Me,
         session: Session,
     ) -> Self {
-        let pool = Self::new(addr, host_id, token, me);
+        let pool = Self::new(addr, host_id, credentials, me);
         pool.inner.idle.lock().expect("idle lock").push(Idle {
             session,
             since: std::time::Instant::now(),
@@ -123,13 +132,40 @@ impl Pool {
         let mut session = loop {
             let pooled = self.inner.idle.lock().expect("idle lock").pop();
             let Some(Idle { mut session, since }) = pooled else {
-                break Session::connect(
+                let credentials = self.credentials();
+                let mut session = Session::connect(
                     self.inner.addr,
                     &self.inner.host_id,
-                    &self.inner.token,
+                    &credentials,
                     &self.inner.me,
                 )
                 .await?;
+                // An owner's device asked to vouch for the host answers here
+                // too: an app left open for weeks would otherwise let it lapse.
+                if let Some(key) = &credentials.key {
+                    session.answer_endorsement(key).await;
+                }
+                if session.signed_in.by_key
+                    && session.signed_in.retire_token
+                    && !credentials.token.is_empty()
+                {
+                    self.inner
+                        .token_retired
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    // Connections signed in with the token are closed by the
+                    // host at their next request: let go of the idle ones now.
+                    self.inner
+                        .idle
+                        .lock()
+                        .expect("idle lock")
+                        .retain(|idle| idle.session.signed_in.by_key);
+                }
+                // The host may have handed over a statement as this one signed
+                // in, and counts it as given: kept for the client.
+                if let Some(member) = session.signed_in.member.take() {
+                    self.hand_over(member);
+                }
+                break session;
             };
             if since.elapsed() < CHECK_AFTER {
                 break session;
@@ -147,7 +183,12 @@ impl Pool {
         let choice = self.inner.profile.lock().expect("profile lock").clone();
         if session.profile_gen != choice.generation {
             match session.profile_use(choice.token.as_deref()).await {
-                Ok(_) => session.profile_gen = choice.generation,
+                Ok(answer) => {
+                    session.profile_gen = choice.generation;
+                    if let Some(member) = answer.member {
+                        self.hand_over(member);
+                    }
+                }
                 // The sign-in ended on the host. The device carries on as
                 // itself rather than failing everything it does, and the
                 // app is told so it can ask who is watching.
@@ -174,6 +215,42 @@ impl Pool {
             inner: Arc::clone(&self.inner),
             healthy: true,
         })
+    }
+
+    /// What new connections sign in with.
+    pub fn credentials(&self) -> Credentials {
+        self.inner.credentials.clone()
+    }
+
+    /// Keeps a statement a connection outside the pool was handed (the
+    /// watch's), with the pool's own, for the client to keep.
+    pub fn hand_over(&self, member: basalt_proto::msg::SignedStatement) {
+        let mut statements = self.inner.statements.lock().expect("statements lock");
+        // The host hands the current one over on every sign-in: one copy.
+        if !statements.iter().any(|kept| kept.payload == member.payload) {
+            statements.push(member);
+        }
+    }
+
+    /// Whether a connection was told the token is retired since this was
+    /// last asked.
+    pub fn take_token_retired(&self) -> bool {
+        self.inner
+            .token_retired
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The statements handed over since this was last asked.
+    pub fn take_statements(&self) -> Vec<basalt_proto::msg::SignedStatement> {
+        std::mem::take(&mut *self.inner.statements.lock().expect("statements lock"))
+    }
+
+    /// Keeps a connection opened elsewhere for later use.
+    pub fn give(&self, session: Session) {
+        self.inner.idle.lock().expect("idle lock").push(Idle {
+            session,
+            since: std::time::Instant::now(),
+        });
     }
 
     /// Acts for a profile from now on, or for the device itself with None.
@@ -260,7 +337,9 @@ impl Lease {
     /// connection, while "the socket reset" does not.
     pub fn check<T>(&mut self, result: Result<T>) -> Result<T> {
         if let Err(e) = &result {
-            if e.is_transient() {
+            // Unavailable is also what a host says as it closes a connection
+            // signed in with something the device no longer uses.
+            if e.is_transient() || e.kind() == "unavailable" {
                 self.discard();
             } else if e.kind() == "signedout" {
                 // Every connection goes back to acting for the device.
@@ -325,13 +404,20 @@ impl ClientError {
 mod tests {
     use super::*;
 
+    fn token() -> Credentials {
+        Credentials {
+            token: "token".into(),
+            ..Credentials::default()
+        }
+    }
+
     fn addr() -> SocketAddr {
         "127.0.0.1:1".parse().unwrap()
     }
 
     #[test]
     fn a_new_pool_holds_nothing() {
-        let pool = Pool::new(addr(), "aa", "token", &Me::new("Laptop A", ""));
+        let pool = Pool::new(addr(), "aa", token(), &Me::new("Laptop A", ""));
         assert_eq!(pool.idle_count(), 0);
         assert_eq!(pool.host_id(), "aa");
         assert_eq!(pool.address(), addr());
@@ -340,7 +426,7 @@ mod tests {
     #[tokio::test]
     async fn acquiring_against_a_dead_host_fails_rather_than_hanging() {
         // Port 1 has nothing on it, so this is a connection refusal.
-        let pool = Pool::new(addr(), "aa", "token", &Me::new("Laptop A", ""));
+        let pool = Pool::new(addr(), "aa", token(), &Me::new("Laptop A", ""));
         let Err(err) = pool.acquire().await else {
             panic!("nothing is listening on port 1");
         };
@@ -350,7 +436,7 @@ mod tests {
 
     #[test]
     fn clearing_empties_the_pool() {
-        let pool = Pool::new(addr(), "aa", "token", &Me::new("Laptop A", ""));
+        let pool = Pool::new(addr(), "aa", token(), &Me::new("Laptop A", ""));
         pool.clear();
         assert_eq!(pool.idle_count(), 0);
     }

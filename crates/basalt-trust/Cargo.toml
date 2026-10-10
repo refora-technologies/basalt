@@ -1,0 +1,18 @@
+[package]
+name = "basalt-trust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Basalt keys: P-256 public keys, bound sign-in messages and signed statements."
+
+[dependencies]
+basalt-proto = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# Already the TLS backend and used for every other primitive; no new crypto.
+ring = "0.17"

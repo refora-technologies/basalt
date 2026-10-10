@@ -3,13 +3,14 @@ import { motion } from 'framer-motion'
 import { AlertTriangle, Plus } from 'lucide-react'
 import { api, type DeviceView, type HostStatus } from '@/lib/api'
 import { usePoll } from '@/lib/usePoll'
-import { DeviceList } from './components/DeviceList'
+import { DeviceList, OwnerLine } from './components/DeviceList'
 import { PairingRequests } from './components/PairingRequests'
 import { SettingsPanel } from './components/SettingsPanel'
 import { UpdateBanner } from './components/UpdateBanner'
 import { ProfileList } from './components/ProfileList'
 import { ProfileAccess } from './components/ProfileAccess'
 import { AddProfileDialog } from './components/AddProfileDialog'
+import { ImportantNotice } from './components/ImportantNotice'
 import { Setup } from './components/Setup'
 import { TitleBar } from './components/TitleBar'
 import { VaultCard } from './components/VaultCard'
@@ -172,6 +173,8 @@ export function App(): React.JSX.Element {
                     </span>
                   </div>
 
+                  <OwnerLine endorsement={current.endorsement} devices={list} />
+
                   <DeviceList
                     devices={list}
                     onRevoke={(device) =>
@@ -208,6 +211,15 @@ export function App(): React.JSX.Element {
                       void api
                         .setDeviceWritable(device.id, !device.writable)
                         .then(() => devices.refresh())
+                    }}
+                    onToggleOwner={(device) => {
+                      void api
+                        .setDeviceOwner(device.id, !device.owner)
+                        .then(() => {
+                          devices.refresh()
+                          status.refresh()
+                        })
+                        .catch(() => devices.refresh())
                     }}
                   />
                 </section>
@@ -348,6 +360,7 @@ export function App(): React.JSX.Element {
           onAdd={(name, color) => api.addProfile(name, color).then(apply)}
         />
       )}
+      {!needsSetup && <ImportantNotice devices={list} />}
     </div>
   )
 }

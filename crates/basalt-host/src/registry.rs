@@ -22,6 +22,8 @@ use std::time::Instant;
 
 use basalt_net::pairing::{self, MAX_PIN_ATTEMPTS, PAIRING_WINDOW};
 use basalt_proto::hex;
+use basalt_proto::msg::KeyKind;
+use basalt_trust::PublicKey;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{HostError, Result};
@@ -39,13 +41,18 @@ const MAX_PENDING: usize = 8;
 const FORGOTTEN_AFTER_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 /// A device that has completed pairing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Device {
-    /// Hex SHA-256 of the device token.
+    /// Hex SHA-256 of the device token, and the device's id everywhere on
+    /// the host: its row in the window, its traffic, its removal.
     ///
     /// The token itself is never stored. The host only ever needs to recognise
     /// one, and a hash does that just as well while making the config file
     /// useless to anyone who reads it.
+    ///
+    /// A device that moves to a key keeps this as its id, though the token is
+    /// no longer accepted: see [`Device::token_retired`]. One that paired with
+    /// a key never had a token, and its id is made from the key instead.
     pub token_hash: String,
     pub name: String,
     /// Unix seconds.
@@ -62,9 +69,28 @@ pub struct Device {
     /// the device calls itself no longer replaces the one it was given here.
     #[serde(default)]
     pub named_by_host: bool,
+    /// The device's public key, SubjectPublicKeyInfo hex, once it has one.
+    /// Empty for a device still signing in with a token.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub public_key: String,
+    /// Where the device says it keeps the key. Shown, never relied on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_kind: Option<KeyKind>,
+    /// The token is no longer accepted: the device has signed in with its key.
+    #[serde(default)]
+    pub token_retired: bool,
+    /// The host's owner has made this device an owner: it vouches for the
+    /// host's key. Only a device with a key can be one.
+    #[serde(default)]
+    pub owner: bool,
 }
 
 impl Device {
+    /// Whether this device signs in with a key.
+    pub fn keyed(&self) -> bool {
+        !self.public_key.is_empty()
+    }
+
     /// What anything kept per device is filed under.
     ///
     /// The device's own id when it has one, because that survives pairing
@@ -116,6 +142,24 @@ pub struct Registry {
 /// Hashes a token for storage and comparison.
 fn hash_token(token: &str) -> String {
     hex::encode(ring::digest::digest(&ring::digest::SHA256, token.as_bytes()).as_ref())
+}
+
+/// The id of a device that paired with a key and never had a token.
+///
+/// Labelled before hashing, so no token, whatever it is, hashes to it; and
+/// such a device's token is marked retired besides, so none is looked for.
+fn record_id(key: &PublicKey) -> String {
+    let mut bytes = b"basalt/device-record/v1\0".to_vec();
+    bytes.extend_from_slice(key.spki());
+    hex::encode(ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref())
+}
+
+/// How a device signs in once paired.
+pub enum Credential<'a> {
+    /// A token, by the hash the host keeps.
+    Token(String),
+    /// A key, and where the device says it keeps it.
+    Key(&'a PublicKey, Option<KeyKind>),
 }
 
 fn unix_now() -> i64 {
@@ -276,6 +320,40 @@ impl Registry {
         request_id: &str,
         proof: Option<&str>,
     ) -> Result<String> {
+        let token = pairing::random_token()
+            .map_err(|e| HostError::PairingRefused(format!("could not issue a token: {e}")))?;
+        let request = self.take_proven(now, host_id, request_id, proof)?;
+        self.record(request, Credential::Token(hash_token(&token)));
+        Ok(token)
+    }
+
+    /// Completes a request for a device pairing with a key. No token is
+    /// issued: the device signs in with the key from the start.
+    ///
+    /// The caller has already checked the device holds the key, by its
+    /// signature of the pairing message. Everything else is as
+    /// [`Registry::finish_pairing`].
+    pub fn finish_pairing_with_key(
+        &mut self,
+        now: Instant,
+        host_id: &str,
+        request_id: &str,
+        proof: Option<&str>,
+        key: &PublicKey,
+        kind: Option<KeyKind>,
+    ) -> Result<Device> {
+        let request = self.take_proven(now, host_id, request_id, proof)?;
+        Ok(self.record(request, Credential::Key(key, kind)))
+    }
+
+    /// Checks a request's PIN proof and takes it off the list.
+    fn take_proven(
+        &mut self,
+        now: Instant,
+        host_id: &str,
+        request_id: &str,
+        proof: Option<&str>,
+    ) -> Result<PairingRequest> {
         self.forget_expired(now);
 
         let index = self
@@ -318,38 +396,84 @@ impl Registry {
             }
         }
 
-        let token = pairing::random_token()
-            .map_err(|e| HostError::PairingRefused(format!("could not issue a token: {e}")))?;
-        let stamp = unix_now();
-        let request = self.pending.remove(index);
+        Ok(self.pending.remove(index))
+    }
 
-        let known = (!request.device_id.is_empty())
-            .then(|| {
-                self.devices
-                    .iter_mut()
-                    .find(|d| d.device_id == request.device_id)
-            })
-            .flatten();
-        match known {
-            Some(device) => {
-                device.token_hash = hash_token(&token);
-                device.paired_at = stamp;
-                device.last_seen = stamp;
-                if !device.named_by_host {
-                    device.name = request.device_name;
-                }
+    /// Records a device that has just paired, replacing its old record if it
+    /// paired before. Returns the record.
+    ///
+    /// The same device is recognised by its key first — holding the key is
+    /// proof — and then by the id it gives. Pairing again resets how it signs
+    /// in and nothing else: whether it may write and a name given here stay.
+    /// Being an owner stays only with the same key, because it is the key that
+    /// vouches for the host.
+    fn record(&mut self, request: PairingRequest, credential: Credential<'_>) -> Device {
+        let stamp = unix_now();
+        let by_key = match &credential {
+            Credential::Key(key, _) => self.find_key(key),
+            Credential::Token(_) => None,
+        };
+        let by_id = || {
+            (!request.device_id.is_empty())
+                .then(|| {
+                    self.devices
+                        .iter()
+                        .position(|d| d.device_id == request.device_id)
+                })
+                .flatten()
+        };
+        let index = match by_key.or_else(by_id) {
+            Some(index) => index,
+            None => {
+                self.devices.push(Device {
+                    writable: true,
+                    ..Device::default()
+                });
+                self.devices.len() - 1
             }
-            None => self.devices.push(Device {
-                token_hash: hash_token(&token),
-                name: request.device_name,
-                paired_at: stamp,
-                last_seen: stamp,
-                writable: true,
-                device_id: request.device_id,
-                named_by_host: false,
-            }),
+        };
+
+        let device = &mut self.devices[index];
+        device.paired_at = stamp;
+        device.last_seen = stamp;
+        if !device.named_by_host {
+            device.name = request.device_name;
         }
-        Ok(token)
+        // Settled once: anything kept for the device (its sign-ins, what was
+        // said about it) is filed under it, and a device recognised by its key
+        // keeps the id it had whatever it says now.
+        if device.device_id.is_empty() && !request.device_id.is_empty() {
+            device.device_id = request.device_id;
+        }
+        match credential {
+            Credential::Token(hash) => {
+                device.token_hash = hash;
+                device.token_retired = false;
+                device.public_key = String::new();
+                device.key_kind = None;
+                device.owner = false;
+            }
+            Credential::Key(key, kind) => {
+                let same_key = device.public_key == key.to_hex();
+                // A row the host already has keeps its id: the window, the
+                // traffic and the device's open connections all know it by
+                // that. Only a new row is named after its key.
+                if device.token_hash.is_empty() {
+                    device.token_hash = record_id(key);
+                }
+                device.token_retired = true;
+                device.public_key = key.to_hex();
+                device.key_kind = kind;
+                device.owner = device.owner && same_key;
+            }
+        }
+        device.clone()
+    }
+
+    /// The device holding `key`, by its place in the list.
+    fn find_key(&self, key: &PublicKey) -> Option<usize> {
+        let hex = key.to_hex();
+        self.devices.iter().position(|d| d.public_key == hex)
     }
 
     /// Takes in what a connecting device says about itself.
@@ -361,9 +485,9 @@ impl Registry {
     ///
     /// Returns whether anything changed, so the caller knows to save.
     pub fn observe(&mut self, token_hash: &str, device_id: &str, device_name: &str) -> bool {
-        let Some(device) = self.devices.iter_mut().find(|d| d.token_hash == token_hash) else {
+        if !self.devices.iter().any(|d| d.token_hash == token_hash) {
             return false;
-        };
+        }
         let mut changed = false;
 
         let device_id = sanitise_device_id(device_id);
@@ -372,7 +496,21 @@ impl Registry {
         // update, and a reinstall on the same device must then find this entry
         // rather than become another. The connection has already shown this
         // device's token, so the id is its own to change.
-        if !device_id.is_empty() && device.device_id != device_id {
+        //
+        // Not for a device with a key: its id was settled when it gave the
+        // key, and a device that could rename itself to another's id would be
+        // filed as that other device.
+        // Nor an id another device here already has: taking it would file
+        // this device as that one, sign-ins and all.
+        let taken = !device_id.is_empty()
+            && self
+                .devices
+                .iter()
+                .any(|d| d.token_hash != token_hash && d.device_id == device_id);
+        let Some(device) = self.devices.iter_mut().find(|d| d.token_hash == token_hash) else {
+            return false;
+        };
+        if !device_id.is_empty() && device.device_id != device_id && !device.keyed() && !taken {
             device.device_id = device_id;
             changed = true;
         }
@@ -404,14 +542,113 @@ impl Registry {
     // -----------------------------------------------------------------------
 
     /// Looks up a device by token, recording that it has been seen.
+    ///
+    /// Never a device whose token is retired: once a device has signed in
+    /// with its key, a copy of its old token is worth nothing.
     pub fn authenticate(&mut self, token: &str) -> Option<Device> {
+        if token.is_empty() {
+            return None;
+        }
         let hash = hash_token(token);
+        let device = self.devices.iter_mut().find(|d| {
+            !d.token_retired && hex::constant_time_eq(d.token_hash.as_bytes(), hash.as_bytes())
+        })?;
+        device.last_seen = unix_now();
+        Some(device.clone())
+    }
+
+    /// Looks up a device by its key, recording that it has been seen.
+    ///
+    /// The caller has checked the device's signature with this key; this
+    /// only says whose key it is.
+    pub fn authenticate_key(&mut self, key: &PublicKey) -> Option<Device> {
+        let index = self.find_key(key)?;
+        let device = &mut self.devices[index];
+        device.last_seen = unix_now();
+        Some(device.clone())
+    }
+
+    /// Gives a device paired with a token the key it will sign in with.
+    ///
+    /// The token keeps working until the device has signed in with the key
+    /// once, so a device that never manages to is not locked out: see
+    /// [`Registry::retire_token`]. Returns whether anything changed.
+    pub fn enrol(
+        &mut self,
+        token_hash: &str,
+        key: &PublicKey,
+        kind: Option<KeyKind>,
+    ) -> Result<bool> {
+        if let Some(other) = self.find_key(key)
+            && self.devices[other].token_hash != token_hash
+        {
+            return Err(HostError::Denied(
+                "that key already belongs to another device here".into(),
+            ));
+        }
         let device = self
             .devices
             .iter_mut()
-            .find(|d| hex::constant_time_eq(d.token_hash.as_bytes(), hash.as_bytes()))?;
-        device.last_seen = unix_now();
-        Some(device.clone())
+            .find(|d| d.token_hash == token_hash)
+            .ok_or(HostError::Unauthenticated)?;
+        if device.token_retired {
+            // Signed in with a key already; a token session cannot be one.
+            return Err(HostError::Unauthenticated);
+        }
+        let hex = key.to_hex();
+        if device.public_key == hex {
+            device.key_kind = kind;
+            return Ok(false);
+        }
+        // Once the host has a key for a device, a token cannot swap it for
+        // another. Otherwise a copy of the token could put its own key in, use
+        // it, retire the token, and lock the real device out; a copied token
+        // reaches the drive, as it always did, and no further. A device that
+        // has lost a key it never used carries on with its token, and pairing
+        // again gives it a new one.
+        if device.keyed() {
+            return Err(HostError::Denied(
+                "this device already has a key here; pair again to give it a new one".into(),
+            ));
+        }
+        device.public_key = hex;
+        device.key_kind = kind;
+        Ok(true)
+    }
+
+    /// Stops accepting a device's token, now that it has signed in with its
+    /// key. Returns whether anything changed.
+    pub fn retire_token(&mut self, token_hash: &str) -> bool {
+        match self
+            .devices
+            .iter_mut()
+            .find(|d| d.token_hash == token_hash && d.keyed())
+        {
+            Some(device) if !device.token_retired => {
+                device.token_retired = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Makes a device an owner, or not. Only a device with a key can be.
+    pub fn set_owner(&mut self, token_hash: &str, owner: bool) -> Result<bool> {
+        let device = self
+            .devices
+            .iter_mut()
+            .find(|d| d.token_hash == token_hash)
+            .ok_or_else(|| HostError::NotFound("that device".into()))?;
+        if owner && !device.keyed() {
+            return Err(HostError::BadRequest(
+                "only a device signing in with a key can be an owner; it moves to one the next \
+                 time it connects with an up-to-date Basalt"
+                    .into(),
+            ));
+        }
+        let changed = device.owner != owner;
+        device.owner = owner;
+        Ok(changed)
     }
 
     /// Removes a device. It cannot connect again without pairing afresh.
@@ -1034,6 +1271,7 @@ mod tests {
             writable: true,
             device_id: id.into(),
             named_by_host: false,
+            ..Device::default()
         };
         let mut registry = Registry::new(
             vec![
@@ -1098,5 +1336,281 @@ mod tests {
             registry.authenticate(&first).is_none(),
             "the old install's token is replaced"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Keys
+    // -----------------------------------------------------------------------
+
+    fn key() -> PublicKey {
+        basalt_trust::Signer::public_key(&basalt_trust::SoftwareKey::generate().unwrap()).clone()
+    }
+
+    /// Pairs with a key the way a current client does.
+    fn pair_with_key(
+        registry: &mut Registry,
+        now: Instant,
+        name: &str,
+        id: &str,
+        key: &PublicKey,
+    ) -> Result<Device> {
+        let nonce = pairing::random_nonce().unwrap();
+        let request = registry.begin_pairing_for(now, name, id, &nonce)?;
+        let proof = request.pin.as_ref().map(|pin| {
+            pairing::compute_proof(pin, HOST_ID, &request.client_nonce, &request.server_nonce)
+                .unwrap()
+        });
+        registry.finish_pairing_with_key(
+            now,
+            HOST_ID,
+            &request.id,
+            proof.as_deref(),
+            key,
+            Some(KeyKind::Chip),
+        )
+    }
+
+    #[test]
+    fn a_device_paired_with_a_key_signs_in_with_it_and_has_no_token() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let key = key();
+        let device = pair_with_key(&mut registry, now, "Phone", DEVICE_A, &key).unwrap();
+
+        assert!(device.keyed() && device.token_retired);
+        assert_eq!(device.key_kind, Some(KeyKind::Chip));
+        assert_eq!(device.public_key, key.to_hex());
+        let found = registry
+            .authenticate_key(&key)
+            .expect("its key signs it in");
+        assert_eq!(found.token_hash, device.token_hash);
+        // No token of any kind reaches it: not an empty one, not its id.
+        assert!(registry.authenticate("").is_none());
+        assert!(registry.authenticate(&device.token_hash).is_none());
+        assert!(registry.authenticate_key(&self::key()).is_none());
+    }
+
+    #[test]
+    fn a_wrong_pin_with_a_key_pairs_nothing() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let nonce = pairing::random_nonce().unwrap();
+        let request = registry
+            .begin_pairing_for(now, "Phone", DEVICE_A, &nonce)
+            .unwrap();
+        let wrong = pairing::compute_proof(
+            "000000",
+            HOST_ID,
+            &request.client_nonce,
+            &request.server_nonce,
+        )
+        .unwrap();
+        let k = key();
+        assert!(
+            registry
+                .finish_pairing_with_key(now, HOST_ID, &request.id, Some(&wrong), &k, None)
+                .is_err()
+        );
+        assert_eq!(registry.device_count(), 0);
+        assert!(registry.authenticate_key(&k).is_none());
+    }
+
+    #[test]
+    fn pairing_again_with_the_same_key_is_the_same_device_and_keeps_its_owner() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let k = key();
+        let first = pair_with_key(&mut registry, now, "Phone", DEVICE_A, &k).unwrap();
+        registry.set_writable(&first.token_hash, false);
+        assert!(registry.set_owner(&first.token_hash, true).unwrap());
+
+        let again = pair_with_key(&mut registry, now, "Phone", DEVICE_A, &k).unwrap();
+        assert_eq!(registry.device_count(), 1);
+        assert_eq!(again.token_hash, first.token_hash);
+        assert!(again.owner, "the same key still vouches");
+        assert!(!again.writable, "the host's decision stays");
+
+        // A new key on the same device: still one record, no longer an owner.
+        let other = key();
+        let renewed = pair_with_key(&mut registry, now, "Phone", DEVICE_A, &other).unwrap();
+        assert_eq!(registry.device_count(), 1);
+        assert!(!renewed.owner);
+        assert!(
+            registry.authenticate_key(&k).is_none(),
+            "the old key is gone"
+        );
+        assert!(registry.authenticate_key(&other).is_some());
+    }
+
+    #[test]
+    fn a_device_moving_to_a_key_keeps_its_token_until_it_has_used_the_key() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let token = pair_as(&mut registry, now, "Laptop", DEVICE_A);
+        let id = hash_token(&token);
+        let k = key();
+
+        assert!(registry.enrol(&id, &k, Some(KeyKind::System)).unwrap());
+        assert!(
+            !registry.enrol(&id, &k, Some(KeyKind::System)).unwrap(),
+            "once"
+        );
+        // Not retired yet: a device that never manages to use its key is not
+        // locked out.
+        assert!(registry.authenticate(&token).is_some());
+        assert_eq!(registry.authenticate_key(&k).unwrap().token_hash, id);
+
+        assert!(registry.retire_token(&id));
+        assert!(!registry.retire_token(&id), "once");
+        assert!(
+            registry.authenticate(&token).is_none(),
+            "the token is worthless now"
+        );
+        let device = registry.authenticate_key(&k).unwrap();
+        assert_eq!(device.token_hash, id, "the same row on the host throughout");
+        // And a retired device cannot be given another key over a token.
+        assert!(registry.enrol(&id, &key(), None).is_err());
+    }
+
+    #[test]
+    fn a_token_device_without_a_key_has_nothing_to_retire() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let token = pair_as(&mut registry, now, "Laptop", DEVICE_A);
+        assert!(!registry.retire_token(&hash_token(&token)));
+        assert!(registry.authenticate(&token).is_some());
+    }
+
+    #[test]
+    fn a_key_belongs_to_one_device() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let a = hash_token(&pair_as(&mut registry, now, "A", DEVICE_A));
+        let b = hash_token(&pair_as(&mut registry, now, "B", DEVICE_B));
+        let k = key();
+        registry.enrol(&a, &k, None).unwrap();
+        assert!(registry.enrol(&b, &k, None).is_err());
+        assert!(registry.enrol("no such device", &key(), None).is_err());
+    }
+
+    #[test]
+    fn a_device_with_a_key_keeps_its_id() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let device = pair_with_key(&mut registry, now, "Phone", DEVICE_A, &key()).unwrap();
+        assert!(!registry.observe(&device.token_hash, DEVICE_B, "Phone"));
+        assert_eq!(
+            registry.device(&device.token_hash).unwrap().device_id,
+            DEVICE_A
+        );
+        // Its name still follows it.
+        assert!(registry.observe(&device.token_hash, DEVICE_B, "Phone 2"));
+        assert_eq!(registry.device(&device.token_hash).unwrap().name, "Phone 2");
+    }
+
+    #[test]
+    fn only_a_device_with_a_key_can_be_an_owner() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let token = hash_token(&pair_as(&mut registry, now, "Laptop", DEVICE_A));
+        assert!(registry.set_owner(&token, true).is_err());
+        assert!(!registry.set_owner(&token, false).unwrap());
+        assert!(registry.set_owner("missing", true).is_err());
+
+        registry.enrol(&token, &key(), None).unwrap();
+        assert!(registry.set_owner(&token, true).unwrap());
+        assert!(registry.device(&token).unwrap().owner);
+        assert!(registry.set_owner(&token, false).unwrap());
+    }
+
+    // What a copied token could do with Enrol: put its own key in over the
+    // device's, use it, and lock the real device out.
+    #[test]
+    fn a_token_cannot_swap_a_devices_key_for_another() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let token = pair_as(&mut registry, now, "Laptop", DEVICE_A);
+        let id = hash_token(&token);
+        let real = key();
+        registry.enrol(&id, &real, None).unwrap();
+        registry.set_owner(&id, true).unwrap();
+        assert!(registry.enrol(&id, &key(), None).is_err());
+        let device = registry.device(&id).unwrap();
+        assert_eq!(device.public_key, real.to_hex());
+        assert!(device.owner, "nothing changed");
+    }
+
+    #[test]
+    fn a_device_cannot_take_an_id_another_device_has() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        pair_as(&mut registry, now, "A", DEVICE_A);
+        let b = hash_token(&pair_as(&mut registry, now, "B", DEVICE_B));
+        assert!(!registry.observe(&b, DEVICE_A, "B"));
+        assert_eq!(registry.device(&b).unwrap().device_id, DEVICE_B);
+    }
+
+    #[test]
+    fn pairing_again_with_a_token_drops_the_key_and_ownership() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let token = pair_as(&mut registry, now, "Laptop", DEVICE_A);
+        let id = hash_token(&token);
+        registry.enrol(&id, &key(), None).unwrap();
+        registry.set_owner(&id, true).unwrap();
+
+        // An older app on the same device pairs again with a token.
+        let token = pair_as(&mut registry, now, "Laptop", DEVICE_A);
+        let device = registry.authenticate(&token).unwrap();
+        assert!(!device.keyed() && !device.token_retired && !device.owner);
+    }
+
+    #[test]
+    fn records_written_before_keys_read_as_token_devices() {
+        let json =
+            r#"{"token_hash":"ab","name":"Old","paired_at":1,"last_seen":2,"writable":true}"#;
+        let device: Device = serde_json::from_str(json).unwrap();
+        assert!(!device.keyed() && !device.token_retired && !device.owner);
+        // And a token device is written without the new fields.
+        let written = serde_json::to_string(&device).unwrap();
+        assert!(!written.contains("public_key") && !written.contains("key_kind"));
+    }
+
+    #[test]
+    fn a_device_that_moved_to_a_key_keeps_its_row_when_it_pairs_again() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let id = hash_token(&pair_as(&mut registry, now, "Laptop", DEVICE_A));
+        let k = key();
+        registry.enrol(&id, &k, None).unwrap();
+        registry.retire_token(&id);
+
+        let again = pair_with_key(&mut registry, now, "Laptop", DEVICE_A, &k).unwrap();
+        assert_eq!(again.token_hash, id, "the same row on the host");
+        assert_eq!(registry.device_count(), 1);
+        assert!(registry.authenticate_key(&k).is_some());
+    }
+
+    #[test]
+    fn a_device_recognised_by_its_key_keeps_its_id_whatever_it_says() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let k = key();
+        pair_with_key(&mut registry, now, "Phone", DEVICE_A, &k).unwrap();
+        let again = pair_with_key(&mut registry, now, "Phone", DEVICE_B, &k).unwrap();
+        assert_eq!(again.device_id, DEVICE_A);
+        assert_eq!(registry.device_count(), 1);
+    }
+
+    #[test]
+    fn no_token_hashes_to_a_keyed_devices_id() {
+        // The id is a labelled hash of the key, so even the key's own bytes,
+        // or its hex, offered as a token find nothing.
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let k = key();
+        pair_with_key(&mut registry, now, "Phone", DEVICE_A, &k).unwrap();
+        assert!(registry.authenticate(&k.to_hex()).is_none());
+        assert!(registry.authenticate(&k.id()).is_none());
     }
 }

@@ -40,10 +40,17 @@ pub fn init_crypto() {
     });
 }
 
+/// TLS 1.3 and nothing older, at both ends.
+///
+/// A device signs in by signing material exported from the session, and only
+/// TLS 1.3's exporter is bound to the whole handshake. Both ends were always
+/// rustls and always agreed on 1.3; this makes it a rule rather than a habit.
+static VERSIONS: &[&rustls::SupportedProtocolVersion] = &[&rustls::version::TLS13];
+
 /// Builds the host's TLS acceptor from its stored identity.
 pub fn server_config(identity: &HostIdentity) -> Result<TlsAcceptor> {
     init_crypto();
-    let config = rustls::ServerConfig::builder()
+    let config = rustls::ServerConfig::builder_with_protocol_versions(VERSIONS)
         .with_no_client_auth()
         .with_single_cert(vec![identity.certificate()], identity.private_key()?)
         .map_err(|e| NetError::Crypto(format!("building the server config: {e}")))?;
@@ -151,11 +158,43 @@ fn verification_algorithms() -> rustls::crypto::WebPkiSupportedAlgorithms {
 pub fn client_config(trust: Trust) -> (TlsConnector, Arc<PinVerifier>) {
     init_crypto();
     let verifier = Arc::new(PinVerifier::new(trust));
-    let config = rustls::ClientConfig::builder()
+    let config = rustls::ClientConfig::builder_with_protocol_versions(VERSIONS)
         .dangerous()
         .with_custom_certificate_verifier(verifier.clone())
         .with_no_client_auth();
     (TlsConnector::from(Arc::new(config)), verifier)
+}
+
+/// Material only the two ends of this session can derive, for a device to
+/// sign when it signs in: see `basalt_trust::message`. None unless the
+/// session is TLS 1.3.
+pub fn server_binding(
+    connection: &rustls::ServerConnection,
+) -> Option<[u8; basalt_trust::message::EXPORTER_BYTES]> {
+    binding(connection)
+}
+
+/// The device's side of [`server_binding`]: the same bytes, from its end.
+pub fn client_binding(
+    connection: &rustls::ClientConnection,
+) -> Option<[u8; basalt_trust::message::EXPORTER_BYTES]> {
+    binding(connection)
+}
+
+/// The one place the exporter is asked for, so the two ends cannot drift.
+fn binding<Data>(
+    connection: &rustls::ConnectionCommon<Data>,
+) -> Option<[u8; basalt_trust::message::EXPORTER_BYTES]> {
+    if connection.protocol_version() != Some(rustls::ProtocolVersion::TLSv1_3) {
+        return None;
+    }
+    connection
+        .export_keying_material(
+            [0u8; basalt_trust::message::EXPORTER_BYTES],
+            basalt_trust::message::EXPORTER_LABEL,
+            None,
+        )
+        .ok()
 }
 
 /// The name sent in SNI.
@@ -198,6 +237,35 @@ mod tests {
             server.get_ref().1.protocol_version(),
             Some(rustls::ProtocolVersion::TLSv1_3)
         );
+    }
+
+    async fn session() -> (
+        tokio_rustls::client::TlsStream<tokio::io::DuplexStream>,
+        tokio_rustls::server::TlsStream<tokio::io::DuplexStream>,
+    ) {
+        let id = HostIdentity::generate("laptop-b").unwrap();
+        let acceptor = server_config(&id).unwrap();
+        let (connector, _) = client_config(Trust::FirstContact);
+        let (near, far) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(async move { acceptor.accept(far).await.unwrap() });
+        let client = connector.connect(sni_name(), near).await.unwrap();
+        (client, server.await.unwrap())
+    }
+
+    // The whole of what makes a device's signature worthless anywhere else:
+    // both ends of one session agree on the bytes, and no two sessions do.
+    #[tokio::test]
+    async fn both_ends_of_a_session_derive_the_same_binding_and_no_other_session_does() {
+        let (client, server) = session().await;
+        let near = client_binding(client.get_ref().1).expect("TLS 1.3");
+        let far = server_binding(server.get_ref().1).expect("TLS 1.3");
+        assert_eq!(near, far);
+        assert_ne!(near, [0u8; 32]);
+
+        let (other_client, other_server) = session().await;
+        let other = client_binding(other_client.get_ref().1).unwrap();
+        assert_ne!(other, near);
+        assert_eq!(server_binding(other_server.get_ref().1).unwrap(), other);
     }
 
     #[test]

@@ -76,6 +76,44 @@ struct DeviceHint {
     id: String,
 }
 
+#[derive(Serialize)]
+struct KeyArgs<'a> {
+    alias: &'a str,
+}
+
+#[derive(Serialize)]
+struct KeySignArgs<'a> {
+    alias: &'a str,
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct Spki {
+    spki: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Signed {
+    signature: String,
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unhex(text: &str) -> Result<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return Err(Error::Android("the key store answered with odd hex".into()));
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&text[i..i + 2], 16)
+                .map_err(|_| Error::Android("the key store answered with bad hex".into()))
+        })
+        .collect()
+}
+
 /// The Android side, for the shell to call.
 pub struct BasaltAndroid<R: Runtime> {
     #[cfg(target_os = "android")]
@@ -120,6 +158,36 @@ impl<R: Runtime> BasaltAndroid<R> {
     pub fn device_hint(&self) -> Result<String> {
         self.call::<DeviceHint>("deviceHint", serde_json::json!({}))
             .map(|r| r.id)
+    }
+
+    /// Makes this device's key in the phone's key store, replacing any under
+    /// `alias`, and returns its public half (SubjectPublicKeyInfo).
+    pub fn key_create(&self, alias: &str) -> Result<Vec<u8>> {
+        let made: Spki = self.call("keyCreate", KeyArgs { alias })?;
+        unhex(&made.spki.unwrap_or_default())
+    }
+
+    /// The public half of the key under `alias`, or None if there is none.
+    pub fn key_public(&self, alias: &str) -> Result<Option<Vec<u8>>> {
+        let found: Spki = self.call("keyPublic", KeyArgs { alias })?;
+        found.spki.map(|spki| unhex(&spki)).transpose()
+    }
+
+    /// Signs `message` with the key under `alias`; the signature in DER.
+    pub fn key_sign(&self, alias: &str, message: &[u8]) -> Result<Vec<u8>> {
+        let signed: Signed = self.call(
+            "keySign",
+            KeySignArgs {
+                alias,
+                message: hex(message),
+            },
+        )?;
+        unhex(&signed.signature)
+    }
+
+    pub fn key_delete(&self, alias: &str) -> Result<()> {
+        self.call::<serde_json::Value>("keyDelete", KeyArgs { alias })
+            .map(|_| ())
     }
 
     /// Shows a finished download, or removes one that failed.

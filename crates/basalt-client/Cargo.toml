@@ -18,6 +18,9 @@ path = "src/main.rs"
 [dependencies]
 basalt-proto = { workspace = true }
 basalt-net = { workspace = true }
+basalt-trust = { workspace = true }
+# Hashing for the TPM, which signs a digest; already the TLS backend.
+ring = "0.17"
 
 anyhow = { workspace = true }
 clap = { workspace = true }

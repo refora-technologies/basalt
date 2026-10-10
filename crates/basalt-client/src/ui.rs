@@ -35,6 +35,12 @@ pub struct Status {
     /// connecting, with a paired host, is a host that did not answer: the
     /// window says it is waiting for it, rather than that it is connecting.
     pub connecting: bool,
+    /// Where this device's key is kept, once it has one.
+    pub key: Option<basalt_proto::msg::KeyKind>,
+    /// This connection signed in with the key, rather than a pairing token.
+    pub signs_in_with_key: bool,
+    /// The host's owner made this device an owner of the drive.
+    pub owner: bool,
 }
 
 impl Status {
@@ -76,12 +82,20 @@ impl Status {
             has_paired: saved.is_some(),
             device_name: device_name.to_string(),
             connecting: false,
+            key: None,
+            signs_in_with_key: info.as_ref().is_some_and(|i| i.by_key),
+            owner: info.as_ref().is_some_and(|i| i.owner),
         }
     }
 
     /// The same status, saying whether a connection is being attempted.
     pub fn connecting(self, connecting: bool) -> Self {
         Self { connecting, ..self }
+    }
+
+    /// The same status, saying where this device's key is kept.
+    pub fn key(self, key: Option<basalt_proto::msg::KeyKind>) -> Self {
+        Self { key, ..self }
     }
 }
 
@@ -223,6 +237,9 @@ mod tests {
                 "hasPaired",
                 "hostId",
                 "hostName",
+                "key",
+                "owner",
+                "signsInWithKey",
                 "vault",
                 "writable",
             ]
@@ -429,6 +446,8 @@ mod tests {
             paired_at: 0,
             used_at: 0,
             identity: Default::default(),
+            key: String::new(),
+            members: Vec::new(),
         }
     }
 
@@ -483,6 +502,8 @@ mod tests {
             vault: "Films".into(),
             writable: true,
             address: "192.168.1.11:7742".parse().unwrap(),
+            by_key: true,
+            owner: false,
         };
         let host = saved_host();
         let status = Status::new(Some(info), Some(&host), "Laptop A");

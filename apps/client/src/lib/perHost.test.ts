@@ -73,6 +73,23 @@ beforeEach(() => {
 })
 
 describe('the film and series library', () => {
+  it('does not say whether recognition is on until the host has said', async () => {
+    const { result, rerender } = renderHook(({ host }) => useMediaLibrary(host), {
+      initialProps: { host: 'host-a' as string | null },
+    })
+    expect(result.current.known).toBe(false)
+    await answer('library', { revision: 3, enabled: true, scanning: false, items: [film('Arrival')] })
+    await waitFor(() => expect(result.current.known).toBe(true))
+    expect(result.current.enabled).toBe(true)
+
+    // Another host: not known again until it answers, rather than "off".
+    rerender({ host: 'host-b' })
+    expect(result.current.known).toBe(false)
+    await answer('library', { revision: 1, enabled: false, scanning: false })
+    await waitFor(() => expect(result.current.known).toBe(true))
+    expect(result.current.enabled).toBe(false)
+  })
+
   it('starts again from nothing on another host, revision and all', async () => {
     const { result, rerender } = renderHook(({ host }) => useMediaLibrary(host), {
       initialProps: { host: 'host-a' as string | null },
@@ -168,6 +185,31 @@ describe('who is using the device', () => {
     rerender({ host: 'host-b' })
     expect(result.current.profiles).toEqual([])
     expect(result.current.state).toBeNull()
+  })
+  it('does not draw them even in the render before it is told', async () => {
+    // Checked render by render: the old profiles used to be cleared by an
+    // effect, after the first render with the new host had drawn them.
+    const seen: Array<{ host: string | null; names: string[]; loaded: boolean }> = []
+    const { rerender } = renderHook(
+      ({ host }) => {
+        const identity = useIdentity(host)
+        seen.push({ host, names: identity.profiles.map((p) => p.name), loaded: identity.loaded })
+        return identity
+      },
+      { initialProps: { host: 'host-a' as string | null } },
+    )
+    await answer('identity', { choose: true, profile: null, lastProfile: null, ended: false })
+    await answer('profiles', [{ id: 'p1', name: 'Maya', color: 0, hasPin: true }])
+    await answer('profiles', [{ id: 'p1', name: 'Maya', color: 0, hasPin: true }])
+    await waitFor(() => expect(seen.at(-1)?.loaded).toBe(true))
+
+    rerender({ host: 'host-b' })
+    const onB = seen.filter((render) => render.host === 'host-b')
+    expect(onB.length).toBeGreaterThan(0)
+    for (const render of onB) {
+      expect(render.names).toEqual([])
+      expect(render.loaded).toBe(false)
+    }
   })
 })
 

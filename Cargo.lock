@@ -181,9 +181,11 @@ dependencies = [
  "basalt-host",
  "basalt-net",
  "basalt-proto",
+ "basalt-trust",
  "blake3",
  "clap",
  "image",
+ "ring",
  "serde",
  "serde_json",
  "thiserror",
@@ -202,6 +204,7 @@ dependencies = [
  "basalt-catalog",
  "basalt-net",
  "basalt-proto",
+ "basalt-trust",
  "blake3",
  "clap",
  "image",
@@ -225,6 +228,7 @@ version = "1.4.6"
 dependencies = [
  "anyhow",
  "basalt-proto",
+ "basalt-trust",
  "if-addrs",
  "rcgen",
  "ring",
@@ -247,6 +251,17 @@ dependencies = [
  "serde_json",
  "thiserror",
  "zstd",
+]
+
+[[package]]
+name = "basalt-trust"
+version = "1.4.6"
+dependencies = [
+ "basalt-proto",
+ "ring",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

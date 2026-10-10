@@ -59,6 +59,14 @@ impl HostIdentity {
         })
     }
 
+    /// The SubjectPublicKeyInfo of the host's key: what its id hashes, and
+    /// what an owner's endorsement names.
+    pub fn spki(&self) -> Result<Vec<u8>> {
+        let (_, parsed) = x509_parser::parse_x509_certificate(&self.cert_der)
+            .map_err(|e| NetError::Crypto(format!("parsing certificate: {e}")))?;
+        Ok(parsed.tbs_certificate.subject_pki.raw.to_vec())
+    }
+
     pub fn certificate(&self) -> CertificateDer<'static> {
         CertificateDer::from(self.cert_der.clone())
     }
@@ -135,6 +143,14 @@ mod tests {
         let reissued = params.self_signed(&key).unwrap();
 
         assert_eq!(host_id_from_cert(reissued.der()).unwrap(), expected);
+    }
+
+    #[test]
+    fn the_public_key_hashes_to_the_host_id() {
+        let id = HostIdentity::generate("laptop-b").unwrap();
+        let spki = id.spki().unwrap();
+        let digest = ring::digest::digest(&ring::digest::SHA256, &spki);
+        assert_eq!(hex::encode(digest.as_ref()), id.host_id);
     }
 
     #[test]

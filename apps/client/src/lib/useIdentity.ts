@@ -31,6 +31,13 @@ export function useIdentity(host: string | null): Identity {
   const [profiles, setProfiles] = useState<ProfileView[]>([])
   const [supported, setSupported] = useState(true)
   const [loaded, setLoaded] = useState(false)
+  /**
+   * The host all of the above was asked of. Cleared in an effect when the
+   * host changes, which runs only after the new host's first render: until
+   * then the last host's profiles were drawn as this one's. Checked when
+   * handing them out instead, so they never are.
+   */
+  const [loadedFor, setLoadedFor] = useState<string | null>(null)
   const live = useRef(true)
   const current = useRef(host)
   current.current = host
@@ -78,7 +85,9 @@ export function useIdentity(host: string | null): Identity {
     if (!host) return undefined
     let cancelled = false
     void Promise.all([refresh(), reloadProfiles()]).then(() => {
-      if (!cancelled) setLoaded(true)
+      if (cancelled) return
+      setLoaded(true)
+      setLoadedFor(host)
     })
     return () => {
       cancelled = true
@@ -112,6 +121,9 @@ export function useIdentity(host: string | null): Identity {
     }
   }, [host, refresh, reloadProfiles])
 
+  if (loadedFor !== host) {
+    return { state: null, profiles: [], supported: true, loaded: false, refresh, reloadProfiles }
+  }
   return { state, profiles, supported, loaded, refresh, reloadProfiles }
 }
 

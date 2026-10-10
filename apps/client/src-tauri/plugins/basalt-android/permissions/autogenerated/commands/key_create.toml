@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-key-create"
+description = "Enables the key_create command without any pre-configured scope."
+commands.allow = ["key_create"]
+
+[[permission]]
+identifier = "deny-key-create"
+description = "Denies the key_create command without any pre-configured scope."
+commands.deny = ["key_create"]
