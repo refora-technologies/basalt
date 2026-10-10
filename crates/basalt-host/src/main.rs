@@ -336,10 +336,17 @@ fn status(config_path: &Path, wait: bool) -> Result<()> {
     );
     println!();
 
-    let address = basalt_net::discovery::local_addresses()
-        .first()
-        .map(|ip| format!("{ip}:{}", config.port))
-        .unwrap_or_else(|| "no network yet".into());
+    let address = match basalt_net::discovery::local_addresses().first() {
+        // A container on Docker's own network sees only its private address,
+        // which no device can reach: the computer's is the one to use.
+        Some(std::net::IpAddr::V4(ip))
+            if container && ip.octets()[0] == 172 && (16..32).contains(&ip.octets()[1]) =>
+        {
+            format!("port {} on this computer's address", config.port)
+        }
+        Some(ip) => format!("{ip}:{}", config.port),
+        None => "no network yet".into(),
+    };
     let sharing = match &config.vault_path {
         Some(path) => format!("{} ({})", config.vault_name, path.display()),
         None => "nothing yet".into(),
