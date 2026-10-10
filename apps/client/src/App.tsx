@@ -1655,7 +1655,14 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
         inert={playing !== null}
       >
       <div className="backdrop" />
-      <TitleBar vaultName={vault.status.vault ?? 'Vault'} connected={connected} />
+      <TitleBar
+        vaultName={
+          vault.status.hasDrive === false
+            ? (vault.status.hostName ?? 'Basalt')
+            : (vault.status.vault ?? 'Vault')
+        }
+        connected={connected}
+      />
 
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <Sidebar
@@ -2122,7 +2129,8 @@ function ConnectionBanner({
   vault: ReturnType<typeof useVault>
 }): React.JSX.Element | null {
   const kind = vault.error?.kind
-  if (!kind) return null
+  // A host with no drive yet: the screen below says so, with what to do.
+  if (!kind || vault.status?.hasDrive === false) return null
 
   const offline = kind === 'offline'
   const waiting = kind === 'unavailable'

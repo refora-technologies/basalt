@@ -198,8 +198,9 @@ export function Devices(tools: Tools): React.JSX.Element {
       <Group icon={MonitorSmartphone} title="Devices" aside={`${online} of ${devices.length} here now`}>
         <Rows>
           {devices.map((device) => {
-            const Icon = deviceIcon(device.name)
             const you = device.id === view.you
+            // This device is known for what it is, whatever it is called.
+            const Icon = you && layout === 'phone' ? Smartphone : deviceIcon(device.name)
             return (
               <Row
                 key={device.id}
@@ -257,7 +258,7 @@ function DeviceDetail({
   const phone = layout === 'phone'
   const you = device.id === view.you
   const only = lastManager(view.devices, device.id)
-  const Icon = deviceIcon(device.name)
+  const Icon = you && phone ? Smartphone : deviceIcon(device.name)
 
   const askManages = async (next: boolean): Promise<boolean> => {
     if (next) {

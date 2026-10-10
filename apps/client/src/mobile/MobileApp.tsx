@@ -758,7 +758,9 @@ function TopBar({
     tab === 'files'
       ? inFolder
         ? vault.dir.split('/').pop()!
-        : (vault.status?.vault ?? 'Basalt')
+        : vault.status?.hasDrive === false
+          ? (vault.status.hostName ?? 'Basalt')
+          : (vault.status?.vault ?? 'Basalt')
       : tab === 'library'
         ? 'Library'
         : tab === 'recent'
@@ -917,7 +919,8 @@ function Crumbs({ model }: { model: AppModel }): React.JSX.Element | null {
 /** Lost the host, or the drive: said plainly, above the list. */
 function ConnectionLine({ model }: { model: AppModel }): React.JSX.Element | null {
   const kind = model.vault.error?.kind
-  if (!kind) return null
+  // A host with no drive yet: the screen below says so, with what to do.
+  if (!kind || model.vault.status?.hasDrive === false) return null
   const offline = kind === 'offline'
   return (
     <div className="flex shrink-0 items-center gap-2.5 border-y border-white/[0.06] bg-[#141416] px-4 py-2.5">

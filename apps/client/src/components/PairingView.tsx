@@ -73,24 +73,51 @@ export function PairingView({
     }
   }, [])
 
-  const scan = useCallback(async () => {
-    setScanning(true)
-    setError(null)
+  // How many looks in a row each host has been missing from: one that does
+  // not answer one look is kept, as a single look can miss a host on a busy
+  // network, and only one gone from two in a row leaves the list.
+  const missed = useRef(new Map<string, number>())
+
+  const look = useCallback(async (quietly: boolean) => {
+    if (!quietly) {
+      setScanning(true)
+      setError(null)
+    }
     try {
       const found = await api.discover()
+      if (!live.current) return
       // The previous list stays on screen until the new one arrives. Clearing
       // it first would make every rescan flash the empty state.
-      if (live.current) setHosts(found)
+      setHosts((before) => {
+        const seen = new Set(found.map((h) => h.hostId))
+        for (const id of seen) missed.current.delete(id)
+        const kept = (before ?? []).filter((h) => {
+          if (seen.has(h.hostId)) return false
+          const times = (missed.current.get(h.hostId) ?? 0) + 1
+          missed.current.set(h.hostId, times)
+          return times < 2
+        })
+        return [...found, ...kept]
+      })
     } catch (e) {
-      if (live.current) setError(e instanceof Error ? e.message : String(e))
+      if (live.current && !quietly) setError(e instanceof Error ? e.message : String(e))
     } finally {
-      if (live.current) setScanning(false)
+      if (live.current && !quietly) setScanning(false)
     }
   }, [])
+  const scan = useCallback(() => look(false), [look])
 
   useEffect(() => {
     void scan()
   }, [scan])
+
+  // Kept listening while the list is open: a host that missed the first
+  // look, or was started just now, appears without "Look again".
+  useEffect(() => {
+    if (chosen || busy) return undefined
+    const timer = setInterval(() => void look(true), 3500)
+    return () => clearInterval(timer)
+  }, [chosen, busy, look])
 
   /**
    * Picking a host opens a request on it, and asks whether it wants a PIN. A
