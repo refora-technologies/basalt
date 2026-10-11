@@ -1,17 +1,13 @@
 {
-  "_about": "The browser preview's library, and the one in Basalt's videos and screenshots. Every title, name and track here is invented; the pictures are drawn by marketing/art.py.",
+  "_about": "The browser preview's library, and the one in Basalt's videos and screenshots, matching the demo drive. The films are Blender's open films (CC BY, Blender Foundation); every series, name, photo and track is invented, and those pictures are drawn by marketing/art.py.",
   "host": { "name": "LIVING-ROOM-PC", "vault": "Media Drive" },
   "films": [
-    { "id": "f1", "title": "Column Zero", "year": 2025, "res": [3840, 1600], "size": 38, "scene": "planet", "seed": 11, "tagline": "The last signal came from the edge." },
-    { "id": "f2", "title": "The Lantern Road", "year": 2024, "res": [1920, 1080], "size": 14, "scene": "autumn", "seed": 22, "tagline": "Every light leads somewhere." },
-    { "id": "f3", "title": "Kestrel Point", "year": 2023, "res": [3840, 2160], "size": 31, "scene": "lighthouse", "seed": 33, "tagline": "The tide keeps its secrets." },
-    { "id": "f4", "title": "Nine Winters", "year": 2022, "res": [1920, 1080], "size": 12, "scene": "night", "seed": 44, "tagline": "Some roads only open in the cold." },
-    { "id": "f5", "title": "Paper Kites", "year": 2025, "res": [1920, 1080], "size": 9, "scene": "blue", "seed": 55, "tagline": "A summer that never let go." },
-    { "id": "f6", "title": "Saltwater Radio", "year": 2021, "res": [3840, 2160], "size": 27, "scene": "golden", "seed": 66, "tagline": "Broadcasting from the end of the pier." },
-    { "id": "f7", "title": "Low Orbit", "year": 2024, "res": [3840, 1600], "size": 35, "scene": "aurora", "seed": 77, "tagline": "Four hundred kilometres from home." },
-    { "id": "f8", "title": "Ember & Iron", "year": 2023, "res": [1920, 800], "size": 16, "scene": "sunset", "seed": 88, "tagline": "Forged in the valley of fire." },
-    { "id": "f9", "title": "The Glass Dunes", "year": 2025, "res": [3840, 2160], "size": 33, "scene": "dunes", "seed": 99, "tagline": "Nothing out here stays buried." },
-    { "id": "f10", "title": "Afterlight City", "year": 2022, "res": [1920, 1080], "size": 13, "scene": "city", "seed": 110, "tagline": "The night shift never ends." }
+    { "id": "f1", "title": "Tears of Steel", "year": 2012, "file": "Tears of Steel (2012).mov", "res": [3840, 1714], "size": 6.27, "duration": 734, "clip": "tears-of-steel" },
+    { "id": "f2", "title": "Sintel", "year": 2010, "file": "Sintel (2010).mkv", "res": [1920, 818], "size": 1.1, "duration": 888, "clip": "sintel" },
+    { "id": "f3", "title": "Big Buck Bunny", "year": 2008, "file": "Big Buck Bunny (2008).mov", "res": [1920, 1080], "size": 0.68, "duration": 596, "clip": "big-buck-bunny" },
+    { "id": "f4", "title": "Charge", "year": 2022, "file": "Charge (2022).mp4", "res": [3840, 1608], "size": 0.18, "duration": 263, "clip": "charge" },
+    { "id": "f5", "title": "Sprite Fright", "year": 2021, "file": "Sprite Fright (2021).mkv", "res": [2048, 858], "size": 0.16, "duration": 630, "clip": "sprite-fright" },
+    { "id": "f6", "title": "Elephants Dream", "year": 2006, "file": "Elephants Dream (2006).mov", "res": [1024, 576], "size": 0.31, "duration": 658, "clip": "elephants-dream" }
   ],
   "series": [
     {
@@ -44,7 +40,7 @@
   "watching": [
     { "film": "f1", "fraction": 0.42, "minutesAgo": 50 },
     { "series": "s1", "season": 2, "episode": 4, "fraction": 0.35, "minutesAgo": 12 },
-    { "film": "f7", "fraction": 0.71, "minutesAgo": 1500 }
+    { "film": "f2", "fraction": 0.71, "minutesAgo": 1500 }
   ],
   "photos": [
     { "dir": "Photos/2026/Coast Trip", "scenes": ["golden", "blue", "dusk", "lighthouse", "golden", "blue"], "day": 3 },
@@ -76,6 +72,7 @@
     { "path": "Documents/Garden layout.png", "size": 1.4, "day": 90 },
     { "path": "Backups/Laptop backup 2026-09.zip", "size": 42000, "day": 2 },
     { "path": "Backups/Phone photos 2026-08.zip", "size": 18400, "day": 30 },
+    { "path": "Movies/About these films.txt", "size": 0.001, "day": 14 },
     { "path": "Welcome.txt", "size": 0.002, "day": 400 }
   ],
   "profiles": [

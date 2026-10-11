@@ -410,8 +410,8 @@ const sample: {
       limit: 2,
       active: [
         {
-          device: 'Pixel 8',
-          file: 'Shows/Northwind/Season 01/Northwind S01E03.mkv',
+          device: "Maya's phone",
+          file: 'Movies/Tears of Steel (2012)/Tears of Steel (2012).mov',
           since: Math.floor(Date.now() / 1000) - 12 * 60,
         },
       ],
@@ -419,16 +419,16 @@ const sample: {
     library: {
       enabled: true,
       scanning: false,
-      films: 10,
+      films: 6,
       series: 4,
       uncertain: 0,
-      withArt: 14,
+      withArt: 6,
       posters: true,
-      hasKey: false,
+      hasKey: true,
       scannedAt: Math.floor(Date.now() / 1000) - 3600,
       videos: 8,
       music: 24,
-      photos: 32,
+      photos: 33,
     },
     profiles: [
       {

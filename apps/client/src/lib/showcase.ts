@@ -2,8 +2,10 @@
  * The preview's library, built from `showcase.json`.
  *
  * What the browser preview shows, and what Basalt's videos and screenshots
- * are made from. Every title, name and song is invented, so nothing here can
- * belong to anyone.
+ * are made from: the same drive as the demo home's real host, folder for
+ * folder, so a scene filmed on the phone and one filmed here agree. The films
+ * are Blender's open films (CC BY); every series, name and song is invented,
+ * so nothing here can belong to anyone.
  *
  * Pictures are optional. `?assets=<url>` points the preview at a folder of
  * them — posters, photos, thumbnails and short films, drawn by
@@ -56,14 +58,17 @@ export const HOST = data.host
 const pad = (n: number): string => String(n).padStart(2, '0')
 
 function filmPath(f: (typeof data.films)[number]): string {
-  const quality = f.res[0]! >= 3840 ? '2160p' : '1080p'
-  return `Films/${f.title} (${f.year})/${f.title.replace(/[^A-Za-z0-9]+/g, '.')}.${f.year}.${quality}.mkv`
+  return `Movies/${f.title} (${f.year})/${f.file}`
 }
 
+/** As marketing/demo_home.py names them on the demo drive. */
 function episodePath(show: (typeof data.series)[number], season: number, episode: number): string {
-  const dotted = show.title.replace(/[^A-Za-z0-9]+/g, '.')
-  return `Shows/${show.title}/Season ${pad(season)}/${dotted}.S${pad(season)}E${pad(episode)}.1080p.mkv`
+  const name = show.seasons.find((s) => s.number === season)?.episodes[episode - 1] ?? ''
+  return `TV Series/${show.title} (${show.year})/Season ${pad(season)}/${show.title} - S${pad(season)}E${pad(episode)} - ${name}.mp4`
 }
+
+/** About what an episode file on the demo drive weighs. */
+const EPISODE_BYTES = 0.085 * GB
 
 export function library(): LibraryItem[] {
   const films: LibraryItem[] = data.films.map((f, i) => ({
@@ -85,7 +90,7 @@ export function library(): LibraryItem[] {
     title: s.title,
     year: s.year,
     path: null,
-    size: s.seasons.reduce((n, season) => n + season.episodes.length, 0) * 2.6 * GB,
+    size: s.seasons.reduce((n, season) => n + season.episodes.length, 0) * EPISODE_BYTES,
     added: now() - DAY * (1 + i * 11),
     seasons: s.seasons.map((season) => ({
       number: season.number,
@@ -94,20 +99,23 @@ export function library(): LibraryItem[] {
         path: episodePath(s, season.number, e + 1),
         resolution: { width: 1920, height: 1080 },
         title,
-        size: 2.6 * GB,
+        size: EPISODE_BYTES,
         added: now() - DAY * (1 + i * 11),
       })),
     })),
     confidence: 99,
-    hasArt: true,
+    // Invented series have no poster anywhere, so the real host draws their
+    // covers from the title; the preview does the same.
+    hasArt: false,
   }))
   return [...films, ...series]
 }
 
 /** How long each thing runs, for the player and for resume points. */
 export function durationOf(path: string): number {
-  if (path.startsWith('Films/')) return 2 * 3600 + (path.length % 40) * 60
-  if (path.startsWith('Shows/')) return 48 * 60 + (path.length % 9) * 60
+  const film = data.films.find((f) => filmPath(f) === path)
+  if (film) return film.duration
+  if (path.startsWith('TV Series/')) return 41 * 60 + (path.length % 11) * 60
   if (path.startsWith('Music/')) return 180 + (path.length % 90)
   return 60 + (path.length % 120)
 }
@@ -183,8 +191,8 @@ function videoFiles(): MediaFile[] {
 function musicFiles(): MediaFile[] {
   return data.music.flatMap((album) =>
     album.tracks.map((title, i) => ({
-      path: `Music/${album.artist}/${album.album}/${pad(i + 1)} ${title}.flac`,
-      size: Math.round((24 + (i % 7) * 3) * MB),
+      path: `Music/${album.artist}/${album.album}/${pad(i + 1)} ${title}.mp3`,
+      size: Math.round((3.4 + (i % 7) * 0.4) * MB),
       mtime: now() - DAY * album.day,
     })),
   )
@@ -297,15 +305,14 @@ export function photoFor(path: string): string {
   return base ? `${base}photos/${slug(path)}.jpg` : ''
 }
 
-/** The film to show behind the player for a path: its own where it has one,
- *  and otherwise one drawn from its scene. Mirrors the footage assets.py
- *  renders. */
+/** The film to show behind the player for a path: a clip of the real film
+ *  for a film, and otherwise one drawn from its scene by assets.py. */
 export function footageFor(path: string): string | null {
   const base = showcaseAssets()
   if (!base) return null
   const film = data.films.find((f) => filmPath(f) === path)
-  if (film) return `${base}footage/${film.id === 'f1' ? 'column-zero' : film.scene}.mp4`
-  const show = data.series.find((s) => path.startsWith(`Shows/${s.title}/`))
+  if (film) return `${base}footage/${film.clip}.mp4`
+  const show = data.series.find((s) => path.startsWith(`TV Series/${s.title} (${s.year})/`))
   if (show) return `${base}footage/${show.id === 's1' ? 'signal-house' : show.scene}.mp4`
   const video = data.videos.find((v) => v.path === path)
   if (video) return `${base}footage/${video.scene}.mp4`
