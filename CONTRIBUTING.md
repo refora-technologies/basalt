@@ -92,8 +92,7 @@ work, please say so in the pull request before it is merged.
 
 ## Code of conduct
 
-Be kind and patient. Everyone here, from first-time users to long-time
-contributors, deserves a respectful answer. Disagree about ideas, never about
-people. Harassment, insults and discrimination of any kind aren't welcome, and
-comments or people who don't respect this may be removed. Tell us about a
-problem at reforatech@gmail.com.
+Be kind and patient, disagree about ideas rather than people, and respect
+everyone's privacy. The full [code of conduct](CODE_OF_CONDUCT.md) applies
+everywhere Basalt is discussed. Tell us about a problem at
+reforatech@gmail.com.
