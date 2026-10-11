@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Read the docs
+    url: https://basalt.reforatech.com/docs/
+    about: Setting up Basalt Host on Windows, Linux or Docker, pairing, the library, profiles, and troubleshooting.
+  - name: Ask a question
+    url: https://github.com/refora-technologies/basalt/discussions/categories/help-and-setup
+    about: Not sure how something works, or stuck setting up? Ask in Help and setup.
+  - name: Suggest an idea
+    url: https://github.com/refora-technologies/basalt/discussions/categories/ideas
+    about: New features and changes are discussed and voted on in Ideas.
+  - name: Report a security problem
+    url: https://github.com/refora-technologies/basalt/blob/main/SECURITY.md
+    about: Please report it privately by email, never in a public issue.

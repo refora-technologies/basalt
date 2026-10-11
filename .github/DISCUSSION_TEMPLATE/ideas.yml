@@ -1,0 +1,35 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping shape Basalt. Before posting, search Ideas in case someone has suggested it already. If they have, vote for it and add how you'd use it.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would it let you do?
+      description: Start with the problem or the wish, rather than the solution. What do you do today, and what gets in the way?
+      placeholder: My parents live elsewhere, and I'd like them to see the family photos on our drive.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: How do you imagine it working?
+      description: Optional. Sketches and examples from other apps are welcome.
+
+  - type: dropdown
+    id: where
+    attributes:
+      label: Which part of Basalt is it about?
+      multiple: true
+      options:
+        - Basalt Host
+        - Basalt on Windows
+        - Basalt on Android
+        - Files
+        - The library and player
+        - Profiles
+        - Setting up and pairing
+        - Something new

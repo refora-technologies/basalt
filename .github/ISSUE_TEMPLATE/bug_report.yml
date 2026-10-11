@@ -1,0 +1,96 @@
+name: Something isn't working
+description: Basalt or Basalt Host does something wrong, crashes, or doesn't do what the docs say.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. A few details now save a lot of back and forth later.
+
+        **Have a question rather than a fault?** Ask in [Help and setup](https://github.com/refora-technologies/basalt/discussions/categories/help-and-setup) instead, and check the [troubleshooting guide](https://basalt.reforatech.com/docs/help/troubleshooting/) first.
+        **Found a security problem?** Please don't report it here. Email reforatech@gmail.com instead, as [SECURITY.md](https://github.com/refora-technologies/basalt/blob/main/SECURITY.md) explains.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw, and what you expected to happen instead.
+      placeholder: When I choose my host on the phone, it says the host isn't running, but Basalt Host shows it is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can we make it happen?
+      description: The steps that lead to it, as exactly as you can. Say if it happens every time or only sometimes.
+      placeholder: |
+        1. Open Basalt on the phone
+        2. Choose the host
+        3. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: host
+    attributes:
+      label: Where does Basalt Host run?
+      options:
+        - Windows
+        - Linux desktop (.deb, .rpm or AppImage)
+        - Linux with no screen (server package)
+        - Docker
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: host-system
+    attributes:
+      label: The host computer's system
+      description: For example Windows 11, Ubuntu 24.04, Raspberry Pi OS (64-bit), Synology DSM 7.2 with Docker.
+    validations:
+      required: true
+
+  - type: input
+    id: host-version
+    attributes:
+      label: Basalt Host version
+      description: In Basalt Host's settings, under the version; or `sudo basalt-host status`; or `docker exec basalt basalt-host status`.
+      placeholder: "1.5.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device
+    attributes:
+      label: Which device shows the problem?
+      multiple: true
+      options:
+        - Basalt Host itself
+        - Basalt on Windows
+        - Basalt on Android
+        - Every device
+    validations:
+      required: true
+
+  - type: input
+    id: device-details
+    attributes:
+      label: The device and Basalt's version on it
+      description: For example Windows 10 with Basalt 1.5.0, or a Pixel 8 on Android 15 with Basalt 1.5.0. In Basalt, the version is under Settings (More on Android).
+
+  - type: textarea
+    id: log
+    attributes:
+      label: The host's log (optional, but very useful)
+      description: |
+        Where to find it: Windows, **open the log folder** in Basalt Host's settings; Linux desktop, `~/.config/basalt/host.log`; no screen, `journalctl -u basalt-host`; Docker, `docker logs basalt`.
+        **The log can contain the names of files and folders on your drive. Read it through and remove anything you'd rather not share.**
+      render: text
+
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else?
+      description: Screenshots, what you've already tried, or anything unusual about your network (a VPN, a mesh system, a guest network).
