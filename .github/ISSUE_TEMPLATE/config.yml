@@ -9,6 +9,3 @@ contact_links:
   - name: Suggest an idea
     url: https://github.com/refora-technologies/basalt/discussions/categories/ideas
     about: New features and changes are discussed and voted on in Ideas.
-  - name: Report a security problem
-    url: https://github.com/refora-technologies/basalt/blob/main/SECURITY.md
-    about: Please report it privately by email, never in a public issue.
