@@ -1,0 +1,39 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask anything about setting up or using Basalt. The [docs](https://basalt.reforatech.com/docs/) and the [troubleshooting guide](https://basalt.reforatech.com/docs/help/troubleshooting/) answer the most common questions, so they're worth a look first.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What are you trying to do, and where are you stuck?
+      placeholder: I installed Basalt Host on my Raspberry Pi, but my phone doesn't list it.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: host
+    attributes:
+      label: Where does Basalt Host run?
+      options:
+        - Windows
+        - Linux desktop
+        - Linux with no screen
+        - Docker
+        - I haven't installed it yet
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions and devices
+      description: Basalt Host's version and what it runs on, and the devices you use Basalt on.
+      placeholder: Basalt Host 1.5.0 on Ubuntu 24.04; Basalt 1.5.0 on a Pixel 8
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried?
+      description: Anything you've already checked, such as the firewall or pairing by address.

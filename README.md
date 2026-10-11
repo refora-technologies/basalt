@@ -393,6 +393,15 @@ update only over an app signed with the same key.
 emulator. After regenerating icons with `npx tauri icon`, run
 `python tools/make-icons.py` again so the Android project has its own.
 
+## Community
+
+- **Questions and help:** [Help and setup](https://github.com/refora-technologies/basalt/discussions/categories/help-and-setup)
+- **Ideas and votes:** [Ideas](https://github.com/refora-technologies/basalt/discussions/categories/ideas)
+- **Show your setup:** [Your setup](https://github.com/refora-technologies/basalt/discussions/categories/your-setup)
+- **Bugs:** [open an issue](https://github.com/refora-technologies/basalt/issues/new/choose)
+- **Security problems:** privately, as [SECURITY.md](SECURITY.md) explains
+- **Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md)
+
 ## License
 
 This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
