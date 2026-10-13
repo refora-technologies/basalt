@@ -17,8 +17,11 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
 WORKDIR /src
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/target \
+# The amd64 and arm64 builds run at once and share these caches: locked, so
+# they take turns. Shared, both unpacked the same crate at the same moment and
+# one failed with "File exists" (the first 1.5.1 run).
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/target,sharing=locked \
     case "$TARGETARCH" in \
         amd64) target=x86_64-unknown-linux-gnu ;; \
         arm64) target=aarch64-unknown-linux-gnu ;; \
