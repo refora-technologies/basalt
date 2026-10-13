@@ -403,18 +403,50 @@ impl Host {
         Ok(bytes)
     }
 
+    /// The films and episodes the library has filed, by path, with the
+    /// library's revision. Videos is every other video: these are in Movies
+    /// and TV Series already. Nothing while the library is off, when there is
+    /// no Movies or TV Series to find them in.
+    fn filed_videos(&self) -> (u64, std::collections::HashSet<String>) {
+        if !self.library_enabled() {
+            return (0, std::collections::HashSet::new());
+        }
+        let library = self.library.lock().expect("library lock");
+        let mut paths = std::collections::HashSet::new();
+        for item in &library.items {
+            paths.extend(item.path.iter().cloned());
+            for season in &item.seasons {
+                paths.extend(season.episodes.iter().map(|e| e.path.clone()));
+            }
+        }
+        (library.revision, paths)
+    }
+
     /// Answers a client, omitting the collections when it already has them.
+    ///
+    /// Videos leaves out what the library filed. The revision a client keeps
+    /// is the collections' and the library's together, so a film filed after
+    /// the walk still leaves Videos on every device.
     pub fn collections_response(
         &self,
         known_revision: u64,
     ) -> basalt_proto::msg::CollectionsResponse {
+        // The library first, and let go of: never both locks at once.
+        let (library_revision, filed) = self.filed_videos();
         let stored = self.collections.lock().expect("collections lock");
+        // Revision 0 is "never walked", which no client can already have.
+        let revision = match stored.revision {
+            0 => 0,
+            walked => walked.wrapping_shl(24) ^ library_revision,
+        };
         basalt_proto::msg::CollectionsResponse {
-            revision: stored.revision,
+            revision,
             scanning: self.is_scanning(),
-            // Revision 0 is "never walked", which no client can already have.
-            collections: (known_revision != stored.revision || stored.revision == 0)
-                .then(|| stored.collections.clone()),
+            collections: (known_revision != revision || revision == 0).then(|| {
+                let mut collections = stored.collections.clone();
+                collections.videos.retain(|v| !filed.contains(&v.path));
+                collections
+            }),
         }
     }
 
@@ -2238,10 +2270,13 @@ impl Host {
             )
         };
         let scanning = self.is_scanning();
+        // Counted as the devices list them: Videos without what was filed.
+        let (_, filed) = self.filed_videos();
         let (videos, music, photos) = {
             let stored = self.collections.lock().expect("collections lock");
             let c = &stored.collections;
-            (c.videos.len(), c.music.len(), c.photos.len())
+            let videos = c.videos.iter().filter(|v| !filed.contains(&v.path)).count();
+            (videos, c.music.len(), c.photos.len())
         };
         let library = self.library.lock().expect("library lock");
 
