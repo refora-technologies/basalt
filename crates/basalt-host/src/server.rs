@@ -2743,6 +2743,20 @@ fn watch_or_announce(root: &std::path::Path) -> Arc<crate::watch::Watch> {
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// How long a connection that has not signed in may wait between requests.
 const UNSIGNED_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// The same, once it has asked to pair: the device keeps this connection open
+/// while somebody reads the PIN off the host and types it in, which takes as
+/// long as it takes, up to the PIN running out.
+const PAIRING_IDLE_TIMEOUT: std::time::Duration =
+    basalt_net::pairing::PAIRING_WINDOW.saturating_add(std::time::Duration::from_secs(30));
+
+/// How long a connection not signed in may wait for its next request.
+fn unsigned_idle_timeout(pairing: bool) -> std::time::Duration {
+    if pairing {
+        PAIRING_IDLE_TIMEOUT
+    } else {
+        UNSIGNED_IDLE_TIMEOUT
+    }
+}
 /// The largest request taken from a connection that has not signed in. Saying
 /// hello, pairing and signing in each take a few kilobytes.
 const UNSIGNED_REQUEST_BYTES: u32 = 256 * 1024;
@@ -2907,6 +2921,8 @@ struct Session {
     /// A reply was cut off part-way, so the connection cannot carry another
     /// and ends once the request returns.
     hang_up: bool,
+    /// This connection asked to pair, and waits for its PIN.
+    pairing: bool,
 }
 
 impl Session {
@@ -2960,7 +2976,7 @@ where
             read_request_raw(&mut stream).await
         } else {
             match tokio::time::timeout(
-                UNSIGNED_IDLE_TIMEOUT,
+                unsigned_idle_timeout(session.pairing),
                 basalt_net::framing::read_request_limited(&mut stream, UNSIGNED_REQUEST_BYTES),
             )
             .await
@@ -3177,6 +3193,7 @@ where
                 },
             )
             .await?;
+            session.pairing = true;
         }
 
         Op::PairFinish => {

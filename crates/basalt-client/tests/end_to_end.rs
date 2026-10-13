@@ -209,6 +209,19 @@ async fn a_pin_pairs_exactly_one_device() {
     );
 }
 
+// Somebody walks to the other room to read the PIN. The device keeps its
+// connection open meanwhile, and the host, which closes idle connections that
+// have not signed in, must not close this one while its PIN is good.
+#[tokio::test]
+async fn a_pin_typed_slowly_still_pairs() {
+    let fixture = start_host().await;
+    let client = fixture.client();
+    client.begin_pairing(fixture.addr).await.unwrap();
+    let pin = fixture.displayed_pin().unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(35)).await;
+    client.finish_pairing(Some(&pin)).await.unwrap();
+}
+
 // The setting the user asked for: no PIN, and connecting is one click.
 #[tokio::test]
 async fn with_the_pin_switched_off_pairing_needs_nothing_typed() {
