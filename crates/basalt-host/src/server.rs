@@ -123,7 +123,9 @@ impl Host {
         // launch, with no window and nothing saying why. It now starts without
         // the drive, says so, and picks the drive up again when it returns.
         let vault = match &config.vault_path {
-            Some(path) => match Vault::open(path, &config.vault_name) {
+            Some(path) => match Vault::open(path, &config.vault_name)
+                .map(|v| v.keeping_out(config_path.parent().unwrap_or(std::path::Path::new("."))))
+            {
                 Ok(vault) => Some(Arc::new(vault)),
                 Err(e) => {
                     tracing::warn!(
@@ -1905,7 +1907,7 @@ impl Host {
     pub async fn set_vault(self: &Arc<Self>, path: &std::path::Path, name: &str) -> Result<()> {
         // Opened before anything is written, so choosing a drive that cannot
         // be read leaves the host exactly as it was.
-        let vault = Vault::open(path, name)?;
+        let vault = Vault::open(path, name)?.keeping_out(self.config_dir());
         {
             let mut config = self.config.lock().expect("config lock");
             config.vault_path = Some(path.to_path_buf());
@@ -2037,7 +2039,7 @@ impl Host {
                     }
                     host.replace_watch(None).await;
                 } else if present && lost {
-                    match Vault::open(&path, &name) {
+                    match Vault::open(&path, &name).map(|v| v.keeping_out(host.config_dir())) {
                         Ok(vault) => {
                             tracing::info!("{} is back", path.display());
                             host.attach(vault).await;
