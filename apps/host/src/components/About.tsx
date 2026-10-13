@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { AlertCircle, ArrowUpCircle, Check, ExternalLink, Github, Loader2 } from 'lucide-react'
+import { AlertCircle, ArrowUpCircle, Bug, Check, ChevronRight, Github, Globe, Loader2, Mail } from 'lucide-react'
 import { inTauri, type HostStatus, type UpdateView } from '@/lib/api'
 import { parseNotes } from '@/lib/notes'
 import { checkForUpdate, installUpdate, moving, progressLabel, setAutomaticUpdates, useUpdate } from '@/lib/updates'
@@ -9,6 +9,7 @@ import { Switch } from './ui/Switch'
 export const WEBSITE = 'https://basalt.reforatech.com'
 export const REPO = 'https://github.com/refora-technologies/basalt'
 export const ISSUES = `${REPO}/issues/new`
+export const FEEDBACK_EMAIL = 'reforatech@gmail.com'
 
 /**
  * Who made this, which version it is, and keeping it up to date.
@@ -88,20 +89,27 @@ export function About({
         </div>
       )}
 
-      <div className="mt-3.5 border-t border-line pt-3">
-        <div className="flex flex-wrap gap-2">
-          <Link href={WEBSITE} icon={<ExternalLink size={11} />}>
+      <div className="mt-3.5 border-t border-line pt-3.5">
+        {/* The same rows as the Basalt app's About. */}
+        <div className="overflow-hidden rounded-lg border border-line">
+          <Row icon={<Globe size={15} />} onClick={() => void openExternal(WEBSITE)}>
             Website
-          </Link>
-          <Link href={REPO} icon={<Github size={11} />}>
+          </Row>
+          <Row
+            icon={<Mail size={15} />}
+            onClick={() => void openExternal(feedbackLink(product, view?.version ?? '', platform))}
+          >
+            Send feedback
+          </Row>
+          <Row icon={<Bug size={15} />} onClick={() => void openExternal(ISSUES)}>
+            Report a problem on GitHub
+          </Row>
+          <Row icon={<Github size={15} />} onClick={() => void openExternal(REPO)}>
             Source code
-          </Link>
-          <Link href={ISSUES} icon={<AlertCircle size={11} />}>
-            Report a problem
-          </Link>
+          </Row>
         </div>
 
-        <p className="mt-3 font-mono text-[10px] text-textFaint">
+        <p className="mt-4 font-mono text-[10px] text-textFaint">
           {platform === 'linux' ? 'Linux' : platform === 'macos' ? 'macOS' : 'Windows'} · GPLv3 ·
           Refora Technologies
         </p>
@@ -241,24 +249,33 @@ function Line({
   )
 }
 
-function Link({
-  href,
+/** One row of links, as the Basalt app draws them. */
+function Row({
   icon,
+  onClick,
   children,
 }: {
-  href: string
   icon: React.ReactNode
+  onClick: () => void
   children: React.ReactNode
 }): React.JSX.Element {
   return (
     <button
-      onClick={() => void openExternal(href)}
-      className="flex items-center gap-1.5 rounded-md border border-line bg-ink2 px-2.5 py-1.5 text-[11px] text-textDim transition-colors hover:border-lineBright hover:text-text"
+      onClick={onClick}
+      className="flex w-full items-center gap-3 border-b border-line px-3.5 py-3 text-left text-[12.5px] text-textDim transition-colors last:border-b-0 hover:bg-white/[0.03] hover:text-text"
     >
-      {icon}
-      {children}
+      <span className="shrink-0 text-textFaint">{icon}</span>
+      <span className="min-w-0 flex-1">{children}</span>
+      <ChevronRight size={14} className="shrink-0 text-textFaint" />
     </button>
   )
+}
+
+/** An email to Refora, with the version and system filled in below the space to write. */
+function feedbackLink(product: string, version: string, platform: HostStatus['platform']): string {
+  const system = platform === 'linux' ? 'Linux' : platform === 'macos' ? 'macOS' : 'Windows'
+  const body = ['', '', '', '--', `${product} ${version}`.trim(), system].join('\n')
+  return `mailto:${FEEDBACK_EMAIL}?subject=${encodeURIComponent(`${product} feedback`)}&body=${encodeURIComponent(body)}`
 }
 
 /**
