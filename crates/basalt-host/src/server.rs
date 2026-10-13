@@ -2737,6 +2737,59 @@ fn watch_or_announce(root: &std::path::Path) -> Arc<crate::watch::Watch> {
     })
 }
 
+/// How long a connection may take over its TLS handshake.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a connection that has not signed in may wait between requests.
+const UNSIGNED_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// The largest request taken from a connection that has not signed in. Saying
+/// hello, pairing and signing in each take a few kilobytes.
+const UNSIGNED_REQUEST_BYTES: u32 = 256 * 1024;
+/// Connections not signed in yet, from one address and in all.
+const UNSIGNED_PER_ADDRESS: usize = 16;
+const UNSIGNED_IN_ALL: usize = 128;
+
+/// Connections that have not signed in yet, counted so that nobody on the
+/// network, paired or not, can open enough of them to stop real devices
+/// connecting. A connection holds its place until it signs in, or ends.
+#[derive(Default)]
+struct Unsigned {
+    by_address: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, usize>>,
+}
+
+/// One place among the connections not signed in; given back when dropped.
+struct UnsignedPlace {
+    gate: Arc<Unsigned>,
+    address: std::net::IpAddr,
+}
+
+impl Unsigned {
+    fn enter(self: &Arc<Self>, address: std::net::IpAddr) -> Option<UnsignedPlace> {
+        let mut by_address = self.by_address.lock().expect("unsigned lock");
+        let all: usize = by_address.values().sum();
+        let here = by_address.entry(address).or_default();
+        if *here >= UNSIGNED_PER_ADDRESS || all >= UNSIGNED_IN_ALL {
+            return None;
+        }
+        *here += 1;
+        Some(UnsignedPlace {
+            gate: Arc::clone(self),
+            address,
+        })
+    }
+}
+
+impl Drop for UnsignedPlace {
+    fn drop(&mut self) {
+        let mut by_address = self.gate.by_address.lock().expect("unsigned lock");
+        if let Some(count) = by_address.get_mut(&self.address) {
+            *count -= 1;
+            if *count == 0 {
+                by_address.remove(&self.address);
+            }
+        }
+    }
+}
+
 /// Accepts connections until the future is dropped.
 pub async fn serve(server: BoundServer) -> Result<()> {
     let BoundServer {
@@ -2802,23 +2855,31 @@ pub async fn serve(server: BoundServer) -> Result<()> {
         });
     }
 
+    let unsigned = Arc::new(Unsigned::default());
     loop {
         let (stream, peer) = listener.accept().await?;
+        // Too many waiting to sign in already, from here or in all: closed at
+        // once, before the handshake costs anything.
+        let Some(place) = unsigned.enter(peer.ip()) else {
+            tracing::debug!("too many connections not signed in; closed one from {peer}");
+            continue;
+        };
         basalt_net::socket::tune(&stream);
         let acceptor = acceptor.clone();
         let host = Arc::clone(&host);
 
         tokio::spawn(async move {
-            match acceptor.accept(stream).await {
-                Ok(tls) => {
+            match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+                Ok(Ok(tls)) => {
                     let binding = basalt_net::tls::server_binding(tls.get_ref().1);
-                    if let Err(e) = serve_connection(tls, host, binding).await {
+                    if let Err(e) = serve_connection(tls, host, binding, Some(place)).await {
                         tracing::debug!("connection from {peer} ended: {e}");
                     }
                 }
                 // A failed handshake is usually a port scanner or a browser
                 // finding the port, not a bug. Worth a line, not a warning.
-                Err(e) => tracing::debug!("tls handshake with {peer} failed: {e}"),
+                Ok(Err(e)) => tracing::debug!("tls handshake with {peer} failed: {e}"),
+                Err(_) => tracing::debug!("tls handshake with {peer} took too long"),
             }
         });
     }
@@ -2869,10 +2930,11 @@ impl Session {
     }
 }
 
-pub async fn serve_connection<S>(
+async fn serve_connection<S>(
     mut stream: S,
     host: Arc<Host>,
     binding: Option<[u8; basalt_trust::message::EXPORTER_BYTES]>,
+    mut unsigned: Option<UnsignedPlace>,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -2885,7 +2947,27 @@ where
     let mut counted: Option<String> = None;
 
     let result = loop {
-        let (raw, payload) = match read_request_raw(&mut stream).await {
+        // Signed in: its place among those waiting is given back.
+        if session.device.is_some() {
+            drop(unsigned.take());
+        }
+        // Until a device signs in, its requests are small and it may not sit
+        // idle: someone on the network who never pairs can hold neither memory
+        // nor connections for long.
+        let read = if session.device.is_some() {
+            read_request_raw(&mut stream).await
+        } else {
+            match tokio::time::timeout(
+                UNSIGNED_IDLE_TIMEOUT,
+                basalt_net::framing::read_request_limited(&mut stream, UNSIGNED_REQUEST_BYTES),
+            )
+            .await
+            {
+                Ok(read) => read,
+                Err(_) => break Ok(()),
+            }
+        };
+        let (raw, payload) = match read {
             Ok(v) => v,
             // A peer that goes away between requests is the normal end of a
             // pooled connection, not a failure.
