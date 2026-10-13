@@ -1,8 +1,9 @@
 import { useSyncExternalStore } from 'react'
 
 /**
- * Whether lists include Windows' hidden and system items — `desktop.ini`,
- * `Thumbs.db`, the Recycle Bin. Off by default, as in Explorer.
+ * Whether lists include what the host's system hides: Windows' hidden and
+ * system items (`desktop.ini`, `Thumbs.db`, the Recycle Bin), or names starting
+ * with a dot on Linux. Off by default, as in Explorer and Linux file managers.
  *
  * Kept on this device, and shared by everything that reads it, so the switch
  * in Settings and the folder on screen can never disagree.

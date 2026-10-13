@@ -77,8 +77,16 @@ export function HostHero(tools: Tools): React.JSX.Element {
       </button>
       <div className={cn('mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-textDim', phone ? 'text-[13px]' : 'text-[12px]')}>
         <span className="flex items-center gap-1.5">
-          <Presence on={status.serving} />
-          {status.serving ? 'Sharing' : 'Not sharing'}
+          {/* Running is not sharing: a host with no drive yet, or with its
+              drive unplugged, has nothing to show anyone. */}
+          <Presence on={status.serving && status.vault !== null && status.vault.available} />
+          {!status.serving
+            ? 'Not sharing'
+            : status.vault === null
+              ? 'No drive shared yet'
+              : status.vault.available
+                ? 'Sharing'
+                : 'Drive not connected'}
         </span>
         <span className="text-textFaint">·</span>
         <span>
@@ -224,7 +232,8 @@ function DrivePicker({ tools, onDone }: { tools: Tools; onDone: () => void }): R
     const trimmed = path.trim().replace(/[\\/]+$/, '') || path.trim()
     const name = trimmed.split(/[\\/]/).filter(Boolean).pop() ?? trimmed
     const ok = await confirm({
-      title: `Share ${name}?`,
+      // "Instead" only when something is shared already.
+      title: view.status.vault ? `Share ${name} instead?` : `Share ${name}?`,
       message: view.status.vault
         ? `Your devices see ${trimmed} in place of ${view.status.vault.name}. Nothing on either is moved or changed.`
         : `Your devices see ${trimmed}. Nothing in it is moved or changed.`,
@@ -237,7 +246,7 @@ function DrivePicker({ tools, onDone }: { tools: Tools; onDone: () => void }): R
     if (drive.path === current) return
     const name = drive.label || drive.name
     const ok = await confirm({
-      title: `Share ${name} instead?`,
+      title: view.status.vault ? `Share ${name} instead?` : `Share ${name}?`,
       message: view.status.vault
         ? `Your devices see ${name} in place of ${view.status.vault.name}. Nothing on either drive is moved or changed, and you can switch back at any time.`
         : `Your devices see ${name}. Nothing on it is moved or changed.`,

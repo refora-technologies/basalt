@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { joinPath, parentOf, toEntries, type DirEntry } from './api'
+import { joinPath, parentOf, placeName, toEntries, type DirEntry, type Status } from './api'
 
 function entry(name: string, kind: 'dir' | 'file', mtime: number): DirEntry {
   return { name, kind, size: 100, mtime, readonly: false }
@@ -69,5 +69,38 @@ describe('parentOf', () => {
   it('stops at the root', () => {
     expect(parentOf('a.mkv')).toBe('')
     expect(parentOf('')).toBe('')
+  })
+})
+
+describe('placeName', () => {
+  const status = (over: Partial<Status>): Status => ({
+    connected: true,
+    hostId: 'h',
+    hostName: 'LIVING-ROOM-PC',
+    vault: 'Vault',
+    writable: true,
+    address: null,
+    hasPaired: true,
+    deviceName: 'Phone',
+    ...over,
+  })
+
+  // The bug this guards: a host with no drive yet still has the placeholder
+  // drive name "Vault", and the profile screen asked "Who is using Vault?".
+  it('names the host while it shares no drive', () => {
+    expect(placeName(status({ hasDrive: false }), 'the drive')).toBe('LIVING-ROOM-PC')
+  })
+
+  it('names the drive once there is one', () => {
+    expect(placeName(status({ hasDrive: true, vault: 'Media Drive' }), 'the drive')).toBe('Media Drive')
+  })
+
+  it('names the drive when an older app shell does not say', () => {
+    expect(placeName(status({ vault: 'Media Drive' }), 'the drive')).toBe('Media Drive')
+  })
+
+  it('falls back when there is nothing to go on', () => {
+    expect(placeName(null, 'the drive')).toBe('the drive')
+    expect(placeName(status({ hasDrive: false, hostName: null }), 'Basalt')).toBe('Basalt')
   })
 })

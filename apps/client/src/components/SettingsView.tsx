@@ -105,7 +105,7 @@ export function SettingsView({
         <Section icon={FolderOpen} title="Files" hint="What folders show">
           <Switch
             label="Show hidden files"
-            description="Files the host’s computer normally hides, such as desktop.ini and the Recycle Bin."
+            description="Files the host’s computer normally hides, like desktop.ini on Windows or names starting with a dot on Linux."
             checked={showHidden}
             onChange={setShowHidden}
             // The same inset as every other row in Settings.
