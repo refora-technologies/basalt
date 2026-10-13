@@ -32,6 +32,9 @@ pub struct Vault {
     root: PathBuf,
     name: String,
     writable: bool,
+    /// Folders inside the drive no device may reach: the host's own settings,
+    /// when the drive holds them. Canonical, like the root.
+    kept_out: Vec<PathBuf>,
 }
 
 impl Vault {
@@ -55,7 +58,44 @@ impl Vault {
             root: canonical,
             name: name.into(),
             writable: true,
+            kept_out: Vec::new(),
         })
+    }
+
+    /// Keeps devices out of `dir` if it is inside the drive.
+    ///
+    /// For the host's own settings: share a home folder on Linux, or a whole
+    /// drive on Windows, and they are in it. There they hold the host's keys
+    /// and its list of devices, so a device that could read them could pass
+    /// itself off as the host, and one that could change them could make
+    /// itself a manager. Nothing in the folder can be read, listed, written,
+    /// moved, copied or removed, nor any folder that holds it.
+    pub fn keeping_out(mut self, dir: &Path) -> Self {
+        let canonical = dir.canonicalize().ok().or_else(|| {
+            let parent = dir.parent()?.canonicalize().ok()?;
+            Some(parent.join(dir.file_name()?))
+        });
+        if let Some(canonical) = canonical
+            && canonical.starts_with(&self.root)
+        {
+            self.kept_out.push(canonical);
+        }
+        self
+    }
+
+    /// Whether `path` is, or holds, a folder kept out.
+    fn holds_kept_out(&self, path: &Path) -> bool {
+        self.kept_out.iter().any(|kept| kept.starts_with(path))
+    }
+
+    fn refuse_if_holds_kept_out(&self, path: &Path, label: &str) -> Result<()> {
+        if self.holds_kept_out(path) {
+            Err(HostError::Denied(format!(
+                "{label} holds Basalt Host’s own settings, which can’t be changed from a device"
+            )))
+        } else {
+            Ok(())
+        }
     }
 
     pub fn read_only(mut self) -> Self {
@@ -135,13 +175,17 @@ impl Vault {
 
     /// Rejects anything that resolved outside the vault.
     fn contain(&self, resolved: &Path, label: &str) -> Result<()> {
-        if resolved.starts_with(&self.root) {
-            Ok(())
-        } else {
-            Err(HostError::Denied(format!(
+        if !resolved.starts_with(&self.root) {
+            return Err(HostError::Denied(format!(
                 "{label} points outside the drive"
-            )))
+            )));
         }
+        if self.kept_out.iter().any(|kept| resolved.starts_with(kept)) {
+            return Err(HostError::Denied(format!(
+                "{label} is Basalt Host’s own settings, which devices can’t open"
+            )));
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -158,6 +202,10 @@ impl Vault {
             // containing a file Windows has locked is common, and a directory
             // that refuses to open at all is much worse than one missing a row.
             let Ok(item) = item else { continue };
+            // The host's own settings are not shown, as well as not opened.
+            if self.kept_out.contains(&item.path()) {
+                continue;
+            }
             let Ok(meta) = item.metadata() else { continue };
             let Ok(name) = item.file_name().into_string() else {
                 continue;
@@ -274,6 +322,7 @@ impl Vault {
     pub fn rename(&self, from: &str, to: &str) -> Result<()> {
         self.require_writable()?;
         let source = self.resolve(from)?;
+        self.refuse_if_holds_kept_out(&source, from)?;
         let target = self.resolve_new(to)?;
         // On a drive that ignores case, `IMG_001.jpg` already "exists" when
         // renaming `IMG_001.JPG` to it: it is the same file. That is a rename
@@ -295,6 +344,7 @@ impl Vault {
     pub fn copy(&self, from: &str, to: &str) -> Result<()> {
         self.require_writable()?;
         let source = self.resolve(from)?;
+        self.refuse_if_holds_kept_out(&source, from)?;
         let target = self.resolve_new(to)?;
 
         if target.exists() {
@@ -329,6 +379,7 @@ impl Vault {
                 "the top of the drive can’t be removed".into(),
             ));
         }
+        self.refuse_if_holds_kept_out(&path, rel)?;
 
         let meta = std::fs::metadata(&path).map_err(|e| from_io(rel, e))?;
         if !meta.is_dir() {
@@ -377,12 +428,21 @@ fn copy_tree(source: &Path, target: &Path) -> std::io::Result<()> {
             // reason a listing tolerates one: a single locked file in a large
             // folder should not mean nothing gets copied.
             let Ok(entry) = entry else { continue };
-            let Ok(meta) = entry.metadata() else { continue };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
             let destination = to.join(entry.file_name());
 
-            if meta.is_dir() {
+            // Links and junctions are left behind, not followed: one pointing
+            // out of the drive would copy what it points at into the drive,
+            // where any device could read it, and a junction pointing back up
+            // the tree would copy until the disk was full.
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
                 pending.push((entry.path(), destination));
-            } else {
+            } else if kind.is_file() {
                 std::fs::copy(entry.path(), destination)?;
             }
         }
@@ -554,6 +614,104 @@ mod tests {
         assert!(!t.vault.is_hidden_path("notes.txt"));
         // Gone, or never there: not hidden, and not an error.
         assert!(!t.vault.is_hidden_path("films/missing.mkv"));
+    }
+
+    // The attack this guards: a home folder shared on Linux holds
+    // ~/.config/basalt, with the host's keys in it, and a device that could
+    // write there could make itself a manager.
+    #[test]
+    fn the_hosts_own_settings_are_out_of_reach() {
+        let mut t = temp_vault();
+        let settings = t.dir.join(".config").join("basalt");
+        std::fs::create_dir_all(&settings).unwrap();
+        std::fs::write(settings.join("host.json"), b"{\"key_der\": \"secret\"}").unwrap();
+        t.vault = t.vault.clone().keeping_out(&settings);
+
+        assert!(t.vault.resolve(".config/basalt/host.json").is_err(), "read");
+        assert!(t.vault.list(".config/basalt").is_err(), "list");
+        assert!(
+            t.vault
+                .list(".config")
+                .unwrap()
+                .iter()
+                .all(|e| e.name != "basalt"),
+            "not even shown"
+        );
+        assert!(
+            t.vault.resolve_new(".config/basalt/new.json").is_err(),
+            "write"
+        );
+        assert!(t.vault.mkdir(".config/basalt/x").is_err(), "make a folder");
+        // Nor any folder that holds it: moving, copying or removing `.config`
+        // would carry the keys off, or lose them.
+        assert!(t.vault.rename(".config", "moved").is_err(), "move");
+        assert!(t.vault.copy(".config", "copied").is_err(), "copy");
+        assert!(t.vault.remove(".config", true).is_err(), "remove");
+        assert!(settings.join("host.json").exists());
+
+        // Everything else is as it was.
+        assert!(t.vault.resolve("notes.txt").is_ok());
+        assert!(t.vault.list("films").is_ok());
+    }
+
+    #[test]
+    fn settings_outside_the_drive_change_nothing() {
+        let outside = std::env::temp_dir().join(format!("basalt-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        let mut t = temp_vault();
+        t.vault = t.vault.clone().keeping_out(&outside);
+        assert!(t.vault.kept_out.is_empty());
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    // The attack this guards: a link in the drive to a file outside it, then
+    // the folder holding the link copied, so the file lands in the drive.
+    #[cfg(unix)]
+    #[test]
+    fn copying_a_folder_leaves_links_behind() {
+        let t = temp_vault();
+        let outside = std::env::temp_dir().join(format!("basalt-outside-{}", std::process::id()));
+        std::fs::write(&outside, b"not for the drive").unwrap();
+        std::fs::create_dir_all(t.dir.join("box")).unwrap();
+        std::fs::write(t.dir.join("box/real.txt"), b"in the drive").unwrap();
+        std::os::unix::fs::symlink(&outside, t.dir.join("box/link.txt")).unwrap();
+
+        t.vault.copy("box", "box copy").unwrap();
+        assert!(t.dir.join("box copy/real.txt").exists());
+        assert!(
+            !t.dir.join("box copy/link.txt").exists(),
+            "the link was followed"
+        );
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    // On Windows, a junction back up the tree: followed, the copy never ends.
+    #[cfg(windows)]
+    #[test]
+    fn copying_a_folder_does_not_follow_a_junction_round_in_circles() {
+        let t = temp_vault();
+        std::fs::create_dir_all(t.dir.join("box")).unwrap();
+        std::fs::write(t.dir.join("box/real.txt"), b"in the drive").unwrap();
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(t.dir.join("box").join("loop"))
+            .arg(t.dir.join("box"))
+            .output()
+            .unwrap();
+        assert!(
+            made.status.success(),
+            "{}",
+            String::from_utf8_lossy(&made.stderr)
+        );
+
+        t.vault.copy("box", "box copy").unwrap();
+        assert!(t.dir.join("box copy/real.txt").exists());
+        assert!(
+            !t.dir.join("box copy/loop").exists(),
+            "the junction was followed"
+        );
+        // The junction itself, not what it points at, before the drive goes.
+        let _ = std::fs::remove_dir(t.dir.join("box").join("loop"));
     }
 
     fn temp_vault() -> TempVault {

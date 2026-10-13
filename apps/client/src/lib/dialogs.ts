@@ -17,7 +17,7 @@ export async function pickSaveLocation(
 ): Promise<string | null> {
   if (!inTauri()) return null
   const { save } = await import('@tauri-apps/plugin-dialog')
-  return (await save({ defaultPath: defaultName })) ?? null
+  return (await save({ defaultPath: safeFileName(defaultName) })) ?? null
 }
 
 /** A folder to download several files into. */
@@ -130,10 +130,24 @@ export function baseName(path: string): string {
   return cut === -1 ? path : path.slice(cut + 1)
 }
 
-/** Joins a local path with a name, keeping the platform's separator. */
+/** Joins a local folder with a name from the drive, which is made safe first. */
 export function localJoin(dir: string, name: string): string {
   const sep = dir.includes('\\') ? '\\' : '/'
-  return dir.endsWith(sep) ? `${dir}${name}` : `${dir}${sep}${name}`
+  const safe = safeFileName(name)
+  return dir.endsWith(sep) ? `${dir}${safe}` : `${dir}${sep}${safe}`
+}
+
+/**
+ * A name from the drive, safe for a file on this computer: what comes after
+ * the last slash of either kind, without the characters Windows refuses, and
+ * never `.` or `..`. A host could name a file `..\..\Startup\run.bat`, and
+ * joined to a folder as it stood, that would land outside the folder.
+ */
+export function safeFileName(name: string): string {
+  const last = name.split(/[\\/]/).pop() ?? name
+  // eslint-disable-next-line no-control-regex
+  const cleaned = last.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/, '').trimStart()
+  return cleaned === '' || /^\.+$/.test(cleaned) ? 'file' : cleaned
 }
 
 /**

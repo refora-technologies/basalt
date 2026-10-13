@@ -48,10 +48,10 @@ import { NoDrive } from '@/components/NoDrive'
 import { PropertiesDetails } from '@/components/PropertiesPanel'
 import { About } from '@/components/About'
 import { WhatsNew } from '@/components/WhatsNew'
-import { ImportantNotice } from '@/components/ImportantNotice'
+import { ImportantNotice, noteFirstStatus } from '@/components/ImportantNotice'
 import type { NavKey } from '@/components/Sidebar'
 import type { Entry } from '@/components/FileList'
-import { api, isFinished, parentOf } from '@/lib/api'
+import { api, isFinished, parentOf, placeName } from '@/lib/api'
 import { android, applyInsets, type PhoneFile } from '@/lib/android'
 import { profileColor } from '@/lib/useIdentity'
 import { fileToEntry } from '@/lib/useCollections'
@@ -115,6 +115,8 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
 
   // Someone who has used Basalt already knows what it is: forgetting a drive
   // later goes straight back to the drive list, not to the introduction.
+  // A device new to Basalt is spared the notice about updating.
+  useEffect(() => noteFirstStatus(vault.status), [vault.status])
   const everPaired = vault.status?.hasPaired === true
   useEffect(() => {
     if (!everPaired) return
@@ -169,7 +171,7 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
       <Safe>
         <div className="h-full overflow-y-auto">
           <ProfileGate
-            vaultName={vault.status.vault ?? 'the drive'}
+            vaultName={placeName(vault.status, 'the drive')}
             deviceName={vault.status.deviceName}
             profiles={identity.profiles}
             lastProfile={identity.state.lastProfile}
@@ -758,9 +760,7 @@ function TopBar({
     tab === 'files'
       ? inFolder
         ? vault.dir.split('/').pop()!
-        : vault.status?.hasDrive === false
-          ? (vault.status.hostName ?? 'Basalt')
-          : (vault.status?.vault ?? 'Basalt')
+        : placeName(vault.status, 'Basalt')
       : tab === 'library'
         ? 'Library'
         : tab === 'recent'
@@ -1567,7 +1567,7 @@ function MoreScreen({
         <Card>
           <Switch
             label="Show hidden files"
-            description="Files the host’s computer normally hides, such as desktop.ini and the Recycle Bin."
+            description="Files the host’s computer normally hides, like desktop.ini on Windows or names starting with a dot on Linux."
             checked={showHidden}
             onChange={setShowHidden}
             className="py-0"

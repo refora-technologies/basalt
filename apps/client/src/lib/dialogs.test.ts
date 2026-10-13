@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { folderUnder } from './dialogs'
+import { folderUnder, localJoin, safeFileName } from './dialogs'
 
 /**
  * A stand-in for the bits of the DOM `folderUnder` actually touches.
@@ -55,5 +55,23 @@ describe('folderUnder', () => {
     // an upload into a folder nobody pointed at.
     stubDocument({ '-1,-1': 'Wrong' })
     expect(folderUnder(-1, -1)).toBeNull()
+  })
+})
+
+describe('names from the drive', () => {
+  // The attack this guards: a rogue host names a file so that, joined to the
+  // folder a download goes to, it lands somewhere else on this computer.
+  it('cannot climb out of the folder they are saved in', () => {
+    expect(localJoin('C:\\Users\\Maya\\Downloads', '..\\..\\Startup\\run.bat')).toBe(
+      'C:\\Users\\Maya\\Downloads\\run.bat',
+    )
+    expect(localJoin('/home/maya/Downloads', '../../.bashrc')).toBe('/home/maya/Downloads/.bashrc')
+    expect(safeFileName('..')).toBe('file')
+    expect(safeFileName('C:evil.txt')).toBe('C_evil.txt')
+  })
+
+  it('leave ordinary names alone', () => {
+    expect(safeFileName('Sintel (2010).mkv')).toBe('Sintel (2010).mkv')
+    expect(localJoin('C:\\Downloads\\', 'Recipes.pdf')).toBe('C:\\Downloads\\Recipes.pdf')
   })
 })

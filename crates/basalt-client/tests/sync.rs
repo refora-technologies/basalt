@@ -386,6 +386,40 @@ async fn switching_the_library_on_finds_films_and_series() {
     assert_eq!(show.seasons[0].episodes.len(), 2);
 }
 
+/// Videos is every video that is not a film or an episode: those are in
+/// Movies and TV Series. The phone listed the films in Videos too, with
+/// blank pictures, until the host left them out.
+#[tokio::test]
+async fn videos_leave_out_what_the_library_filed() {
+    let fixture = start_host().await;
+    put_feature(&fixture.vault_path("films/Arrival.2016.mkv"));
+    put_feature(&fixture.vault_path("shows/Breaking Bad/Season 01/S01E01.mkv"));
+    let beach = fixture.vault_path("Home Videos/Beach day.mp4");
+    std::fs::create_dir_all(beach.parent().unwrap()).unwrap();
+    std::fs::write(&beach, b"a short clip, not a film").unwrap();
+
+    let client = fixture.paired_client().await;
+    fixture.host.set_library_enabled(true).await.unwrap();
+    assert_eq!(library_of(&client, 2).await.len(), 2);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut videos = Vec::new();
+    while std::time::Instant::now() < deadline {
+        let response = client.collections(0).await.expect("the collections answer");
+        if !response.scanning {
+            videos = response
+                .collections
+                .map(|c| c.videos.into_iter().map(|v| v.path).collect::<Vec<_>>())
+                .unwrap_or_default();
+            if videos == ["Home Videos/Beach day.mp4"] {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(videos, vec!["Home Videos/Beach day.mp4".to_string()]);
+}
+
 /// The reindexing asked for by name: what is gone has to go.
 #[tokio::test]
 async fn a_deleted_film_leaves_the_library_on_the_next_scan() {

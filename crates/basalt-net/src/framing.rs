@@ -55,17 +55,41 @@ pub async fn read_request_raw<R>(r: &mut R) -> Result<(u8, Vec<u8>)>
 where
     R: AsyncRead + Unpin + ?Sized,
 {
+    read_request_limited(r, MAX_REQUEST_BYTES).await
+}
+
+/// As [`read_request_raw`], refusing a request declared larger than `limit`.
+///
+/// The payload grows as its bytes arrive, rather than being set aside in full
+/// when the size is read: a peer that declares 64 MB and then sends nothing
+/// would otherwise hold 64 MB of the host's memory for each connection it
+/// opened, and a few hundred of them, from anyone on the network, ran the
+/// host out of memory.
+pub async fn read_request_limited<R>(r: &mut R, limit: u32) -> Result<(u8, Vec<u8>)>
+where
+    R: AsyncRead + Unpin + ?Sized,
+{
     let mut head = [0u8; 5];
     r.read_exact(&mut head).await?;
     let op = head[0];
     let len = u32::from_le_bytes([head[1], head[2], head[3], head[4]]);
-    if len > MAX_REQUEST_BYTES {
+    let limit = limit.min(MAX_REQUEST_BYTES);
+    if len > limit {
         return Err(NetError::Protocol(format!(
-            "request declares {len} bytes, over the {MAX_REQUEST_BYTES} byte limit"
+            "request declares {len} bytes, over the {limit} byte limit"
         )));
     }
-    let mut payload = vec![0u8; len as usize];
-    r.read_exact(&mut payload).await?;
+    let mut payload = Vec::with_capacity((len as usize).min(64 * 1024));
+    (&mut *r)
+        .take(u64::from(len))
+        .read_to_end(&mut payload)
+        .await?;
+    if payload.len() != len as usize {
+        return Err(NetError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "the request ended early",
+        )));
+    }
     Ok((op, payload))
 }
 
@@ -185,6 +209,41 @@ where
 mod tests {
     use super::*;
     use basalt_proto::msg::ListRequest;
+
+    fn header(op: u8, len: u32) -> Vec<u8> {
+        let mut head = vec![op];
+        head.extend_from_slice(&len.to_le_bytes());
+        head
+    }
+
+    #[tokio::test]
+    async fn a_request_over_the_limit_is_refused_before_its_bytes() {
+        let bytes = header(Op::Hello as u8, 300 * 1024);
+        let refused = read_request_limited(&mut bytes.as_slice(), 256 * 1024).await;
+        assert!(matches!(refused, Err(NetError::Protocol(_))), "{refused:?}");
+    }
+
+    // The attack this guards: a header claiming 64 MB and nothing after it,
+    // from many connections at once. The payload grows with what arrives, so
+    // a request that stops short costs only what it sent, and is an error.
+    #[tokio::test]
+    async fn a_request_that_stops_short_is_an_error() {
+        let mut bytes = header(Op::Hello as u8, 64 * 1024 * 1024);
+        bytes.extend_from_slice(b"only this much");
+        let read = read_request_raw(&mut bytes.as_slice()).await;
+        assert!(matches!(read, Err(NetError::Io(_))), "{read:?}");
+    }
+
+    #[tokio::test]
+    async fn a_request_within_the_limit_is_read_whole() {
+        let mut bytes = header(Op::Ping as u8, 5);
+        bytes.extend_from_slice(b"hello");
+        let (op, payload) = read_request_limited(&mut bytes.as_slice(), 16)
+            .await
+            .unwrap();
+        assert_eq!(op, Op::Ping as u8);
+        assert_eq!(payload, b"hello");
+    }
 
     #[tokio::test]
     async fn a_request_round_trips() {

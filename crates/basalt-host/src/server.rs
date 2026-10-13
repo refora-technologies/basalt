@@ -123,7 +123,9 @@ impl Host {
         // launch, with no window and nothing saying why. It now starts without
         // the drive, says so, and picks the drive up again when it returns.
         let vault = match &config.vault_path {
-            Some(path) => match Vault::open(path, &config.vault_name) {
+            Some(path) => match Vault::open(path, &config.vault_name)
+                .map(|v| v.keeping_out(config_path.parent().unwrap_or(std::path::Path::new("."))))
+            {
                 Ok(vault) => Some(Arc::new(vault)),
                 Err(e) => {
                     tracing::warn!(
@@ -403,18 +405,50 @@ impl Host {
         Ok(bytes)
     }
 
+    /// The films and episodes the library has filed, by path, with the
+    /// library's revision. Videos is every other video: these are in Movies
+    /// and TV Series already. Nothing while the library is off, when there is
+    /// no Movies or TV Series to find them in.
+    fn filed_videos(&self) -> (u64, std::collections::HashSet<String>) {
+        if !self.library_enabled() {
+            return (0, std::collections::HashSet::new());
+        }
+        let library = self.library.lock().expect("library lock");
+        let mut paths = std::collections::HashSet::new();
+        for item in &library.items {
+            paths.extend(item.path.iter().cloned());
+            for season in &item.seasons {
+                paths.extend(season.episodes.iter().map(|e| e.path.clone()));
+            }
+        }
+        (library.revision, paths)
+    }
+
     /// Answers a client, omitting the collections when it already has them.
+    ///
+    /// Videos leaves out what the library filed. The revision a client keeps
+    /// is the collections' and the library's together, so a film filed after
+    /// the walk still leaves Videos on every device.
     pub fn collections_response(
         &self,
         known_revision: u64,
     ) -> basalt_proto::msg::CollectionsResponse {
+        // The library first, and let go of: never both locks at once.
+        let (library_revision, filed) = self.filed_videos();
         let stored = self.collections.lock().expect("collections lock");
+        // Revision 0 is "never walked", which no client can already have.
+        let revision = match stored.revision {
+            0 => 0,
+            walked => walked.wrapping_shl(24) ^ library_revision,
+        };
         basalt_proto::msg::CollectionsResponse {
-            revision: stored.revision,
+            revision,
             scanning: self.is_scanning(),
-            // Revision 0 is "never walked", which no client can already have.
-            collections: (known_revision != stored.revision || stored.revision == 0)
-                .then(|| stored.collections.clone()),
+            collections: (known_revision != revision || revision == 0).then(|| {
+                let mut collections = stored.collections.clone();
+                collections.videos.retain(|v| !filed.contains(&v.path));
+                collections
+            }),
         }
     }
 
@@ -1873,7 +1907,7 @@ impl Host {
     pub async fn set_vault(self: &Arc<Self>, path: &std::path::Path, name: &str) -> Result<()> {
         // Opened before anything is written, so choosing a drive that cannot
         // be read leaves the host exactly as it was.
-        let vault = Vault::open(path, name)?;
+        let vault = Vault::open(path, name)?.keeping_out(self.config_dir());
         {
             let mut config = self.config.lock().expect("config lock");
             config.vault_path = Some(path.to_path_buf());
@@ -2005,7 +2039,7 @@ impl Host {
                     }
                     host.replace_watch(None).await;
                 } else if present && lost {
-                    match Vault::open(&path, &name) {
+                    match Vault::open(&path, &name).map(|v| v.keeping_out(host.config_dir())) {
                         Ok(vault) => {
                             tracing::info!("{} is back", path.display());
                             host.attach(vault).await;
@@ -2238,10 +2272,13 @@ impl Host {
             )
         };
         let scanning = self.is_scanning();
+        // Counted as the devices list them: Videos without what was filed.
+        let (_, filed) = self.filed_videos();
         let (videos, music, photos) = {
             let stored = self.collections.lock().expect("collections lock");
             let c = &stored.collections;
-            (c.videos.len(), c.music.len(), c.photos.len())
+            let videos = c.videos.iter().filter(|v| !filed.contains(&v.path)).count();
+            (videos, c.music.len(), c.photos.len())
         };
         let library = self.library.lock().expect("library lock");
 
@@ -2702,6 +2739,73 @@ fn watch_or_announce(root: &std::path::Path) -> Arc<crate::watch::Watch> {
     })
 }
 
+/// How long a connection may take over its TLS handshake.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a connection that has not signed in may wait between requests.
+const UNSIGNED_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// The same, once it has asked to pair: the device keeps this connection open
+/// while somebody reads the PIN off the host and types it in, which takes as
+/// long as it takes, up to the PIN running out.
+const PAIRING_IDLE_TIMEOUT: std::time::Duration =
+    basalt_net::pairing::PAIRING_WINDOW.saturating_add(std::time::Duration::from_secs(30));
+
+/// How long a connection not signed in may wait for its next request.
+fn unsigned_idle_timeout(pairing: bool) -> std::time::Duration {
+    if pairing {
+        PAIRING_IDLE_TIMEOUT
+    } else {
+        UNSIGNED_IDLE_TIMEOUT
+    }
+}
+/// The largest request taken from a connection that has not signed in. Saying
+/// hello, pairing and signing in each take a few kilobytes.
+const UNSIGNED_REQUEST_BYTES: u32 = 256 * 1024;
+/// Connections not signed in yet, from one address and in all.
+const UNSIGNED_PER_ADDRESS: usize = 16;
+const UNSIGNED_IN_ALL: usize = 128;
+
+/// Connections that have not signed in yet, counted so that nobody on the
+/// network, paired or not, can open enough of them to stop real devices
+/// connecting. A connection holds its place until it signs in, or ends.
+#[derive(Default)]
+struct Unsigned {
+    by_address: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, usize>>,
+}
+
+/// One place among the connections not signed in; given back when dropped.
+struct UnsignedPlace {
+    gate: Arc<Unsigned>,
+    address: std::net::IpAddr,
+}
+
+impl Unsigned {
+    fn enter(self: &Arc<Self>, address: std::net::IpAddr) -> Option<UnsignedPlace> {
+        let mut by_address = self.by_address.lock().expect("unsigned lock");
+        let all: usize = by_address.values().sum();
+        let here = by_address.entry(address).or_default();
+        if *here >= UNSIGNED_PER_ADDRESS || all >= UNSIGNED_IN_ALL {
+            return None;
+        }
+        *here += 1;
+        Some(UnsignedPlace {
+            gate: Arc::clone(self),
+            address,
+        })
+    }
+}
+
+impl Drop for UnsignedPlace {
+    fn drop(&mut self) {
+        let mut by_address = self.gate.by_address.lock().expect("unsigned lock");
+        if let Some(count) = by_address.get_mut(&self.address) {
+            *count -= 1;
+            if *count == 0 {
+                by_address.remove(&self.address);
+            }
+        }
+    }
+}
+
 /// Accepts connections until the future is dropped.
 pub async fn serve(server: BoundServer) -> Result<()> {
     let BoundServer {
@@ -2767,23 +2871,31 @@ pub async fn serve(server: BoundServer) -> Result<()> {
         });
     }
 
+    let unsigned = Arc::new(Unsigned::default());
     loop {
         let (stream, peer) = listener.accept().await?;
+        // Too many waiting to sign in already, from here or in all: closed at
+        // once, before the handshake costs anything.
+        let Some(place) = unsigned.enter(peer.ip()) else {
+            tracing::debug!("too many connections not signed in; closed one from {peer}");
+            continue;
+        };
         basalt_net::socket::tune(&stream);
         let acceptor = acceptor.clone();
         let host = Arc::clone(&host);
 
         tokio::spawn(async move {
-            match acceptor.accept(stream).await {
-                Ok(tls) => {
+            match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+                Ok(Ok(tls)) => {
                     let binding = basalt_net::tls::server_binding(tls.get_ref().1);
-                    if let Err(e) = serve_connection(tls, host, binding).await {
+                    if let Err(e) = serve_connection(tls, host, binding, Some(place)).await {
                         tracing::debug!("connection from {peer} ended: {e}");
                     }
                 }
                 // A failed handshake is usually a port scanner or a browser
                 // finding the port, not a bug. Worth a line, not a warning.
-                Err(e) => tracing::debug!("tls handshake with {peer} failed: {e}"),
+                Ok(Err(e)) => tracing::debug!("tls handshake with {peer} failed: {e}"),
+                Err(_) => tracing::debug!("tls handshake with {peer} took too long"),
             }
         });
     }
@@ -2809,6 +2921,8 @@ struct Session {
     /// A reply was cut off part-way, so the connection cannot carry another
     /// and ends once the request returns.
     hang_up: bool,
+    /// This connection asked to pair, and waits for its PIN.
+    pairing: bool,
 }
 
 impl Session {
@@ -2834,10 +2948,11 @@ impl Session {
     }
 }
 
-pub async fn serve_connection<S>(
+async fn serve_connection<S>(
     mut stream: S,
     host: Arc<Host>,
     binding: Option<[u8; basalt_trust::message::EXPORTER_BYTES]>,
+    mut unsigned: Option<UnsignedPlace>,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -2850,7 +2965,27 @@ where
     let mut counted: Option<String> = None;
 
     let result = loop {
-        let (raw, payload) = match read_request_raw(&mut stream).await {
+        // Signed in: its place among those waiting is given back.
+        if session.device.is_some() {
+            drop(unsigned.take());
+        }
+        // Until a device signs in, its requests are small and it may not sit
+        // idle: someone on the network who never pairs can hold neither memory
+        // nor connections for long.
+        let read = if session.device.is_some() {
+            read_request_raw(&mut stream).await
+        } else {
+            match tokio::time::timeout(
+                unsigned_idle_timeout(session.pairing),
+                basalt_net::framing::read_request_limited(&mut stream, UNSIGNED_REQUEST_BYTES),
+            )
+            .await
+            {
+                Ok(read) => read,
+                Err(_) => break Ok(()),
+            }
+        };
+        let (raw, payload) = match read {
             Ok(v) => v,
             // A peer that goes away between requests is the normal end of a
             // pooled connection, not a failure.
@@ -3058,6 +3193,7 @@ where
                 },
             )
             .await?;
+            session.pairing = true;
         }
 
         Op::PairFinish => {

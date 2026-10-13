@@ -633,13 +633,107 @@ async fn download(
         .insert(id.clone(), cancel.clone());
 
     let report = progress_reporter(app, id.clone(), name, "download");
+    let local = PathBuf::from(local);
     let result = state
         .client
-        .download(&remote, &PathBuf::from(local), Some(report), Some(cancel))
+        .download(&remote, &local, Some(report), Some(cancel))
         .await;
 
     state.transfers.lock().expect("transfers lock").remove(&id);
-    Ok(result?)
+    let bytes = result?;
+    mark_downloaded(&local);
+    Ok(bytes)
+}
+
+/// Marks a file as come from elsewhere, as a browser marks its downloads, so
+/// Windows asks before running it and Office opens it in Protected View. A
+/// file from the drive is only as trustworthy as every device that can write
+/// to it. Nowhere else to mark it (a drive that is not NTFS) is not an error.
+fn mark_downloaded(path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let mut marked = path.as_os_str().to_os_string();
+        marked.push(":Zone.Identifier");
+        let _ = std::fs::write(marked, "[ZoneTransfer]\r\nZoneId=3\r\n");
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+}
+
+/// A name from the drive, safe to give a file here: whatever came after the
+/// last slash of either kind, without the characters Windows refuses, and
+/// never `.` or `..`. A host could name a file `..\..\Startup\x.bat`.
+fn safe_local_name(remote: &str) -> String {
+    let last = remote.rsplit(['/', '\\']).next().unwrap_or(remote);
+    let cleaned: String = last
+        .chars()
+        .map(|c| {
+            if c.is_control() || "<>:\"/\\|?*".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_end_matches(['.', ' ']).trim_start();
+    if cleaned.is_empty() || cleaned.chars().all(|c| c == '.') {
+        "file".to_string()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// Kinds of file Windows runs when it opens them. Basalt never opens one of
+/// these from the drive by itself: a program anyone with write access could
+/// have put there, named to look like a photo, would run with no question.
+const PROGRAMS: &[&str] = &[
+    "exe",
+    "com",
+    "bat",
+    "cmd",
+    "ps1",
+    "psm1",
+    "psd1",
+    "vbs",
+    "vbe",
+    "js",
+    "jse",
+    "wsf",
+    "wsh",
+    "ws",
+    "hta",
+    "msi",
+    "msp",
+    "mst",
+    "scr",
+    "pif",
+    "cpl",
+    "lnk",
+    "url",
+    "reg",
+    "jar",
+    "appref-ms",
+    "application",
+    "msc",
+    "gadget",
+    "inf",
+    "scf",
+    "sct",
+    "settingcontent-ms",
+    "library-ms",
+    "search-ms",
+    "appx",
+    "msix",
+    "appxbundle",
+    "msixbundle",
+    "diagcab",
+    "xll",
+    "chm",
+];
+
+fn is_program(name: &str) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| PROGRAMS.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
 #[tauri::command]
@@ -993,7 +1087,9 @@ async fn open_externally(
     let Some(player) = chosen else {
         return Err(UiError {
             kind: "noplayer".into(),
-            message: "No player that can stream was found on this computer. Install VLC, then try again.".into(),
+            message:
+                "No player that can stream was found on this computer. Install VLC, then try again."
+                    .into(),
         });
     };
 
@@ -1029,7 +1125,16 @@ async fn copy_and_open(
 ) -> Answer<OpenResult> {
     use tauri_plugin_opener::OpenerExt;
 
-    let name = remote.rsplit('/').next().unwrap_or(&remote).to_string();
+    let name = safe_local_name(&remote);
+    if is_program(&name) {
+        return Err(UiError {
+            kind: "error".into(),
+            message: format!(
+                "{name} is a program, and Basalt doesn’t run programs from the drive. If you \
+                 trust where it came from, download it and open it from this computer."
+            ),
+        });
+    }
     let dir = scratch_dir(&app).join("Basalt");
     std::fs::create_dir_all(&dir).map_err(|e| UiError::from(basalt_client::ClientError::Io(e)))?;
     let local = dir.join(&name);
@@ -1048,6 +1153,7 @@ async fn copy_and_open(
         .await;
     state.transfers.lock().expect("transfers lock").remove(&id);
     result?;
+    mark_downloaded(&local);
 
     let shown = local.display().to_string();
     app.opener()
@@ -1447,4 +1553,36 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Basalt");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_program, safe_local_name};
+
+    // The attack these guard: a file on the drive named to climb out of the
+    // folder it is saved in, or a program dressed as a photo.
+    #[test]
+    fn a_name_from_the_drive_cannot_climb_out() {
+        assert_eq!(
+            safe_local_name("Photos/..\\..\\Startup\\run.bat"),
+            "run.bat"
+        );
+        assert_eq!(safe_local_name("a/.."), "file");
+        assert_eq!(safe_local_name("a/C:evil"), "C_evil");
+        assert_eq!(
+            safe_local_name("Films/Sintel (2010).mkv"),
+            "Sintel (2010).mkv"
+        );
+        assert_eq!(safe_local_name("notes.txt. "), "notes.txt");
+    }
+
+    #[test]
+    fn programs_are_known_by_their_last_extension() {
+        assert!(is_program("Holiday photos.jpg.exe"));
+        assert!(is_program("setup.MSI"));
+        assert!(is_program("shortcut.lnk"));
+        assert!(!is_program("Holiday photos.jpg"));
+        assert!(!is_program("Recipes.pdf"));
+        assert!(!is_program("no extension"));
+    }
 }

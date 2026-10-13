@@ -59,6 +59,16 @@ export interface Status {
   hasDrive?: boolean
 }
 
+/**
+ * What to call the place this device is connected to: its drive, or, while
+ * the host shares none yet, the host itself. A host with no drive still has a
+ * placeholder drive name ("Vault"), which means nothing to anyone.
+ */
+export function placeName(status: Status | null | undefined, fallback: string): string {
+  if (status?.hasDrive === false) return status.hostName ?? fallback
+  return status?.vault ?? fallback
+}
+
 /** Where a device keeps its key: a security chip, sealed by its system, or a file. */
 export type KeyKind = 'chip' | 'system' | 'file'
 

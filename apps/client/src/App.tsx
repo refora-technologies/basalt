@@ -56,7 +56,7 @@ import { useContextMenu, type MenuAction } from '@/components/ui/ContextMenu'
 import { PromptDialog, type PromptRequest } from '@/components/ui/PromptDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { WhatsNew } from '@/components/WhatsNew'
-import { ImportantNotice } from '@/components/ImportantNotice'
+import { ImportantNotice, noteFirstStatus } from '@/components/ImportantNotice'
 import { OpenWithDialog, type OpenWithRequest } from '@/components/OpenWithDialog'
 import { preferPlayer, preferredPlayer, type PlayerChoice } from '@/lib/playerChoice'
 import {
@@ -66,6 +66,7 @@ import {
   isFinished,
   joinPath,
   parentOf,
+  placeName,
   type MediaFile,
   type SubtitleTrack,
 } from '@/lib/api'
@@ -1510,6 +1511,8 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
 
   // Someone who has used Basalt already knows what it is: forgetting a drive
   // later goes straight back to the drive list, not to the introduction.
+  // A device new to Basalt is spared the notice about updating.
+  useEffect(() => noteFirstStatus(vault.status), [vault.status])
   const everPaired = vault.status?.hasPaired === true
   useEffect(() => {
     if (!everPaired) return
@@ -1585,10 +1588,10 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
   ) {
     return (
       <div className="relative flex h-full flex-col">
-        <TitleBar vaultName={vault.status.vault ?? 'Basalt'} connected={connected} />
+        <TitleBar vaultName={placeName(vault.status, 'Basalt')} connected={connected} />
         <div className="min-h-0 flex-1">
           <ProfileGate
-            vaultName={vault.status.vault ?? 'the drive'}
+            vaultName={placeName(vault.status, 'the drive')}
             deviceName={vault.status.deviceName}
             profiles={identity.profiles}
             lastProfile={identity.state.lastProfile}
@@ -1656,11 +1659,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
       >
       <div className="backdrop" />
       <TitleBar
-        vaultName={
-          vault.status.hasDrive === false
-            ? (vault.status.hostName ?? 'Basalt')
-            : (vault.status.vault ?? 'Drive')
-        }
+        vaultName={placeName(vault.status, 'Basalt')}
         connected={connected}
       />
 
@@ -1696,7 +1695,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
           driveUsed={vault.space ? vault.space[1] - vault.space[0] : 0}
           driveTotal={vault.space ? vault.space[1] : 0}
           connected={connected}
-          vaultName={vault.status.vault ?? 'Drive'}
+          vaultName={placeName(vault.status, 'Drive')}
           onChangeDrive={() => setChangingDrive(true)}
         />
 

@@ -36,9 +36,21 @@ function markSeen(): void {
  * Names the devices still signing in the old way, so the owner knows which
  * ones to update rather than guessing.
  */
-export function ImportantNotice({ devices }: { devices: DeviceView[] }): React.JSX.Element | null {
+export function ImportantNotice({ devices }: { devices: DeviceView[] | null }): React.JSX.Element | null {
   const [open, setOpen] = useState(() => !seen())
-  if (!open) return null
+  // Decided when the devices first arrive, until then nothing is shown. The
+  // notice is about updating the devices: a host with none paired is a new
+  // one, which has no older devices to update, so for it the notice is read.
+  const decided = useRef(false)
+  useEffect(() => {
+    if (decided.current || devices === null) return
+    decided.current = true
+    if (devices.length === 0 && open) {
+      markSeen()
+      setOpen(false)
+    }
+  }, [devices, open])
+  if (!open || devices === null || (!decided.current && devices.length === 0)) return null
   return createPortal(
     <motion.div
       initial={{ opacity: 0 }}
