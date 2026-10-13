@@ -31,6 +31,18 @@ use crate::error::{HostError, Result};
 /// Requests held at once, so a flood cannot fill memory or bury the real one.
 const MAX_PENDING: usize = 8;
 
+/// Wrong PINs the host takes, across every request, in [`WRONG_PIN_WINDOW`],
+/// before it stops pairing until the oldest of them is that old.
+///
+/// Five wrong tries end a request, but anyone on the network can open another
+/// at once, each with a new PIN and five more tries. Without a limit across
+/// them a script could keep guessing until one PIN in a million came up, in
+/// well under an hour, and be let in without anyone at the host saying yes.
+/// Twenty in a quarter of an hour leaves it a chance in about fifty thousand an
+/// hour; a person mistyping their own PIN never comes near it.
+const MAX_WRONG_PINS: usize = 20;
+const WRONG_PIN_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 /// How long a device with no id may go unseen before it is let go.
 ///
 /// Devices paired before ids existed cannot be told apart once they pair
@@ -143,6 +155,8 @@ pub struct Registry {
     /// Wrong setup codes since the code was last made or used. See
     /// [`crate::setup::MAX_WRONG_CODES`].
     pub wrong_setup_codes: u32,
+    /// When each recent wrong PIN came in. See [`MAX_WRONG_PINS`].
+    wrong_pins: std::collections::VecDeque<Instant>,
 }
 
 /// Hashes a token for storage and comparison.
@@ -182,7 +196,32 @@ impl Registry {
             pending: Vec::new(),
             require_pin,
             wrong_setup_codes: 0,
+            wrong_pins: std::collections::VecDeque::new(),
         }
+    }
+
+    /// While too many wrong PINs have come in lately, how long until pairing
+    /// opens again. See [`MAX_WRONG_PINS`].
+    fn pairing_paused(&mut self, now: Instant) -> Option<std::time::Duration> {
+        while self
+            .wrong_pins
+            .front()
+            .is_some_and(|at| now.saturating_duration_since(*at) >= WRONG_PIN_WINDOW)
+        {
+            self.wrong_pins.pop_front();
+        }
+        (self.wrong_pins.len() >= MAX_WRONG_PINS).then(|| {
+            let oldest = *self.wrong_pins.front().expect("as many as the limit");
+            WRONG_PIN_WINDOW.saturating_sub(now.saturating_duration_since(oldest))
+        })
+    }
+
+    fn paused_refusal(wait: std::time::Duration) -> HostError {
+        let minutes = wait.as_secs().div_ceil(60).max(1);
+        HostError::PairingRefused(format!(
+            "this host has had too many wrong PINs, so it isn’t letting new devices in for              {minutes} minute{}. Try again then.",
+            if minutes == 1 { "" } else { "s" }
+        ))
     }
 
     pub fn devices(&self) -> &[Device] {
@@ -291,6 +330,13 @@ impl Registry {
             self.pending.retain(|r| r.device_name != name);
         } else {
             self.pending.retain(|r| r.device_id != device_id);
+        }
+
+        if setup_code.is_none()
+            && self.require_pin
+            && let Some(wait) = self.pairing_paused(now)
+        {
+            return Err(Self::paused_refusal(wait));
         }
 
         if self.pending.len() >= MAX_PENDING {
@@ -405,6 +451,15 @@ impl Registry {
                 )
             })?;
 
+        // Not even checked while paused: a guess that happened to be right
+        // must not get in while the guessing is what paused it.
+        if !self.pending[index].setup
+            && self.pending[index].pin.is_some()
+            && let Some(wait) = self.pairing_paused(now)
+        {
+            return Err(Self::paused_refusal(wait));
+        }
+
         if let Some(pin) = self.pending[index].pin.clone() {
             let request = &self.pending[index];
             let ok = proof.is_some_and(|proof| {
@@ -421,6 +476,8 @@ impl Registry {
                 let setup = self.pending[index].setup;
                 if setup {
                     self.wrong_setup_codes += 1;
+                } else {
+                    self.wrong_pins.push_back(now);
                 }
                 self.pending[index].attempts += 1;
                 let spent = self.pending[index].attempts >= MAX_PIN_ATTEMPTS;
@@ -947,6 +1004,74 @@ mod tests {
             registry.pending(now).is_empty(),
             "the request must be gone once the attempts are spent"
         );
+    }
+
+    /// Spends every try a request allows on PINs that are not its own.
+    fn guess_wrong(registry: &mut Registry, now: Instant, name: &str) {
+        let nonce = pairing::random_nonce().unwrap();
+        let request = registry.begin_pairing(now, name, &nonce).unwrap();
+        let wrong_pin = if request.pin.as_deref() == Some("000001") {
+            "000002"
+        } else {
+            "000001"
+        };
+        let wrong = pairing::compute_proof(
+            wrong_pin,
+            HOST_ID,
+            &request.client_nonce,
+            &request.server_nonce,
+        )
+        .unwrap();
+        for _ in 0..MAX_PIN_ATTEMPTS {
+            let _ = registry.finish_pairing(now, HOST_ID, &request.id, Some(&wrong));
+        }
+    }
+
+    // The attack this guards: a new request every five wrong tries, each with
+    // a new PIN, until one in a million comes up. Spread over requests, the
+    // wrong PINs still add up, and pairing stops.
+    #[test]
+    fn guessing_across_many_requests_pauses_pairing() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        // One request waits, honestly, with its right PIN, while the guessing
+        // goes on beside it.
+        let nonce = pairing::random_nonce().unwrap();
+        let honest = registry.begin_pairing(now, "Phone", &nonce).unwrap();
+        let pin = honest.pin.clone().unwrap();
+
+        let requests = MAX_WRONG_PINS as u32 / MAX_PIN_ATTEMPTS;
+        for i in 0..requests {
+            guess_wrong(&mut registry, now, &format!("Intruder {i}"));
+        }
+
+        let nonce = pairing::random_nonce().unwrap();
+        let refused = registry.begin_pairing(now, "Intruder again", &nonce);
+        assert!(
+            matches!(&refused, Err(HostError::PairingRefused(why)) if why.contains("too many wrong PINs")),
+            "{refused:?}"
+        );
+        let right =
+            pairing::compute_proof(&pin, HOST_ID, &honest.client_nonce, &honest.server_nonce)
+                .unwrap();
+        assert!(
+            registry
+                .finish_pairing(now, HOST_ID, &honest.id, Some(&right))
+                .is_err(),
+            "not even the right PIN while paused"
+        );
+        assert_eq!(registry.device_count(), 0);
+    }
+
+    #[test]
+    fn pairing_opens_again_once_the_wrong_pins_are_old() {
+        let mut registry = with_pin();
+        let start = Instant::now();
+        for i in 0..MAX_WRONG_PINS as u32 / MAX_PIN_ATTEMPTS {
+            guess_wrong(&mut registry, start, &format!("Intruder {i}"));
+        }
+        let later = start + WRONG_PIN_WINDOW + std::time::Duration::from_secs(1);
+        assert!(pair(&mut registry, later, HOST_ID, "Phone").is_ok());
     }
 
     #[test]
