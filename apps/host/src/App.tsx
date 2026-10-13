@@ -398,7 +398,7 @@ export function App(): React.JSX.Element {
           onAdd={(name, color) => api.addProfile(name, color).then(apply)}
         />
       )}
-      {!needsSetup && <ImportantNotice devices={list} />}
+      {!needsSetup && <ImportantNotice devices={devices.data} />}
     </div>
   )
 }
