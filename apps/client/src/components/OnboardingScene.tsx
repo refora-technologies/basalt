@@ -353,6 +353,7 @@ function Tile({
   sub?: string
 }): React.JSX.Element {
   const half = R * size
+  const caption = title ? fitCaption(title, x) : ['', TITLE_SIZE, 0]
   return (
     <motion.g
       initial={false}
@@ -430,14 +431,15 @@ function Tile({
             transition={{ duration: 0.2 }}
           >
             <text
+              x={caption[2]}
               y={TITLE_Y - ROW}
               textAnchor="middle"
               className="font-sans"
-              fontSize={11.5}
+              fontSize={caption[1]}
               fontWeight={600}
               fill="#f4f4f5"
             >
-              {title.length > 20 ? `${title.slice(0, 19)}…` : title}
+              {caption[0]}
             </text>
             {sub && (
               <text
@@ -456,6 +458,47 @@ function Tile({
       )}
     </motion.g>
   )
+}
+
+let measureCanvas: HTMLCanvasElement | undefined
+
+/** The caption's usual size, and the smallest it may shrink to before it is shortened. */
+const TITLE_SIZE = 11.5
+const TITLE_MIN = 9.5
+
+/**
+ * A tile's title, the size to draw it at, and how far to move it sideways, so
+ * it stays in view: whole and centred under the tile if it can be, then a
+ * little smaller, then moved in towards the middle of the scene (where there
+ * is room up to the halfway point to the next tile), and only then shortened
+ * on the right. A tile near the side has less room than one in the middle: a
+ * host called LIVING-ROOM-PC lost its first letter past the left edge.
+ */
+function fitCaption(text: string, x: number): [string, number, number] {
+  const ctx = typeof document === 'undefined' ? null : (measureCanvas ??= document.createElement('canvas')).getContext('2d')
+  if (!ctx) return [text.length > 20 ? `${text.slice(0, 19)}…` : text, TITLE_SIZE, 0]
+  const family = getComputedStyle(document.body).fontFamily
+  const widthAt = (size: number, t: string): number => {
+    ctx.font = `600 ${size}px ${family}`
+    return ctx.measureText(t).width
+  }
+  // Centred under the tile, between the view's edges.
+  const centred = 2 * Math.min(x - VIEW_X, W - VIEW_X - x) - 6
+  // Allowed to lean inwards, as far as halfway to the next tile.
+  const lo = x > CX ? CX + 4 : VIEW_X + 3
+  const hi = x < CX ? CX - 4 : W - VIEW_X - 3
+  const shift = (w: number): number => Math.max(lo - (x - w / 2), Math.min(0, hi - (x + w / 2)))
+
+  const full = widthAt(TITLE_SIZE, text)
+  if (full <= centred) return [text, TITLE_SIZE, 0]
+  const size = Math.max(TITLE_MIN, (TITLE_SIZE * centred) / full)
+  if (size > TITLE_MIN) return [text, size, 0]
+  const small = widthAt(TITLE_MIN, text)
+  if (small <= hi - lo) return [text, TITLE_MIN, shift(small)]
+  let cut = text
+  while (cut.length > 1 && widthAt(TITLE_MIN, `${cut}…`) > hi - lo) cut = cut.slice(0, -1)
+  const shortened = `${cut.trimEnd()}…`
+  return [shortened, TITLE_MIN, shift(widthAt(TITLE_MIN, shortened))]
 }
 
 /**
