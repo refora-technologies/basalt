@@ -24,6 +24,26 @@ function markSeen(): void {
   }
 }
 
+let decided = false
+
+/**
+ * Given the first status of each run. The notice is news about updating, for
+ * people who used an older version; a device that starts out never having
+ * paired is new to Basalt, so for it the notice counts as read. Without this
+ * a brand new phone was told to "update Basalt on all your devices" the moment
+ * it paired for the first time.
+ */
+export function noteFirstStatus(status: { hasPaired: boolean } | null): void {
+  if (decided || !status) return
+  decided = true
+  if (!status.hasPaired && !seen()) markSeen()
+}
+
+/** For tests: forget that this run has decided. */
+export function resetNoticeForTests(): void {
+  decided = false
+}
+
 /**
  * Something everyone using this version has to know, shown once.
  *
