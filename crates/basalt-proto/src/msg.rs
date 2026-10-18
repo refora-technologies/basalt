@@ -141,6 +141,12 @@ pub struct PairFinishResponse {
     /// screen, with its setup code. Absent from older hosts.
     #[serde(default)]
     pub manages: bool,
+    /// See [`AuthResponse::addresses`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
+    /// See [`AuthResponse::machine`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine: String,
 }
 
 /// Where a device keeps its key, as it reports it. Shown on the host; nothing
@@ -200,6 +206,18 @@ pub struct AuthResponse {
     /// return with [`EndorseRequest`], when one is due: the payload, hex.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endorse: Option<String>,
+    /// Every address the host has, `ip:port`, for the device to try when
+    /// the one it used stops working: after the router hands out a new one,
+    /// say, on a network where searching is blocked. Only ever a hint, as the
+    /// host is still known by its key. Empty from older hosts, and from one
+    /// in a container, whose own addresses no device can reach.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
+    /// The computer's name, for finding it by name when none of its
+    /// addresses answer. Empty when, as for `addresses`, there is none worth
+    /// trying.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine: String,
 }
 
 /// A statement as it travels: the payload's bytes and the issuer's

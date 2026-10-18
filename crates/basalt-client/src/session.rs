@@ -108,6 +108,10 @@ pub struct SignedIn {
     /// The key was tried and the host said it knows no such key: it needs
     /// giving again.
     pub key_unknown: bool,
+    /// Where else the host can be reached: see [`AuthResponse::addresses`].
+    pub addresses: Vec<String>,
+    /// The host's computer name: see [`AuthResponse::machine`].
+    pub machine: String,
 }
 
 /// Who this device is, as it introduces itself to a host.
@@ -447,6 +451,8 @@ impl Session {
                 endorse: auth.endorse,
                 member: auth.member,
                 key_unknown: false,
+                addresses: auth.addresses,
+                machine: auth.machine,
             },
             info: SessionInfo {
                 host_id,
@@ -670,6 +676,8 @@ impl Session {
         })?;
 
         self.info.vault = finish.vault;
+        self.signed_in.addresses = finish.addresses;
+        self.signed_in.machine = finish.machine;
         if key.is_some() {
             self.signed_in.by_key = true;
             self.info.by_key = true;

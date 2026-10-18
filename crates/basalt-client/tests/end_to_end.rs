@@ -462,6 +462,84 @@ async fn another_host_at_a_missing_hosts_address_is_named_as_the_wrong_host() {
     );
 }
 
+/// Rewrites what a client remembers about the one host it is paired with.
+fn remember_differently(store: &std::path::Path, change: impl Fn(&mut serde_json::Value)) {
+    let mut saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(store).unwrap()).unwrap();
+    change(&mut saved["hosts"][0]);
+    std::fs::write(store, serde_json::to_string(&saved).unwrap()).unwrap();
+}
+
+// The router handed the host a new address, on a network where searching is
+// blocked: the last address refuses, and the host is reached at another it
+// said it has.
+#[tokio::test]
+async fn a_host_is_reached_at_another_address_it_gave() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    let id = client.status().unwrap().host_id;
+    let saved = client.known_hosts();
+    assert!(
+        !saved[0].addresses.is_empty() && !saved[0].machine.is_empty(),
+        "pairing tells the device where else to look: {:?} {:?}",
+        saved[0].addresses,
+        saved[0].machine
+    );
+    client.disconnect().await;
+    drop(client);
+
+    let port = fixture.addr.port();
+    remember_differently(&fixture.client_store, |host| {
+        host["last_address"] = format!("127.0.0.2:{port}").into();
+        host["addresses"] = serde_json::json!([fixture.address()]);
+        host["machine"] = "".into();
+    });
+    let client = fixture.client();
+    let info = client
+        .connect(&id, None)
+        .await
+        .expect("found at the other address");
+    assert_eq!(info.address, fixture.addr);
+    assert_eq!(
+        client.known_hosts()[0].last_address.as_deref(),
+        Some(fixture.address().as_str()),
+        "and remembered there"
+    );
+}
+
+// None of its addresses answer, and the computer's name still finds it.
+#[tokio::test]
+async fn a_host_is_reached_by_its_computers_name() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    let id = client.status().unwrap().host_id;
+    client.disconnect().await;
+    drop(client);
+
+    let port = fixture.addr.port();
+    remember_differently(&fixture.client_store, |host| {
+        host["last_address"] = format!("127.0.0.2:{port}").into();
+        host["addresses"] = serde_json::json!([]);
+        // What this machine calls itself, which the system resolves: here, to
+        // the address the test host listens on.
+        host["machine"] = "localhost".into();
+    });
+    let client = fixture.client();
+    let started = std::time::Instant::now();
+    let info = client
+        .connect(&id, None)
+        .await
+        .expect("found by the computer's name");
+    assert_eq!(info.address, fixture.addr);
+    // Not held up by the names that do not resolve: "localhost.local" takes
+    // Windows five seconds to give up on.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Browsing
 // ---------------------------------------------------------------------------

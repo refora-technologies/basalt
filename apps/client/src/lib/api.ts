@@ -94,6 +94,12 @@ export interface DiscoveredHost {
    * with the setup code read on that machine. Absent from older apps' hosts.
    */
   needsSetup: boolean
+  /**
+   * Found on the network just now. False for a host this device has paired
+   * with that the search missed, listed last: choosing it tries everywhere it
+   * might be. Absent from older versions, where every host listed was found.
+   */
+  seen?: boolean
 }
 
 /** What a host said when asked to pair. Mirrors `basalt_client::ui::PairingStart`. */
@@ -890,6 +896,7 @@ const MOCK_HOSTS: DiscoveredHost[] = [
     hasVault: true,
     paired: true,
     needsSetup: false,
+    seen: true,
   },
   {
     hostId: '5c1e8d2a9b7f4e03c6a1f2e3d4c5b6a7',
@@ -900,6 +907,7 @@ const MOCK_HOSTS: DiscoveredHost[] = [
     hasVault: true,
     paired: false,
     needsSetup: false,
+    seen: true,
   },
   {
     hostId: 'e27b94f0c3a15d68e9f0a1b2c3d4e5f6',
@@ -910,6 +918,7 @@ const MOCK_HOSTS: DiscoveredHost[] = [
     hasVault: false,
     paired: false,
     needsSetup: false,
+    seen: true,
   },
 ]
 
@@ -919,10 +928,9 @@ const MOCK_HOSTS: DiscoveredHost[] = [
  * device; its setup code in the preview is K7QM-4XPR.
  */
 function mockHosts(): DiscoveredHost[] {
-  if (!previewFlag('setup')) return MOCK_HOSTS
-  return [
-    ...MOCK_HOSTS,
-    {
+  const hosts = [...MOCK_HOSTS]
+  if (previewFlag('setup')) {
+    hosts.push({
       hostId: '9d41c7e2b8a05f36d1e2f3a4b5c6d7e8',
       hostName: 'basement-pi',
       vault: '',
@@ -931,8 +939,25 @@ function mockHosts(): DiscoveredHost[] {
       hasVault: false,
       paired: false,
       needsSetup: true,
-    },
-  ]
+      seen: true,
+    })
+  }
+  // `?unseen`: a drive this device paired with that the search missed, as on
+  // a network that blocks searching or with its computer asleep.
+  if (previewFlag('unseen')) {
+    hosts.push({
+      hostId: '3b7d1f9e5a2c48b6d0e1f2a3b4c5d6e7',
+      hostName: 'ATTIC-NAS',
+      vault: 'Archive',
+      address: '192.168.1.8:7742',
+      requiresPin: false,
+      hasVault: true,
+      paired: true,
+      needsSetup: false,
+      seen: false,
+    })
+  }
+  return hosts
 }
 
 /** The showcase library: invented films and series. See `showcase.ts`. */

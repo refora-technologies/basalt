@@ -33,6 +33,11 @@ use crate::vault::Vault;
 /// Everything shared between connections.
 pub struct Host {
     identity: HostIdentity,
+    /// The port actually listened on, once [`bind`] has: what devices are
+    /// told to use. The configured one when nothing is bound yet. Different
+    /// only where the port was chosen by the system, as tests do, which
+    /// otherwise sent devices to whatever else listens on the configured one.
+    bound_port: std::sync::atomic::AtomicU16,
     pub(crate) config_path: std::path::PathBuf,
     pub(crate) config: std::sync::Mutex<HostConfig>,
     vault: tokio::sync::RwLock<Option<Arc<Vault>>>,
@@ -233,6 +238,7 @@ impl Host {
             .to_path_buf();
         let host = Arc::new(Self {
             identity,
+            bound_port: std::sync::atomic::AtomicU16::new(0),
             config_path,
             config: std::sync::Mutex::new(config),
             vault: tokio::sync::RwLock::new(vault),
@@ -2060,6 +2066,38 @@ impl Host {
         self.config.lock().expect("config lock").port
     }
 
+    /// The port devices are told to use: see [`Host::bound_port`].
+    fn serving_port(&self) -> u16 {
+        match self.bound_port.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => self.port(),
+            bound => bound,
+        }
+    }
+
+    /// Where else devices can reach this host, told to each one as it signs
+    /// in: its addresses, and its computer's name. Nothing from a container,
+    /// whose addresses and name are its own and of no use to a device.
+    pub fn reach(&self) -> (Vec<String>, String) {
+        let container = std::env::var_os("BASALT_CONTAINER").is_some()
+            || std::path::Path::new("/.dockerenv").exists();
+        if container {
+            return (Vec::new(), String::new());
+        }
+        let port = self.serving_port();
+        let addresses = basalt_net::discovery::local_addresses()
+            .into_iter()
+            .map(|ip| SocketAddr::new(ip, port).to_string())
+            .collect();
+        let machine = crate::config::machine_name();
+        // The stand-in for a machine with no name is no name to look up.
+        let machine = if machine == "Basalt Host" {
+            String::new()
+        } else {
+            machine
+        };
+        (addresses, machine)
+    }
+
     /// Renames the host. Clients see this before they pair.
     pub fn set_host_name(&self, name: &str) -> Result<()> {
         let name = name.trim();
@@ -2405,12 +2443,14 @@ impl Host {
     pub fn beacon(&self) -> basalt_net::discovery::Beacon {
         // Asked before the config is locked: it looks at the device list.
         let needs_setup = self.in_setup();
+        // So is the port, which may read the config.
+        let port = self.serving_port();
         let config = self.config.lock().expect("config lock");
         basalt_net::discovery::Beacon {
             host_id: self.identity.host_id.clone(),
             host_name: config.host_name.clone(),
             vault: config.vault_name.clone(),
-            port: config.port,
+            port,
             requires_pin: config.require_pin,
             has_vault: config.vault_path.is_some(),
             needs_setup,
@@ -2722,6 +2762,8 @@ pub async fn bind(host: Arc<Host>, addr: SocketAddr) -> Result<BoundServer> {
         .map_err(|e| HostError::BadRequest(format!("could not start TLS: {e}")))?;
     let listener = TcpListener::bind(addr).await?;
     let addr = listener.local_addr()?;
+    host.bound_port
+        .store(addr.port(), std::sync::atomic::Ordering::Relaxed);
     Ok(BoundServer {
         listener,
         acceptor,
@@ -2870,6 +2912,10 @@ pub async fn serve(server: BoundServer) -> Result<()> {
             }
         });
     }
+    // And by mDNS, for networks that drop broadcasts, for as long as this
+    // loop runs.
+    let _announced =
+        crate::announce::announce(&host.identity.host_id, listener.local_addr()?.port());
 
     let unsigned = Arc::new(Unsigned::default());
     loop {
@@ -3257,12 +3303,15 @@ where
                 session.signed_key = Some(device.public_key.clone());
                 session.device = Some(device);
                 session.by_key = true;
+                let (addresses, machine) = host.reach();
                 reply(
                     stream,
                     &PairFinishResponse {
                         token: String::new(),
                         vault: host.vault_name(),
                         manages,
+                        addresses,
+                        machine,
                     },
                 )
                 .await?;
@@ -3297,12 +3346,15 @@ where
                 host.forget_old_keys(device);
             }
 
+            let (addresses, machine) = host.reach();
             reply(
                 stream,
                 &PairFinishResponse {
                     token,
                     vault: host.vault_name(),
                     manages: false,
+                    addresses,
+                    machine,
                 },
             )
             .await?;
@@ -3323,6 +3375,7 @@ where
                 }
                 let member = host.household_member(&device);
                 let endorse = host.endorse_offer(&device);
+                let (addresses, machine) = host.reach();
                 let response = AuthResponse {
                     vault: host.vault_name(),
                     device_name: device.name.clone(),
@@ -3333,6 +3386,8 @@ where
                     member,
                     owner: device.owner,
                     endorse,
+                    addresses,
+                    machine,
                 };
                 session.signed_key = Some(device.public_key.clone());
                 session.device = Some(device);
@@ -3376,6 +3431,7 @@ where
             if changed {
                 host.persist()?;
             }
+            let (addresses, machine) = host.reach();
             let response = AuthResponse {
                 vault: host.vault_name(),
                 device_name: device.name.clone(),
@@ -3384,6 +3440,8 @@ where
                 member: None,
                 owner: device.owner,
                 endorse: None,
+                addresses,
+                machine,
             };
             session.device = Some(device);
             reply(stream, &response).await?;

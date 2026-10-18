@@ -90,15 +90,21 @@ export function PairingView({
       // The previous list stays on screen until the new one arrives. Clearing
       // it first would make every rescan flash the empty state.
       setHosts((before) => {
-        const seen = new Set(found.map((h) => h.hostId))
+        // The paired hosts the search missed come last, from the device's
+        // own record. One just missed once stays where it was instead, as
+        // any other host does.
+        const here = found.filter((h) => h.seen !== false)
+        const away = found.filter((h) => h.seen === false)
+        const seen = new Set(here.map((h) => h.hostId))
         for (const id of seen) missed.current.delete(id)
         const kept = (before ?? []).filter((h) => {
-          if (seen.has(h.hostId)) return false
+          if (h.seen === false || seen.has(h.hostId)) return false
           const times = (missed.current.get(h.hostId) ?? 0) + 1
           missed.current.set(h.hostId, times)
           return times < 2
         })
-        return [...found, ...kept]
+        const keptIds = new Set(kept.map((h) => h.hostId))
+        return [...here, ...kept, ...away.filter((h) => !keptIds.has(h.hostId))]
       })
     } catch (e) {
       if (live.current && !quietly) setError(e instanceof Error ? e.message : String(e))
@@ -482,11 +488,13 @@ function HostList({
 }
 
 /**
- * The host by its address, for when looking for it finds nothing.
+ * The host by its address or its computer's name, for when looking for it
+ * finds nothing.
  *
  * Some networks do not pass the broadcasts hosts announce themselves with —
  * guest Wi-Fi, some mesh systems, a phone emulator. The address is shown in
- * Basalt Host's own window. Pairing goes on exactly as it would have: the PIN,
+ * Basalt Host's own window; the computer's name is often easier, and the
+ * router or Windows usually knows it. Pairing goes on exactly as it would have: the PIN,
  * and then the host's key, are what is trusted, never the address.
  */
 function AddressEntry({
@@ -507,7 +515,7 @@ function AddressEntry({
         onClick={() => setOpen(true)}
         className="mt-1 flex w-full items-center justify-center py-2 text-[11px] text-textFaint underline decoration-white/15 underline-offset-4 transition-colors hover:text-textDim"
       >
-        Enter the address instead
+        Enter the address or computer name
       </button>
     )
   }
@@ -528,7 +536,7 @@ function AddressEntry({
         spellCheck={false}
         value={address}
         onChange={(e) => setAddress(e.target.value)}
-        placeholder="192.168.1.20"
+        placeholder="192.168.1.20 or LIVING-ROOM-PC"
         aria-label="Host address"
         className="min-w-0 flex-1 rounded-md border border-line bg-panel px-3 py-2.5 font-mono text-[13px] text-text placeholder:text-textFaint focus:border-white/25"
       />
@@ -562,6 +570,9 @@ function HostRow({
   const setup = host.needsSetup && !host.paired
   const ready = host.hasVault || setup
   const disabled = busy || !ready
+  // Paired, and not found by the search just now: dimmed, and still chosen
+  // with a tap, which tries everywhere it might be.
+  const away = host.seen === false
 
   return (
     <motion.button
@@ -573,6 +584,7 @@ function HostRow({
       className={cn(
         'mb-2 flex w-full items-center gap-3 rounded-lg border border-white/[0.07] bg-panel2 px-3.5 py-3 text-left transition-colors',
         disabled ? 'cursor-not-allowed opacity-45' : 'hover:border-white/[0.16]',
+        away && !disabled && 'opacity-60 hover:opacity-100',
       )}
     >
       <span className="shrink-0 text-textFaint">
@@ -600,7 +612,8 @@ function HostRow({
             {setup ? 'set it up from here' : host.hasVault ? host.hostName : 'no drive shared yet'}
           </span>
           <span className="shrink-0">·</span>
-          <span className="shrink-0">{host.hostId.slice(0, 8)}</span>
+          {/* In place of the id: the name needs the room more. */}
+          <span className="shrink-0">{away ? 'not found right now' : host.hostId.slice(0, 8)}</span>
         </div>
       </div>
 

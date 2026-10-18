@@ -96,7 +96,8 @@ fn literal(text: &str) -> String {
 /// For each kind of network the computer is on now: a firewall that is off,
 /// or lets everything in, is open; a rule turning the host away is blocked,
 /// whatever else allows it, as Windows itself decides; otherwise it needs a
-/// rule letting the host in, by its program or by its port.
+/// rule letting the host in: by its program, or by its ports, the
+/// connection's and the search's.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn check_script(exe: &str, port: u16) -> String {
     format!(
@@ -104,6 +105,7 @@ fn check_script(exe: &str, port: u16) -> String {
 try {{
   $exe = {exe}
   $port = '{port}'
+  $find = '{find}'
   $kinds = @(Get-NetConnectionProfile | ForEach-Object {{
     $c = $_.NetworkCategory.ToString(); if ($c -eq 'DomainAuthenticated') {{ 'Domain' }} else {{ $c }} }} | Select-Object -Unique)
   if ($kinds.Count -eq 0) {{ 'unknown'; exit }}
@@ -111,18 +113,26 @@ try {{
   $inbound = {{ param($rules) @($rules | Where-Object {{ $_ -and "$($_.Enabled)" -eq 'True' -and "$($_.Direction)" -eq 'Inbound' }}) }}
   $mine = @(& $inbound (Get-NetFirewallApplicationFilter -PolicyStore ActiveStore -Program $exe -ErrorAction SilentlyContinue | Get-NetFirewallRule -PolicyStore ActiveStore))
   $byPort = @(& $inbound (Get-NetFirewallPortFilter -PolicyStore ActiveStore -Protocol TCP -ErrorAction SilentlyContinue | Where-Object {{ @($_.LocalPort) -contains $port }} | Get-NetFirewallRule -PolicyStore ActiveStore))
+  $byFind = @(& $inbound (Get-NetFirewallPortFilter -PolicyStore ActiveStore -Protocol UDP -ErrorAction SilentlyContinue | Where-Object {{ @($_.LocalPort) -contains $find }} | Get-NetFirewallRule -PolicyStore ActiveStore))
   foreach ($kind in $kinds) {{
     $fw = Get-NetFirewallProfile -PolicyStore ActiveStore -Name $kind
     if ("$($fw.Enabled)" -ne 'True') {{ continue }}
-    $here = @($mine + $byPort | Where-Object {{ $p = "$($_.Profile)"; $_ -and ($p -eq 'Any' -or ($p -split ', ') -contains $kind) }})
-    if (@($here | Where-Object {{ "$($_.Action)" -eq 'Block' }}).Count -gt 0) {{ 'blocked'; exit }}
+    $inKind = {{ param($rules) @($rules | Where-Object {{ $p = "$($_.Profile)"; $_ -and ($p -eq 'Any' -or ($p -split ', ') -contains $kind) }}) }}
+    $allows = {{ param($rules) @($rules | Where-Object {{ "$($_.Action)" -eq 'Allow' }}).Count -gt 0 }}
+    $program = @(& $inKind $mine)
+    $tcp = @(& $inKind $byPort)
+    $udp = @(& $inKind $byFind)
+    if (@($program + $tcp + $udp | Where-Object {{ "$($_.Action)" -eq 'Block' }}).Count -gt 0) {{ 'blocked'; exit }}
     if ("$($fw.DefaultInboundAction)" -eq 'Allow') {{ continue }}
-    if (@($here | Where-Object {{ "$($_.Action)" -eq 'Allow' }}).Count -eq 0) {{ 'blocked'; exit }}
+    # The program's own rule lets in all it listens on. Rules by port must let
+    # in the search as well as the connection, or devices cannot find it.
+    if (-not (& $allows $program) -and -not ((& $allows $tcp) -and (& $allows $udp))) {{ 'blocked'; exit }}
   }}
   'open'
 }} catch {{ 'unknown' }}
 "#,
         exe = literal(exe),
+        find = basalt_net::discovery::DISCOVERY_PORT,
     )
 }
 
@@ -270,6 +280,10 @@ mod tests {
         let script = check_script(r"C:\Users\O'Neil\Basalt Host\basalt-host-shell.exe", 7742);
         assert!(script.contains(r"$exe = 'C:\Users\O''Neil\Basalt Host\basalt-host-shell.exe'"));
         assert!(script.contains("$port = '7742'"));
+        assert!(
+            script.contains("$find = '7743'"),
+            "the search's port is checked too"
+        );
     }
 
     #[test]

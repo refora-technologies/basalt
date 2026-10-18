@@ -25,6 +25,14 @@ pub struct KnownHost {
     /// discovery. Only ever a hint: the pin is what decides trust, so a stale
     /// address is a failed connection and never a wrong one.
     pub last_address: Option<String>,
+    /// Every address the host said it has, and its computer's name: tried
+    /// when the last address stops working, before giving up on a network
+    /// where searching is blocked. Hints like `last_address`, and refreshed
+    /// on every connection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine: String,
     pub paired_at: i64,
     /// When this device last connected to it. The host to reopen is the one
     /// used last, not the one paired last: choosing another drive from the
@@ -205,6 +213,18 @@ impl ClientStore {
     pub fn note_address(&mut self, host_id: &str, address: &str) {
         if let Some(host) = self.hosts.iter_mut().find(|h| h.host_id == host_id) {
             host.last_address = Some(address.to_string());
+        }
+    }
+
+    /// Keeps where else a host said it can be reached. An older host says
+    /// nothing, which leaves what was known.
+    pub fn note_reach(&mut self, host_id: &str, addresses: &[String], machine: &str) {
+        if addresses.is_empty() && machine.is_empty() {
+            return;
+        }
+        if let Some(host) = self.hosts.iter_mut().find(|h| h.host_id == host_id) {
+            host.addresses = addresses.to_vec();
+            host.machine = machine.to_string();
         }
     }
 
@@ -572,6 +592,8 @@ mod tests {
             vault: "Vault".into(),
             host_name: "laptop-b".into(),
             last_address: None,
+            addresses: Vec::new(),
+            machine: String::new(),
             paired_at,
             used_at: 0,
             identity: Default::default(),

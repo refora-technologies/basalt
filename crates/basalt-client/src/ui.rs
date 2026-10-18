@@ -130,6 +130,11 @@ pub struct DiscoveredHost {
     /// A host with no screen that nobody manages yet: set it up from here,
     /// with the setup code read on that machine.
     pub needs_setup: bool,
+    /// Found on the network just now. False for a host this device has
+    /// paired with that did not answer the search, listed anyway, last: a
+    /// network can block searching and still reach it, and choosing it tries
+    /// everywhere it might be.
+    pub seen: bool,
 }
 
 impl DiscoveredHost {
@@ -143,6 +148,23 @@ impl DiscoveredHost {
             has_vault: found.beacon.has_vault,
             paired,
             needs_setup: found.beacon.needs_setup,
+            seen: true,
+        }
+    }
+
+    /// A paired host as this device remembers it, for when the search did
+    /// not find it.
+    pub fn unseen(known: &crate::store::KnownHost) -> Self {
+        Self {
+            host_id: known.host_id.clone(),
+            host_name: known.host_name.clone(),
+            vault: known.vault.clone(),
+            address: known.last_address.clone().unwrap_or_default(),
+            requires_pin: false,
+            has_vault: !known.vault.is_empty(),
+            paired: true,
+            needs_setup: false,
+            seen: false,
         }
     }
 }
@@ -196,6 +218,24 @@ pub fn sort_hosts(hosts: &mut [DiscoveredHost]) {
             .then_with(|| a.host_name.to_lowercase().cmp(&b.host_name.to_lowercase()))
             .then_with(|| a.host_id.cmp(&b.host_id))
     });
+}
+
+/// The list to choose a drive from: what the search found, in
+/// [`sort_hosts`] order, then the paired hosts it did not find, the one used
+/// most recently first, so a drive is never missing from the list just
+/// because searching is blocked on this network.
+pub fn with_unseen(
+    mut found: Vec<DiscoveredHost>,
+    known: &[crate::store::KnownHost],
+) -> Vec<DiscoveredHost> {
+    sort_hosts(&mut found);
+    let mut missing: Vec<&crate::store::KnownHost> = known
+        .iter()
+        .filter(|k| !found.iter().any(|f| f.host_id == k.host_id))
+        .collect();
+    missing.sort_by_key(|k| std::cmp::Reverse(k.used_at.max(k.paired_at)));
+    found.extend(missing.into_iter().map(DiscoveredHost::unseen));
+    found
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -323,6 +363,7 @@ mod tests {
                 "needsSetup",
                 "paired",
                 "requiresPin",
+                "seen",
                 "vault",
             ]
         );
@@ -362,7 +403,38 @@ mod tests {
             has_vault,
             paired,
             needs_setup: false,
+            seen: true,
         }
+    }
+
+    #[test]
+    fn paired_hosts_the_search_missed_are_listed_last_most_recent_first() {
+        let mut older = saved_host();
+        older.host_id = "old".into();
+        older.host_name = "STUDY-PC".into();
+        older.used_at = 100;
+        let mut recent = saved_host();
+        recent.host_id = "new".into();
+        recent.host_name = "ATTIC-NAS".into();
+        recent.used_at = 200;
+        let mut here = saved_host();
+        here.host_id = "here".into();
+
+        let found = vec![
+            host("LIVING-ROOM-PC", "here", true, true),
+            host("NEIGHBOUR", "x", false, true),
+        ];
+        let list = with_unseen(found, &[older, recent, here]);
+        let order: Vec<(&str, bool)> = list.iter().map(|h| (h.host_id.as_str(), h.seen)).collect();
+        assert_eq!(
+            order,
+            [("here", true), ("x", true), ("new", false), ("old", false)],
+            "found first as before, then the missing paired ones, latest first;              a found one is not listed twice"
+        );
+        let attic = &list[2];
+        assert!(attic.paired && !attic.needs_setup);
+        assert_eq!(attic.host_name, "ATTIC-NAS");
+        assert_eq!(attic.address, "192.168.1.11:7742", "its last address");
     }
 
     #[test]
@@ -495,6 +567,8 @@ mod tests {
             vault: "Films".into(),
             host_name: "laptop-b".into(),
             last_address: Some("192.168.1.11:7742".into()),
+            addresses: Vec::new(),
+            machine: String::new(),
             paired_at: 0,
             used_at: 0,
             identity: Default::default(),
