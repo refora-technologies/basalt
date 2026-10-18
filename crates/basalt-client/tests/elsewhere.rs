@@ -70,7 +70,13 @@ struct World {
     home: Drive,
     other: Drive,
     device: Arc<Basalt>,
-    _dir: PathBuf,
+    dir: PathBuf,
+}
+
+impl Drop for World {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 /// Maya made on the home drive from a device, which then pairs with the
@@ -91,7 +97,7 @@ async fn world() -> World {
         home,
         other,
         device,
-        _dir: dir,
+        dir,
     }
 }
 
