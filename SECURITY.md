@@ -7,9 +7,15 @@ protects your drive is described in plain words in the
 ## Reporting a problem
 
 If you find a way around any of Basalt's protections, please tell us
-**privately**, by email to **reforatech@gmail.com**, with "Basalt security" in
-the subject. Please don't open a public issue or discussion about it until it
-is fixed.
+**privately**. Please don't open a public issue or discussion about it until
+it is fixed.
+
+- **On GitHub:** use
+  [Report a vulnerability](https://github.com/refora-technologies/basalt/security/advisories/new)
+  on this repository's Security tab. Only you and the maintainers can see the
+  report, and we can work on the fix with you there.
+- **By email,** if you'd rather not use GitHub: write to
+  **reforatech@gmail.com** with "Basalt security" in the subject.
 
 It helps to include:
 

@@ -6,6 +6,9 @@ contact_links:
   - name: Ask a question
     url: https://github.com/refora-technologies/basalt/discussions/categories/help-and-setup
     about: Not sure how something works, or stuck setting up? Ask in Help and setup.
+  - name: Report a security problem
+    url: https://github.com/refora-technologies/basalt/security/advisories/new
+    about: Found a way around Basalt's protections? Report it privately here, not in a public issue.
   - name: Suggest an idea
     url: https://github.com/refora-technologies/basalt/discussions/categories/ideas
     about: New features and changes are discussed and voted on in Ideas.
