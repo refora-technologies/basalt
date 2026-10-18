@@ -77,6 +77,32 @@ export function waitingLabel(status: Status | null): string {
   return `Waiting for ${drive}. It opens here by itself as soon as ${host} is sharing again.`
 }
 
+/**
+ * What the phone's Files says when there is nothing to list.
+ *
+ * Not yet connected is not an empty drive. While the phone was still reaching
+ * its host this said "This folder is empty" for seconds, a claim about the
+ * drive that reads as it having been wiped. The window has said "Connecting"
+ * all along; this is the phone saying the same.
+ */
+export function filesEmptyLabel({
+  connected,
+  status,
+  error,
+  query,
+}: {
+  connected: boolean
+  status: Status | null
+  error: ApiError | null
+  query: string
+}): string {
+  if (!connected) {
+    if (isWaiting(status)) return waitingLabel(status)
+    return error ? 'Not connected to the host' : 'Connecting to the host…'
+  }
+  return query ? `Nothing matches “${query}”` : 'This folder is empty'
+}
+
 export function takeOn(
   status: Status,
   fetch: { listing: () => void; size: () => void },
@@ -305,8 +331,8 @@ export function useVault(): Vault {
       // that it schedules the next attempt. Leaving the old one in place, as
       // this did, meant one retry and then none: the loop only runs when the
       // error changes. A failed attempt is the normal case while the host is
-      // still waking up; one that says something else, such as a host that is
-      // not the one paired with, is shown and not retried.
+      // still waking up; one that says something else is shown, and retried
+      // only if it is a wrong host (see the loop below).
       else if (e instanceof ApiError && e.kind !== 'offline') setError(e)
       else setError(new ApiError('offline', e instanceof Error ? e.message : String(e)))
     } finally {
@@ -394,8 +420,12 @@ export function useVault(): Vault {
   // the connection, and the drive coming back is something to notice rather
   // than wait for somebody to press refresh. The listing is simply asked for
   // again, more often, until it answers.
+  //
+  // So is another host answering at this one's address. The client has
+  // already searched the network for the right one; it may be off, or on its
+  // way back at a new address, and is found the moment it answers.
   useEffect(() => {
-    const offline = error?.kind === 'offline'
+    const offline = error?.kind === 'offline' || error?.kind === 'wronghost'
     const waiting = error?.kind === 'unavailable'
     if (!offline && !waiting) return undefined
 

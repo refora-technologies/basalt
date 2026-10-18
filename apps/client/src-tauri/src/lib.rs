@@ -106,6 +106,16 @@ async fn begin_pairing(
     Ok(state.client.begin_pairing_at(&address).await?)
 }
 
+/// Who answers at an address typed into the drive list: a host this device
+/// knows is reconnected to rather than paired with again.
+#[tauri::command]
+async fn identify_host(
+    state: State<'_, AppState>,
+    address: String,
+) -> Answer<basalt_client::ui::DiscoveredHost> {
+    Ok(state.client.identify_at(&address).await?)
+}
+
 /// Completes the request begun above, on the same session.
 ///
 /// `pin` is empty when the host did not ask for one. Two calls rather than one
@@ -1507,6 +1517,7 @@ pub fn run() {
             status,
             discover,
             begin_pairing,
+            identify_host,
             profiles_elsewhere,
             use_profile_elsewhere,
             finish_pairing,

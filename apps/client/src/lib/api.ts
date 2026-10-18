@@ -488,6 +488,12 @@ export const api = {
   status: () => call<Status>('status'),
   /** Every host answering on this network. Takes about a second. */
   discover: () => call<DiscoveredHost[]>('discover'),
+  /**
+   * Who answers at an address typed into the drive list, as the list would
+   * have found it: a host this device has paired with comes back `paired`,
+   * to be reconnected to rather than paired with again.
+   */
+  identifyHost: (address: string) => call<DiscoveredHost>('identify_host', { address }),
   /** Asks a host to pair. Resolves to whether it wants a PIN. */
   beginPairing: (address: string) => call<PairingStart>('begin_pairing', { address }),
   /** Completes it. Pass an empty string when no PIN was asked for. */
@@ -986,6 +992,12 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       await new Promise((resolve) => setTimeout(resolve, 900))
       // `?nohosts`: a network with no host on it, as a newcomer's is.
       return (previewFlag('nohosts') ? [] : mockHosts()) as T
+    case 'identify_host': {
+      const address = String(args?.address ?? '')
+      const host = mockHosts().find((h) => h.address === address)
+      if (host) return host as T
+      throw new ApiError('offline', `nothing answered at ${address}`)
+    }
     case 'begin_pairing': {
       const host = mockHosts().find((h) => h.address === args?.address)
       return {

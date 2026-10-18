@@ -351,6 +351,50 @@ async fn a_revoked_device_stops_working() {
     );
 }
 
+// An address typed into the drive list. Who answers there is asked first, so a
+// host this device is paired with is reconnected to rather than paired with
+// again: on a network where hosts cannot be found, typing the address used to
+// ask for a PIN all over again.
+#[tokio::test]
+async fn a_typed_address_says_whether_its_host_is_already_paired() {
+    let fixture = start_host().await;
+
+    let stranger = fixture.client();
+    let seen = stranger.identify_at(&fixture.address()).await.unwrap();
+    assert!(!seen.paired, "never paired from this device");
+    assert_eq!(seen.host_id, fixture.host.host_id());
+    assert_eq!(seen.host_name, "test-host");
+    assert_eq!(seen.vault, "Test Vault");
+    assert!(seen.has_vault);
+    assert_eq!(seen.address, fixture.address());
+    drop(stranger);
+
+    let paired = fixture.paired_client().await;
+    paired.disconnect().await;
+    let seen = paired.identify_at(&fixture.address()).await.unwrap();
+    assert!(seen.paired, "known: reconnected to, not paired again");
+    assert_eq!(seen.host_id, fixture.host.host_id());
+
+    // And reconnecting by that answer works, at the typed address.
+    paired
+        .connect(&seen.host_id, Some(&seen.address))
+        .await
+        .expect("reconnects without pairing");
+    assert!(paired.is_connected());
+}
+
+#[tokio::test]
+async fn a_typed_address_with_nothing_there_fails_as_offline() {
+    let fixture = start_host().await;
+    let client = fixture.client();
+    // A port nothing listens on, on this machine: refused at once.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = closed.local_addr().unwrap().to_string();
+    drop(closed);
+    let err = client.identify_at(&address).await.unwrap_err();
+    assert_eq!(err.kind(), "offline", "got: {err}");
+}
+
 // The check that makes the pin worth having: a host that is not the one this
 // device paired with must be refused, even though it is a perfectly valid
 // Basalt host with a perfectly valid certificate.
@@ -367,11 +411,55 @@ async fn a_different_host_at_the_same_address_is_refused() {
         .await
         .unwrap_err();
 
+    // The first host is still running and may answer the search that follows
+    // a wrong host, at whatever address it announces; which of the tests'
+    // hosts answers a search depends on the machine. Refused either way. The
+    // test below pins down how the refusal is named.
     assert!(
         err.is_transient() || matches!(err, ClientError::WrongHost { .. }),
         "connecting to the wrong host must fail, got: {err}"
     );
     assert!(!client.is_connected());
+}
+
+// A device whose host is nowhere on the network, and another host answering at
+// that host's last address: the address was handed to another computer, or
+// the host was reset. Said as what it is, so the app can say "another host is
+// answering here". It used to arrive as a plain network failure, and the app
+// showed the TLS library's "unexpected error" with both ids.
+#[tokio::test]
+async fn another_host_at_a_missing_hosts_address_is_named_as_the_wrong_host() {
+    let first = start_host().await;
+    let client = first.paired_client().await;
+    let real_id = client.status().unwrap().host_id;
+    client.disconnect().await;
+    drop(client);
+
+    // The same pairing, for a host id that nothing on the network has, so the
+    // search after the wrong answer finds nothing, whatever else is running.
+    let gone = format!("{:f>64}", "0");
+    let store = std::fs::read_to_string(&first.client_store).unwrap();
+    assert!(store.contains(&real_id), "the pairing is in the store");
+    std::fs::write(&first.client_store, store.replace(&real_id, &gone)).unwrap();
+    let client = first.client();
+
+    let impostor = start_host().await;
+    let err = client
+        .connect(&gone, Some(&impostor.address()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.kind(), "wronghost", "got: {err}");
+    let ClientError::WrongHost { expected, got } = &err else {
+        panic!("expected WrongHost, got: {err:?}")
+    };
+    assert_eq!(expected, &gone);
+    assert_eq!(got, impostor.host.host_id());
+    assert!(!client.is_connected());
+    assert!(
+        client.known_hosts().iter().any(|h| h.host_id == gone),
+        "the pairing is kept: the host may come back"
+    );
 }
 
 // ---------------------------------------------------------------------------

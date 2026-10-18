@@ -201,12 +201,19 @@ async fn open(
     me: &Me,
 ) -> Result<(TlsStream<TcpStream>, HelloResponse, String)> {
     let tcp = socket::connect(addr).await?;
+    let pinned = match &trust {
+        Trust::Pinned(expected) => Some(expected.clone()),
+        Trust::FirstContact => None,
+    };
     let (connector, verifier) = client_config(trust);
     let mut stream = connector.connect(sni_name(), tcp).await.map_err(|e| {
         // The pin failing is the one connection error worth explaining
         // precisely, because it means something is wrong rather than merely
-        // unavailable.
-        ClientError::Net(basalt_net::NetError::Io(e))
+        // unavailable: another host is answering at this address.
+        match (pinned, verifier.refused_host_id()) {
+            (Some(expected), Some(got)) => ClientError::WrongHost { expected, got },
+            _ => ClientError::Net(basalt_net::NetError::Io(e)),
+        }
     })?;
 
     let hello: HelloResponse = call_json(
