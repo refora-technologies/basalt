@@ -399,18 +399,15 @@ impl Basalt {
     /// click on.
     pub async fn discover_hosts(&self) -> Result<Vec<crate::ui::DiscoveredHost>> {
         let found = self.discover().await?;
-        let known: std::collections::HashSet<String> = self
-            .known_hosts()
-            .into_iter()
-            .map(|host| host.host_id)
-            .collect();
-
-        let mut hosts: Vec<_> = found
+        let known = self.known_hosts();
+        let hosts: Vec<_> = found
             .iter()
-            .map(|f| crate::ui::DiscoveredHost::new(f, known.contains(&f.beacon.host_id)))
+            .map(|f| {
+                let paired = known.iter().any(|k| k.host_id == f.beacon.host_id);
+                crate::ui::DiscoveredHost::new(f, paired)
+            })
             .collect();
-        crate::ui::sort_hosts(&mut hosts);
-        Ok(hosts)
+        Ok(crate::ui::with_unseen(hosts, &known))
     }
 
     /// Asks a host to pair, from the `ip:port` a discovered host reported.
@@ -439,8 +436,31 @@ impl Basalt {
     /// The id is the one the host's key proved in the handshake, not a claim
     /// in its greeting, and reconnecting pins it anyway.
     pub async fn identify_at(&self, address: &str) -> Result<crate::ui::DiscoveredHost> {
-        let addr = basalt_net::socket::resolve(address, basalt_net::DEFAULT_PORT).await?;
-        let hello = Session::probe(addr, &self.me).await?;
+        // A computer's name can stand for several addresses, only one of
+        // them reachable from here: all are asked, and the first to answer
+        // is the one used.
+        let mut asking = tokio::task::JoinSet::new();
+        for addr in basalt_net::socket::resolve_all(address, basalt_net::DEFAULT_PORT).await? {
+            let me = self.me.clone();
+            asking.spawn(async move { Session::probe(addr, &me).await.map(|hello| (addr, hello)) });
+        }
+        let mut failed = None;
+        let mut answer = None;
+        while let Some(joined) = asking.join_next().await {
+            match joined {
+                Ok(Ok(found)) => {
+                    answer = Some(found);
+                    break;
+                }
+                Ok(Err(e)) => {
+                    failed.get_or_insert(e);
+                }
+                Err(_) => {}
+            }
+        }
+        let Some((addr, hello)) = answer else {
+            return Err(failed.unwrap_or(ClientError::HostNotFound));
+        };
         let paired = self
             .known_hosts()
             .iter()
@@ -456,6 +476,7 @@ impl Basalt {
             has_vault: hello.has_vault,
             paired,
             needs_setup: false,
+            seen: true,
         })
     }
 
@@ -536,6 +557,8 @@ impl Basalt {
                 vault: info.vault.clone(),
                 host_name: info.host_name.clone(),
                 last_address: Some(addr.to_string()),
+                addresses: session.signed_in.addresses.clone(),
+                machine: session.signed_in.machine.clone(),
                 paired_at: unix_now(),
                 used_at: unix_now(),
                 identity: Default::default(),
@@ -647,6 +670,96 @@ impl Basalt {
         })
     }
 
+    /// Finds a paired host its last address did not reach.
+    ///
+    /// Everywhere it might be, at once, and the first to answer with the
+    /// pinned key wins: the network searched by broadcast and mDNS, every
+    /// other address the host said it has, and its computer's name, which the
+    /// router, Windows or mDNS may know. A network that blocks searching
+    /// still leaves the addresses and the name, which is what keeps a host
+    /// one tap away after the router hands it a new address. Only the pinned
+    /// key is accepted anywhere, so a wrong answer is a failed handshake.
+    async fn reach_elsewhere(
+        &self,
+        known: &KnownHost,
+        tried: Option<SocketAddr>,
+        credentials: &Credentials,
+        mut wrong_host: Option<ClientError>,
+    ) -> Result<Session> {
+        let port = tried
+            .or_else(|| known.last_address.as_deref()?.parse().ok())
+            .map_or(basalt_net::DEFAULT_PORT, |at: SocketAddr| at.port());
+        let mut targets = known.addresses.clone();
+        if !known.machine.is_empty() {
+            targets.push(known.machine.clone());
+            targets.push(format!("{}.local", known.machine));
+        }
+
+        let mut attempts = tokio::task::JoinSet::new();
+        {
+            let (id, credentials, me) =
+                (known.host_id.clone(), credentials.clone(), self.me.clone());
+            attempts.spawn(async move {
+                match basalt_net::discovery::find_host(&id, Duration::from_secs(3)).await {
+                    Ok(Some(found)) => Session::connect(found.address, &id, &credentials, &me)
+                        .await
+                        .map(Some),
+                    _ => Ok(None),
+                }
+            });
+        }
+        for target in targets {
+            let (id, credentials, me) =
+                (known.host_id.clone(), credentials.clone(), self.me.clone());
+            attempts.spawn(async move {
+                // A name can stand for several addresses: each is tried.
+                let Ok(Ok(resolved)) = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    basalt_net::socket::resolve_all(&target, port),
+                )
+                .await
+                else {
+                    return Ok(None);
+                };
+                let mut each = tokio::task::JoinSet::new();
+                for addr in resolved.into_iter().filter(|addr| Some(*addr) != tried) {
+                    let (id, credentials, me) = (id.clone(), credentials.clone(), me.clone());
+                    each.spawn(async move { Session::connect(addr, &id, &credentials, &me).await });
+                }
+                let mut said = Ok(None);
+                while let Some(joined) = each.join_next().await {
+                    match joined {
+                        Ok(Ok(session)) => return Ok(Some(session)),
+                        Ok(Err(e))
+                            if said.is_ok()
+                                && (said_by_the_host(&e)
+                                    || matches!(e, ClientError::WrongHost { .. })) =>
+                        {
+                            said = Err(e);
+                        }
+                        _ => {}
+                    }
+                }
+                said
+            });
+        }
+
+        while let Some(joined) = attempts.join_next().await {
+            match joined {
+                // The rest are stopped as `attempts` goes.
+                Ok(Ok(Some(session))) => return Ok(session),
+                Ok(Err(e @ ClientError::WrongHost { .. })) => {
+                    wrong_host.get_or_insert(e);
+                }
+                // The host itself said no, as it will wherever it is found.
+                Ok(Err(e)) if said_by_the_host(&e) => return Err(e),
+                // Nothing there, or something that is not this host.
+                _ => {}
+            }
+        }
+        Err(wrong_host.unwrap_or(ClientError::HostNotFound))
+    }
+
     async fn connect_known(&self, host_id: &str, address: Option<&str>) -> Result<SessionInfo> {
         let known = self
             .store
@@ -698,21 +811,8 @@ impl Basalt {
         let session = match session {
             Some(session) => session,
             None => {
-                // Ask the network. Only a host presenting the pinned key will
-                // do, so a wrong answer costs a failed handshake and nothing
-                // more.
-                let found = match basalt_net::discovery::find_host(
-                    &known.host_id,
-                    std::time::Duration::from_secs(3),
-                )
-                .await
-                {
-                    Ok(Some(found)) => found,
-                    Ok(None) => return Err(wrong_host.unwrap_or(ClientError::HostNotFound)),
-                    Err(e) => return Err(wrong_host.unwrap_or(e.into())),
-                };
-
-                Session::connect(found.address, &known.host_id, &credentials, &self.me).await?
+                self.reach_elsewhere(&known, hint, &credentials, wrong_host)
+                    .await?
             }
         };
         let mut session = session;
@@ -745,8 +845,14 @@ impl Basalt {
             let mut store = self.store.lock().expect("store lock");
             store.note_address(host_id, &addr.to_string());
             store.note_used(host_id, unix_now());
-            let named = proven.as_ref().unwrap_or(&session).info();
+            let latest = proven.as_ref().unwrap_or(&session);
+            let named = latest.info();
             store.note_names(host_id, &named.vault, &named.host_name);
+            store.note_reach(
+                host_id,
+                &latest.signed_in.addresses,
+                &latest.signed_in.machine,
+            );
         }
         // A failure to write the address cache must not fail the connection —
         // it is an optimisation, and the client works without it.
@@ -2378,6 +2484,20 @@ fn hash_file(path: &Path) -> Result<String> {
         hasher.update(&buf[..n]);
     }
     Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// Whether a failure came from the host this device paired with, rather
+/// than from the way to it: refused or removed, too old or too new. Said the
+/// same wherever it is found, so looking further would only hide it.
+fn said_by_the_host(e: &ClientError) -> bool {
+    e.code().is_some()
+        || matches!(
+            e,
+            ClientError::Incompatible { .. }
+                | ClientError::KeyGone
+                | ClientError::HostTooOld
+                | ClientError::Key(_)
+        )
 }
 
 fn unix_now() -> i64 {

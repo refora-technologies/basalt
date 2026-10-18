@@ -25,7 +25,9 @@
 //! Written rather than using mDNS: mDNS means a dependency, a responder
 //! competing with the one Windows already runs, and a great deal of protocol
 //! for the question "who is out there". This is the same reasoning that
-//! produced the file protocol.
+//! produced the file protocol. mDNS is only *asked*, as well, for networks
+//! that drop broadcasts (see [`crate::mdns`]); the answer is still this
+//! protocol's beacon.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -216,6 +218,12 @@ pub async fn scan(window: Duration) -> Result<Vec<Found>> {
     for target in broadcast_targets() {
         let _ = socket.send_to(&query, target).await;
     }
+    // Asked by mDNS as well, for networks that drop broadcasts. Whoever
+    // answers is asked the same question directly, and replies to this
+    // socket like everyone else.
+    let mdns = crate::mdns::ask().await;
+    let mut asked: std::collections::HashSet<IpAddr> = std::collections::HashSet::new();
+    let mut mdns_buf = vec![0u8; MAX_DATAGRAM];
 
     // Keyed by host id, so a host that both answers and announces inside the
     // window appears once.
@@ -228,8 +236,33 @@ pub async fn scan(window: Duration) -> Result<Vec<Found>> {
         if remaining.is_zero() {
             break;
         }
-        let Ok(Ok((len, from))) = tokio::time::timeout(remaining, socket.recv_from(&mut buf)).await
-        else {
+        let received = tokio::time::timeout(remaining, async {
+            loop {
+                tokio::select! {
+                    received = socket.recv_from(&mut buf) => match received {
+                        Ok(received) => return Some(received),
+                        // Windows reports a question sent to a closed port
+                        // as the next read failing. One host not listening
+                        // must not end the look for all the others.
+                        Err(_) => continue,
+                    },
+                    answered = async {
+                        match &mdns {
+                            Some(mdns) => crate::mdns::answer(mdns, &mut mdns_buf).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        if let Some(ip) = answered
+                            && asked.insert(ip)
+                        {
+                            let _ = socket.send_to(&query, (ip, DISCOVERY_PORT)).await;
+                        }
+                    }
+                }
+            }
+        })
+        .await;
+        let Ok(Some((len, from))) = received else {
             break;
         };
 

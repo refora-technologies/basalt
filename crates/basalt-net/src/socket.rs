@@ -115,6 +115,17 @@ pub const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_se
 ///
 /// Accepts `192.168.1.10`, `192.168.1.10:7742`, `laptop-b`, and bracketed IPv6.
 pub async fn resolve(host: &str, default_port: u16) -> Result<SocketAddr> {
+    resolve_all(host, default_port).await.map(|all| all[0])
+}
+
+/// Every address a host string resolves to, IPv4 first.
+///
+/// A computer's name often resolves to several: Windows answers for its
+/// VirtualBox, WSL and VPN adapters too, and lists them first as often as
+/// not. Only one is reachable from another device, and nothing here can
+/// tell which, so they are all tried. IPv4 first, because a host listens on
+/// IPv4 and names often come back with IPv6 first.
+pub async fn resolve_all(host: &str, default_port: u16) -> Result<Vec<SocketAddr>> {
     let target = if host.parse::<std::net::Ipv6Addr>().is_ok() {
         // A bare IPv6 address needs brackets before a port can be appended.
         format!("[{host}]:{default_port}")
@@ -124,11 +135,22 @@ pub async fn resolve(host: &str, default_port: u16) -> Result<SocketAddr> {
         format!("{host}:{default_port}")
     };
 
-    tokio::net::lookup_host(&target)
+    let mut addresses: Vec<SocketAddr> = Vec::new();
+    for address in tokio::net::lookup_host(&target)
         .await
         .map_err(|e| NetError::Protocol(format!("could not resolve {target}: {e}")))?
-        .next()
-        .ok_or_else(|| NetError::Protocol(format!("{target} resolved to no addresses")))
+    {
+        if !addresses.contains(&address) {
+            addresses.push(address);
+        }
+    }
+    addresses.sort_by_key(|a| !a.is_ipv4());
+    if addresses.is_empty() {
+        return Err(NetError::Protocol(format!(
+            "{target} resolved to no addresses"
+        )));
+    }
+    Ok(addresses)
 }
 
 /// Whether a host string already carries a `:port`.

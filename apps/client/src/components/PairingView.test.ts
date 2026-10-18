@@ -17,6 +17,8 @@ const calls = vi.hoisted(() => ({
   pair: [] as string[],
   /** Who answers at a typed address, or nothing. */
   answer: null as DiscoveredHost | null,
+  /** What a search turns up. */
+  discovered: [] as DiscoveredHost[],
 }))
 
 vi.mock('@/lib/api', async (importOriginal) => {
@@ -26,7 +28,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
     api: {
       ...actual.api,
       // A network where hosts cannot be found: the reason to type one in.
-      discover: () => Promise.resolve([]),
+      discover: () => Promise.resolve(calls.discovered),
       identifyHost: (address: string) => {
         calls.identify.push(address)
         return calls.answer
@@ -63,7 +65,7 @@ const living: DiscoveredHost = {
 }
 
 async function typeAddress(address: string): Promise<void> {
-  const open = await screen.findByText('Enter the address instead')
+  const open = await screen.findByText('Enter the address or computer name')
   await act(async () => {
     fireEvent.click(open)
   })
@@ -78,6 +80,7 @@ beforeEach(() => {
   calls.connect = []
   calls.pair = []
   calls.answer = null
+  calls.discovered = []
 })
 
 afterEach(() => cleanup())
@@ -134,5 +137,38 @@ describe('typing a host’s address', () => {
     ).toBeTruthy()
     expect(calls.pair).toEqual([])
     expect(calls.connect).toEqual([])
+  })
+})
+
+describe('a paired host the search did not find', () => {
+  it('is listed, dimmed, and reconnected to with a tap', async () => {
+    const attic: DiscoveredHost = {
+      ...living,
+      hostId: '3b7d1f9e'.repeat(8),
+      hostName: 'ATTIC-NAS',
+      vault: 'Archive',
+      address: '192.168.1.8:7742',
+      paired: true,
+      seen: false,
+    }
+    calls.discovered = [{ ...living, seen: true }, attic]
+    const onPaired = vi.fn()
+    render(createElement(PairingView, { onPaired }))
+
+    const row = (await screen.findByText('Archive')).closest('button')!
+    expect(row.textContent).toContain('not found right now')
+    expect(row.disabled).toBe(false)
+    // After the hosts that were found.
+    const names = screen.getAllByRole('button').map((b) => b.textContent ?? '')
+    const atticAt = names.findIndex((t) => t.includes('Archive'))
+    const livingAt = names.findIndex((t) => t.includes('Media Drive'))
+    expect(livingAt).toBeLessThan(atticAt)
+
+    await act(async () => {
+      fireEvent.click(row)
+    })
+    await waitFor(() => expect(calls.connect).toEqual([[attic.hostId, attic.address]]))
+    expect(calls.pair).toEqual([])
+    await waitFor(() => expect(onPaired).toHaveBeenCalled())
   })
 })

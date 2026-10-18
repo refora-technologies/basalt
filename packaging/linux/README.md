@@ -23,8 +23,8 @@ sudo dnf install ./Basalt-Host-Server-Linux-x86_64.rpm    # or -aarch64.rpm
 
 The package installs `/usr/bin/basalt-host`, a `basalt-host` service that starts
 with the computer, its updater, and a firewall profile (ufw or firewalld) for
-ports 7742/tcp and 7743/udp. When it finishes, it shows the host's address, its
-setup code and anything left to do.
+ports 7742/tcp, 7743/udp and 5353/udp (mDNS). When it finishes, it shows the
+host's address, its setup code and anything left to do.
 
 With a `.tar.gz`, copy the files into place yourself:
 

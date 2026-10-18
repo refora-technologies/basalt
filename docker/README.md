@@ -50,7 +50,7 @@ Setting up and pairing only happen on your own network.
 | `/media/...` | Each folder mounted here is a drive the host can share. Add `:ro` for read only. |
 | `PUID`, `PGID` | The user and group the host runs as: the owner of your media (default 1000). |
 | `BASALT_HOST_NAME` | What devices call it at first. Renamed any time in Manage host. |
-| `network_mode: host` | Lets devices find the host by themselves. Without it, publish `7742/tcp` and `7743/udp`, and use "Enter the address" in the app. |
+| `network_mode: host` | Lets devices find the host by themselves. Without it, publish `7742/tcp` and `7743/udp`, and use "Enter the address or computer name" in the app. |
 | `/dev/dri` | Pass it in for faster video conversion with Intel or AMD graphics. |
 
 A container never updates itself. When a new version is out, Manage host and

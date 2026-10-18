@@ -15,6 +15,7 @@
 //! shapes that window receives — here rather than in the Tauri shell, which no
 //! test ever runs.
 
+pub mod announce;
 pub mod authority;
 pub mod autostart;
 pub mod config;

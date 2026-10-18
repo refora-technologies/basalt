@@ -13,7 +13,8 @@ services:
     image: ghcr.io/refora-technologies/basalt-host:latest
     container_name: basalt
     # So phones and computers on your network find it by themselves. Without
-    # it, map the ports below and use "Enter the address" in the app.
+    # it, map the ports below and use "Enter the address or computer name"
+    # in the app.
     network_mode: host
     # ports:
     #   - "7742:7742/tcp"

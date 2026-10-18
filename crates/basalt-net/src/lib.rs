@@ -12,6 +12,7 @@
 pub mod discovery;
 pub mod framing;
 pub mod identity;
+pub mod mdns;
 pub mod pairing;
 pub mod socket;
 pub mod tls;
