@@ -34,7 +34,21 @@ struct Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        // A conversion's ffmpeg still has its film open here: it is stopped
+        // when the test's runtime shuts down, just after. Windows will not
+        // remove an open file, so the folder is tried again until it goes,
+        // instead of leaving a film behind in the temp folder on every run.
+        if std::fs::remove_dir_all(&self.dir).is_err() {
+            let dir = self.dir.clone();
+            std::thread::spawn(move || {
+                for _ in 0..50 {
+                    std::thread::sleep(Duration::from_millis(100));
+                    if std::fs::remove_dir_all(&dir).is_ok() || !dir.exists() {
+                        return;
+                    }
+                }
+            });
+        }
         for store in self.stores.lock().expect("stores lock").iter() {
             let _ = std::fs::remove_file(store);
         }
@@ -70,7 +84,35 @@ impl Fixture {
     }
 }
 
+/// Removes what earlier runs could not: a test run on its own ends the
+/// moment its test does, before the folder its conversion held is let go.
+/// Only another run's folders, and only old ones, so nothing in use is
+/// touched.
+fn clear_earlier_runs() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let mine = format!("basalt-sync-{}-", std::process::id());
+        let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("basalt-sync-") || name.starts_with(&mine) {
+                continue;
+            }
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t.elapsed().is_ok_and(|age| age > Duration::from_secs(600)));
+            if old && entry.path().is_dir() {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    });
+}
+
 async fn start_host() -> Fixture {
+    clear_earlier_runs();
     let dir = unique("sync");
     let vault = dir.join("vault");
     std::fs::create_dir_all(vault.join("films")).unwrap();

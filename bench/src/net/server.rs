@@ -509,17 +509,33 @@ fn local_addresses() -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn temp_root() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("basalt-test-{}", std::process::id()));
+    /// A share for one test, gone when the test ends.
+    struct Root(PathBuf);
+
+    impl std::ops::Deref for Root {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn temp_root(name: &str) -> Root {
+        let dir = std::env::temp_dir().join(format!("basalt-test-{}-{name}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("ok.txt"), b"hello").unwrap();
         std::fs::write(dir.join("sub").join("nested.txt"), b"nested").unwrap();
-        dir.canonicalize().unwrap()
+        Root(dir.canonicalize().unwrap())
     }
 
     #[test]
     fn resolve_accepts_paths_inside_the_root() {
-        let root = temp_root();
+        let root = temp_root("inside");
         assert!(resolve(&root, "ok.txt").is_ok());
         assert!(resolve(&root, "sub/nested.txt").is_ok());
         assert!(
@@ -530,7 +546,7 @@ mod tests {
 
     #[test]
     fn resolve_rejects_traversal_out_of_the_root() {
-        let root = temp_root();
+        let root = temp_root("traversal");
         for bad in [
             "../outside.txt",
             "sub/../../escape",
@@ -546,7 +562,7 @@ mod tests {
 
     #[test]
     fn resolve_rejects_missing_files() {
-        let root = temp_root();
+        let root = temp_root("missing");
         assert!(resolve(&root, "does-not-exist.txt").is_err());
     }
 
