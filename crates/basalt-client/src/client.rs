@@ -427,6 +427,38 @@ impl Basalt {
         })
     }
 
+    /// Who answers at an address a person typed, for the drive list to treat
+    /// as it would a host it had found itself.
+    ///
+    /// Typing an address used to always start a new pairing, even for a host
+    /// this device was paired with. On a network where hosts cannot be found
+    /// (guest Wi-Fi, a router that keeps devices apart) that was the only way
+    /// back to a host, and it asked for a PIN all over again. Asked first, a
+    /// known host is reconnected to instead.
+    ///
+    /// The id is the one the host's key proved in the handshake, not a claim
+    /// in its greeting, and reconnecting pins it anyway.
+    pub async fn identify_at(&self, address: &str) -> Result<crate::ui::DiscoveredHost> {
+        let addr = basalt_net::socket::resolve(address, basalt_net::DEFAULT_PORT).await?;
+        let hello = Session::probe(addr, &self.me).await?;
+        let paired = self
+            .known_hosts()
+            .iter()
+            .any(|host| host.host_id == hello.host_id);
+        Ok(crate::ui::DiscoveredHost {
+            host_id: hello.host_id,
+            host_name: hello.host_name,
+            vault: hello.vault,
+            address: addr.to_string(),
+            // A greeting does not say; asking to pair does, before any PIN
+            // screen is shown.
+            requires_pin: true,
+            has_vault: hello.has_vault,
+            paired,
+            needs_setup: false,
+        })
+    }
+
     /// Whether the pairing begun asks for the host's setup code rather than a
     /// PIN: a host with no screen, being set up by this device.
     pub async fn pairing_is_setup(&self) -> bool {
@@ -636,12 +668,26 @@ impl Basalt {
 
         let mut credentials = self.credentials(&known).await;
         let mut session = None;
+        // A different host answering at the remembered address says nothing
+        // about where this one went: after the router hands addresses out
+        // again, it is usually somewhere else on the network. So it is looked
+        // for, and the wrong host is only reported if it is not found.
+        let mut wrong_host = None;
         if let Some(addr) = hint {
             match Session::connect(addr, &known.host_id, &credentials, &self.me).await {
                 Ok(open) => session = Some(open),
-                // Only a transport failure is worth looking elsewhere for. A
-                // host that answered and said no — a revoked token, a key that
-                // is not the pinned one — will say exactly the same thing at
+                Err(e @ ClientError::WrongHost { .. }) => {
+                    if let ClientError::WrongHost { expected, got } = &e {
+                        tracing::warn!(
+                            "{addr} is answering as host {got:.8}…, not {expected:.8}…; \
+                             looking for it on the network"
+                        );
+                    }
+                    wrong_host = Some(e);
+                }
+                // Otherwise only a transport failure is worth looking
+                // elsewhere for. A host that answered and said no — a revoked
+                // token, a key reset — will say exactly the same thing at
                 // whatever address discovery turns up, and searching would
                 // turn a clear "you have been removed" into a vague "offline".
                 Err(e) if !e.is_transient() => return Err(e),
@@ -655,12 +701,16 @@ impl Basalt {
                 // Ask the network. Only a host presenting the pinned key will
                 // do, so a wrong answer costs a failed handshake and nothing
                 // more.
-                let found = basalt_net::discovery::find_host(
+                let found = match basalt_net::discovery::find_host(
                     &known.host_id,
                     std::time::Duration::from_secs(3),
                 )
-                .await?
-                .ok_or(ClientError::HostNotFound)?;
+                .await
+                {
+                    Ok(Some(found)) => found,
+                    Ok(None) => return Err(wrong_host.unwrap_or(ClientError::HostNotFound)),
+                    Err(e) => return Err(wrong_host.unwrap_or(e.into())),
+                };
 
                 Session::connect(found.address, &known.host_id, &credentials, &self.me).await?
             }

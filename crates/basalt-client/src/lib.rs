@@ -51,8 +51,8 @@ pub enum ClientError {
     /// The key presented did not match the pinned one. Either the host was
     /// reset, or something is pretending to be it.
     #[error(
-        "this is not the host this device paired with \
-         (expected {expected}…, got {got}…). If you reset the host, pair again."
+        "another Basalt host is answering at this host's address \
+         (host {got:.8}…, not {expected:.8}…). If you reset this host, pair it again."
     )]
     WrongHost { expected: String, got: String },
 
@@ -229,7 +229,22 @@ mod tests {
         let text = format!("{err}");
         assert!(text.contains("aabbccdd"));
         assert!(text.contains("11223344"));
-        assert!(text.contains("pair again"));
+        assert!(text.contains("another Basalt host"));
+        assert!(text.contains("pair it again"));
+    }
+
+    #[test]
+    fn the_wrong_host_message_shortens_host_ids() {
+        let err = ClientError::WrongHost {
+            expected: "d30f2542".repeat(8),
+            got: "c3228c6a".repeat(8),
+        };
+        let text = format!("{err}");
+        assert!(text.contains("d30f2542…") && text.contains("c3228c6a…"));
+        assert!(
+            !text.contains("d30f2542d30f2542"),
+            "a whole id is noise: {text}"
+        );
     }
 
     #[test]

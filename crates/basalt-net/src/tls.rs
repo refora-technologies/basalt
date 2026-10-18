@@ -76,6 +76,10 @@ pub struct PinVerifier {
     trust: Trust,
     /// The id actually presented, recorded for the pairing flow to read back.
     seen: Mutex<Option<String>>,
+    /// The id of a host refused for not being the pinned one. The handshake
+    /// error can only carry text, so the caller reads this back to say
+    /// "another host is answering here" rather than relay rustls's message.
+    refused: Mutex<Option<String>>,
 }
 
 impl PinVerifier {
@@ -83,6 +87,7 @@ impl PinVerifier {
         Self {
             trust,
             seen: Mutex::new(None),
+            refused: Mutex::new(None),
         }
     }
 
@@ -90,6 +95,12 @@ impl PinVerifier {
     /// has completed.
     pub fn seen_host_id(&self) -> Option<String> {
         self.seen.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// The host id of a certificate refused for not being the pinned host,
+    /// once a handshake has failed for that reason.
+    pub fn refused_host_id(&self) -> Option<String> {
+        self.refused.lock().ok().and_then(|g| g.clone())
     }
 }
 
@@ -111,6 +122,9 @@ impl ServerCertVerifier for PinVerifier {
             // leaks nothing an attacker does not already have: the host id is
             // public by design.
             if &presented != expected {
+                if let Ok(mut slot) = self.refused.lock() {
+                    *slot = Some(presented.clone());
+                }
                 return Err(rustls::Error::General(format!(
                     "this is not the host you paired with \
                      (expected {}…, got {}…)",
@@ -336,6 +350,29 @@ mod tests {
             format!("{err}").contains("not the host you paired with"),
             "the message should say what went wrong, got: {err}"
         );
+        // Read back by the client, to name the case rather than relay rustls.
+        assert_eq!(
+            verifier.refused_host_id().as_deref(),
+            Some(impostor.host_id.as_str())
+        );
+        assert!(verifier.seen_host_id().is_none());
+    }
+
+    #[test]
+    fn the_pinned_host_is_not_recorded_as_refused() {
+        init_crypto();
+        let id = HostIdentity::generate("laptop-b").unwrap();
+        let verifier = PinVerifier::new(Trust::Pinned(id.host_id.clone()));
+        verifier
+            .verify_server_cert(
+                &id.certificate(),
+                &[],
+                &sni_name(),
+                &[],
+                UnixTime::since_unix_epoch(std::time::Duration::from_secs(1_700_000_000)),
+            )
+            .expect("the pinned key is accepted");
+        assert!(verifier.refused_host_id().is_none());
     }
 
     #[test]

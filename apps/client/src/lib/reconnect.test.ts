@@ -17,6 +17,8 @@ const host = vi.hoisted(() => ({
   wasConnected: false,
   /** The next listing hangs for five seconds, then fails as unanswered. */
   hangNext: false,
+  /** How a failed attempt to connect fails: no answer, or another host's. */
+  failAs: 'offline' as 'offline' | 'wronghost',
 }))
 
 const offline = {
@@ -46,7 +48,11 @@ vi.mock('./api', async (importOriginal) => {
         host.attempts += 1
         return host.attempts > host.downFor
           ? Promise.resolve(online)
-          : Promise.reject(new actual.ApiError('offline', 'the host did not answer'))
+          : Promise.reject(
+              host.failAs === 'wronghost'
+                ? new actual.ApiError('wronghost', 'another Basalt host is answering here')
+                : new actual.ApiError('offline', 'the host did not answer'),
+            )
       },
       list: () => {
         host.listed += 1
@@ -76,6 +82,7 @@ beforeEach(() => {
   host.listed = 0
   host.wasConnected = false
   host.hangNext = false
+  host.failAs = 'offline'
   vi.useFakeTimers({ shouldAdvanceTime: true })
 })
 
@@ -115,6 +122,29 @@ describe('a host that was not sharing when the app opened', () => {
     }
     // Two, four, eight, then every ten seconds: about eight in a minute.
     expect(host.attempts).toBeGreaterThanOrEqual(6)
+  })
+})
+
+describe('another host answering at the paired host’s address', () => {
+  it('is said, and the paired host is looked for until it answers', async () => {
+    // The address went to another computer while the paired host was off;
+    // it comes back, and is found.
+    host.failAs = 'wronghost'
+    host.downFor = 3
+    const { result } = renderHook(() => useVault())
+    await waitFor(() => expect(result.current.status?.hasPaired).toBe(true))
+    const seen = new Set<string>()
+    for (let second = 0; second < 40 && host.attempts <= host.downFor; second++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000)
+      })
+      if (result.current.error) seen.add(result.current.error.kind)
+    }
+    // Said as what it is, and tried again regardless.
+    expect(seen).toContain('wronghost')
+    expect(host.attempts).toBe(4)
+    await waitFor(() => expect(result.current.error).toBeNull())
+    await waitFor(() => expect(result.current.entries.map((e) => e.name)).toEqual(['Holiday 2026.mp4']))
   })
 })
 

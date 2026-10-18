@@ -19,6 +19,7 @@ import { VaultCard } from './components/VaultCard'
 import { HexMark } from './components/HexMark'
 import { PromptDialog, type PromptRequest } from './components/ui/PromptDialog'
 import { MessageDialog, type MessageRequest } from './components/ui/MessageDialog'
+import { ConfirmDialog } from './components/ui/ConfirmDialog'
 
 /** How often the dashboard asks for each thing. */
 const STATUS_INTERVAL = 2_000
@@ -40,6 +41,8 @@ export function App(): React.JSX.Element {
 
   const [prompt, setPrompt] = useState<PromptRequest | null>(null)
   const [message, setMessage] = useState<MessageRequest | null>(null)
+  // Turning the PIN off is asked about first, as Manage host on a phone asks.
+  const [askNoPin, setAskNoPin] = useState(false)
   const [adding, setAdding] = useState(false)
   /** Why the last change to the profile rules was refused. */
   const [rulesError, setRulesError] = useState<string | null>(null)
@@ -61,6 +64,16 @@ export function App(): React.JSX.Element {
       status.set(next)
     },
     [status],
+  )
+
+  const setRequirePin = useCallback(
+    (require: boolean) => {
+      void api.setRequirePin(require).then((next) => {
+        apply(next)
+        pairings.refresh()
+      })
+    },
+    [apply, pairings],
   )
 
   useEffect(() => {
@@ -338,10 +351,8 @@ export function App(): React.JSX.Element {
                   <SettingsPanel
                     status={current}
                     onRequirePin={(require) => {
-                      void api.setRequirePin(require).then((next) => {
-                        apply(next)
-                        pairings.refresh()
-                      })
+                      if (require) setRequirePin(true)
+                      else setAskNoPin(true)
                     }}
                     onStartWithWindows={(enabled) => {
                       void api.setStartWithWindows(enabled).then(apply)
@@ -390,6 +401,23 @@ export function App(): React.JSX.Element {
 
       <PromptDialog request={prompt} onClose={() => setPrompt(null)} />
       <MessageDialog request={message} onClose={() => setMessage(null)} />
+      <ConfirmDialog
+        request={
+          askNoPin
+            ? {
+                title: 'Let devices join without a PIN?',
+                message:
+                  'Any device on the same network could join and open the drive. Turn it back on once your new device has joined.',
+                confirmLabel: 'Turn off',
+                danger: true,
+              }
+            : null
+        }
+        onAnswer={(yes) => {
+          setAskNoPin(false)
+          if (yes) setRequirePin(false)
+        }}
+      />
       {current && (
         <AddProfileDialog
           open={adding}

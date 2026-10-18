@@ -11,6 +11,7 @@ import {
 import { HexMark } from './HexMark'
 import { ApiError, api, type DiscoveredHost, type Status } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { wrongHostText } from '@/lib/wrongHost'
 import { useBack } from '@/mobile/useBack'
 
 const PIN_LENGTH = 6
@@ -137,7 +138,13 @@ export function PairingView({
           onPaired(await api.connectTo(host.hostId, host.address))
         } catch (e) {
           if (!live.current) return
-          setError(e instanceof Error ? e.message : String(e))
+          setError(
+            e instanceof ApiError && e.kind === 'wronghost'
+              ? wrongHostText(host.hostName, { retrying: false })
+              : e instanceof Error
+                ? e.message
+                : String(e),
+          )
           // Removed by that host: it is no longer paired, so the list is
           // looked at again and it shows as a new host to pair with.
           if (e instanceof ApiError && e.kind === 'removed') void scan()
@@ -174,6 +181,39 @@ export function PairingView({
       }
     },
     [busy, onPaired, onBack, currentHostId, scan],
+  )
+
+  /**
+   * An address typed in. Asked who answers there first, so a host this device
+   * has paired with is reconnected to, as choosing it from the list would.
+   * It used to start a new pairing every time, PIN and all, which on a
+   * network where hosts cannot be found was the only way back to a host.
+   */
+  const chooseAddress = useCallback(
+    async (address: string) => {
+      if (busy) return
+      setBusy(true)
+      setError(null)
+      let host: DiscoveredHost
+      try {
+        host = await api.identifyHost(address)
+      } catch (e) {
+        if (!live.current) return
+        setError(
+          e instanceof ApiError && e.kind === 'offline'
+            ? `Nothing answered at ${address}. The address is shown in Basalt Host’s window.`
+            : e instanceof Error
+              ? e.message
+              : String(e),
+        )
+        setBusy(false)
+        return
+      }
+      if (!live.current) return
+      setBusy(false)
+      await choose(host)
+    },
+    [busy, choose],
   )
 
   const submitPin = useCallback(
@@ -266,6 +306,7 @@ export function PairingView({
               busy={busy}
               currentHostId={currentHostId ?? null}
               onChoose={(host) => void choose(host)}
+              onAddress={(address) => void chooseAddress(address)}
               onRescan={() => void scan()}
             />
             {onHowItWorks && (
@@ -322,9 +363,14 @@ export function PairingView({
                   </>
                 ) : (
                   <>
-                    Sharing <span className="text-text">{chosen.vault}</span>. Check that this
-                    identity matches the one the host shows. After this, this device trusts
-                    it and won’t ask again.
+                    {/* Not "Sharing ." for a host with no drive shared yet. */}
+                    {chosen.hasVault && chosen.vault.trim() && (
+                      <>
+                        Sharing <span className="text-text">{chosen.vault}</span>.{' '}
+                      </>
+                    )}
+                    Check that this identity matches the one the host shows. After this,
+                    this device trusts it and won’t ask again.
                   </>
                 )}
               </p>
@@ -369,6 +415,7 @@ function HostList({
   busy,
   currentHostId,
   onChoose,
+  onAddress,
   onRescan,
 }: {
   hosts: DiscoveredHost[] | null
@@ -376,6 +423,7 @@ function HostList({
   busy: boolean
   currentHostId: string | null
   onChoose: (host: DiscoveredHost) => void
+  onAddress: (address: string) => void
   onRescan: () => void
 }): React.JSX.Element {
   if (hosts === null) {
@@ -428,7 +476,7 @@ function HostList({
         {scanning ? 'Looking…' : 'Look again'}
       </button>
 
-      <AddressEntry busy={busy} onChoose={onChoose} />
+      <AddressEntry busy={busy} onAddress={onAddress} />
     </div>
   )
 }
@@ -443,10 +491,10 @@ function HostList({
  */
 function AddressEntry({
   busy,
-  onChoose,
+  onAddress,
 }: {
   busy: boolean
-  onChoose: (host: DiscoveredHost) => void
+  onAddress: (address: string) => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const [address, setAddress] = useState('')
@@ -469,16 +517,7 @@ function AddressEntry({
       onSubmit={(e) => {
         e.preventDefault()
         if (!withPort || busy) return
-        onChoose({
-          hostId: '',
-          hostName: trimmed,
-          vault: '',
-          address: withPort,
-          requiresPin: true,
-          hasVault: true,
-          paired: false,
-          needsSetup: false,
-        })
+        onAddress(withPort)
       }}
     >
       <input

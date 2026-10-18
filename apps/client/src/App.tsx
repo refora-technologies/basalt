@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import { forgetPosters } from '@/components/Poster'
 import { useShowHidden, visibleEntries } from '@/lib/showHidden'
+import { wrongHostText } from '@/lib/wrongHost'
 import { TitleBar } from '@/components/TitleBar'
 import { Breadcrumbs } from '@/components/Breadcrumbs'
 import { Sidebar, type NavKey } from '@/components/Sidebar'
@@ -2131,15 +2132,19 @@ function ConnectionBanner({
   // A host with no drive yet: the screen below says so, with what to do.
   if (!kind || vault.status?.hasDrive === false) return null
 
-  const offline = kind === 'offline'
+  const wrongHost = kind === 'wronghost'
+  // Kept trying, as a host that is not answering is.
+  const offline = kind === 'offline' || wrongHost
   const waiting = kind === 'unavailable'
-  const text = offline
-    ? vault.reconnecting
-      ? 'Reconnecting…'
-      : 'Lost the connection to the host. Basalt keeps trying.'
-    : waiting
-      ? `${capitalise(vault.error?.message ?? 'The drive isn’t connected')}. It appears here again as soon as it’s plugged back in.`
-      : capitalise(vault.error?.message ?? 'Something went wrong')
+  const text = wrongHost
+    ? wrongHostText(vault.status?.hostName)
+    : offline
+      ? vault.reconnecting
+        ? 'Reconnecting…'
+        : 'Lost the connection to the host. Basalt keeps trying.'
+      : waiting
+        ? `${capitalise(vault.error?.message ?? 'The drive isn’t connected')}. It appears here again as soon as it’s plugged back in.`
+        : capitalise(vault.error?.message ?? 'Something went wrong')
 
   return (
     <motion.div

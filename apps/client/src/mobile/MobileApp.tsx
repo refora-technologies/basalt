@@ -31,8 +31,9 @@ import {
   X,
 } from 'lucide-react'
 import { Switch } from '@/components/Switch'
-import { isWaiting, waitingLabel } from '@/lib/useVault'
+import { filesEmptyLabel } from '@/lib/useVault'
 import { setShowHidden, useShowHidden } from '@/lib/showHidden'
+import { wrongHostText } from '@/lib/wrongHost'
 import { musicItem, type AppModel } from '@/App'
 import { HexMark } from '@/components/HexMark'
 import { PairingView } from '@/components/PairingView'
@@ -442,13 +443,12 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
               selecting={selecting}
               onActions={setMenuFor}
               scrollKey={model.listKey}
-              emptyLabel={
-                isWaiting(model.vault.status)
-                  ? waitingLabel(model.vault.status)
-                  : query
-                    ? `Nothing matches “${query}”`
-                    : 'This folder is empty'
-              }
+              emptyLabel={filesEmptyLabel({
+                connected: model.connected,
+                status: model.vault.status,
+                error: model.vault.error,
+                query,
+              })}
             />
           )}
           {tab === 'recent' && (
@@ -921,16 +921,20 @@ function ConnectionLine({ model }: { model: AppModel }): React.JSX.Element | nul
   const kind = model.vault.error?.kind
   // A host with no drive yet: the screen below says so, with what to do.
   if (!kind || model.vault.status?.hasDrive === false) return null
-  const offline = kind === 'offline'
+  const wrongHost = kind === 'wronghost'
+  // Kept trying, as a host that is not answering is.
+  const offline = kind === 'offline' || wrongHost
   return (
     <div className="flex shrink-0 items-center gap-2.5 border-y border-white/[0.06] bg-[#141416] px-4 py-2.5">
       <Loader2 size={14} className="shrink-0 animate-spin text-textFaint" />
       <span className="min-w-0 flex-1 text-[12.5px] leading-snug text-textDim">
-        {offline
-          ? model.vault.reconnecting
-            ? 'Reconnecting…'
-            : 'Can’t reach the host. Trying again.'
-          : (model.vault.error?.message ?? 'Something went wrong')}
+        {wrongHost
+          ? wrongHostText(model.vault.status?.hostName)
+          : offline
+            ? model.vault.reconnecting
+              ? 'Reconnecting…'
+              : 'Can’t reach the host. Trying again.'
+            : (model.vault.error?.message ?? 'Something went wrong')}
       </span>
       <button
         onClick={() => (offline ? void model.vault.reconnect() : model.vault.refresh())}
