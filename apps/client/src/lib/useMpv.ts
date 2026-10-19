@@ -451,6 +451,13 @@ export interface Mpv extends MpvState {
   togglePause: () => Promise<void>
   setPaused: (paused: boolean) => Promise<void>
   seekTo: (seconds: number) => Promise<void>
+  /**
+   * A quick look at `seconds` while the seek bar is held: to the nearest
+   * keyframe, which is what keeps a drag smooth. Nothing for a conversion
+   * past what has arrived, where every seek would start the conversion
+   * again: letting go decides there. Whether it moved.
+   */
+  scrubTo: (seconds: number) => Promise<boolean>
   seekBy: (seconds: number) => Promise<void>
   /** One frame forward, or back. Exact — this is why mpv is here. */
   stepFrame: (direction: 1 | -1) => Promise<void>
@@ -927,6 +934,22 @@ function useAppMpv(): Mpv {
     [load],
   )
 
+  const scrubTo = useCallback(async (seconds: number) => {
+    if (!inTauri()) return false
+    const source = converted.current
+    if (source) {
+      const [position, cachedTo] = await Promise.all([
+        readProperty('time-pos', 'double'),
+        readProperty('demuxer-cache-time', 'double'),
+      ])
+      const at = Number(position) || source.from
+      const end = Number(cachedTo) || at
+      if (!seekWithinConversion(seconds, source.from, at, end)) return false
+    }
+    await mpv.command('seek', [seconds.toFixed(3), 'absolute+keyframes'])
+    return true
+  }, [])
+
   const seekBy = useCallback(
     async (seconds: number) => {
       if (!inTauri()) return
@@ -1016,6 +1039,7 @@ function useAppMpv(): Mpv {
     togglePause,
     setPaused,
     seekTo,
+    scrubTo,
     seekBy,
     stepFrame,
     setVolume,

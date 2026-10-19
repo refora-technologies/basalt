@@ -16,8 +16,9 @@ import {
 import { cn, formatBytes } from '@/lib/utils'
 import { Poster } from './Poster'
 import { subtitleBadge, subtitleTitle } from '@/lib/subtitles'
-import { ContinueWatching, resumable } from './ContinueWatching'
+import { ContinueWatching, resumable, type Resumable } from './ContinueWatching'
 import { useBack } from '@/mobile/useBack'
+import { useLongPress } from '@/lib/useLongPress'
 
 /**
  * Films and series, as a wall of posters.
@@ -39,6 +40,9 @@ export function LibraryView({
   playing,
   onPlay,
   onForget,
+  onContinueMore,
+  onItemMore,
+  onEpisodeMore,
 }: {
   kind: 'film' | 'series'
   items: LibraryItem[]
@@ -64,6 +68,15 @@ export function LibraryView({
   playing: boolean
   onPlay: (path: string) => void
   onForget: (path: string) => void
+  /** On a phone: a Continue watching card's ⋮ or long press. */
+  onContinueMore?: (entry: Resumable) => void
+  /**
+   * On a phone: a long press on a poster, or on an episode. What a computer
+   * says in tooltips over the badges (which subtitles, a match that may be
+   * wrong) is said there instead, as nothing hovers on a phone.
+   */
+  onItemMore?: (item: LibraryItem) => void
+  onEpisodeMore?: (item: LibraryItem, episode: LibraryEpisode, season: number) => void
 }): React.JSX.Element {
   const [open, setOpen] = useState<LibraryItem | null>(null)
 
@@ -158,7 +171,12 @@ export function LibraryView({
         )}
       </AnimatePresence>
 
-      <ContinueWatching entries={carryOn} onPlay={onPlay} onForget={onForget} />
+      <ContinueWatching
+        entries={carryOn}
+        onPlay={onPlay}
+        onForget={onForget}
+        onMore={onContinueMore}
+      />
 
       {/* Two to a row on a phone, whatever its display size: a column count
           worked out from a minimum width fell to one on phones set to show
@@ -174,6 +192,7 @@ export function LibraryView({
               if (item.kind === 'series') setOpen(item)
               else if (item.path) onPlay(item.path)
             }}
+            onMore={TOUCH && onItemMore ? () => onItemMore(item) : undefined}
           />
         ))}
       </div>
@@ -185,6 +204,7 @@ export function LibraryView({
             watched={watched}
             onClose={() => setOpen(null)}
             onPlay={onPlay}
+            onEpisodeMore={TOUCH ? onEpisodeMore : undefined}
           />
         )}
       </AnimatePresence>
@@ -250,15 +270,19 @@ function Card({
   index,
   progress,
   onOpen,
+  onMore,
 }: {
   item: LibraryItem
   index: number
   /** 0-1, drawn as a bar across the bottom of the poster. */
   progress: number
   onOpen: () => void
+  /** A long press, on a phone: see [`LibraryView`]'s `onItemMore`. */
+  onMore?: () => void
 }): React.JSX.Element {
   const episodes = item.seasons.reduce((total, s) => total + s.episodes.length, 0)
   const quality = itemQuality(item)
+  const press = useLongPress(() => onMore?.(), onOpen)
 
   return (
     <motion.button
@@ -268,8 +292,8 @@ function Card({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, delay: Math.min(index, 18) * 0.02, ease: [0.22, 1, 0.36, 1] }}
       whileHover={{ y: -3 }}
-      onClick={onOpen}
-      className="group block text-left"
+      {...(onMore ? press : { onClick: onOpen })}
+      className="group block select-none text-left"
       // Cards far off screen are neither laid out nor painted until they come
       // near, so a long library scrolls like a short one.
       style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 320px' }}
@@ -354,11 +378,13 @@ function SeriesSheet({
   watched,
   onClose,
   onPlay,
+  onEpisodeMore,
 }: {
   item: LibraryItem
   watched: Map<string, Watched>
   onClose: () => void
   onPlay: (path: string) => void
+  onEpisodeMore?: (item: LibraryItem, episode: LibraryEpisode, season: number) => void
 }): React.JSX.Element {
   const [season, setSeason] = useState<LibrarySeason | undefined>(item.seasons[0])
   const sideways = useSideways()
@@ -414,6 +440,9 @@ function SeriesSheet({
           episode={episode}
           watched={watched.get(episode.path)}
           onPlay={() => onPlay(episode.path)}
+          onMore={
+            onEpisodeMore && season ? () => onEpisodeMore(item, episode, season.number) : undefined
+          }
         />
       ))}
     </div>
@@ -542,18 +571,22 @@ function EpisodeRow({
   episode,
   watched,
   onPlay,
+  onMore,
 }: {
   episode: LibraryEpisode
   watched: Watched | undefined
   onPlay: () => void
+  /** A long press, on a phone: see [`LibraryView`]'s `onEpisodeMore`. */
+  onMore?: () => void
 }): React.JSX.Element {
   const done = watched ? isFinished(watched) : false
   const part = watched && !done ? watched.fraction : 0
+  const press = useLongPress(() => onMore?.(), onPlay)
 
   return (
     <button
-      onClick={onPlay}
-      className="group relative flex items-center gap-3 overflow-hidden rounded-md border border-line bg-panel px-3.5 py-2.5 text-left transition-colors hover:bg-panel2"
+      {...(onMore ? press : { onClick: onPlay })}
+      className="group relative flex select-none items-center gap-3 overflow-hidden rounded-md border border-line bg-panel px-3.5 py-2.5 text-left transition-colors hover:bg-panel2 active:bg-panel2"
     >
       <span className="tnum w-7 shrink-0 font-mono text-[12px] text-textFaint">
         {episode.number === 0 ? '—' : String(episode.number).padStart(2, '0')}

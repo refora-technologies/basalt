@@ -7,6 +7,12 @@ import type { Config } from 'tailwindcss'
  */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
+  // Hover styles only where something can hover: a mouse or a trackpad. On a
+  // phone a tap used to leave whatever it touched in its hover look — a
+  // poster zoomed, a card's buttons showing — until the next tap elsewhere.
+  future: {
+    hoverOnlyWhenSupported: true,
+  },
   theme: {
     extend: {
       colors: {

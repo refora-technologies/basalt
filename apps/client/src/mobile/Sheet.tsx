@@ -218,12 +218,15 @@ export function ActionSheet({
   onClose,
   title,
   subtitle,
+  details,
   actions,
 }: {
   open: boolean
   onClose: () => void
   title?: string
   subtitle?: string
+  /** Said above the actions: what a computer shows in tooltips, say. */
+  details?: React.ReactNode
   actions: MenuAction[]
 }): React.JSX.Element | null {
   return (
@@ -243,6 +246,7 @@ export function ActionSheet({
         ) : undefined
       }
     >
+      {details && <div className="px-5 pb-3 text-[13.5px] leading-relaxed text-textDim">{details}</div>}
       <div className="pb-1">
         {actions.map((action) => {
           const Icon = action.icon

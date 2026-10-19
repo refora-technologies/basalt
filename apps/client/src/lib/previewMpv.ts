@@ -114,6 +114,13 @@ export function usePreviewMpv(): Mpv {
     togglePause: useCallback(async () => setState((s) => ({ ...s, paused: !s.paused })), []),
     setPaused: useCallback(async (paused: boolean) => setState((s) => ({ ...s, paused })), []),
     seekTo,
+    scrubTo: useCallback(
+      async (seconds: number) => {
+        await seekTo(seconds)
+        return true
+      },
+      [seekTo],
+    ),
     seekBy: useCallback(
       async (by: number) =>
         setState((s) => ({ ...s, position: Math.max(0, Math.min(s.duration, s.position + by)) })),
