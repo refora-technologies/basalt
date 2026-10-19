@@ -487,6 +487,18 @@
           "markdownDescription": "Denies the list_folder command without any pre-configured scope."
         },
         {
+          "description": "Enables the local_network command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-local-network",
+          "markdownDescription": "Enables the local_network command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the local_network command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-local-network",
+          "markdownDescription": "Denies the local_network command without any pre-configured scope."
+        },
+        {
           "description": "Enables the minimize command without any pre-configured scope.",
           "type": "string",
           "const": "allow-minimize",
@@ -581,6 +593,18 @@
           "type": "string",
           "const": "deny-notify-update",
           "markdownDescription": "Denies the notify_update command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_app_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-app-settings",
+          "markdownDescription": "Enables the open_app_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_app_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-app-settings",
+          "markdownDescription": "Denies the open_app_settings command without any pre-configured scope."
         },
         {
           "description": "Enables the open_download command without any pre-configured scope.",
@@ -763,6 +787,18 @@
           "markdownDescription": "Denies the remove_listener command without any pre-configured scope."
         },
         {
+          "description": "Enables the request_local_network command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-request-local-network",
+          "markdownDescription": "Enables the request_local_network command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the request_local_network command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-request-local-network",
+          "markdownDescription": "Denies the request_local_network command without any pre-configured scope."
+        },
+        {
           "description": "Enables the request_notifications command without any pre-configured scope.",
           "type": "string",
           "const": "allow-request-notifications",
@@ -809,6 +845,18 @@
           "type": "string",
           "const": "deny-set-orientation",
           "markdownDescription": "Denies the set_orientation command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_pip command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-pip",
+          "markdownDescription": "Enables the set_pip command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_pip command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-pip",
+          "markdownDescription": "Denies the set_pip command without any pre-configured scope."
         },
         {
           "description": "Enables the set_volume command without any pre-configured scope.",
@@ -871,10 +919,10 @@
           "markdownDescription": "Denies the take_shared command without any pre-configured scope."
         },
         {
-          "description": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`",
+          "description": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-pip`\n- `allow-local-network`\n- `allow-request-local-network`\n- `allow-open-app-settings`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`"
+          "markdownDescription": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-pip`\n- `allow-local-network`\n- `allow-request-local-network`\n- `allow-open-app-settings`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-destroy`"
         }
       ]
     }

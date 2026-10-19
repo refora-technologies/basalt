@@ -38,6 +38,7 @@ import { musicItem, type AppModel } from '@/App'
 import { HexMark } from '@/components/HexMark'
 import { PairingView } from '@/components/PairingView'
 import { Onboarding, markOnboarded, onboarded } from '@/components/Onboarding'
+import { LocalNetworkGate, useLocalNetwork } from './LocalNetworkGate'
 import { ProfileGate } from '@/components/ProfileGate'
 import { LibraryView } from '@/components/LibraryView'
 import { MusicList, PhotoGrid, VideoGrid } from '@/components/MediaViews'
@@ -106,6 +107,7 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
   }, [])
 
   const { vault, identity, connected } = model
+  const localNetwork = useLocalNetwork()
   // Choosing another drive from More: the drive list, with a way back.
   const [changingDrive, setChangingDrive] = useState(false)
   const [introducing, setIntroducing] = useState(() => !onboarded())
@@ -125,7 +127,14 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
     setIntroducing(false)
   }, [everPaired])
 
-  if (!vault.status) return <Splash />
+  if (!vault.status || !localNetwork.state) return <Splash />
+  if (localNetwork.state !== 'granted') {
+    return (
+      <Safe>
+        <LocalNetworkGate state={localNetwork.state} onRequest={localNetwork.request} />
+      </Safe>
+    )
+  }
 
   // The drive list: on first use, when the host has removed this device, and
   // when changing drives.

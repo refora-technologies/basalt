@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-pip"
+description = "Enables the set_pip command without any pre-configured scope."
+commands.allow = ["set_pip"]
+
+[[permission]]
+identifier = "deny-set-pip"
+description = "Denies the set_pip command without any pre-configured scope."
+commands.deny = ["set_pip"]
