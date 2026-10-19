@@ -1764,15 +1764,21 @@ export function PlayerOverlay({
             />
           )}
 
-          <motion.div
-            initial={false}
-            animate={{ y: controlsUp ? 0 : 28, opacity: controlsUp ? 1 : 0 }}
-            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+          <div
             onMouseEnter={() => setOverBar(true)}
             onMouseLeave={() => setOverBar(false)}
             // A finger on the controls is someone using them.
             onPointerDown={TOUCH ? keepControls : undefined}
+            // A CSS transition rather than Framer Motion: its fade runs on the
+            // compositor and its slide on the page's own frames, and on a busy
+            // phone the slide stalled while the fade finished, leaving the bar
+            // showing 28 px low, its buttons cut off at the bottom edge. Here
+            // both run together on the compositor, as the Sheet's do.
             style={{
+              transform: `translateY(${controlsUp ? 0 : 28}px)`,
+              opacity: controlsUp ? 1 : 0,
+              transition:
+                'transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms cubic-bezier(0.22, 1, 0.36, 1)',
               pointerEvents: controlsUp ? 'auto' : 'none',
               ...(TOUCH
                 ? {
@@ -1978,7 +1984,7 @@ export function PlayerOverlay({
                 />
               )}
             </div>
-          </motion.div>
+          </div>
         </motion.div>
       )}
     </AnimatePresence>
