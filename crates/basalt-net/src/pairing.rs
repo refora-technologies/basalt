@@ -30,11 +30,9 @@
 //! around 10^11 HMAC operations instead of 10^6. Pairing happens once and the
 //! derivation takes about a tenth of a second, so this is paid for by nobody.
 //!
-//! A PAKE such as SPAKE2 would remove the offline attack rather than merely
-//! pricing it, and is the right answer if this ever leaves the LAN. It is a
-//! considerably larger piece of machinery and, with a three-minute window and a
-//! five-attempt lockout in front of it, it is not what is protecting anyone
-//! here.
+//! A PAKE removes the offline attack rather than merely pricing it, and pairing
+//! now goes by SPAKE2 where both sides can: see [`crate::pake`]. This proof is
+//! what a device or a host from before that still uses.
 
 use std::num::NonZeroU32;
 

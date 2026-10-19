@@ -101,6 +101,29 @@ pub struct PairBeginResponse {
     /// with it becomes the host's first manager. Absent from older hosts.
     #[serde(default)]
     pub setup: bool,
+    /// The host takes the PIN, or setup code, by SPAKE2: [`PairPakeRequest`]
+    /// before `PairFinish`. Absent from older hosts, which take only the
+    /// HMAC proof.
+    #[serde(default)]
+    pub pake: bool,
+}
+
+/// The device's SPAKE2 message for a pairing begun, made with the PIN as
+/// typed. Answered with the host's; the proof in [`PairFinishRequest`] then
+/// shows the device ended up with the same key. A wrong PIN means another
+/// one of these, with the PIN typed again. See `basalt_net::pake`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairPakeRequest {
+    /// The id from [`PairBeginResponse`].
+    pub request: String,
+    /// Hex.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairPakeResponse {
+    /// The host's SPAKE2 message, hex.
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +164,11 @@ pub struct PairFinishResponse {
     /// screen, with its setup code. Absent from older hosts.
     #[serde(default)]
     pub manages: bool,
+    /// After pairing by SPAKE2, the host's proof that it has the same key,
+    /// and so knew the PIN the device was shown. The device keeps the
+    /// pairing only if it checks. Empty otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub confirm: String,
     /// See [`AuthResponse::addresses`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub addresses: Vec<String>,

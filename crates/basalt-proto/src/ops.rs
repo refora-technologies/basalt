@@ -142,6 +142,9 @@ pub enum Op {
     /// Signs in to a profile made on another drive, with the statement its
     /// home host signed for this device: see [`crate::msg::ProfileLinkRequest`].
     ProfileLink = 37,
+    /// The PIN step of pairing by SPAKE2, between `PairBegin` and
+    /// `PairFinish`: see [`crate::msg::PairPakeRequest`].
+    PairPake = 38,
 }
 
 impl Op {
@@ -150,7 +153,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::ProfileLink as u8;
+    pub const LAST: u8 = Op::PairPake as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -191,6 +194,7 @@ impl Op {
             35 => Op::Endorse,
             36 => Op::Manage,
             37 => Op::ProfileLink,
+            38 => Op::PairPake,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -205,7 +209,7 @@ impl Op {
     pub fn allowed_unauthenticated(self) -> bool {
         matches!(
             self,
-            Op::Ping | Op::Hello | Op::PairBegin | Op::PairFinish | Op::Auth
+            Op::Ping | Op::Hello | Op::PairBegin | Op::PairPake | Op::PairFinish | Op::Auth
         )
     }
 
@@ -330,7 +334,14 @@ mod tests {
 
     #[test]
     fn only_the_handshake_is_allowed_before_authenticating() {
-        for op in [Op::Ping, Op::Hello, Op::PairBegin, Op::PairFinish, Op::Auth] {
+        for op in [
+            Op::Ping,
+            Op::Hello,
+            Op::PairBegin,
+            Op::PairPake,
+            Op::PairFinish,
+            Op::Auth,
+        ] {
             assert!(op.allowed_unauthenticated(), "{op:?} is part of connecting");
         }
         for op in [

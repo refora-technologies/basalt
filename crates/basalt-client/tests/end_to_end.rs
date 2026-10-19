@@ -173,6 +173,26 @@ async fn a_wrong_pin_is_refused_and_pairs_nothing() {
     assert!(!client.is_connected());
 }
 
+// By SPAKE2, each PIN typed is an exchange of its own: the one after a typo
+// must not be judged with the key the typo made.
+#[tokio::test]
+async fn a_pin_typed_wrong_then_right_pairs() {
+    let fixture = start_host().await;
+    let client = fixture.client();
+    assert!(client.begin_pairing(fixture.addr).await.unwrap());
+    let real = fixture.displayed_pin().unwrap();
+    let wrong = if real == "000000" { "111111" } else { "000000" };
+
+    let err = client.finish_pairing(Some(wrong)).await.unwrap_err();
+    assert_eq!(err.kind(), "pairing", "got: {err}");
+    client
+        .finish_pairing(Some(&real))
+        .await
+        .expect("the right PIN, typed again, pairs");
+    assert_eq!(client.known_hosts().len(), 1);
+    assert!(client.is_connected());
+}
+
 // The whole point of a request: the host can say *who* is asking, beside the
 // number to read across.
 #[tokio::test]

@@ -14,6 +14,7 @@ pub mod framing;
 pub mod identity;
 pub mod mdns;
 pub mod pairing;
+pub mod pake;
 pub mod socket;
 pub mod tls;
 
