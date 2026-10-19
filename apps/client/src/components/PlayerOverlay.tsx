@@ -2211,10 +2211,7 @@ function SubtitleMenu({
         </button>
       </div>
 
-      {/* On a phone the tracks and the settings below scroll as one, so the
-          tracks have the height rather than four lines of it. */}
-      <div className={TOUCH ? 'min-h-0 flex-1 overflow-y-auto' : 'contents'}>
-      <div className={cn('py-1.5', !TOUCH && 'min-h-0 flex-1 overflow-y-auto')}>
+      <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
         <Choice label="Off" active={mpv.subtitleId === null} onClick={() => onChoose(null)} />
         {inFile.map((track) => {
           const label = labelOf(describeSub(track))
@@ -2295,7 +2292,7 @@ function SubtitleMenu({
         )}
       </div>
 
-      <div className="border-t border-white/[0.07] px-4 py-3">
+      <div className="shrink-0 border-t border-white/[0.07] px-4 py-3">
         <button
           onClick={onAddFromDisk}
           className="flex w-full items-center gap-2 text-left text-[12px] text-textDim transition-colors duration-150 hover:text-text"
@@ -2328,7 +2325,6 @@ function SubtitleMenu({
           {/* Which way is which is genuinely hard to remember, so it says. */}
           Plus if the subtitles are early, minus if they are late.
         </p>
-      </div>
       </div>
     </motion.div>
   )
