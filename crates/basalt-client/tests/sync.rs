@@ -1777,7 +1777,7 @@ async fn a_private_drive_tells_a_device_acting_as_itself_only_that_the_profiles_
         .find(|p| p.name == "Maya")
         .unwrap();
     client
-        .sign_in_profile(&maya.id, "2468", false)
+        .claim_profile(&maya.id, &claim_code(&fixture, &maya.id), "2468", false)
         .await
         .unwrap();
     settle().await;
@@ -1798,7 +1798,7 @@ async fn a_sign_in_ended_on_the_host_is_told_to_the_device_at_once() {
     let client = fixture.paired_client().await;
     let maya = client.profiles().await.unwrap().remove(0);
     client
-        .sign_in_profile(&maya.id, "2468", true)
+        .claim_profile(&maya.id, &claim_code(&fixture, &maya.id), "2468", true)
         .await
         .unwrap();
 
@@ -1813,4 +1813,15 @@ async fn a_sign_in_ended_on_the_host_is_told_to_the_device_at_once() {
     let identity = client.identity().await;
     assert!(identity.choose, "the device asks who is using it again");
     assert!(identity.profile.is_none());
+}
+
+/// The code the host shows to claim a profile still waiting for its PIN.
+fn claim_code(fixture: &Fixture, id: &str) -> String {
+    fixture
+        .host
+        .profiles_overview()
+        .into_iter()
+        .find(|p| p.id == id)
+        .and_then(|p| p.claim_code)
+        .expect("a profile waiting for its PIN has a code")
 }

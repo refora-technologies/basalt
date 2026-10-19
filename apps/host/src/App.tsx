@@ -309,11 +309,21 @@ export function App(): React.JSX.Element {
                         .then(apply)
                         .catch((e: unknown) => setRulesError(reason(e)))
                     }}
+                    onClaimCode={(required) => {
+                      setRulesError(null)
+                      void api
+                        .setClaimCode(required)
+                        .then(apply)
+                        .catch((e: unknown) => setRulesError(reason(e)))
+                    }}
                   />
                   <ProfileList
                     profiles={current.profiles}
                     ownerAdds={current.profileRules.ownerAddsProfiles}
                     onAdd={() => setAdding(true)}
+                    onNewCode={(profile) => {
+                      void api.newClaimCode(profile.id).then(apply)
+                    }}
                     onResetPin={(profile) =>
                       setPrompt({
                         title: `Reset ${profile.name}'s PIN?`,

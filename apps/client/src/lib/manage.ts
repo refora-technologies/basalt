@@ -54,6 +54,11 @@ export interface ManagedProfile {
   color: number
   /** False after the PIN was reset, until its person chooses a new one. */
   hasPin: boolean
+  /**
+   * While it has no PIN: the code its person types to claim it, as shown.
+   * Absent from hosts before codes.
+   */
+  claimCode?: string | null
   createdAt: number
   lastUsed: number
   devices: { name: string; remembered: boolean; lastUsed: number }[]
@@ -110,7 +115,8 @@ export interface ManagedHostStatus {
     scannedAt: number
   }
   profiles: ManagedProfile[]
-  profileRules: { requireProfile: boolean; ownerAddsProfiles: boolean }
+  /** `claimCode` is absent from hosts before codes. */
+  profileRules: { requireProfile: boolean; ownerAddsProfiles: boolean; claimCode?: boolean }
   sections: LibrarySections
   serving: boolean
   problem: string | null
@@ -195,6 +201,8 @@ export type ManageAction =
   | { do: 'resetProfilePin'; id: string }
   | { do: 'setRequireProfile'; require: boolean }
   | { do: 'setOwnerAddsProfiles'; ownerOnly: boolean }
+  | { do: 'setClaimCode'; required: boolean }
+  | { do: 'newClaimCode'; id: string }
   | { do: 'listDrives' }
   | { do: 'chooseDrive'; path: string; name: string }
   | { do: 'renameDrive'; name: string }

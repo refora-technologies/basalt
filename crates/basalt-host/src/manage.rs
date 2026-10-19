@@ -73,6 +73,8 @@ impl Host {
             ManageAction::SetOwnerAddsProfiles { owner_only } => {
                 self.set_owner_adds_profiles(owner_only)?
             }
+            ManageAction::SetClaimCode { required } => self.set_claim_code(required)?,
+            ManageAction::NewClaimCode { id } => self.new_claim_code(&id)?,
             ManageAction::ListDrives => drives = true,
             ManageAction::ChooseDrive { path, name } => {
                 self.choose_drive(Path::new(&path), &name).await?;

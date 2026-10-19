@@ -285,6 +285,7 @@ export function ProfileGate({
           {step.kind === 'pin' && (
             <PinStep
               profile={step.profile}
+              needsCode={!step.profile.hasPin && rules.claimCode === true}
               onBack={() => setStep({ kind: 'choose' })}
               onDone={onDone}
             />
@@ -391,10 +392,16 @@ export function Avatar({
 
 function PinStep({
   profile,
+  needsCode,
   onBack,
   onDone,
 }: {
   profile: ProfileView
+  /**
+   * The host asks for the code it shows for this profile, so that only the
+   * person it is for chooses its PIN.
+   */
+  needsCode: boolean
   onBack: () => void
   onDone: () => void
 }): React.JSX.Element {
@@ -402,6 +409,7 @@ function PinStep({
   // one the host's owner added, at its very first sign-in.
   const choosing = !profile.hasPin
   const first = choosing && profile.lastUsed === 0
+  const [code, setCode] = useState('')
   const [pin, setPin] = useState('')
   const [confirm, setConfirm] = useState('')
   const [remember, setRemember] = useState(true)
@@ -410,6 +418,10 @@ function PinStep({
   const [shake, setShake] = useState(0)
 
   const submit = async (): Promise<void> => {
+    if (needsCode && codeLetters(code).length !== 8) {
+      setError('The code is eight letters and digits.')
+      return
+    }
     if (!validPin(pin)) {
       setError('A PIN is 4 to 8 digits.')
       return
@@ -421,7 +433,8 @@ function PinStep({
     setBusy(true)
     setError(null)
     try {
-      await api.signInProfile(profile.id, pin, remember)
+      if (needsCode) await api.claimProfile(profile.id, code, pin, remember)
+      else await api.signInProfile(profile.id, pin, remember)
       onDone()
     } catch (e) {
       setError(e instanceof ApiError || e instanceof Error ? capitalise(e.message) : String(e))
@@ -440,12 +453,20 @@ function PinStep({
         {first ? `Welcome, ${profile.name}` : profile.name}
       </h2>
       <p className="mt-1 max-w-[300px] text-[12px] leading-relaxed text-textDim">
-        {first
-          ? 'Choose a PIN for your profile. Only you will know it, not even the host.'
-          : choosing
-            ? 'This PIN was reset on the host. Choose a new one.'
-            : 'Enter your PIN'}
+        {needsCode
+          ? `Type the code for ${profile.name} from Basalt Host, then choose a PIN only you will know.`
+          : first
+            ? 'Choose a PIN for your profile. Only you will know it, not even the host.'
+            : choosing
+              ? 'This PIN was reset on the host. Choose a new one.'
+              : 'Enter your PIN'}
       </p>
+      {needsCode && (
+        <p className="mt-1.5 max-w-[300px] text-[11px] leading-relaxed text-textFaint">
+          It is shown with the profile in Basalt Host, and in Manage host on a device that manages
+          it.
+        </p>
+      )}
 
       <motion.div
         key={shake}
@@ -453,7 +474,27 @@ function PinStep({
         transition={{ duration: 0.36 }}
         className="mt-6 w-full"
       >
-        <PinField value={pin} onChange={setPin} onEnter={() => void submit()} autoFocus />
+        {needsCode && (
+          <input
+            value={code}
+            onChange={(e) => setCode(e.target.value.toUpperCase())}
+            onKeyDown={(e) => e.key === 'Enter' && void submit()}
+            autoFocus
+            autoCapitalize="characters"
+            autoCorrect="off"
+            spellCheck={false}
+            maxLength={12}
+            placeholder="Code from Basalt Host"
+            aria-label="Code from Basalt Host"
+            className="mb-3 h-12 w-full rounded-lg border border-white/[0.1] bg-ink2 px-3 text-center font-mono text-[15px] tracking-[0.2em] text-text outline-none transition-colors placeholder:font-sans placeholder:text-[12.5px] placeholder:tracking-normal placeholder:text-textFaint focus:border-white/30"
+          />
+        )}
+        <PinField
+          value={pin}
+          onChange={setPin}
+          onEnter={() => void submit()}
+          autoFocus={!needsCode}
+        />
         {choosing && (
           <div className="mt-3">
             <PinField
@@ -830,6 +871,11 @@ function previewStep(profiles: ProfileView[]): Step {
   if (gate === 'pin' && pinned) return { kind: 'pin', profile: pinned }
   if (gate === 'reset' && reset) return { kind: 'pin', profile: reset }
   return { kind: 'choose' }
+}
+
+/** A typed code as the host reads it: letters and digits only. */
+function codeLetters(typed: string): string {
+  return typed.replace(/[^0-9a-z]/gi, '')
 }
 
 /** What a private drive's rules mean, in one line under the profiles. */

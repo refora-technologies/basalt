@@ -506,7 +506,7 @@ async fn a_reset_pin_is_chosen_again_at_the_next_sign_in() {
     assert!(!listed[0].has_pin);
 
     laptop
-        .sign_in_profile(&maya.id, "2468", true)
+        .claim_profile(&maya.id, &claim_code(&fixture, &maya.id), "2468", true)
         .await
         .unwrap();
     laptop.sign_out_profile().await.unwrap();
@@ -617,7 +617,7 @@ async fn a_private_drive_is_closed_to_a_device_acting_as_itself() {
     let maya = laptop.profiles().await.unwrap().remove(0);
     assert!(!maya.has_pin);
     laptop
-        .sign_in_profile(&maya.id, "2468", true)
+        .claim_profile(&maya.id, &claim_code(&fixture, &maya.id), "2468", true)
         .await
         .unwrap();
     assert!(laptop.list("").await.is_ok());
@@ -665,7 +665,12 @@ async fn only_the_host_adds_profiles_when_the_owner_says_so() {
 
     // The first sign-in sets the PIN; after that it is checked like any.
     laptop
-        .sign_in_profile(&listed[0].id, "1357", true)
+        .claim_profile(
+            &listed[0].id,
+            &claim_code(&fixture, &listed[0].id),
+            "1357",
+            true,
+        )
         .await
         .unwrap();
     laptop.sign_out_profile().await.unwrap();
@@ -708,4 +713,118 @@ async fn an_older_host_reads_as_both_rules_off() {
         serde_json::from_str(r#"{"profiles":[]}"#).unwrap();
     assert_eq!(parsed.rules, basalt_proto::msg::ProfileRules::default());
     assert!(!parsed.rules.require_profile && !parsed.rules.owner_adds_profiles);
+}
+
+/// The code the host shows to claim a profile still waiting for its PIN.
+fn claim_code(fixture: &Fixture, id: &str) -> String {
+    fixture
+        .host
+        .profiles_overview()
+        .into_iter()
+        .find(|p| p.id == id)
+        .and_then(|p| p.claim_code)
+        .expect("a profile waiting for its PIN has a code")
+}
+
+// A profile made on the host, waiting for its person: a paired device that
+// signs in first used to choose its PIN, and with it the profile.
+#[tokio::test]
+async fn a_profile_waiting_for_its_pin_is_claimed_only_with_its_code() {
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    fixture.host.add_profile("Sam", 1).unwrap();
+    let sam = laptop.profiles().await.unwrap().remove(0);
+    assert!(
+        laptop.identity().await.rules.claim_code,
+        "devices are told to ask"
+    );
+    let code = claim_code(&fixture, &sam.id);
+    assert_eq!(code.len(), 9, "shown as K7QM-4XPR: {code}");
+
+    let wrong = laptop
+        .claim_profile(&sam.id, "AAAA-AAAA", "1357", true)
+        .await
+        .expect_err("not the code");
+    assert!(wrong.to_string().contains("code isn’t right"), "{wrong}");
+    // What an app from before codes sends.
+    let old = laptop
+        .sign_in_profile(&sam.id, "1357", true)
+        .await
+        .expect_err("no code");
+    assert!(old.to_string().contains("Update Basalt"), "{old}");
+
+    // Typed as people type it: lower case, no dash, spaces around.
+    let typed = format!(" {} ", code.replace('-', "").to_lowercase());
+    laptop
+        .claim_profile(&sam.id, &typed, "1357", true)
+        .await
+        .expect("the code claims it");
+    assert!(
+        fixture.host.profiles_overview()[0].claim_code.is_none(),
+        "used up"
+    );
+    // A PIN from now on, as for any profile, and no code.
+    laptop.sign_out_profile().await.unwrap();
+    laptop
+        .sign_in_profile(&sam.id, "1357", true)
+        .await
+        .expect("its PIN");
+}
+
+#[tokio::test]
+async fn a_new_code_replaces_the_one_given_out() {
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    fixture.host.add_profile("Sam", 1).unwrap();
+    let sam = laptop.profiles().await.unwrap().remove(0);
+    let first = claim_code(&fixture, &sam.id);
+    fixture.host.new_claim_code(&sam.id).unwrap();
+    let second = claim_code(&fixture, &sam.id);
+    assert_ne!(first, second);
+    assert!(
+        laptop
+            .claim_profile(&sam.id, &first, "1357", true)
+            .await
+            .is_err(),
+        "the old code is no use"
+    );
+    laptop
+        .claim_profile(&sam.id, &second, "1357", true)
+        .await
+        .expect("the new one is");
+}
+
+#[tokio::test]
+async fn with_codes_off_any_paired_device_claims_a_waiting_profile() {
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    fixture.host.add_profile("Sam", 1).unwrap();
+    fixture.host.set_claim_code(false).unwrap();
+    assert!(!laptop.identity().await.rules.claim_code);
+    let sam = laptop.profiles().await.unwrap().remove(0);
+    laptop
+        .sign_in_profile(&sam.id, "1357", true)
+        .await
+        .expect("as before codes");
+}
+
+// The code is for the person the profile is for: shown on the host and to a
+// device that manages it, never in what the devices choosing a profile see.
+#[tokio::test]
+async fn devices_are_never_told_a_profiles_code() {
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    fixture.host.add_profile("Sam", 1).unwrap();
+    let sam = laptop.profiles().await.unwrap().remove(0);
+    let code = claim_code(&fixture, &sam.id);
+    let bare = code.replace('-', "");
+    let told = format!(
+        "{} {:?}",
+        serde_json::to_string(&laptop.profiles().await.unwrap()).unwrap(),
+        laptop.identity().await
+    );
+    assert!(
+        !told.contains(&code) && !told.contains(&bare),
+        "the code leaked: {told}"
+    );
 }

@@ -479,6 +479,19 @@ async fn sign_in_profile(
     Ok(state.client.sign_in_profile(&id, &pin, remember).await?)
 }
 
+/// Signs in to a profile with no PIN yet, choosing its PIN, with the code
+/// the host shows for it.
+#[tauri::command]
+async fn claim_profile(
+    state: State<'_, AppState>,
+    id: String,
+    code: String,
+    pin: String,
+    remember: bool,
+) -> Answer<basalt_proto::msg::ProfileView> {
+    Ok(state.client.claim_profile(&id, &code, &pin, remember).await?)
+}
+
 /// Profiles this device is signed in to on its other drives.
 #[tauri::command]
 async fn profiles_elsewhere(
@@ -1545,6 +1558,7 @@ pub fn run() {
             manage,
             create_profile,
             sign_in_profile,
+            claim_profile,
             sign_out_profile,
             continue_as_device,
             profile_stars,

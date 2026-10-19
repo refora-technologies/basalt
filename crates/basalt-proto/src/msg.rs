@@ -327,6 +327,14 @@ pub enum ManageAction {
     SetOwnerAddsProfiles {
         owner_only: bool,
     },
+    /// Whether a profile with no PIN yet needs its code to be claimed.
+    SetClaimCode {
+        required: bool,
+    },
+    /// A new code for a profile with no PIN yet, in place of the last.
+    NewClaimCode {
+        id: String,
+    },
     /// The drives the host's computer could share, in the answer.
     ListDrives,
     ChooseDrive {
@@ -857,6 +865,11 @@ pub struct ProfileRules {
     /// Only the host's owner adds profiles; devices cannot.
     #[serde(default)]
     pub owner_adds_profiles: bool,
+    /// A profile with no PIN yet is claimed with the code its host shows,
+    /// typed with the new PIN, rather than by whichever paired device signs
+    /// in first. Absent from older hosts, which have no codes.
+    #[serde(default)]
+    pub claim_code: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -878,6 +891,10 @@ pub struct ProfileSignInRequest {
     pub id: String,
     /// The PIN, or the new one for a profile whose PIN was reset.
     pub pin: String,
+    /// The code that claims a profile with no PIN yet, when the host asks
+    /// for one: see [`ProfileRules::claim_code`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub code: String,
     #[serde(default)]
     pub remember: bool,
 }

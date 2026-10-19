@@ -1385,12 +1385,27 @@ impl Basalt {
         pin: &str,
         remember: bool,
     ) -> Result<ProfileView> {
+        self.claim_profile(id, "", pin, remember).await
+    }
+
+    /// Signs in to a profile with no PIN yet, choosing its PIN: with the code
+    /// the host shows for it, when the host asks for one (see
+    /// [`basalt_proto::msg::ProfileRules::claim_code`]). An empty code is
+    /// [`Basalt::sign_in_profile`].
+    pub async fn claim_profile(
+        &self,
+        id: &str,
+        code: &str,
+        pin: &str,
+        remember: bool,
+    ) -> Result<ProfileView> {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
         let result = lease
             .profile_sign_in(&ProfileSignInRequest {
                 id: id.to_string(),
                 pin: pin.to_string(),
+                code: code.to_string(),
                 remember,
             })
             .await;

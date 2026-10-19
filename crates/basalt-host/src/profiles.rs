@@ -65,6 +65,12 @@ pub struct Profile {
     /// here; it signs in with the statement its home drive gave the device.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<Home>,
+    /// For a profile with no PIN yet: the code that claims it, shown on the
+    /// host and given to the person it is for, so that only they choose its
+    /// PIN, rather than whichever paired device signs in first. Normalised,
+    /// as [`basalt_net::pairing::normalise_code`] makes it. Gone once used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<String>,
 }
 
 /// Where a profile from another drive lives, and the key that speaks for it.
@@ -196,6 +202,12 @@ pub(crate) fn clean_name(name: &str) -> Result<String, HostError> {
     Ok(name)
 }
 
+/// A code to claim a profile by: like a setup code, eight letters and digits
+/// none of which look alike. `None` only with no randomness to be had.
+fn new_claim() -> Option<String> {
+    basalt_net::pairing::generate_setup_code().ok()
+}
+
 impl ProfileBook {
     pub fn new(profiles: Vec<Profile>, tokens: Vec<ProfileToken>) -> Self {
         Self {
@@ -251,10 +263,41 @@ impl ProfileBook {
         let mut profile = self.add(name, color, None, now)?;
         // Not used until its first sign-in: the host shows "not used yet".
         profile.last_used = 0;
+        profile.claim = new_claim();
         if let Some(stored) = self.profiles.iter_mut().find(|p| p.id == profile.id) {
             stored.last_used = 0;
+            stored.claim = profile.claim.clone();
         }
         Ok(profile)
+    }
+
+    /// Gives every profile still waiting for its PIN a code to claim it by:
+    /// the ones made before there were codes. Whether anything changed.
+    pub fn give_claim_codes(&mut self) -> bool {
+        let mut changed = false;
+        for profile in &mut self.profiles {
+            if profile.pin_hash.is_none() && profile.home.is_none() && profile.claim.is_none() {
+                profile.claim = new_claim();
+                changed |= profile.claim.is_some();
+            }
+        }
+        changed
+    }
+
+    /// A new code for a profile waiting for its PIN, in place of the last:
+    /// given to the wrong person, say. False for one that has a PIN, or is
+    /// from another drive.
+    pub fn new_claim_code(&mut self, id: &str) -> bool {
+        let Some(profile) = self
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == id && p.pin_hash.is_none() && p.home.is_none())
+        else {
+            return false;
+        };
+        profile.claim = new_claim();
+        self.failures.remove(id);
+        profile.claim.is_some()
     }
 
     /// A new profile, checked and kept.
@@ -292,6 +335,7 @@ impl ProfileBook {
             last_used: now,
             person_key: new_person_key(),
             home: None,
+            claim: None,
         };
         self.profiles.push(profile.clone());
         Ok(profile)
@@ -338,6 +382,7 @@ impl ProfileBook {
             last_used: 0,
             person_key: crate::sealed::Secret::default(),
             home: Some(home),
+            claim: None,
         };
         self.profiles.push(profile.clone());
         Ok(profile)
@@ -370,10 +415,14 @@ impl ProfileBook {
     /// Checks a PIN and signs the device in. Returns the token.
     ///
     /// A profile whose PIN was reset takes the PIN given as its new one.
+    ///
+    /// `code` is what was typed to claim a profile that has no PIN yet, when
+    /// the host asks for one; `None` when it does not.
     pub fn sign_in(
         &mut self,
         id: &str,
         pin: &str,
+        code: Option<&str>,
         device_key: &str,
         remember: bool,
         now: i64,
@@ -405,21 +454,38 @@ impl ProfileBook {
         match self.profiles[index].pin_hash.clone() {
             Some(hash) => {
                 if !pin_matches(pin, &hash) {
-                    let failures = self.failures.entry(id.to_string()).or_default();
-                    failures.count += 1;
-                    if failures.count > FREE_TRIES {
-                        let doublings = (failures.count - FREE_TRIES - 1).min(10);
-                        let lock = (FIRST_LOCK_SECS << doublings).min(LONGEST_LOCK_SECS);
-                        failures.locked_until = now + lock;
-                    }
+                    self.note_failure(id, now);
                     return Err(HostError::Denied("that PIN isn’t right".into()));
                 }
             }
             None => {
+                if let Some(typed) = code {
+                    let name = self.profiles[index].name.clone();
+                    match self.profiles[index].claim.as_deref() {
+                        // An app from before codes, which cannot ask for one.
+                        _ if typed.trim().is_empty() => {
+                            return Err(HostError::Denied(format!(
+                                "{name} is claimed with the code Basalt Host shows for it. \
+                                 Update Basalt on this device to type it."
+                            )));
+                        }
+                        Some(claim) if basalt_net::pairing::normalise_code(typed) == claim => {}
+                        Some(_) => {
+                            self.note_failure(id, now);
+                            return Err(HostError::Denied("that code isn’t right".into()));
+                        }
+                        None => {
+                            return Err(HostError::Denied(format!(
+                                "{name} has no code yet. Make one on Basalt Host."
+                            )));
+                        }
+                    }
+                }
                 if !valid_pin(pin) {
                     return Err(HostError::BadRequest("a PIN is 4 to 8 digits".into()));
                 }
                 self.profiles[index].pin_hash = Some(hash_pin(pin)?);
+                self.profiles[index].claim = None;
             }
         }
         self.failures.remove(id);
@@ -557,9 +623,21 @@ impl ProfileBook {
             return false;
         };
         profile.pin_hash = None;
+        profile.claim = new_claim();
         self.tokens.retain(|t| t.profile_id != id);
         self.failures.remove(id);
         true
+    }
+
+    /// One more wrong PIN or code: a few are free, then each wait doubles.
+    fn note_failure(&mut self, id: &str, now: i64) {
+        let failures = self.failures.entry(id.to_string()).or_default();
+        failures.count += 1;
+        if failures.count > FREE_TRIES {
+            let doublings = (failures.count - FREE_TRIES - 1).min(10);
+            let lock = (FIRST_LOCK_SECS << doublings).min(LONGEST_LOCK_SECS);
+            failures.locked_until = now + lock;
+        }
     }
 
     pub fn rename(&mut self, id: &str, name: &str) -> Result<bool, HostError> {
@@ -621,6 +699,53 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_waiting_for_its_pin_has_a_code_until_claimed() {
+        let mut b = book();
+        let sam = b.create_without_pin("Sam", 1, 1).unwrap();
+        let code = sam.claim.clone().expect("made with a code");
+        assert!(basalt_net::pairing::is_valid_setup_code(&code));
+        // Wrong codes count like wrong PINs.
+        for _ in 0..=FREE_TRIES {
+            assert!(
+                b.sign_in(&sam.id, "1357", Some("AAAAAAAA"), "d", false, 2)
+                    .is_err()
+            );
+        }
+        let locked = b.sign_in(&sam.id, "1357", Some(&code), "d", false, 2);
+        assert!(locked.unwrap_err().to_string().contains("Try again"));
+        b.sign_in(
+            &sam.id,
+            "1357",
+            Some(&code),
+            "d",
+            false,
+            2 + LONGEST_LOCK_SECS,
+        )
+        .expect("its code, once the wait is over");
+        assert!(b.find(&sam.id).unwrap().claim.is_none(), "used up");
+
+        // Reset, it waits for a PIN again, with a new code.
+        assert!(b.reset_pin(&sam.id));
+        let again = b.find(&sam.id).unwrap().claim.clone().unwrap();
+        assert_ne!(again, code);
+        assert!(b.new_claim_code(&sam.id));
+        assert_ne!(b.find(&sam.id).unwrap().claim.clone().unwrap(), again);
+    }
+
+    #[test]
+    fn profiles_waiting_from_before_codes_are_given_one() {
+        let mut b = book();
+        let sam = b.create_without_pin("Sam", 1, 1).unwrap();
+        b.profiles.iter_mut().for_each(|p| p.claim = None);
+        let (maya, _) = b.create("Maya", "4821", 2, "d", true, 1).unwrap();
+        assert!(b.give_claim_codes());
+        assert!(b.find(&sam.id).unwrap().claim.is_some());
+        assert!(b.find(&maya.id).unwrap().claim.is_none(), "it has a PIN");
+        assert!(!b.give_claim_codes(), "nothing more to do");
+        assert!(!b.new_claim_code(&maya.id));
+    }
+
+    #[test]
     fn a_profile_is_made_and_signed_in_to() {
         let mut b = book();
         let (profile, token) = b.create("  Maya ", "4821", 3, "dev-a", true, 100).unwrap();
@@ -654,8 +779,8 @@ mod tests {
     fn the_right_pin_signs_in_and_a_wrong_one_does_not() {
         let mut b = book();
         let (p, _) = b.create("Maya", "4821", 0, "dev-a", false, 1).unwrap();
-        assert!(b.sign_in(&p.id, "0000", "dev-b", false, 2).is_err());
-        let (_, token) = b.sign_in(&p.id, "4821", "dev-b", false, 3).unwrap();
+        assert!(b.sign_in(&p.id, "0000", None, "dev-b", false, 2).is_err());
+        let (_, token) = b.sign_in(&p.id, "4821", None, "dev-b", false, 3).unwrap();
         assert!(b.resolve(&token, "dev-b", 4).is_some());
         assert!(
             b.resolve(&token, "dev-a", 4).is_none(),
@@ -668,30 +793,43 @@ mod tests {
         let mut b = book();
         let (p, _) = b.create("Maya", "4821", 0, "d", false, 0).unwrap();
         for _ in 0..FREE_TRIES {
-            assert!(b.sign_in(&p.id, "0000", "d", false, 10).is_err());
+            assert!(b.sign_in(&p.id, "0000", None, "d", false, 10).is_err());
         }
         // The next wrong one locks it; now even the right PIN waits.
-        assert!(b.sign_in(&p.id, "0000", "d", false, 10).is_err());
-        let err = b.sign_in(&p.id, "4821", "d", false, 20).unwrap_err();
+        assert!(b.sign_in(&p.id, "0000", None, "d", false, 10).is_err());
+        let err = b.sign_in(&p.id, "4821", None, "d", false, 20).unwrap_err();
         assert!(err.to_string().contains("Try again"), "{err}");
 
         // Another wrong one once the lock is over locks it for twice as long.
         let after_first = 10 + FIRST_LOCK_SECS + 1;
-        assert!(b.sign_in(&p.id, "0000", "d", false, after_first).is_err());
         assert!(
-            b.sign_in(&p.id, "4821", "d", false, after_first + FIRST_LOCK_SECS + 1)
+            b.sign_in(&p.id, "0000", None, "d", false, after_first)
                 .is_err()
         );
+        assert!(
+            b.sign_in(
+                &p.id,
+                "4821",
+                None,
+                "d",
+                false,
+                after_first + FIRST_LOCK_SECS + 1
+            )
+            .is_err()
+        );
         let after_second = after_first + FIRST_LOCK_SECS * 2 + 1;
-        assert!(b.sign_in(&p.id, "4821", "d", false, after_second).is_ok());
+        assert!(
+            b.sign_in(&p.id, "4821", None, "d", false, after_second)
+                .is_ok()
+        );
 
         // The right PIN clears the count: one slip afterwards is just a slip.
         assert!(
-            b.sign_in(&p.id, "0000", "d", false, after_second + 1)
+            b.sign_in(&p.id, "0000", None, "d", false, after_second + 1)
                 .is_err()
         );
         assert!(
-            b.sign_in(&p.id, "4821", "d", false, after_second + 2)
+            b.sign_in(&p.id, "4821", None, "d", false, after_second + 2)
                 .is_ok()
         );
     }
@@ -729,7 +867,7 @@ mod tests {
     fn signing_out_ends_only_that_sign_in() {
         let mut b = book();
         let (p, on_a) = b.create("Maya", "4821", 0, "a", true, 0).unwrap();
-        let (_, on_b) = b.sign_in(&p.id, "4821", "b", true, 1).unwrap();
+        let (_, on_b) = b.sign_in(&p.id, "4821", None, "b", true, 1).unwrap();
         assert!(b.sign_out(&on_a));
         assert!(b.resolve(&on_a, "a", 2).is_none());
         assert!(b.resolve(&on_b, "b", 2).is_some());
@@ -739,7 +877,7 @@ mod tests {
     fn signing_in_again_on_a_device_replaces_its_old_token() {
         let mut b = book();
         let (p, first) = b.create("Maya", "4821", 0, "a", true, 0).unwrap();
-        let (_, second) = b.sign_in(&p.id, "4821", "a", true, 1).unwrap();
+        let (_, second) = b.sign_in(&p.id, "4821", None, "a", true, 1).unwrap();
         assert!(b.resolve(&first, "a", 2).is_none());
         assert!(b.resolve(&second, "a", 2).is_some());
         assert_eq!(b.tokens().len(), 1);
@@ -752,12 +890,12 @@ mod tests {
         assert!(b.reset_pin(&p.id));
         assert!(b.resolve(&token, "a", 1).is_none());
         assert!(!b.find(&p.id).unwrap().view().has_pin);
-        b.sign_in(&p.id, "7777", "a", true, 2).unwrap();
+        b.sign_in(&p.id, "7777", None, "a", true, 2).unwrap();
         assert!(
-            b.sign_in(&p.id, "4821", "a", true, 3).is_err(),
+            b.sign_in(&p.id, "4821", None, "a", true, 3).is_err(),
             "the old PIN is gone"
         );
-        assert!(b.sign_in(&p.id, "7777", "a", true, 4).is_ok());
+        assert!(b.sign_in(&p.id, "7777", None, "a", true, 4).is_ok());
     }
 
     #[test]

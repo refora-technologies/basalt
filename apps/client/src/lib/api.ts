@@ -284,6 +284,11 @@ export interface ProfileRules {
   requireProfile: boolean
   /** Only the host adds profiles: no "Add profile" here. */
   ownerAddsProfiles: boolean
+  /**
+   * A profile with no PIN yet is claimed with the code its host shows,
+   * typed with the new PIN. Absent from hosts before codes.
+   */
+  claimCode?: boolean
 }
 
 export interface Star {
@@ -524,6 +529,9 @@ export const api = {
     call<ProfileView>('create_profile', { name, pin, color, remember }),
   signInProfile: (id: string, pin: string, remember: boolean) =>
     call<ProfileView>('sign_in_profile', { id, pin, remember }),
+  /** A profile with no PIN yet, with the code its host shows: chooses the PIN. */
+  claimProfile: (id: string, code: string, pin: string, remember: boolean) =>
+    call<ProfileView>('claim_profile', { id, code, pin, remember }),
   signOutProfile: () => call<void>('sign_out_profile'),
   continueAsDevice: (always: boolean) => call<void>('continue_as_device', { always }),
   /** Profiles this device is signed in to on its other drives. */
@@ -1136,10 +1144,15 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       mockIdentity = { rules: mockRules, profile, choose: false, ended: false, lastProfile: profile.id }
       return profile as T
     }
+    case 'claim_profile':
     case 'sign_in_profile': {
       const profile = mockProfiles.find((p) => p.id === args?.id)
       const pin = String(args?.pin ?? '')
       if (!profile) throw new ApiError('notfound', 'that profile is not there any more')
+      if (!profile.hasPin && mockRules.claimCode) {
+        const code = String(args?.code ?? '').replace(/[^0-9a-z]/gi, '').toUpperCase()
+        if (code !== 'K7QM4XPR') throw new ApiError('denied', 'that code isn’t right')
+      }
       if (profile.hasPin && mockPins.get(profile.id) !== pin) {
         throw new ApiError('denied', 'that PIN isn’t right')
       }
@@ -1233,6 +1246,9 @@ let mockProfileStars: Star[] = []
 const mockRules: ProfileRules = {
   requireProfile: previewFlag('private') || previewFlag('requireProfile'),
   ownerAddsProfiles: previewFlag('private') || previewFlag('ownerAdds'),
+  // As hosts are set: on. The preview's code for every waiting profile is
+  // K7QM-4XPR.
+  claimCode: true,
 }
 
 let mockIdentity: IdentityState = {
