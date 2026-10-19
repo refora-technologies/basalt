@@ -104,6 +104,18 @@ export function Profiles(tools: Tools): React.JSX.Element {
             disabled={profiles.length === 0 && !rules.requireProfile}
             onChange={(require) => m.act({ do: 'setRequireProfile', require })}
           />
+          {rules.claimCode !== undefined && (
+            <Toggle
+              title="Code to claim a profile"
+              description={
+                rules.claimCode
+                  ? 'A profile with no PIN yet is claimed with its code, shown with the profile. Give the code to the person it is for.'
+                  : 'Any paired device can claim a profile with no PIN yet, and choose its PIN, before the person it is for does.'
+              }
+              checked={rules.claimCode}
+              onChange={(required) => m.act({ do: 'setClaimCode', required })}
+            />
+          )}
           <div className={cn('px-4', phone ? 'pb-4 pt-1' : 'pb-3.5 pt-1')}>
             <div className={cn('mb-2 text-text', phone ? 'text-[15px]' : 'text-[13px]')}>Who can add profiles</div>
             <Segmented
@@ -201,6 +213,42 @@ function ProfileDetail({
           </div>
         </div>
       </div>
+
+      {profile.claimCode && (
+        <Card>
+          <div className="px-4 pb-1 pt-3 font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
+            Code to claim it
+          </div>
+          <div className="flex items-center gap-3 px-4 pb-3">
+            <span
+              className={cn(
+                'select-all font-mono tracking-[0.14em] text-text',
+                phone ? 'text-[19px]' : 'text-[16px]',
+              )}
+            >
+              {profile.claimCode}
+            </span>
+            <button
+              onClick={() => void m.act({ do: 'newClaimCode', id: profile.id })}
+              className={cn(
+                'ml-auto rounded-md px-2.5 py-1 text-textDim transition-colors hover:bg-white/[0.06] hover:text-text',
+                phone ? 'text-[13px]' : 'text-[11.5px]',
+              )}
+            >
+              New code
+            </button>
+          </div>
+          <p
+            className={cn(
+              'border-t border-white/[0.05] px-4 py-2.5 leading-snug text-textFaint',
+              phone ? 'text-[12.5px]' : 'text-[11.5px]',
+            )}
+          >
+            {profile.name} types it with a new PIN to sign in the first time. Only for {profile.name}: whoever has it can
+            take the profile.
+          </p>
+        </Card>
+      )}
 
       {profile.devices.length > 0 && (
         <Card>

@@ -191,6 +191,8 @@ impl Host {
             .collect();
         profiles.rebind_devices(&device_keys);
         let made_person_keys = profiles.ensure_person_keys();
+        // Profiles waiting for their PIN from before there were codes.
+        let made_claim_codes = profiles.give_claim_codes();
         let mut authority = crate::authority::Authority::new(
             &config.household_key.0,
             config.issued.clone(),
@@ -282,7 +284,7 @@ impl Host {
         }
         // Keys made now are written now: a statement made with a key that was
         // never saved would speak for nobody after a restart.
-        if abandoned > 0 || made_person_keys || made_household || pruned {
+        if abandoned > 0 || made_person_keys || made_claim_codes || made_household || pruned {
             host.persist()?;
         }
         Ok(host)
@@ -738,6 +740,11 @@ impl Host {
                     name: profile.name.clone(),
                     color: profile.color,
                     has_pin: profile.pin_hash.is_some(),
+                    claim_code: profile
+                        .claim
+                        .as_deref()
+                        .filter(|_| profile.pin_hash.is_none())
+                        .map(basalt_net::pairing::format_setup_code),
                     created_at: profile.created_at,
                     last_used: profile.last_used,
                     devices: signed_in,
@@ -770,9 +777,11 @@ impl Host {
         request: ProfileSignInRequest,
         device_key: &str,
     ) -> Result<(ProfileView, String)> {
+        let required = self.config.lock().expect("config lock").claim_code;
         let (profile, token) = self.profiles.lock().expect("profiles lock").sign_in(
             &request.id,
             &request.pin,
+            required.then_some(request.code.as_str()),
             device_key,
             request.remember,
             unix_now(),
@@ -2371,6 +2380,7 @@ impl Host {
         basalt_proto::msg::ProfileRules {
             require_profile: config.require_profile,
             owner_adds_profiles: config.owner_adds_profiles,
+            claim_code: config.claim_code,
         }
     }
 
@@ -2397,6 +2407,29 @@ impl Host {
         self.config.lock().expect("config lock").require_profile = require;
         self.persist()?;
         self.profiles_changed();
+        Ok(())
+    }
+
+    /// Asks for the code to claim a profile with no PIN yet, or lets any
+    /// paired device claim one.
+    pub fn set_claim_code(&self, required: bool) -> Result<()> {
+        self.config.lock().expect("config lock").claim_code = required;
+        self.persist()?;
+        self.profiles_changed();
+        Ok(())
+    }
+
+    /// A new code for a profile with no PIN yet, in place of the last.
+    pub fn new_claim_code(&self, id: &str) -> Result<()> {
+        if !self
+            .profiles
+            .lock()
+            .expect("profiles lock")
+            .new_claim_code(id)
+        {
+            return Err(HostError::NotFound("a profile waiting for its PIN".into()));
+        }
+        self.persist()?;
         Ok(())
     }
 

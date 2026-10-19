@@ -386,6 +386,18 @@ async fn set_owner_adds_profiles(
 }
 
 #[tauri::command]
+async fn set_claim_code(state: State<'_, AppState>, required: bool) -> Answer<HostStatus> {
+    state.host.set_claim_code(required)?;
+    status(state).await
+}
+
+#[tauri::command]
+async fn new_claim_code(state: State<'_, AppState>, id: String) -> Answer<HostStatus> {
+    state.host.new_claim_code(&id)?;
+    status(state).await
+}
+
+#[tauri::command]
 async fn set_tmdb_key(state: State<'_, AppState>, key: String) -> Answer<HostStatus> {
     state.host.set_tmdb_key(&key).await?;
     status(state).await
@@ -1053,6 +1065,8 @@ pub fn run() {
             add_profile,
             set_require_profile,
             set_owner_adds_profiles,
+            set_claim_code,
+            new_claim_code,
             set_sections,
             build_info,
             open_log_folder,

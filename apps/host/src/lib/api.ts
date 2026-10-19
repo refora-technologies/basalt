@@ -55,6 +55,12 @@ export interface ProfileSummary {
   color: number
   /** False after the PIN was reset, until the next sign-in sets one. */
   hasPin: boolean
+  /**
+   * While it has no PIN: the code its person types to claim it, as shown,
+   * such as `K7QM-4XPR`. Null once claimed, and for a profile from another
+   * drive. Absent from hosts before codes.
+   */
+  claimCode?: string | null
   createdAt: number
   lastUsed: number
   devices: ProfileDevice[]
@@ -86,6 +92,11 @@ export interface ProfileRules {
   requireProfile: boolean
   /** Only this host adds profiles; devices cannot. */
   ownerAddsProfiles: boolean
+  /**
+   * A profile with no PIN yet is claimed with its code, shown here. On by
+   * default. Absent from hosts before codes.
+   */
+  claimCode?: boolean
 }
 
 export interface ProfileDevice {
@@ -347,6 +358,10 @@ export const api = {
     call('set_require_profile', { require }),
   setOwnerAddsProfiles: (ownerOnly: boolean): Promise<HostStatus> =>
     call('set_owner_adds_profiles', { ownerOnly }),
+  setClaimCode: (required: boolean): Promise<HostStatus> =>
+    call('set_claim_code', { required }),
+  /** A new code for a profile waiting for its PIN, in place of the last. */
+  newClaimCode: (id: string): Promise<HostStatus> => call('new_claim_code', { id }),
   setSections: (sections: Sections): Promise<HostStatus> =>
     call('set_sections', { sections }),
   openVaultFolder: (): Promise<void> => call('open_vault_folder'),
@@ -394,7 +409,7 @@ const sample: {
     hostName: 'LIVING-ROOM-PC',
     port: 7742,
     requirePin: true,
-    profileRules: { requireProfile: false, ownerAddsProfiles: false },
+    profileRules: { requireProfile: false, ownerAddsProfiles: false, claimCode: true },
     startWithWindows: false,
     vault: null,
     addresses: ['192.168.1.20'],
@@ -459,6 +474,7 @@ const sample: {
         name: 'Leo',
         color: 2,
         hasPin: false,
+        claimCode: 'K7QM-4XPR',
         createdAt: Math.floor(Date.now() / 1000) - 86400 * 4,
         lastUsed: Math.floor(Date.now() / 1000) - 86400 * 3,
         devices: [],
@@ -728,7 +744,7 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return sample.status
       case 'reset_profile_pin':
         sample.status.profiles = sample.status.profiles.map((p) =>
-          p.id === args?.id ? { ...p, hasPin: false, devices: [] } : p,
+          p.id === args?.id ? { ...p, hasPin: false, claimCode: mockClaimCode(), devices: [] } : p,
         )
         return sample.status
       case 'remove_profile':
@@ -748,6 +764,7 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
             name,
             color: Number(args?.color ?? 0),
             hasPin: false,
+            claimCode: mockClaimCode(),
             createdAt: Date.now() / 1000,
             lastUsed: 0,
             devices: [],
@@ -764,6 +781,14 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return sample.status
       case 'set_owner_adds_profiles':
         sample.status.profileRules.ownerAddsProfiles = Boolean(args?.ownerOnly)
+        return sample.status
+      case 'set_claim_code':
+        sample.status.profileRules.claimCode = Boolean(args?.required)
+        return sample.status
+      case 'new_claim_code':
+        sample.status.profiles = sample.status.profiles.map((p) =>
+          p.id === args?.id ? { ...p, claimCode: mockClaimCode() } : p,
+        )
         return sample.status
       case 'set_sections':
         sample.status.sections = args?.sections as Sections
@@ -916,3 +941,11 @@ function previewFlag(name: string): boolean {
 }
 
 /** Fills the bar over a couple of seconds, then resolves like the real one. */
+
+/** A made-up code, shaped like the host's: no letters or digits that look alike. */
+function mockClaimCode(): string {
+  const letters = '23456789ABCDEFGHJKMNPQRSTUVWXYZ'
+  const pick = () => letters[Math.floor(Math.random() * letters.length)]
+  const half = () => Array.from({ length: 4 }, pick).join('')
+  return `${half()}-${half()}`
+}

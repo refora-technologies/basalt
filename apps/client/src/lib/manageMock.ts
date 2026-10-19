@@ -85,12 +85,13 @@ const sample: ManageView = {
         name: 'Leo',
         color: 5,
         hasPin: false,
+        claimCode: 'K7QM-4XPR',
         createdAt: now() - 86400 * 3,
         lastUsed: 0,
         devices: [],
       },
     ],
-    profileRules: { requireProfile: false, ownerAddsProfiles: false },
+    profileRules: { requireProfile: false, ownerAddsProfiles: false, claimCode: true },
     sections: { movies: true, series: true, videos: true, music: true, photos: true },
     serving: true,
     problem: null,
@@ -314,8 +315,17 @@ function apply(action: ManageAction): boolean {
       const profile = status.profiles.find((p) => p.id === action.id)
       if (profile) {
         profile.hasPin = false
+        profile.claimCode = 'R4NW-8HZT'
         profile.devices = []
       }
+      break
+    }
+    case 'setClaimCode':
+      status.profileRules.claimCode = action.required
+      break
+    case 'newClaimCode': {
+      const profile = status.profiles.find((p) => p.id === action.id)
+      if (profile) profile.claimCode = profile.claimCode === 'K7QM-4XPR' ? 'R4NW-8HZT' : 'K7QM-4XPR'
       break
     }
     case 'setRequireProfile':

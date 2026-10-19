@@ -66,6 +66,7 @@ export function ProfileList({
   onAdd,
   onResetPin,
   onRemove,
+  onNewCode,
 }: {
   profiles: ProfileSummary[]
   /** Only this host adds profiles: the empty list says how. */
@@ -73,6 +74,8 @@ export function ProfileList({
   onAdd: () => void
   onResetPin: (profile: ProfileSummary) => void
   onRemove: (profile: ProfileSummary) => void
+  /** A new code for a profile waiting for its PIN. */
+  onNewCode: (profile: ProfileSummary) => void
 }): React.JSX.Element {
   if (profiles.length === 0) {
     return (
@@ -114,6 +117,7 @@ export function ProfileList({
               profile={profile}
               onResetPin={() => onResetPin(profile)}
               onRemove={() => onRemove(profile)}
+              onNewCode={() => onNewCode(profile)}
             />
           </motion.div>
         ))}
@@ -126,10 +130,12 @@ function ProfileCard({
   profile,
   onResetPin,
   onRemove,
+  onNewCode,
 }: {
   profile: ProfileSummary
   onResetPin: () => void
   onRemove: () => void
+  onNewCode: () => void
 }): React.JSX.Element {
   const [menu, setMenu] = useState(false)
   const now = Date.now() / 1000
@@ -174,11 +180,27 @@ function ProfileCard({
         </div>
       )}
       {!profile.hasPin && !profile.home && (
-        <div className="mt-3 flex items-center gap-2 rounded-md bg-white/[0.04] px-2.5 py-1.5 text-[11px] text-textDim">
-          <KeyRound size={12} className="shrink-0 text-textFaint" />
-          {profile.lastUsed === 0
-            ? `Waiting for ${profile.name} to sign in and choose a PIN.`
-            : 'PIN cleared. The next sign-in chooses a new one.'}
+        <div className="mt-3 rounded-md bg-white/[0.04] px-2.5 py-1.5 text-[11px] text-textDim">
+          <div className="flex items-center gap-2">
+            <KeyRound size={12} className="shrink-0 text-textFaint" />
+            {profile.lastUsed === 0
+              ? `Waiting for ${profile.name} to sign in and choose a PIN.`
+              : 'PIN cleared. The next sign-in chooses a new one.'}
+          </div>
+          {profile.claimCode && (
+            <div className="mt-1.5 flex items-center gap-2 pl-5">
+              <span className="text-textFaint">Code to claim it</span>
+              <span className="select-all font-mono text-[12.5px] tracking-[0.12em] text-text">
+                {profile.claimCode}
+              </span>
+              <button
+                onClick={onNewCode}
+                className="ml-auto rounded px-1.5 py-0.5 text-[10.5px] text-textFaint transition-colors hover:bg-white/[0.06] hover:text-text"
+              >
+                New code
+              </button>
+            </div>
+          )}
         </div>
       )}
 

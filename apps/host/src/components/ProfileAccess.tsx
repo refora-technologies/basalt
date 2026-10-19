@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { Lock, ShieldCheck, UserPlus } from 'lucide-react'
+import { KeyRound, Lock, ShieldCheck, UserPlus } from 'lucide-react'
 import type { ProfileRules } from '@/lib/api'
 import { Switch } from './ui/Switch'
 import { cn } from '@/lib/utils'
@@ -22,6 +22,7 @@ export function ProfileAccess({
   error,
   onRequireProfile,
   onOwnerAddsProfiles,
+  onClaimCode,
 }: {
   rules: ProfileRules
   profileCount: number
@@ -29,6 +30,7 @@ export function ProfileAccess({
   error: string | null
   onRequireProfile: (require: boolean) => void
   onOwnerAddsProfiles: (ownerOnly: boolean) => void
+  onClaimCode: (required: boolean) => void
 }): React.JSX.Element {
   // A drive nobody could open is not a setting anyone means.
   const cannotRequire = profileCount === 0 && !rules.requireProfile
@@ -91,6 +93,35 @@ export function ProfileAccess({
             />
           </div>
         </div>
+
+        {rules.claimCode !== undefined && (
+          <div className="flex items-start gap-3.5 px-5 py-4">
+            <RuleIcon on={rules.claimCode}>
+              <KeyRound size={14} />
+            </RuleIcon>
+            <div
+              className="min-w-0 flex-1 cursor-pointer select-none"
+              onClick={() => onClaimCode(!rules.claimCode)}
+            >
+              <div className="text-[13px] font-medium text-text">Code to claim a profile</div>
+              <Detail
+                warn={!rules.claimCode}
+                text={
+                  rules.claimCode
+                    ? 'A profile with no PIN yet is claimed with the code shown on it. Give the code to the person it is for.'
+                    : 'Any paired device can claim a profile with no PIN yet, and choose its PIN, before the person it is for does.'
+                }
+              />
+            </div>
+            <div className="mt-0.5 shrink-0">
+              <Switch
+                checked={rules.claimCode}
+                onChange={onClaimCode}
+                label="Code to claim a profile"
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       <AnimatePresence initial={false}>
@@ -130,7 +161,7 @@ function RuleIcon({ on, children }: { on: boolean; children: React.ReactNode }):
   )
 }
 
-function Detail({ text }: { text: string }): React.JSX.Element {
+function Detail({ text, warn = false }: { text: string; warn?: boolean }): React.JSX.Element {
   return (
     <AnimatePresence mode="wait" initial={false}>
       <motion.p
@@ -139,7 +170,11 @@ function Detail({ text }: { text: string }): React.JSX.Element {
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.15 }}
-        className="mt-1 text-[11.5px] leading-relaxed text-textFaint"
+        className={cn(
+          'mt-1 text-[11.5px] leading-relaxed',
+          // Brighter, not coloured: colour is kept for what destroys something.
+          warn ? 'text-textDim' : 'text-textFaint',
+        )}
       >
         {text}
       </motion.p>

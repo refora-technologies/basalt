@@ -98,6 +98,11 @@ pub struct HostConfig {
     /// Only the host's owner adds profiles. Off: anyone using the drive may.
     #[serde(default)]
     pub owner_adds_profiles: bool,
+    /// A profile with no PIN yet is claimed with the code the host shows for
+    /// it. On by default, for hosts from before it too: off, any paired
+    /// device could take such a profile before its person does.
+    #[serde(default = "default_true")]
+    pub claim_code: bool,
 
     /// Which library sections devices show. All of them unless the owner
     /// unticks some.
@@ -163,6 +168,7 @@ impl HostConfig {
             profile_tokens: Vec::new(),
             require_profile: false,
             owner_adds_profiles: false,
+            claim_code: true,
             sections: basalt_proto::msg::Sections::default(),
             convert_enabled: true,
             convert_at_once: None,

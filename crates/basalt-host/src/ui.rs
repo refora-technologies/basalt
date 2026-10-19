@@ -139,6 +139,10 @@ pub struct ProfileSummary {
     pub color: u8,
     /// False after its PIN was reset, until someone signs in and sets one.
     pub has_pin: bool,
+    /// While it has no PIN: the code its person types to claim it, as
+    /// shown. Only ever in the host's own window and on a device that
+    /// manages the host, never in what other devices are told.
+    pub claim_code: Option<String>,
     pub created_at: i64,
     pub last_used: i64,
     pub devices: Vec<ProfileDevice>,
