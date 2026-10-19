@@ -124,6 +124,13 @@ class ImmersiveArgs {
 }
 
 @InvokeArg
+class PipArgs {
+  var playing: Boolean = false
+  var width: Int = 0
+  var height: Int = 0
+}
+
+@InvokeArg
 class OrientationArgs {
   /** landscape, portrait or auto */
   lateinit var mode: String
@@ -206,7 +213,9 @@ class MpvPropertyArgs {
  */
 @TauriPlugin(
   permissions = [
-    Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications")
+    Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications"),
+    Permission(strings = [LocalNetwork.PERMISSION], alias = LocalNetwork.ALIAS),
+    Permission(strings = [LocalNetwork.TEST_PERMISSION], alias = LocalNetwork.TEST_ALIAS),
   ]
 )
 class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
@@ -217,10 +226,25 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   /** What a notification asked the app to open, until the page takes it. */
   private var pendingAction: String? = null
   private var lastInsets = JSObject()
-  private val player by lazy { MpvPlayer(activity) { event -> trigger("mpv", event) } }
+  private val player: MpvPlayer by lazy {
+    MpvPlayer(activity) { event ->
+      if (event.optString("name") == "pause") pip.paused(event.optBoolean("data"))
+      trigger("mpv", event)
+    }
+  }
+  private val pip: Pip by lazy {
+    Pip(
+      activity,
+      togglePause = { player.command(arrayOf("cycle", "pause")) },
+      pause = { player.setProperty("pause", "yes") },
+      tell = { active -> trigger("pip", JSObject().put("active", active)) },
+    )
+  }
 
   override fun load(webView: WebView) {
     this.webView = webView
+    current = this
+    pip.start()
     watchInsets(webView)
     bindToWifi()
     acquireMulticast()
@@ -256,6 +280,8 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   override fun onDestroy() {
+    pip.stop()
+    if (current === this) current = null
     runCatching { player.destroy() }
     wifiCallback?.let {
       runCatching { connectivity().unregisterNetworkCallback(it) }
@@ -350,6 +376,32 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
       }
       invoke.resolve()
     }
+  }
+
+  /**
+   * Whether a film is playing, and its picture's size, for the small window
+   * it goes into when the person leaves the app. See [Pip].
+   */
+  @Command
+  fun setPip(invoke: Invoke) {
+    val args = invoke.parseArgs(PipArgs::class.java)
+    pip.set(args.playing, args.width, args.height)
+    invoke.resolve()
+  }
+
+  /** The activity being left: see [Pip.leaving]. */
+  fun leaving() = pip.leaving()
+
+  /** Into the small window or out of it: see [Pip.changed]. */
+  fun pictureInPicture(active: Boolean, closed: Boolean) = pip.changed(active, closed)
+
+  /**
+   * Keeps the page drawing in the small window. The activity pauses it as it
+   * goes there, as for any app in the back, and the page has to redraw once
+   * without its controls.
+   */
+  fun keepPageRunning() {
+    if (pip.inPip()) webView?.onResume()
   }
 
   /** Back at the top level: to the home screen, as every app does, not closed. */
@@ -869,6 +921,49 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     invoke.resolve(JSObject().put("granted", state.toString() == "granted"))
   }
 
+  /**
+   * Whether the app may reach the home network: `granted`, `ask` (Android
+   * will show its question), or `denied` (only Settings can change it). See
+   * [LocalNetwork]; `granted` wherever Android does not ask.
+   */
+  @Command
+  fun localNetwork(invoke: Invoke) {
+    invoke.resolve(JSObject().put("state", localNetworkState()))
+  }
+
+  @Command
+  fun requestLocalNetwork(invoke: Invoke) {
+    val alias = LocalNetwork.alias(activity)
+    if (alias == null) {
+      invoke.resolve(JSObject().put("state", "granted"))
+      return
+    }
+    requestPermissionForAlias(alias, invoke, "localNetworkAnswered")
+  }
+
+  @PermissionCallback
+  fun localNetworkAnswered(invoke: Invoke) {
+    invoke.resolve(JSObject().put("state", localNetworkState()))
+  }
+
+  private fun localNetworkState(): String {
+    val alias = LocalNetwork.alias(activity) ?: return "granted"
+    return when (getPermissionState(alias)?.toString()) {
+      "granted" -> "granted"
+      "denied" -> "denied"
+      else -> "ask"
+    }
+  }
+
+  /** This app's page in Android's settings, to allow what was refused. */
+  @Command
+  fun openAppSettings(invoke: Invoke) {
+    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+      .setData(Uri.fromParts("package", activity.packageName, null))
+    activity.startActivity(intent)
+    invoke.resolve()
+  }
+
   // ---------------------------------------------------------------------------
   // Updates
   // ---------------------------------------------------------------------------
@@ -1159,6 +1254,10 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   companion object {
+    /** The one running, for the activity's own callbacks to reach. */
+    @Volatile
+    var current: BasaltPlugin? = null
+
     private const val ACTION_EXTRA = "basalt.action"
     private const val UPDATE_CHANNEL = "basalt-updates"
     private const val UPDATE_NOTIFICATION = 7301

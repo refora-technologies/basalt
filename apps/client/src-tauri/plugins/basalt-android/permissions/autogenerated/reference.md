@@ -14,6 +14,10 @@ What the Basalt interface may ask of Android directly. Opening files and creatin
 - `allow-keep-alive`
 - `allow-let-go`
 - `allow-set-immersive`
+- `allow-set-pip`
+- `allow-local-network`
+- `allow-request-local-network`
+- `allow-open-app-settings`
 - `allow-set-orientation`
 - `allow-minimize`
 - `allow-install-apk`
@@ -473,6 +477,32 @@ Denies the list_folder command without any pre-configured scope.
 <tr>
 <td>
 
+`basalt-android:allow-local-network`
+
+</td>
+<td>
+
+Enables the local_network command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-local-network`
+
+</td>
+<td>
+
+Denies the local_network command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `basalt-android:allow-minimize`
 
 </td>
@@ -674,6 +704,32 @@ Enables the notify_update command without any pre-configured scope.
 <td>
 
 Denies the notify_update command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-open-app-settings`
+
+</td>
+<td>
+
+Enables the open_app_settings command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-open-app-settings`
+
+</td>
+<td>
+
+Denies the open_app_settings command without any pre-configured scope.
 
 </td>
 </tr>
@@ -1071,6 +1127,32 @@ Denies the remove_listener command without any pre-configured scope.
 <tr>
 <td>
 
+`basalt-android:allow-request-local-network`
+
+</td>
+<td>
+
+Enables the request_local_network command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-request-local-network`
+
+</td>
+<td>
+
+Denies the request_local_network command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `basalt-android:allow-request-notifications`
 
 </td>
@@ -1168,6 +1250,32 @@ Enables the set_orientation command without any pre-configured scope.
 <td>
 
 Denies the set_orientation command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-set-pip`
+
+</td>
+<td>
+
+Enables the set_pip command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-set-pip`
+
+</td>
+<td>
+
+Denies the set_pip command without any pre-configured scope.
 
 </td>
 </tr>

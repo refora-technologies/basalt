@@ -21,6 +21,12 @@ export interface PhoneFile {
   rel?: string
 }
 
+/**
+ * Whether Android lets the app reach the home network: `ask` when Android
+ * will show its question, `denied` when only Settings can change it.
+ */
+export type LocalNetworkState = 'granted' | 'ask' | 'denied'
+
 export interface Insets {
   top: number
   bottom: number
@@ -70,6 +76,23 @@ export const android = {
   requestNotifications: () => plugin<{ granted: boolean }>('request_notifications'),
 
   setImmersive: (on: boolean) => plugin<void>('set_immersive', { on }),
+  /**
+   * Android 17's permission for the home network, without which Basalt can
+   * reach nothing. `granted` wherever Android does not ask.
+   */
+  localNetwork: async (): Promise<LocalNetworkState> =>
+    (await plugin<{ state: LocalNetworkState }>('local_network'))?.state ?? 'granted',
+  /** Android's question; what it says now. */
+  requestLocalNetwork: async (): Promise<LocalNetworkState> =>
+    (await plugin<{ state: LocalNetworkState }>('request_local_network'))?.state ?? 'granted',
+  /** Basalt's page in Android's settings. */
+  openAppSettings: () => plugin<void>('open_app_settings'),
+  /**
+   * Whether a film is playing, and its picture's size: playing, leaving the
+   * app puts it in a small window over other apps.
+   */
+  setPip: (playing: boolean, width = 0, height = 0) =>
+    plugin<void>('set_pip', { playing, width, height }),
   setOrientation: (mode: 'landscape' | 'portrait' | 'auto') =>
     plugin<void>('set_orientation', { mode }),
   /** Back at the top of the app: to the home screen, as every app does. */

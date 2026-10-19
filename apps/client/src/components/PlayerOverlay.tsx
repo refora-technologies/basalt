@@ -567,6 +567,8 @@ export function PlayerOverlay({
    * Closing the player gives the screen back as it was.
    */
   const [turned, setTurned] = useState<'landscape' | 'portrait' | null>(null)
+  /** The picture's size, for the small window's shape. */
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null)
   useEffect(() => {
     if (!TOUCH || !open || !mpv.picture) return undefined
     let cancelled = false
@@ -575,6 +577,7 @@ export function PlayerOverlay({
       const h = Number(await getProperty('dheight', 'int64').catch(() => 0)) || 0
       if (cancelled) return
       const way = w > 0 && h > w ? 'portrait' : 'landscape'
+      setSize({ w, h })
       setTurned(way)
       void android.setOrientation(way)
       void android.setImmersive(true)
@@ -583,9 +586,45 @@ export function PlayerOverlay({
       cancelled = true
     }
   }, [open, mpv.picture, item?.id])
+  /**
+   * In a small window over other apps, on Android: the person left the app
+   * while the film played, and it went on in a corner. Only the film shows
+   * there; the controls come back with the app.
+   */
+  const [pip, setPip] = useState(false)
+  useEffect(() => {
+    if (!TOUCH || !isAndroid()) return undefined
+    let stop: (() => void) | undefined
+    let gone = false
+    void (async () => {
+      try {
+        const { addPluginListener } = await import('@tauri-apps/api/core')
+        const listener = await addPluginListener<{ active: boolean }>('basalt-android', 'pip', (e) => {
+          setPip(e.active)
+          if (e.active) setShowControls(false)
+        })
+        if (gone) void listener.unregister()
+        else stop = () => void listener.unregister()
+      } catch {
+        // An older app shell, without the small window.
+      }
+    })()
+    return () => {
+      gone = true
+      stop?.()
+    }
+  }, [])
+  // Android is told whether leaving the app should make that window: while a
+  // film plays, not while it is paused, nor for music.
+  const playingFilm = open && mpv.picture && !mpv.paused
+  useEffect(() => {
+    if (!TOUCH || !isAndroid()) return
+    void android.setPip(playingFilm, size?.w ?? 0, size?.h ?? 0).catch(() => {})
+  }, [playingFilm, size])
   useEffect(() => {
     if (!TOUCH || open) return
     setTurned(null)
+    setSize(null)
     void android.setImmersive(false)
     void android.setOrientation('auto')
     // The swipe's brightness was the player's; the app has the phone's.
@@ -1265,7 +1304,13 @@ export function PlayerOverlay({
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
           data-player=""
-          className={cn('fixed inset-0 z-40', !mpv.picture && 'bg-black')}
+          className={cn(
+            'fixed inset-0 z-40',
+            !mpv.picture && 'bg-black',
+            // In the small window, nothing over the film at all: not the
+            // controls, and not what the stage shows over a paused film.
+            pip && '[&>*:not([data-stage])]:hidden [&>[data-stage]>*]:hidden',
+          )}
         >
           {/* The browser preview's stand-in for mpv's picture. */}
           {!inTauri() && mpv.picture && (
@@ -1289,6 +1334,7 @@ export function PlayerOverlay({
             `picture` is careful to wait for.
           */}
           <div
+            data-stage=""
             onClick={TOUCH ? onTap : onSingleClick}
             onDoubleClick={TOUCH ? undefined : onDoubleClick}
             onPointerDown={TOUCH ? onSwipeStart : undefined}
