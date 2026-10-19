@@ -18,6 +18,7 @@ import {
   Loader2,
   MoreHorizontal,
   Music,
+  Play,
   Plus,
   Scissors,
   Search,
@@ -53,7 +54,17 @@ import { WhatsNew } from '@/components/WhatsNew'
 import { ImportantNotice, noteFirstStatus } from '@/components/ImportantNotice'
 import type { NavKey } from '@/components/Sidebar'
 import type { Entry } from '@/components/FileList'
-import { api, isFinished, parentOf, placeName } from '@/lib/api'
+import {
+  api,
+  CONFIDENT,
+  isFinished,
+  parentOf,
+  placeName,
+  type LibraryEpisode,
+  type LibraryItem,
+} from '@/lib/api'
+import { itemQuality, qualityOf } from '@/lib/quality'
+import { episodesWithSubtitles, subtitleTitle } from '@/lib/subtitles'
 import { android, applyInsets, type PhoneFile } from '@/lib/android'
 import { profileColor } from '@/lib/useIdentity'
 import { fileToEntry } from '@/lib/useCollections'
@@ -63,6 +74,8 @@ import { Rise } from './presence'
 import { isAndroid } from '@/lib/platform'
 import { offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
 import { ActionSheet, Sheet } from './Sheet'
+import { remaining, type Resumable } from '@/components/ContinueWatching'
+import { useLongPress } from '@/lib/useLongPress'
 import { useBack } from './useBack'
 import { SectionPager, SectionTabs, useSectionLink, type Section } from './SectionPager'
 
@@ -882,14 +895,27 @@ function IconButton({
   onClick: () => void
   children: React.ReactNode
 }): React.JSX.Element {
+  // Held, it says what it is rather than doing it, as Android's own toolbar
+  // buttons do: a tooltip never shows on a phone.
+  const [naming, setNaming] = useState(false)
+  useEffect(() => {
+    if (!naming) return undefined
+    const timer = setTimeout(() => setNaming(false), 1500)
+    return () => clearTimeout(timer)
+  }, [naming])
+  const press = useLongPress(() => setNaming(true), onClick)
   return (
     <button
       aria-label={label}
-      title={label}
-      onClick={onClick}
-      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-textDim transition-colors active:bg-white/[0.08] active:text-text"
+      {...press}
+      className="relative flex h-11 w-11 shrink-0 select-none items-center justify-center rounded-full text-textDim transition-colors active:bg-white/[0.08] active:text-text"
     >
       {children}
+      {naming && (
+        <span className="pointer-events-none absolute top-full z-10 mt-1.5 whitespace-nowrap rounded-md bg-[#2a2a2e] px-2.5 py-1 text-[12px] text-text shadow-lift">
+          {label}
+        </span>
+      )}
     </button>
   )
 }
@@ -1365,6 +1391,10 @@ function LibraryScreen({
     setPlaying,
     query,
   } = model
+  // A Continue watching card's ⋮ or long press: what it offers, in a sheet.
+  const [card, setCard] = useState<Resumable | null>(null)
+  // A long press on a poster or an episode: what it is, in words, and Play.
+  const [about, setAbout] = useState<About | null>(null)
 
   if (section === 'movies' || section === 'series') {
     return (
@@ -1385,6 +1415,62 @@ function LibraryScreen({
           playing={playing !== null}
           onPlay={(path) => void playPath(path)}
           onForget={watched.forget}
+          onContinueMore={setCard}
+          onItemMore={(item) => setAbout({ item })}
+          onEpisodeMore={(item, episode, season) => setAbout({ item, episode, season })}
+        />
+        <ActionSheet
+          open={about !== null}
+          onClose={() => setAbout(null)}
+          title={about ? aboutTitle(about) : undefined}
+          subtitle={about ? aboutLine(about) : undefined}
+          details={about ? <AboutMedia {...about} /> : undefined}
+          actions={
+            about
+              ? about.item.kind === 'series' && !about.episode
+                ? []
+                : [
+                    {
+                      id: 'play',
+                      label: 'Play',
+                      icon: Play,
+                      run: () => {
+                        const path = about.episode?.path ?? about.item.path
+                        if (path) void playPath(path)
+                      },
+                    },
+                  ]
+              : []
+          }
+        />
+        <ActionSheet
+          open={card !== null}
+          onClose={() => setCard(null)}
+          title={card?.item.title}
+          subtitle={
+            card ? [card.episode, remaining(card.watched)].filter(Boolean).join(' · ') : undefined
+          }
+          actions={
+            card
+              ? [
+                  {
+                    id: 'play',
+                    label: 'Carry on watching',
+                    icon: Play,
+                    run: () => void playPath(card.watched.path),
+                  },
+                  {
+                    id: 'forget',
+                    label: 'Remove from Continue watching',
+                    icon: X,
+                    run: () => {
+                      watched.forget(card.watched.path)
+                      model.setNotice(`${card.item.title} is off Continue watching.`)
+                    },
+                  },
+                ]
+              : []
+          }
         />
       </div>
     )
@@ -1728,5 +1814,79 @@ function MobilePlayer({ model }: { model: AppModel }): React.JSX.Element {
       subtitles={playing ? subtitlesFor(playing.id) : []}
       resolution={playing ? resolutionFor(playing.id) : null}
     />
+  )
+}
+
+/** A poster or an episode, as the sheet a long press opens names it. */
+interface About {
+  item: LibraryItem
+  episode?: LibraryEpisode
+  season?: number
+}
+
+function episodeCode(season: number, number: number): string {
+  return `S${String(season).padStart(2, '0')}E${String(number).padStart(2, '0')}`
+}
+
+function aboutTitle({ item, episode, season }: About): string {
+  if (!episode) return item.title
+  return episode.title ?? `${item.title} ${episodeCode(season ?? 1, episode.number)}`
+}
+
+/** The line under the title: what it is, how good a picture, how big. */
+function aboutLine({ item, episode, season }: About): string {
+  if (episode) {
+    return [
+      `${item.title} ${episodeCode(season ?? 1, episode.number)}`,
+      qualityOf(episode.resolution),
+      formatBytes(episode.size),
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  }
+  const episodes = item.seasons.reduce((total, s) => total + s.episodes.length, 0)
+  return [
+    item.year,
+    itemQuality(item),
+    item.kind === 'series'
+      ? `${item.seasons.length} ${item.seasons.length === 1 ? 'season' : 'seasons'}, ${episodes} episodes`
+      : formatBytes(item.size),
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/**
+ * What the badges on a poster or an episode say on a computer when the
+ * pointer rests on them: which subtitle files there are, and whether the
+ * match is a guess. Nothing hovers on a phone, so here it is in words.
+ */
+function AboutMedia({ item, episode }: About): React.JSX.Element {
+  const lines: string[] = []
+  if (episode) {
+    const subtitles = subtitleTitle(episode.subtitles)
+    lines.push(subtitles ? `${subtitles}.` : 'No subtitle files beside it on the drive.')
+  } else if (item.kind === 'film') {
+    const subtitles = subtitleTitle(item.subtitles)
+    lines.push(subtitles ? `${subtitles}.` : 'No subtitle files beside it on the drive.')
+  } else {
+    const [withSubs, total] = episodesWithSubtitles(item)
+    lines.push(
+      withSubs === 0
+        ? 'No subtitle files beside its episodes on the drive.'
+        : withSubs === total
+          ? 'Every episode has a subtitle file on the drive.'
+          : `${withSubs} of its ${total} episodes have a subtitle file on the drive.`,
+    )
+  }
+  if (!episode && item.confidence < CONFIDENT) {
+    lines.push('Matched by its file name, so it may be wrong.')
+  }
+  return (
+    <div className="space-y-1.5">
+      {lines.map((line) => (
+        <p key={line}>{line}</p>
+      ))}
+    </div>
   )
 }

@@ -1,9 +1,14 @@
 import { motion } from 'framer-motion'
 import { qualityOf, type Quality } from '@/lib/quality'
 import { QualityTag } from './QualityTag'
-import { Play, X } from 'lucide-react'
+import { MoreVertical, Play, X } from 'lucide-react'
 import type { LibraryItem, Watched } from '@/lib/api'
+import { isMobileShell } from '@/lib/platform'
+import { useLongPress } from '@/lib/useLongPress'
 import { Poster } from './Poster'
+import { cn } from '@/lib/utils'
+
+const TOUCH = isMobileShell()
 
 /** One thing part-watched, resolved back to what it belongs to. */
 export interface Resumable {
@@ -66,7 +71,7 @@ export function resumable(items: LibraryItem[], watched: Watched[]): Resumable[]
 }
 
 /** How long is left, in words. */
-function remaining(watched: Watched): string {
+export function remaining(watched: Watched): string {
   if (watched.duration <= 0) return `${Math.round(watched.fraction * 100)}% through`
   const left = Math.max(0, watched.duration - watched.position)
   const minutes = Math.round(left / 60)
@@ -87,10 +92,17 @@ export function ContinueWatching({
   entries,
   onPlay,
   onForget,
+  onMore,
 }: {
   entries: Resumable[]
   onPlay: (path: string) => void
   onForget: (path: string) => void
+  /**
+   * On a phone: what can be done with a card, from its ⋮ or a long press,
+   * in place of the × a pointer finds by hovering. Removing loses the place
+   * in the film, so it is not left one stray tap away.
+   */
+  onMore?: (entry: Resumable) => void
 }): React.JSX.Element | null {
   if (entries.length === 0) return null
 
@@ -105,72 +117,116 @@ export function ContinueWatching({
           well — so without room made for it the button was sliced in half
           along its top edge. */}
       <div className="flex gap-3 overflow-x-auto pb-1 pt-2">
-        {entries.map(({ watched, item, episode, quality }, index) => (
-          <motion.div
-            key={watched.path}
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{
-              duration: 0.28,
-              delay: Math.min(index, 8) * 0.03,
-              ease: [0.22, 1, 0.36, 1],
-            }}
-            className="group relative w-[228px] shrink-0"
-          >
-            <button
-              onClick={() => onPlay(watched.path)}
-              className="flex w-full items-stretch gap-3 overflow-hidden rounded-md border border-line bg-panel text-left transition-colors hover:bg-panel2"
-            >
-              {/* The play affordance sits over the poster on hover, matching
-                  the grid below it — inside the poster's own box, so it
-                  covers the picture exactly. Positioned against the whole
-                  card, it sat across the card's border and missed the
-                  poster's right edge. */}
-              <div className="relative w-[56px] shrink-0 self-center overflow-hidden">
-                <Poster
-                  title={item.title}
-                  year={item.year ?? undefined}
-                  id={item.id}
-                  hasArt={item.hasArt}
-                />
-                <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
-                  <Play size={13} className="ml-0.5 text-basalt" fill="currentColor" />
-                </span>
-              </div>
-
-              <div className="flex min-w-0 flex-1 flex-col justify-center py-2.5 pr-2">
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="truncate text-[12.5px] font-medium text-text">
-                    {item.title}
-                  </span>
-                  <QualityTag quality={quality} size="sm" />
-                </div>
-                <div className="tnum mt-0.5 truncate font-mono text-[10px] text-textFaint">
-                  {episode ? `${episode} · ` : ''}
-                  {remaining(watched)}
-                </div>
-
-                <div className="mt-2 h-[3px] w-full overflow-hidden rounded-full bg-ink2">
-                  <div
-                    className="h-full rounded-full bg-basalt"
-                    style={{ width: `${Math.round(watched.fraction * 100)}%` }}
-                  />
-                </div>
-              </div>
-
-            </button>
-
-            <button
-              onClick={() => onForget(watched.path)}
-              title="Remove from Continue watching"
-              aria-label={`Remove ${item.title} from Continue watching`}
-              className="absolute -right-1.5 -top-1.5 rounded-full border border-line bg-panel2 p-1 text-textFaint opacity-0 transition-opacity hover:text-text group-hover:opacity-100 focus:opacity-100"
-            >
-              <X size={10} />
-            </button>
-          </motion.div>
+        {entries.map((entry, index) => (
+          <ContinueCard
+            key={entry.watched.path}
+            entry={entry}
+            index={index}
+            onPlay={onPlay}
+            onForget={onForget}
+            onMore={TOUCH ? onMore : undefined}
+          />
         ))}
       </div>
     </section>
+  )
+}
+
+function ContinueCard({
+  entry,
+  index,
+  onPlay,
+  onForget,
+  onMore,
+}: {
+  entry: Resumable
+  index: number
+  onPlay: (path: string) => void
+  onForget: (path: string) => void
+  onMore?: (entry: Resumable) => void
+}): React.JSX.Element {
+  const { watched, item, episode, quality } = entry
+  const press = useLongPress(
+    () => onMore?.(entry),
+    () => onPlay(watched.path),
+  )
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{
+        duration: 0.28,
+        delay: Math.min(index, 8) * 0.03,
+        ease: [0.22, 1, 0.36, 1],
+      }}
+      className="group relative w-[228px] shrink-0"
+    >
+      <button
+        // A finger: a tap plays, a long press offers the rest. A pointer: a
+        // click plays, and the × is found by hovering.
+        {...(onMore ? press : { onClick: () => onPlay(watched.path) })}
+        className={cn(
+          'flex w-full select-none items-stretch gap-3 overflow-hidden rounded-md border border-line bg-panel text-left transition-colors hover:bg-panel2',
+          onMore && 'pr-9 active:bg-panel2',
+        )}
+      >
+        {/* The play affordance sits over the poster on hover, matching
+            the grid below it — inside the poster's own box, so it
+            covers the picture exactly. Positioned against the whole
+            card, it sat across the card's border and missed the
+            poster's right edge. */}
+        <div className="relative w-[56px] shrink-0 self-center overflow-hidden">
+          <Poster
+            title={item.title}
+            year={item.year ?? undefined}
+            id={item.id}
+            hasArt={item.hasArt}
+          />
+          <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/55 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+            <Play size={13} className="ml-0.5 text-basalt" fill="currentColor" />
+          </span>
+        </div>
+
+        <div className="flex min-w-0 flex-1 flex-col justify-center py-2.5 pr-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-[12.5px] font-medium text-text">
+              {item.title}
+            </span>
+            <QualityTag quality={quality} size="sm" />
+          </div>
+          <div className="tnum mt-0.5 truncate font-mono text-[10px] text-textFaint">
+            {episode ? `${episode} · ` : ''}
+            {remaining(watched)}
+          </div>
+
+          <div className="mt-2 h-[3px] w-full overflow-hidden rounded-full bg-ink2">
+            <div
+              className="h-full rounded-full bg-basalt"
+              style={{ width: `${Math.round(watched.fraction * 100)}%` }}
+            />
+          </div>
+        </div>
+      </button>
+
+      {onMore ? (
+        // Inside the card, the height of it: a finger's worth to hit.
+        <button
+          onClick={() => onMore(entry)}
+          aria-label={`More for ${item.title}`}
+          className="absolute inset-y-0 right-0 flex w-9 items-center justify-center rounded-r-md text-textFaint active:bg-white/[0.06] active:text-text"
+        >
+          <MoreVertical size={16} />
+        </button>
+      ) : (
+        <button
+          onClick={() => onForget(watched.path)}
+          title="Remove from Continue watching"
+          aria-label={`Remove ${item.title} from Continue watching`}
+          className="absolute -right-1.5 -top-1.5 rounded-full border border-line bg-panel2 p-1 text-textFaint opacity-0 transition-opacity hover:text-text group-hover:opacity-100 focus:opacity-100"
+        >
+          <X size={10} />
+        </button>
+      )}
+    </motion.div>
   )
 }

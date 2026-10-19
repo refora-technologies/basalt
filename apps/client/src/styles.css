@@ -137,20 +137,23 @@ body.player-open [data-player] * {
   }
 }
 
-::-webkit-scrollbar {
+/* The computer's scrollbars. Not the phone's: styled at all, Android's
+   thin bar that shows only while scrolling becomes a 10 px one that never
+   goes away, under every row that scrolls sideways and beside every list. */
+html:not(.mobile) ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
-::-webkit-scrollbar-track {
+html:not(.mobile) ::-webkit-scrollbar-track {
   background: transparent;
 }
-::-webkit-scrollbar-thumb {
+html:not(.mobile) ::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.1);
   border-radius: 6px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
-::-webkit-scrollbar-thumb:hover {
+html:not(.mobile) ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.2);
   background-clip: padding-box;
 }

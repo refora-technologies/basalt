@@ -4,12 +4,17 @@ import ReactDOM from 'react-dom/client'
 import { App } from './App'
 import { suppressNativeContextMenu } from './lib/nativeMenu'
 import { noteLaunch } from './lib/review'
+import { isMobileShell } from './lib/platform'
 import { startUpdateChecks } from './lib/updates'
 import './styles.css'
 
 // Before the first render, so no right click can ever reach the browser's
 // own menu — not even during startup.
 suppressNativeContextMenu()
+
+// The phone's look from the first frame: its own scrollbars among it, which
+// the computer's would otherwise replace until the phone app had drawn.
+if (isMobileShell()) document.documentElement.classList.add('mobile')
 
 // A newer Basalt is looked for on opening and twice a day after, so the offer
 // is waiting in the sidebar, or on a phone in a banner and a notification,

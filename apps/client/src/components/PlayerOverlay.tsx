@@ -73,6 +73,27 @@ import { useBack } from '@/mobile/useBack'
  */
 const TOUCH = isMobileShell()
 
+/**
+ * The size of a control: what a pointer needs on a computer, what a finger
+ * needs on a phone (Android asks for 48 dp; 44 keeps a row of them on one
+ * line in a phone held upright).
+ */
+const TAP = TOUCH ? 'h-11 w-11' : 'h-8 w-8'
+const ICON = TOUCH ? 20 : 16
+
+/** A phone held upright: too narrow for every control in one row. */
+function useNarrow(): boolean {
+  const narrowNow = (): boolean => TOUCH && typeof window !== 'undefined' && window.innerWidth < 560
+  const [narrow, setNarrow] = useState(narrowNow)
+  useEffect(() => {
+    if (!TOUCH) return undefined
+    const onResize = (): void => setNarrow(narrowNow())
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  return narrow
+}
+
 /** Motionless for this long and the controls step aside. */
 const CONTROLS_IDLE = 2600
 
@@ -82,6 +103,17 @@ const pictureSaid = new Set<PictureHelp['mode']>()
 /** Where mpv draws subtitles with the controls up, and without. */
 const SUBTITLES_ABOVE_CONTROLS = 96
 const SUBTITLES_AT_REST = 22
+
+/**
+ * How far up subtitles go with the controls up, in mpv's scaled pixels (as
+ * if the window were 720 high). On a phone, just over the bar as measured,
+ * less the clear top of its fade; on a computer, the bar's fixed height.
+ */
+function subtitlesAbove(barHeight: number): number {
+  if (!TOUCH || barHeight <= 0 || typeof window === 'undefined') return SUBTITLES_ABOVE_CONTROLS
+  const clear = barHeight - 24
+  return Math.max(SUBTITLES_ABOVE_CONTROLS, Math.round((clear / window.innerHeight) * 720))
+}
 
 /**
  * The player.
@@ -687,10 +719,22 @@ export function PlayerOverlay({
    * somebody was reading. They drop back down as soon as the bar does.
    */
   const lift = mpv.setSubtitleMargin
+  // The bar's height, measured: a phone's is taller than a computer's (times
+  // over the seek bar, buttons a finger can hit), and subtitles lifted by
+  // the computer's figure sat across the seek bar.
+  const bar = useRef<HTMLDivElement | null>(null)
+  const [barHeight, setBarHeight] = useState(0)
+  useEffect(() => {
+    const element = bar.current
+    if (!TOUCH || !element || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(() => setBarHeight(element.offsetHeight))
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [item])
   useEffect(() => {
     if (!item) return
-    void lift(controlsUp ? SUBTITLES_ABOVE_CONTROLS : SUBTITLES_AT_REST)
-  }, [item, controlsUp, lift])
+    void lift(controlsUp ? subtitlesAbove(barHeight) : SUBTITLES_AT_REST)
+  }, [item, controlsUp, lift, barHeight])
 
   const fullscreenRef = useRef(fullscreen)
   fullscreenRef.current = fullscreen
@@ -1284,6 +1328,38 @@ export function PlayerOverlay({
   }, [open])
 
   const percent = mpv.duration > 0 ? (mpv.position / mpv.duration) * 100 : 0
+  const narrow = useNarrow()
+
+  /**
+   * The seek bar held and moving: quick looks along the way, one at a time,
+   * the latest place waiting while one is under way, so a fast drag never
+   * queues up a trail of seeks behind the finger. Letting go makes the exact
+   * seek. See [`Scrubber`].
+   */
+  const scrubbing = useRef<{ busy: boolean; next: number | null }>({ busy: false, next: null })
+  const { scrubTo } = mpv
+  const scrub = useCallback(
+    (fraction: number) => {
+      const state = scrubbing.current
+      const look = async (seconds: number): Promise<void> => {
+        state.busy = true
+        try {
+          await scrubTo(seconds)
+        } catch {
+          // A look that failed is only a frame not shown.
+        } finally {
+          state.busy = false
+          const next = state.next
+          state.next = null
+          if (next !== null) void look(next)
+        }
+      }
+      const seconds = fraction * mpv.duration
+      if (state.busy) state.next = seconds
+      else void look(seconds)
+    },
+    [scrubTo, mpv.duration],
+  )
   // A conversion that did not open is handled, by trying again or by the
   // file itself, lighter; only the file itself failing is a problem to show.
   const problem = failed ?? mpv.problem ?? (mpv.converted ? null : mpv.loadFailed)
@@ -1607,10 +1683,12 @@ export function PlayerOverlay({
 
             <motion.button
               initial={false}
-              animate={{ opacity: controlsUp ? 1 : 0 }}
+              // Out of the way of a menu on a phone, where the menu reaches
+              // the top of the screen and has its own close button.
+              animate={{ opacity: controlsUp && !(TOUCH && (menu || qualityMenu)) ? 1 : 0 }}
               transition={{ duration: 0.22 }}
               style={{
-                pointerEvents: controlsUp ? 'auto' : 'none',
+                pointerEvents: controlsUp && !(TOUCH && (menu || qualityMenu)) ? 'auto' : 'none',
                 ...(TOUCH
                   ? {
                       top: 'calc(var(--inset-top, 0px) + 12px)',
@@ -1711,15 +1789,22 @@ export function PlayerOverlay({
             />
           )}
 
-          <motion.div
-            initial={false}
-            animate={{ y: controlsUp ? 0 : 28, opacity: controlsUp ? 1 : 0 }}
-            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+          <div
+            ref={bar}
             onMouseEnter={() => setOverBar(true)}
             onMouseLeave={() => setOverBar(false)}
             // A finger on the controls is someone using them.
             onPointerDown={TOUCH ? keepControls : undefined}
+            // A CSS transition rather than Framer Motion: its fade runs on the
+            // compositor and its slide on the page's own frames, and on a busy
+            // phone the slide stalled while the fade finished, leaving the bar
+            // showing 28 px low, its buttons cut off at the bottom edge. Here
+            // both run together on the compositor, as the Sheet's do.
             style={{
+              transform: `translateY(${controlsUp ? 0 : 28}px)`,
+              opacity: controlsUp ? 1 : 0,
+              transition:
+                'transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms cubic-bezier(0.22, 1, 0.36, 1)',
               pointerEvents: controlsUp ? 'auto' : 'none',
               ...(TOUCH
                 ? {
@@ -1773,13 +1858,27 @@ export function PlayerOverlay({
               )}
             </AnimatePresence>
 
+            {/* On a phone the times sit over the bar, at its two ends, as
+                phone players have them: in the row of buttons they pushed a
+                phone held upright off its edge. */}
+            {TOUCH && (
+              <div className="tnum mb-2 flex justify-between font-mono text-[12px] text-textDim">
+                <span>{formatDuration(mpv.position)}</span>
+                <span className="text-textFaint">{formatDuration(mpv.duration)}</span>
+              </div>
+            )}
             <Scrubber
               percent={percent}
-              onSeek={(fraction) => void mpv.seekTo(fraction * mpv.duration)}
+              duration={mpv.duration}
+              onScrub={scrub}
+              onSeek={(fraction) => {
+                scrubbing.current.next = null
+                void mpv.seekTo(fraction * mpv.duration)
+              }}
               disabled={mpv.duration === 0}
             />
 
-            <div className="mt-3 flex items-center gap-2">
+            <div className={cn('flex items-center', TOUCH ? 'mt-2 gap-1' : 'mt-3 gap-2')}>
               {/* Previous and next beside play, the way every player has
                   them. Previous restarts this one first; next is only there
                   to press when there is something after this. */}
@@ -1797,12 +1896,15 @@ export function PlayerOverlay({
                 disabled={mpv.duration === 0}
                 aria-label={mpv.paused ? 'Play' : 'Pause'}
                 title={mpv.paused ? 'Play (Space)' : 'Pause (Space)'}
-                className="mx-1 flex h-10 w-10 items-center justify-center rounded-full bg-basalt text-ink transition-transform duration-150 hover:scale-105 disabled:opacity-30 disabled:hover:scale-100"
+                className={cn(
+                  'mx-1 flex items-center justify-center rounded-full bg-basalt text-ink transition-transform duration-150 hover:scale-105 disabled:opacity-30 disabled:hover:scale-100',
+                  TOUCH ? 'h-12 w-12' : 'h-10 w-10',
+                )}
               >
                 {mpv.paused ? (
-                  <Play size={17} className="ml-0.5 fill-ink" />
+                  <Play size={TOUCH ? 20 : 17} className="ml-0.5 fill-ink" />
                 ) : (
-                  <Pause size={17} className="fill-ink" />
+                  <Pause size={TOUCH ? 20 : 17} className="fill-ink" />
                 )}
               </button>
               <ControlButton
@@ -1814,13 +1916,21 @@ export function PlayerOverlay({
 
               <div className={cn('mx-1.5 h-4 w-px bg-white/[0.1]', TOUCH && 'hidden')} />
 
-              <SeekButton direction={-1} onClick={() => void mpv.seekBy(-10)} />
-              <SeekButton direction={1} onClick={() => void mpv.seekBy(10)} />
+              {/* A phone held upright has no room for them; a double tap on
+                  either side of the picture does the same. */}
+              {!narrow && (
+                <>
+                  <SeekButton direction={-1} onClick={() => void mpv.seekBy(-10)} />
+                  <SeekButton direction={1} onClick={() => void mpv.seekBy(10)} />
+                </>
+              )}
 
-              <span className="tnum ml-2 whitespace-nowrap font-mono text-[11px] text-textDim">
-                {formatDuration(mpv.position)}
-                <span className="text-textFaint"> / {formatDuration(mpv.duration)}</span>
-              </span>
+              {!TOUCH && (
+                <span className="tnum ml-2 whitespace-nowrap font-mono text-[11px] text-textDim">
+                  {formatDuration(mpv.position)}
+                  <span className="text-textFaint"> / {formatDuration(mpv.duration)}</span>
+                </span>
+              )}
 
               <div className="flex-1" />
 
@@ -1833,7 +1943,8 @@ export function PlayerOverlay({
                   aria-label="Quality"
                   title="Quality"
                   className={cn(
-                    'flex h-8 items-center gap-1.5 rounded-md px-2 font-mono text-[10.5px] transition-colors',
+                    TOUCH ? 'h-11 px-3 text-[11.5px]' : 'h-8 px-2 text-[10.5px]',
+                    'flex items-center gap-1.5 rounded-md font-mono transition-colors',
                     qualityMenu ? 'bg-white/[0.08] text-text' : 'text-textDim hover:bg-white/[0.06] hover:text-text',
                   )}
                 >
@@ -1850,7 +1961,8 @@ export function PlayerOverlay({
                 aria-label="Subtitles"
                 title="Subtitles"
                 className={cn(
-                  'flex h-8 items-center gap-1.5 rounded-md px-2 text-[11px] transition-colors',
+                  TOUCH ? 'h-11 px-3' : 'h-8 px-2',
+                  'flex items-center gap-1.5 rounded-md text-[11px] transition-colors',
                   // Nothing to read along to on a phone playing music.
                   TOUCH && !mpv.picture && 'hidden',
                   mpv.subtitleId !== null
@@ -1858,7 +1970,7 @@ export function PlayerOverlay({
                     : 'text-textDim hover:bg-white/[0.06] hover:text-text',
                 )}
               >
-                <Subtitles size={16} />
+                <Subtitles size={ICON} />
                 {mpv.subtitleDelay !== 0 && (
                   <span className="tnum font-mono text-[10px]">
                     {mpv.subtitleDelay > 0 ? '+' : ''}
@@ -1898,7 +2010,7 @@ export function PlayerOverlay({
                 />
               )}
             </div>
-          </motion.div>
+          </div>
         </motion.div>
       )}
     </AnimatePresence>
@@ -1913,7 +2025,22 @@ export function PlayerOverlay({
 const RECOVER_WAITS = [1000, 2000, 3000, 5000, 8000, 10000, 12000]
 
 /** The tallest a menu over the controls may be: the screen less the bar. */
-const MENU_HEIGHT = 'min(560px, calc(100dvh - var(--inset-top, 0px) - 132px))'
+const MENU_HEIGHT = TOUCH
+  ? // Over the controls, from the bottom corner: above them, a phone on its
+    // side left room for four lines, and the title ran off the top.
+    'calc(100dvh - var(--inset-top, 0px) - var(--inset-bottom, 0px) - 24px)'
+  : 'min(560px, calc(100dvh - var(--inset-top, 0px) - 132px))'
+
+/** Where a menu sits: above the bar on a computer, over it on a phone. */
+const MENU_PLACE = TOUCH
+  ? 'absolute z-10 flex w-[min(340px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border border-white/[0.12] bg-[#141416] shadow-lift'
+  : 'absolute bottom-full right-4 z-10 mb-3 flex flex-col overflow-hidden rounded-xl border border-white/[0.12] bg-[#141416] shadow-lift'
+const MENU_CORNER: React.CSSProperties = TOUCH
+  ? {
+      bottom: 'calc(var(--inset-bottom, 0px) + 12px)',
+      right: 'calc(var(--inset-right, 0px) + 12px)',
+    }
+  : {}
 
 /**
  * Which picture to play: the host's conversion, made for this device, or the
@@ -1941,8 +2068,8 @@ function QualityMenu({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 6, scale: 0.98 }}
       transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
-      style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT }}
-      className="absolute bottom-full right-4 z-10 mb-3 flex w-[340px] flex-col overflow-hidden rounded-xl border border-white/[0.12] bg-[#141416] shadow-lift"
+      style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT, ...MENU_CORNER }}
+      className={cn(MENU_PLACE, !TOUCH && 'w-[340px]')}
     >
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/[0.07] pl-4 pr-2">
         <span className="text-[12.5px] font-semibold text-text">Quality</span>
@@ -2070,8 +2197,8 @@ function SubtitleMenu({
       // menu used *while* watching, so it is always over a picture.
       // As tall as the screen allows and no taller: on a phone turned on its
       // side a long list ran off the top, title and all. The list scrolls.
-      style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT }}
-      className="absolute bottom-full right-4 z-10 mb-3 flex w-[320px] flex-col overflow-hidden rounded-xl border border-white/[0.12] bg-[#141416] shadow-lift"
+      style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT, ...MENU_CORNER }}
+      className={cn(MENU_PLACE, !TOUCH && 'w-[320px]')}
     >
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/[0.07] pl-4 pr-2">
         <span className="text-[12.5px] font-semibold text-text">Subtitles</span>
@@ -2165,14 +2292,16 @@ function SubtitleMenu({
         )}
       </div>
 
-      <div className="border-t border-white/[0.07] px-4 py-3">
+      <div className="shrink-0 border-t border-white/[0.07] px-4 py-3">
         <button
           onClick={onAddFromDisk}
           className="flex w-full items-center gap-2 text-left text-[12px] text-textDim transition-colors duration-150 hover:text-text"
         >
           <Plus size={13} />
           Add a subtitle file
-          <span className="ml-auto text-[10.5px] text-textFaint">or drop one on the video</span>
+          {!TOUCH && (
+            <span className="ml-auto text-[10.5px] text-textFaint">or drop one on the video</span>
+          )}
         </button>
 
         <div className="mt-3 flex items-center gap-2">
@@ -2290,63 +2419,128 @@ function Nudge({
  * by guessing at it repeatedly, and every real player lets you scrub — the
  * pointer is captured so the drag keeps working past the ends of the bar.
  */
-function Scrubber({
+export function Scrubber({
   percent,
+  duration,
+  onScrub,
   onSeek,
   disabled,
 }: {
   percent: number
+  /** Seconds, for the time shown while the bar is held. */
+  duration: number
+  /** Where it is held now, as it moves: a quick look, not the seek. */
+  onScrub: (fraction: number) => void
+  /** Where it was let go: the seek. */
   onSeek: (fraction: number) => void
   disabled: boolean
 }): React.JSX.Element {
+  // Where the pointer holds it, while it does; then where it was let go,
+  // until the film has caught up, so the bar does not jump back to the old
+  // position for the moment the seek takes.
+  const [held, setHeld] = useState<number | null>(null)
+  const [landing, setLanding] = useState<number | null>(null)
+  const holding = useRef(false)
+  const last = useRef(0)
+
+  useEffect(() => {
+    if (landing === null) return undefined
+    if (Math.abs(percent - landing * 100) < 1.5) {
+      setLanding(null)
+      return undefined
+    }
+    const giveUp = setTimeout(() => setLanding(null), 2500)
+    return () => clearTimeout(giveUp)
+  }, [landing, percent])
+
   const fractionAt = (element: HTMLElement, clientX: number): number => {
     const box = element.getBoundingClientRect()
     return Math.max(0, Math.min(1, (clientX - box.left) / box.width))
   }
+  const follow = (element: HTMLElement, clientX: number): void => {
+    const fraction = fractionAt(element, clientX)
+    last.current = fraction
+    setHeld(fraction)
+    onScrub(fraction)
+  }
+  const letGo = (fraction: number): void => {
+    holding.current = false
+    setHeld(null)
+    setLanding(fraction)
+    onSeek(fraction)
+  }
+
+  const shown = held ?? landing
+  const at = shown === null ? percent : shown * 100
 
   return (
     <div
       role="slider"
       aria-label="Position"
-      aria-valuenow={Math.round(percent)}
+      aria-valuenow={Math.round(at)}
       aria-valuemin={0}
       aria-valuemax={100}
       tabIndex={0}
+      // The bar takes a finger's sideways movement for itself. Without this
+      // the phone's browser took it for a scroll, cancelled the pointer, and
+      // only the first touch ever seeked.
+      style={{ touchAction: 'none' }}
       onPointerDown={(e) => {
         if (disabled) return
-        // Seek first, capture second. The other order loses the seek
-        // entirely whenever `setPointerCapture` throws — which it does for
-        // some synthesised pointers — and a timeline that ignores a click is
-        // worse than one that cannot be dragged.
-        onSeek(fractionAt(e.currentTarget, e.clientX))
+        holding.current = true
+        follow(e.currentTarget, e.clientX)
         try {
           e.currentTarget.setPointerCapture(e.pointerId)
         } catch {
-          // Dragging will not follow the pointer outside the bar. Clicking
-          // still works, which is the part that matters.
+          // Dragging will not follow the pointer outside the bar. The press
+          // still seeks, which is the part that matters.
         }
       }}
       onPointerMove={(e) => {
-        // Only while the button is held; `buttons` is the reliable test,
-        // because a plain move over the bar must not seek.
-        if (disabled || e.buttons !== 1) return
-        onSeek(fractionAt(e.currentTarget, e.clientX))
+        if (disabled || !holding.current) return
+        follow(e.currentTarget, e.clientX)
+      }}
+      onPointerUp={(e) => {
+        if (!holding.current) return
+        letGo(fractionAt(e.currentTarget, e.clientX))
+      }}
+      // Taken away mid-drag, by the system or a second finger: it lands
+      // where it was last held, rather than nowhere.
+      onPointerCancel={() => {
+        if (holding.current) letGo(last.current)
       }}
       className={cn(
-        'group relative h-1 rounded-full bg-white/[0.1]',
+        'group relative rounded-full bg-white/[0.1] transition-[height] duration-150',
+        held !== null ? 'h-1.5' : 'h-1',
         disabled ? 'cursor-default opacity-50' : 'cursor-pointer',
       )}
     >
-      {/* A taller invisible target: a 1px bar is far too small to hit. */}
-      <div className="absolute -inset-y-2 inset-x-0" />
+      {/* A taller invisible target: a 4 px bar is far too small to hit, and
+          a finger needs more than a pointer. */}
+      <div className={cn('absolute inset-x-0', TOUCH ? '-inset-y-4' : '-inset-y-2')} />
       <div
         className="absolute inset-y-0 left-0 rounded-full bg-basalt"
-        style={{ width: `${percent}%` }}
+        style={{ width: `${at}%` }}
       />
       <div
-        className="absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full bg-basalt opacity-0 transition-opacity group-hover:opacity-100"
-        style={{ left: `calc(${percent}% - 6px)` }}
+        className={cn(
+          'absolute top-1/2 -translate-y-1/2 rounded-full bg-basalt transition-[opacity,width,height] duration-150',
+          held !== null ? 'h-4 w-4' : 'h-3 w-3',
+          // Always there on a phone, where nothing hovers; on a computer
+          // when the pointer is over the bar, or holds it.
+          TOUCH || held !== null ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+        )}
+        style={{ left: `calc(${at}% - ${held !== null ? 8 : 6}px)` }}
       />
+      {/* Where it will land, above the finger that is covering the bar. */}
+      {held !== null && duration > 0 && (
+        <div
+          className="pointer-events-none absolute bottom-full mb-4 -translate-x-1/2 rounded-md bg-black/80 px-2 py-1 font-mono text-[12px] text-text tnum"
+          style={{ left: `clamp(28px, ${held * 100}%, calc(100% - 28px))` }}
+        >
+          {formatDuration(held * duration)}
+        </div>
+      )}
     </div>
   )
 }
@@ -2369,12 +2563,13 @@ function ControlButton({
       aria-label={label}
       title={label}
       className={cn(
-        'flex h-8 w-8 items-center justify-center rounded-md text-textDim',
-        'transition-colors duration-150 hover:bg-white/[0.06] hover:text-text',
+        TAP,
+        'flex items-center justify-center rounded-md text-textDim',
+        'transition-colors duration-150 hover:bg-white/[0.06] hover:text-text active:bg-white/[0.08]',
         'disabled:pointer-events-none disabled:opacity-30',
       )}
     >
-      <Icon size={16} />
+      <Icon size={ICON} />
     </button>
   )
 }
@@ -2397,10 +2592,18 @@ function SeekButton({
       onClick={onClick}
       aria-label={label}
       title={label}
-      className="relative flex h-8 w-8 items-center justify-center rounded-md text-textDim transition-colors duration-150 hover:bg-white/[0.06] hover:text-text"
+      className={cn(
+        TAP,
+        'relative flex items-center justify-center rounded-md text-textDim transition-colors duration-150 hover:bg-white/[0.06] hover:text-text active:bg-white/[0.08]',
+      )}
     >
-      <Icon size={20} strokeWidth={1.6} />
-      <span className="absolute inset-0 flex items-center justify-center pt-[1px] font-mono text-[7.5px] font-semibold">
+      <Icon size={TOUCH ? 24 : 20} strokeWidth={1.6} />
+      <span
+        className={cn(
+          'absolute inset-0 flex items-center justify-center pt-[1px] font-mono font-semibold',
+          TOUCH ? 'text-[8.5px]' : 'text-[7.5px]',
+        )}
+      >
         10
       </span>
     </button>
