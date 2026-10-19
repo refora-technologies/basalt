@@ -105,6 +105,17 @@ const SUBTITLES_ABOVE_CONTROLS = 96
 const SUBTITLES_AT_REST = 22
 
 /**
+ * How far up subtitles go with the controls up, in mpv's scaled pixels (as
+ * if the window were 720 high). On a phone, just over the bar as measured,
+ * less the clear top of its fade; on a computer, the bar's fixed height.
+ */
+function subtitlesAbove(barHeight: number): number {
+  if (!TOUCH || barHeight <= 0 || typeof window === 'undefined') return SUBTITLES_ABOVE_CONTROLS
+  const clear = barHeight - 24
+  return Math.max(SUBTITLES_ABOVE_CONTROLS, Math.round((clear / window.innerHeight) * 720))
+}
+
+/**
  * The player.
  *
  * Nothing is downloaded. The source is a URL from the local media proxy, and
@@ -708,10 +719,22 @@ export function PlayerOverlay({
    * somebody was reading. They drop back down as soon as the bar does.
    */
   const lift = mpv.setSubtitleMargin
+  // The bar's height, measured: a phone's is taller than a computer's (times
+  // over the seek bar, buttons a finger can hit), and subtitles lifted by
+  // the computer's figure sat across the seek bar.
+  const bar = useRef<HTMLDivElement | null>(null)
+  const [barHeight, setBarHeight] = useState(0)
+  useEffect(() => {
+    const element = bar.current
+    if (!TOUCH || !element || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(() => setBarHeight(element.offsetHeight))
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [item])
   useEffect(() => {
     if (!item) return
-    void lift(controlsUp ? SUBTITLES_ABOVE_CONTROLS : SUBTITLES_AT_REST)
-  }, [item, controlsUp, lift])
+    void lift(controlsUp ? subtitlesAbove(barHeight) : SUBTITLES_AT_REST)
+  }, [item, controlsUp, lift, barHeight])
 
   const fullscreenRef = useRef(fullscreen)
   fullscreenRef.current = fullscreen
@@ -1660,10 +1683,12 @@ export function PlayerOverlay({
 
             <motion.button
               initial={false}
-              animate={{ opacity: controlsUp ? 1 : 0 }}
+              // Out of the way of a menu on a phone, where the menu reaches
+              // the top of the screen and has its own close button.
+              animate={{ opacity: controlsUp && !(TOUCH && (menu || qualityMenu)) ? 1 : 0 }}
               transition={{ duration: 0.22 }}
               style={{
-                pointerEvents: controlsUp ? 'auto' : 'none',
+                pointerEvents: controlsUp && !(TOUCH && (menu || qualityMenu)) ? 'auto' : 'none',
                 ...(TOUCH
                   ? {
                       top: 'calc(var(--inset-top, 0px) + 12px)',
@@ -1765,6 +1790,7 @@ export function PlayerOverlay({
           )}
 
           <div
+            ref={bar}
             onMouseEnter={() => setOverBar(true)}
             onMouseLeave={() => setOverBar(false)}
             // A finger on the controls is someone using them.
@@ -1999,7 +2025,22 @@ export function PlayerOverlay({
 const RECOVER_WAITS = [1000, 2000, 3000, 5000, 8000, 10000, 12000]
 
 /** The tallest a menu over the controls may be: the screen less the bar. */
-const MENU_HEIGHT = 'min(560px, calc(100dvh - var(--inset-top, 0px) - 132px))'
+const MENU_HEIGHT = TOUCH
+  ? // Over the controls, from the bottom corner: above them, a phone on its
+    // side left room for four lines, and the title ran off the top.
+    'calc(100dvh - var(--inset-top, 0px) - var(--inset-bottom, 0px) - 24px)'
+  : 'min(560px, calc(100dvh - var(--inset-top, 0px) - 132px))'
+
+/** Where a menu sits: above the bar on a computer, over it on a phone. */
+const MENU_PLACE = TOUCH
+  ? 'absolute z-10 flex w-[min(340px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border border-white/[0.12] bg-[#141416] shadow-lift'
+  : 'absolute bottom-full right-4 z-10 mb-3 flex flex-col overflow-hidden rounded-xl border border-white/[0.12] bg-[#141416] shadow-lift'
+const MENU_CORNER: React.CSSProperties = TOUCH
+  ? {
+      bottom: 'calc(var(--inset-bottom, 0px) + 12px)',
+      right: 'calc(var(--inset-right, 0px) + 12px)',
+    }
+  : {}
 
 /**
  * Which picture to play: the host's conversion, made for this device, or the
@@ -2027,8 +2068,8 @@ function QualityMenu({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 6, scale: 0.98 }}
       transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
-      style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT }}
-      className="absolute bottom-full right-4 z-10 mb-3 flex w-[340px] flex-col overflow-hidden rounded-xl border border-white/[0.12] bg-[#141416] shadow-lift"
+      style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT, ...MENU_CORNER }}
+      className={cn(MENU_PLACE, !TOUCH && 'w-[340px]')}
     >
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/[0.07] pl-4 pr-2">
         <span className="text-[12.5px] font-semibold text-text">Quality</span>
@@ -2156,8 +2197,8 @@ function SubtitleMenu({
       // menu used *while* watching, so it is always over a picture.
       // As tall as the screen allows and no taller: on a phone turned on its
       // side a long list ran off the top, title and all. The list scrolls.
-      style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT }}
-      className="absolute bottom-full right-4 z-10 mb-3 flex w-[320px] flex-col overflow-hidden rounded-xl border border-white/[0.12] bg-[#141416] shadow-lift"
+      style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT, ...MENU_CORNER }}
+      className={cn(MENU_PLACE, !TOUCH && 'w-[320px]')}
     >
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/[0.07] pl-4 pr-2">
         <span className="text-[12.5px] font-semibold text-text">Subtitles</span>
@@ -2170,7 +2211,10 @@ function SubtitleMenu({
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
+      {/* On a phone the tracks and the settings below scroll as one, so the
+          tracks have the height rather than four lines of it. */}
+      <div className={TOUCH ? 'min-h-0 flex-1 overflow-y-auto' : 'contents'}>
+      <div className={cn('py-1.5', !TOUCH && 'min-h-0 flex-1 overflow-y-auto')}>
         <Choice label="Off" active={mpv.subtitleId === null} onClick={() => onChoose(null)} />
         {inFile.map((track) => {
           const label = labelOf(describeSub(track))
@@ -2258,7 +2302,9 @@ function SubtitleMenu({
         >
           <Plus size={13} />
           Add a subtitle file
-          <span className="ml-auto text-[10.5px] text-textFaint">or drop one on the video</span>
+          {!TOUCH && (
+            <span className="ml-auto text-[10.5px] text-textFaint">or drop one on the video</span>
+          )}
         </button>
 
         <div className="mt-3 flex items-center gap-2">
@@ -2282,6 +2328,7 @@ function SubtitleMenu({
           {/* Which way is which is genuinely hard to remember, so it says. */}
           Plus if the subtitles are early, minus if they are late.
         </p>
+      </div>
       </div>
     </motion.div>
   )
