@@ -3159,7 +3159,7 @@ where
             // drive is not why a key was refused.
             let e = if matches!(
                 op,
-                Op::Auth | Op::PairBegin | Op::PairFinish | Op::Enrol | Op::Endorse
+                Op::Auth | Op::PairBegin | Op::PairPake | Op::PairFinish | Op::Enrol | Op::Endorse
             ) {
                 e
             } else {
@@ -3269,10 +3269,24 @@ where
                     request: request.id.clone(),
                     requires_pin: request.pin.is_some(),
                     setup: request.setup,
+                    pake: request.pin.is_some(),
                 },
             )
             .await?;
             session.pairing = true;
+        }
+
+        Op::PairPake => {
+            let req: basalt_proto::msg::PairPakeRequest = decode(payload)?;
+            // This host's own id, never one that arrived: it is what binds the
+            // key to the certificate the device was shown.
+            let message = host.registry.lock().expect("registry lock").pake_exchange(
+                Instant::now(),
+                host.host_id(),
+                &req.request,
+                &req.message,
+            )?;
+            reply(stream, &basalt_proto::msg::PairPakeResponse { message }).await?;
         }
 
         Op::PairFinish => {
@@ -3310,16 +3324,16 @@ where
                             &key,
                             req.key_kind,
                         )
-                        .and_then(|mut device| {
+                        .and_then(|(mut device, confirm)| {
                             if setup {
                                 registry.set_owner(&device.token_hash, true)?;
                                 device.owner = true;
                             }
-                            Ok(device)
+                            Ok((device, confirm))
                         })
                 };
-                let device = match finished {
-                    Ok(device) => device,
+                let (device, confirm) = match finished {
+                    Ok(finished) => finished,
                     Err(e) => {
                         if setup {
                             host.check_setup_guesses();
@@ -3345,17 +3359,18 @@ where
                         manages,
                         addresses,
                         machine,
+                        confirm: confirm.unwrap_or_default(),
                     },
                 )
                 .await?;
                 return Ok(());
             }
-            let token = {
+            let (token, confirm) = {
                 let mut registry = host.registry.lock().expect("registry lock");
                 // The host id comes from this host's own identity. Taking it
                 // from the request would hand an attacker the one value the
                 // proof is supposed to bind.
-                registry.finish_pairing(
+                registry.finish_pairing_confirmed(
                     Instant::now(),
                     host.host_id(),
                     &req.request,
@@ -3388,6 +3403,7 @@ where
                     manages: false,
                     addresses,
                     machine,
+                    confirm: confirm.unwrap_or_default(),
                 },
             )
             .await?;

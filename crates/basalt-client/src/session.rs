@@ -152,6 +152,8 @@ pub struct PairChallenge {
     pub device_name: String,
     /// Whether the host can take a key, so the device pairs with one.
     pub host_keys: bool,
+    /// Whether the host takes the PIN by SPAKE2: see `basalt_net::pake`.
+    pub pake: bool,
 }
 
 /// Signs a message with the device's key, off the async threads: a TPM takes
@@ -578,6 +580,7 @@ impl Session {
             host_id: presented.clone(),
             device_name: me.name.clone(),
             host_keys: hello.keys,
+            pake: begin.pake,
         };
 
         Ok((
@@ -615,7 +618,18 @@ impl Session {
         pin: Option<&str>,
         key: Option<&Arc<KeyRing>>,
     ) -> Result<String> {
-        let proof = if challenge.requires_pin {
+        // What the host must send back to show it knew the PIN too, when it
+        // takes the PIN by SPAKE2.
+        let mut host_proof = None;
+        let proof = if !challenge.requires_pin {
+            None
+        } else if challenge.pake {
+            let pin = pin.ok_or(ClientError::PinRequired)?;
+            let key = self.pake(challenge, pin).await?;
+            host_proof = Some(key.host_proof(&challenge.client_nonce, &challenge.server_nonce));
+            Some(key.device_proof(&challenge.client_nonce, &challenge.server_nonce))
+        } else {
+            // A host from before SPAKE2.
             let pin = pin.ok_or(ClientError::PinRequired)?;
             Some(
                 basalt_net::pairing::compute_proof(
@@ -626,8 +640,6 @@ impl Session {
                 )
                 .map_err(|e| ClientError::Protocol(format!("could not build the proof: {e}")))?,
             )
-        } else {
-            None
         };
 
         let key = key.filter(|_| challenge.host_keys);
@@ -675,6 +687,18 @@ impl Session {
             _ => ClientError::Net(e),
         })?;
 
+        // Paired by SPAKE2, the host shows it had the same key: a host that
+        // cannot is not the one showing that PIN, whatever answered, and this
+        // device keeps nothing from it.
+        if let Some(expected) = host_proof
+            && !basalt_net::pake::proof_matches(&expected, &finish.confirm)
+        {
+            return Err(ClientError::Protocol(
+                "the host could not show it knew the PIN, so this device did not pair with it. \
+                 Check that the identity matches the one the host shows, and try again."
+                    .into(),
+            ));
+        }
         self.info.vault = finish.vault;
         self.signed_in.addresses = finish.addresses;
         self.signed_in.machine = finish.machine;
@@ -698,6 +722,33 @@ impl Session {
 
     pub fn info(&self) -> &SessionInfo {
         &self.info
+    }
+
+    /// The SPAKE2 step, with the PIN as typed and the host the certificate
+    /// proved: the key both sides have if the PIN was right. A new exchange
+    /// for every PIN typed.
+    async fn pake(
+        &mut self,
+        challenge: &PairChallenge,
+        pin: &str,
+    ) -> Result<basalt_net::pake::Key> {
+        let (half, message) = basalt_net::pake::DeviceHalf::start(pin, &challenge.host_id)
+            .map_err(|e| ClientError::Protocol(format!("could not start pairing: {e}")))?;
+        let answer: basalt_proto::msg::PairPakeResponse = call_json(
+            &mut self.stream,
+            Op::PairPake,
+            &basalt_proto::msg::PairPakeRequest {
+                request: challenge.request.clone(),
+                message,
+            },
+        )
+        .await
+        .map_err(|e| match e.code() {
+            Some(ErrorCode::PairingRefused) => ClientError::BadPin(e.to_string()),
+            _ => ClientError::Net(e),
+        })?;
+        half.finish(&answer.message)
+            .map_err(|e| ClientError::Protocol(format!("the host's answer did not work: {e}")))
     }
 
     // -----------------------------------------------------------------------

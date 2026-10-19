@@ -31,6 +31,7 @@ x509-parser = "0.18"
 # host is actually on rather than whichever one Windows routes a broadcast to.
 if-addrs = "0.13"
 socket2 = "0.5"
+spake2 = "0.4.0"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

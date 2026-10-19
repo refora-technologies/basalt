@@ -133,6 +133,18 @@ pub struct PairingRequest {
     /// Made with the host's setup code rather than a PIN: the device that
     /// proves it becomes the host's first manager. See [`crate::setup`].
     pub setup: bool,
+    /// After the SPAKE2 step, what the key it gave proves: see
+    /// [`Registry::pake_exchange`]. None before it, after a wrong PIN, and
+    /// for a device pairing the older way.
+    pub pake: Option<PakeProofs>,
+}
+
+/// The two proofs a SPAKE2 key gives a pairing: the one the device must send,
+/// and the host's own, sent back. See `basalt_net::pake`.
+#[derive(Debug, Clone)]
+pub struct PakeProofs {
+    pub device: String,
+    pub host: String,
 }
 
 impl PairingRequest {
@@ -370,6 +382,7 @@ impl Registry {
             client_nonce: client_nonce.to_string(),
             server_nonce,
             setup: setup_code.is_some(),
+            pake: None,
         };
         self.pending.push(request.clone());
         Ok(request)
@@ -405,11 +418,71 @@ impl Registry {
         request_id: &str,
         proof: Option<&str>,
     ) -> Result<String> {
+        self.finish_pairing_confirmed(now, host_id, request_id, proof)
+            .map(|(token, _)| token)
+    }
+
+    /// [`Registry::finish_pairing`], with the host's own proof for a device
+    /// that paired by SPAKE2, to send back.
+    pub fn finish_pairing_confirmed(
+        &mut self,
+        now: Instant,
+        host_id: &str,
+        request_id: &str,
+        proof: Option<&str>,
+    ) -> Result<(String, Option<String>)> {
         let token = pairing::random_token()
             .map_err(|e| HostError::PairingRefused(format!("could not issue a token: {e}")))?;
         let request = self.take_proven(now, host_id, request_id, proof)?;
+        let confirm = request.pake.as_ref().map(|p| p.host.clone());
         self.record(request, Credential::Token(hash_token(&token)));
-        Ok(token)
+        Ok((token, confirm))
+    }
+
+    /// The PIN step by SPAKE2: the host's answer to the device's message,
+    /// made with the PIN it is showing, or its setup code. What the key
+    /// proves is kept for [`Registry::finish_pairing`] to check. Every
+    /// attempt is a new exchange, and a wrong one counts as a wrong PIN
+    /// there, so this gives nobody more guesses than typing does.
+    ///
+    /// `host_id` is this host's own, never one that arrived: see
+    /// [`basalt_net::pake`].
+    pub fn pake_exchange(
+        &mut self,
+        now: Instant,
+        host_id: &str,
+        request_id: &str,
+        device_message: &str,
+    ) -> Result<String> {
+        self.forget_expired(now);
+        let index = self
+            .pending
+            .iter()
+            .position(|r| r.id == request_id)
+            .ok_or_else(|| {
+                HostError::PairingRefused(
+                    "that pairing request has expired. Try connecting again.".into(),
+                )
+            })?;
+        if !self.pending[index].setup
+            && self.pending[index].pin.is_some()
+            && let Some(wait) = self.pairing_paused(now)
+        {
+            return Err(Self::paused_refusal(wait));
+        }
+        let Some(pin) = self.pending[index].pin.clone() else {
+            return Err(HostError::BadRequest(
+                "this host is not asking for a PIN".into(),
+            ));
+        };
+        let (answer, key) = basalt_net::pake::host_answer(&pin, host_id, device_message)
+            .map_err(|e| HostError::BadRequest(e.to_string()))?;
+        let request = &mut self.pending[index];
+        request.pake = Some(PakeProofs {
+            device: key.device_proof(&request.client_nonce, &request.server_nonce),
+            host: key.host_proof(&request.client_nonce, &request.server_nonce),
+        });
+        Ok(answer)
     }
 
     /// Completes a request for a device pairing with a key. No token is
@@ -426,9 +499,10 @@ impl Registry {
         proof: Option<&str>,
         key: &PublicKey,
         kind: Option<KeyKind>,
-    ) -> Result<Device> {
+    ) -> Result<(Device, Option<String>)> {
         let request = self.take_proven(now, host_id, request_id, proof)?;
-        Ok(self.record(request, Credential::Key(key, kind)))
+        let confirm = request.pake.as_ref().map(|p| p.host.clone());
+        Ok((self.record(request, Credential::Key(key, kind)), confirm))
     }
 
     /// Checks a request's PIN proof and takes it off the list.
@@ -462,17 +536,24 @@ impl Registry {
 
         if let Some(pin) = self.pending[index].pin.clone() {
             let request = &self.pending[index];
-            let ok = proof.is_some_and(|proof| {
-                pairing::verify_proof(
+            let ok = match (&request.pake, proof) {
+                // By SPAKE2: the proof its key gives.
+                (Some(pake), Some(proof)) => basalt_net::pake::proof_matches(&pake.device, proof),
+                // The older way, for a device from before SPAKE2.
+                (None, Some(proof)) => pairing::verify_proof(
                     &pin,
                     host_id,
                     &request.client_nonce,
                     &request.server_nonce,
                     proof,
-                )
-            });
+                ),
+                (_, None) => false,
+            };
 
             if !ok {
+                // A key is good for one try: the next PIN typed is a new
+                // exchange.
+                self.pending[index].pake = None;
                 let setup = self.pending[index].setup;
                 if setup {
                     self.wrong_setup_codes += 1;
@@ -832,6 +913,123 @@ mod tests {
 
     fn without_pin() -> Registry {
         Registry::new(Vec::new(), false)
+    }
+
+    /// The device's side of the SPAKE2 step, with `pin` as typed: its proof,
+    /// and the host's proof it expects back.
+    fn pake(
+        registry: &mut Registry,
+        now: Instant,
+        request: &PairingRequest,
+        pin: &str,
+    ) -> (String, String) {
+        let (half, message) = basalt_net::pake::DeviceHalf::start(pin, HOST_ID).unwrap();
+        let answer = registry
+            .pake_exchange(now, HOST_ID, &request.id, &message)
+            .unwrap();
+        let key = half.finish(&answer).unwrap();
+        (
+            key.device_proof(&request.client_nonce, &request.server_nonce),
+            key.host_proof(&request.client_nonce, &request.server_nonce),
+        )
+    }
+
+    #[test]
+    fn pairing_by_spake2_ends_with_the_hosts_own_proof() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let nonce = pairing::random_nonce().unwrap();
+        let request = registry.begin_pairing(now, "Phone", &nonce).unwrap();
+        let pin = request.pin.clone().unwrap();
+        let (proof, expected) = pake(&mut registry, now, &request, &pin);
+        let (token, confirm) = registry
+            .finish_pairing_confirmed(now, HOST_ID, &request.id, Some(&proof))
+            .unwrap();
+        assert!(registry.authenticate(&token).is_some());
+        assert_eq!(
+            confirm.as_deref(),
+            Some(expected.as_str()),
+            "the host proves it knew the PIN"
+        );
+    }
+
+    #[test]
+    fn a_wrong_pin_by_spake2_counts_and_needs_a_new_exchange() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let nonce = pairing::random_nonce().unwrap();
+        let request = registry.begin_pairing(now, "Phone", &nonce).unwrap();
+        let pin = request.pin.clone().unwrap();
+        let wrong = if pin == "000000" { "000001" } else { "000000" };
+
+        let (proof, _) = pake(&mut registry, now, &request, wrong);
+        let err = registry
+            .finish_pairing(now, HOST_ID, &request.id, Some(&proof))
+            .unwrap_err();
+        assert!(err.to_string().contains("PIN isn’t right"), "{err}");
+        assert_eq!(
+            registry.pending(now)[0].attempts,
+            1,
+            "counted as any wrong PIN"
+        );
+
+        // The right PIN, but the key from the wrong attempt is gone: a proof
+        // needs an exchange of its own.
+        let (right, _) = {
+            let (half, message) = basalt_net::pake::DeviceHalf::start(&pin, HOST_ID).unwrap();
+            let answer = registry
+                .pake_exchange(now, HOST_ID, &request.id, &message)
+                .unwrap();
+            let key = half.finish(&answer).unwrap();
+            (
+                key.device_proof(&request.client_nonce, &request.server_nonce),
+                (),
+            )
+        };
+        assert!(
+            registry
+                .finish_pairing(now, HOST_ID, &request.id, Some(&right))
+                .is_ok(),
+            "a fresh exchange with the right PIN pairs"
+        );
+    }
+
+    #[test]
+    fn the_older_proof_still_pairs_a_device_from_before_spake2() {
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let nonce = pairing::random_nonce().unwrap();
+        let request = registry.begin_pairing(now, "Old phone", &nonce).unwrap();
+        let pin = request.pin.clone().unwrap();
+        let proof =
+            pairing::compute_proof(&pin, HOST_ID, &request.client_nonce, &request.server_nonce)
+                .unwrap();
+        let (_, confirm) = registry
+            .finish_pairing_confirmed(now, HOST_ID, &request.id, Some(&proof))
+            .unwrap();
+        assert_eq!(
+            confirm, None,
+            "nothing to prove to a device that cannot check it"
+        );
+    }
+
+    #[test]
+    fn spake2_needs_a_waiting_request_with_a_pin() {
+        let mut registry = without_pin();
+        let now = Instant::now();
+        let nonce = pairing::random_nonce().unwrap();
+        let request = registry.begin_pairing(now, "Phone", &nonce).unwrap();
+        let (_, message) = basalt_net::pake::DeviceHalf::start("123456", HOST_ID).unwrap();
+        assert!(
+            registry
+                .pake_exchange(now, HOST_ID, &request.id, &message)
+                .is_err()
+        );
+        assert!(
+            registry
+                .pake_exchange(now, HOST_ID, "nope", &message)
+                .is_err()
+        );
     }
 
     /// Runs a whole pairing the way a client does, returning the token.
@@ -1534,14 +1732,16 @@ mod tests {
             pairing::compute_proof(pin, HOST_ID, &request.client_nonce, &request.server_nonce)
                 .unwrap()
         });
-        registry.finish_pairing_with_key(
-            now,
-            HOST_ID,
-            &request.id,
-            proof.as_deref(),
-            key,
-            Some(KeyKind::Chip),
-        )
+        registry
+            .finish_pairing_with_key(
+                now,
+                HOST_ID,
+                &request.id,
+                proof.as_deref(),
+                key,
+                Some(KeyKind::Chip),
+            )
+            .map(|(device, _)| device)
     }
 
     #[test]
@@ -1813,7 +2013,7 @@ mod tests {
         )
         .unwrap();
         let k = key();
-        let device = registry
+        let (device, _) = registry
             .finish_pairing_with_key(now, HOST_ID, &request.id, Some(&proof), &k, None)
             .unwrap();
         assert_eq!(device.name, "Phone");

@@ -616,6 +616,7 @@ mod tests {
             client_nonce: "n".into(),
             server_nonce: "s".into(),
             setup: false,
+            pake: None,
         };
         let view = PairingView::new(&request, Instant::now());
         assert_eq!(
@@ -743,6 +744,7 @@ mod tests {
             client_nonce: "n".into(),
             server_nonce: "s".into(),
             setup: false,
+            pake: None,
         };
         let fresh = PairingView::new(&request, opened);
         assert!(fresh.seconds_left > 0);
@@ -766,6 +768,7 @@ mod tests {
             client_nonce: "n".into(),
             server_nonce: "s".into(),
             setup: false,
+            pake: None,
         };
         let json = serde_json::to_value(PairingView::new(&request, Instant::now())).unwrap();
         assert!(json["pin"].is_null());
