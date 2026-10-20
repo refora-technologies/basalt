@@ -3,6 +3,10 @@ import { useRef } from 'react'
 /**
  * A press that is either a tap or, held, a long press — never both, and
  * neither if the finger moved to scroll.
+ *
+ * By key too, for a television's remote: OK is the tap, and OK held (the
+ * remote repeats it while held) or the menu key is the long press. So the
+ * thing can be reached by the remote at all, it takes the focus.
  */
 export function useLongPress(
   onLong: () => void,
@@ -13,10 +17,15 @@ export function useLongPress(
   onPointerMove: (e: React.PointerEvent) => void
   onPointerCancel: () => void
   onContextMenu: (e: React.MouseEvent) => void
+  onKeyDown: (e: React.KeyboardEvent) => void
+  onKeyUp: (e: React.KeyboardEvent) => void
+  tabIndex: number
 } {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const start = useRef<{ x: number; y: number } | null>(null)
   const fired = useRef(false)
+  /** OK is down, and has not yet been let go. */
+  const held = useRef(false)
 
   const clear = (): void => {
     if (timer.current) clearTimeout(timer.current)
@@ -54,5 +63,30 @@ export function useLongPress(
     },
     // A long press also fires the browser's context menu; this is ours.
     onContextMenu: (e) => e.preventDefault(),
+    onKeyDown: (e) => {
+      // A button inside (a row's menu) presses itself.
+      if (e.target !== e.currentTarget) return
+      if (e.key === 'ContextMenu') {
+        e.preventDefault()
+        onLong()
+        return
+      }
+      if (e.key !== 'Enter') return
+      // Not the button's own click as well: the tap comes as OK is let go.
+      e.preventDefault()
+      if (!e.repeat) {
+        fired.current = false
+        held.current = true
+      } else if (held.current && !fired.current) {
+        fired.current = true
+        onLong()
+      }
+    },
+    onKeyUp: (e) => {
+      if (e.target !== e.currentTarget || e.key !== 'Enter' || !held.current) return
+      held.current = false
+      if (!fired.current) onTap()
+    },
+    tabIndex: 0,
   }
 }

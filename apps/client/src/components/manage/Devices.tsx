@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { signsIn, signsInWith, spacedPin, type ManagedDevice, type PairingRequest } from '@/lib/manage'
+import { handheldWord, isTv } from '@/lib/platform'
 import { cn, formatBytes } from '@/lib/utils'
 import { Card, Group, Pill, Presence, Row, Rows, Tag, Toggle, ago, useLayout } from './parts'
 import { Surface } from './Surface'
@@ -165,9 +166,9 @@ function deviceIcon(name: string): LucideIcon {
   return MonitorSmartphone
 }
 
-/** "this phone" or "this computer", by where the screen is shown. */
+/** "This phone" (or TV) or "This computer", by where the screen is shown. */
 function thisOne(layout: 'phone' | 'desktop'): string {
-  return layout === 'phone' ? 'This phone' : 'This computer'
+  return layout === 'phone' ? `This ${handheldWord()}` : 'This computer'
 }
 
 function lastManager(devices: ManagedDevice[], id: string): boolean {
@@ -200,7 +201,7 @@ export function Devices(tools: Tools): React.JSX.Element {
           {devices.map((device) => {
             const you = device.id === view.you
             // This device is known for what it is, whatever it is called.
-            const Icon = you && layout === 'phone' ? Smartphone : deviceIcon(device.name)
+            const Icon = you && layout === 'phone' ? (isTv() ? Tv : Smartphone) : deviceIcon(device.name)
             return (
               <Row
                 key={device.id}
@@ -258,7 +259,7 @@ function DeviceDetail({
   const phone = layout === 'phone'
   const you = device.id === view.you
   const only = lastManager(view.devices, device.id)
-  const Icon = you && phone ? Smartphone : deviceIcon(device.name)
+  const Icon = you && phone ? (isTv() ? Tv : Smartphone) : deviceIcon(device.name)
 
   const askManages = async (next: boolean): Promise<boolean> => {
     if (next) {
@@ -271,7 +272,7 @@ function DeviceDetail({
     }
     if (!you) return true
     return confirm({
-      title: `Stop managing from ${phone ? 'this phone' : 'this computer'}?`,
+      title: `Stop managing from ${phone ? `this ${handheldWord()}` : 'this computer'}?`,
       message:
         'This screen closes. Another device that manages the host, or the host’s own window, can let it manage again.',
       confirmLabel: 'Stop managing',
@@ -287,7 +288,7 @@ function DeviceDetail({
 
   const remove = async (): Promise<void> => {
     const ok = await confirm({
-      title: you ? `Remove ${phone ? 'this phone' : 'this computer'}?` : `Remove ${device.name}?`,
+      title: you ? `Remove ${phone ? `this ${handheldWord()}` : 'this computer'}?` : `Remove ${device.name}?`,
       message: you
         ? 'It’s disconnected right away. To use the drive again, it has to pair again.'
         : 'It’s disconnected right away. To use the drive again, it has to pair again.',

@@ -79,7 +79,7 @@ import { ProfileGate } from '@/components/ProfileGate'
 import { scrollKeyOf } from '@/lib/useScrollMemory'
 import { stemOf, trackInfo } from '@/lib/mediaInfo'
 import { isWaiting, useVault, waitingLabel } from '@/lib/useVault'
-import { isMobileShell } from '@/lib/platform'
+import { handheldWord, isMobileShell } from '@/lib/platform'
 import { android, type PhoneFile } from '@/lib/android'
 import { MobileApp } from '@/mobile/MobileApp'
 import { filterKind, isKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
@@ -734,7 +734,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         try {
           const url = await api.mediaUrl(path)
           const name = nameOf(path)
-          await android.keepAlive('playback', `Streaming ${name}`, 'To another player on this phone')
+          await android.keepAlive('playback', `Streaming ${name}`, `To another player on this ${handheldWord()}`)
           await android.openWith(url, mimeOf(name), name)
         } catch (e) {
           setNotice(e instanceof Error ? e.message : String(e))
@@ -1174,7 +1174,9 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         setSelected(new Set())
         return
       }
-      if (e.key === 'Enter' && chosen.length === 1) {
+      // Not an Enter something has taken already: a remote's OK held on a
+      // row selects it, and its repeats would open it.
+      if (e.key === 'Enter' && chosen.length === 1 && !e.defaultPrevented) {
         openEntry(chosen[0]!)
         return
       }
@@ -1291,7 +1293,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     try {
       const ok = await confirm({
         title: 'Forget this drive?',
-        message: `This ${mobile ? 'phone' : 'computer'} will have to pair with ${
+        message: `This ${mobile ? handheldWord() : 'computer'} will have to pair with ${
           vault.status?.hostName ?? 'the host'
         } again to open the drive. Nothing on the drive changes.`,
         confirmLabel: 'Forget drive',

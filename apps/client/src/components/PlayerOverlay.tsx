@@ -50,7 +50,7 @@ import {
   type NotConverted,
   type PictureHelp,
 } from '@/lib/pictureHelp'
-import { isAndroid } from '@/lib/platform'
+import { isAndroid, isTv } from '@/lib/platform'
 import {
   chooseDriveFile,
   chooseSubtitle,
@@ -75,6 +75,8 @@ import { useBack } from '@/mobile/useBack'
  * fullscreen button turns the picture instead.
  */
 const TOUCH = isMobileShell()
+/** On a television, driven by a remote: see `lib/remote.ts`. */
+const TV = isTv()
 
 /**
  * The size of a control: what a pointer needs on a computer, what a finger
@@ -1261,8 +1263,64 @@ export function PlayerOverlay({
     )
     if (typing) return
 
+    // On a television the arrows also move between the controls, as the
+    // remote does everywhere else, and its volume is the television's own.
+    // Left and right seek unless a control has the focus; OK presses the
+    // focused control, or pauses.
+    if (TV) {
+      const onControl = Boolean(target?.closest('[data-player] button, [data-player] [role="radio"]'))
+      const tvKey = ((): boolean => {
+        switch (e.key) {
+          case 'ArrowUp':
+          case 'ArrowDown':
+            return false
+          case 'ArrowLeft':
+          case 'ArrowRight':
+            if (onControl && controlsUp) return false
+            void mpv.seekBy(e.key === 'ArrowRight' ? 10 : -10)
+            return true
+          case 'Enter':
+            if (onControl) return false
+            void mpv.togglePause()
+            return true
+          default:
+            return false
+        }
+      })()
+      if (tvKey) e.preventDefault()
+      if (tvKey || e.key.startsWith('Arrow') || e.key === 'Enter') {
+        keepControls()
+        return
+      }
+    }
+
     let handled = true
     switch (e.key) {
+      // A remote's keys, a keyboard's media keys.
+      case 'MediaPlayPause':
+        void mpv.togglePause()
+        break
+      case 'MediaPlay':
+        void mpv.setPaused(false)
+        break
+      case 'MediaPause':
+        void mpv.setPaused(true)
+        break
+      case 'MediaFastForward':
+        void mpv.seekBy(30)
+        break
+      case 'MediaRewind':
+        void mpv.seekBy(-30)
+        break
+      case 'MediaTrackNext':
+        goNext()
+        break
+      case 'MediaTrackPrevious':
+        goPrevious()
+        break
+      case 'MediaStop':
+        void escape()
+        break
       case 'Escape':
         // The menu first, if it is open: Escape putting away the thing in
         // front of you is universal, and ending the film instead is not.
@@ -1326,8 +1384,10 @@ export function PlayerOverlay({
   useEffect(() => {
     if (!open) return undefined
     const listener = (e: KeyboardEvent): void => onKey.current(e)
-    window.addEventListener('keydown', listener)
-    return () => window.removeEventListener('keydown', listener)
+    // Before anything else hears the key, so a key the player takes is not
+    // also taken by the remote's moving between controls.
+    window.addEventListener('keydown', listener, { capture: true })
+    return () => window.removeEventListener('keydown', listener, { capture: true })
   }, [open])
 
   const percent = mpv.duration > 0 ? (mpv.position / mpv.duration) * 100 : 0
@@ -1383,6 +1443,8 @@ export function PlayerOverlay({
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
           data-player=""
+          // The remote moves only among the player's own controls.
+          data-remote-scope=""
           className={cn(
             'fixed inset-0 z-40',
             !mpv.picture && 'bg-black',
@@ -1899,6 +1961,8 @@ export function PlayerOverlay({
                 disabled={mpv.duration === 0}
                 aria-label={mpv.paused ? 'Play' : 'Pause'}
                 title={mpv.paused ? 'Play (Space)' : 'Pause (Space)'}
+                // Where the remote starts, not the close button above it.
+                data-remote-first=""
                 className={cn(
                   'mx-1 flex items-center justify-center rounded-full bg-basalt text-ink transition-transform duration-150 hover:scale-105 disabled:opacity-30 disabled:hover:scale-100',
                   TOUCH ? 'h-12 w-12' : 'h-10 w-10',

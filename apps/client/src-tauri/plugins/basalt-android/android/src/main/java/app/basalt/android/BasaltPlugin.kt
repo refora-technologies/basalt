@@ -373,6 +373,12 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun setOrientation(invoke: Invoke) {
     val args = invoke.parseArgs(OrientationArgs::class.java)
+    // A television stands one way only; asked to turn, some draw the app on
+    // its side.
+    if (isTelevision()) {
+      invoke.resolve()
+      return
+    }
     activity.runOnUiThread {
       activity.requestedOrientation = when (args.mode) {
         "landscape" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -1199,7 +1205,19 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
         .put("code", code)
         .put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
         .put("android", Build.VERSION.RELEASE)
+        .put("tv", isTelevision())
     )
+  }
+
+  /**
+   * A television rather than a phone or tablet: Android TV and Google TV say
+   * so in the mode the system runs in; some set-top boxes only in the
+   * features they declare.
+   */
+  private fun isTelevision(): Boolean {
+    val modes = activity.getSystemService(Context.UI_MODE_SERVICE) as? android.app.UiModeManager
+    if (modes?.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION) return true
+    return activity.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
   }
 
   /** Text handed to any app that takes it: a link sent to WhatsApp, an email, a PC. */

@@ -117,7 +117,7 @@ export const android = {
 
   /** The version Android installed: the name people see and Play's number. */
   appVersion: () =>
-    plugin<{ name: string; code: number; device: string; android: string }>('app_version'),
+    plugin<{ name: string; code: number; device: string; android: string; tv?: boolean }>('app_version'),
   /** Text handed to any app that takes it: a link sent to WhatsApp, an email, a PC. */
   shareText: (text: string, title?: string) => plugin<void>('share_text', { text, title }),
   /** A new email in the person's mail app, filled in and not sent. Whether it opened. */

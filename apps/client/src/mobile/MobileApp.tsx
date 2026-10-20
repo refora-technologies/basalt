@@ -71,7 +71,7 @@ import { fileToEntry } from '@/lib/useCollections'
 import { cn, formatBytes } from '@/lib/utils'
 import { FilesScreen } from './FilesScreen'
 import { Rise } from './presence'
-import { isAndroid } from '@/lib/platform'
+import { handheldWord, isAndroid } from '@/lib/platform'
 import { offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
 import { ActionSheet, Sheet } from './Sheet'
 import { remaining, type Resumable } from '@/components/ContinueWatching'
@@ -1631,7 +1631,7 @@ function MoreScreen({
               <KeyRound size={12} className="shrink-0" />
               {vault.status?.signsInWithKey
                 ? vault.status.key === 'chip'
-                  ? 'Signs in with a key in this phone’s security chip'
+                  ? `Signs in with a key in this ${handheldWord()}’s security chip`
                   : 'Signs in with a key of its own'
                 : 'Signs in with its pairing code'}
               {vault.status?.owner && ' · manages host'}

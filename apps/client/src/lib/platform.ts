@@ -14,6 +14,21 @@ export function isMobileShell(): boolean {
   return false
 }
 
+/**
+ * The app on a television: Android TV or Google TV, driven by a remote.
+ * Known once the app has asked Android (see `main.tsx`), which it does
+ * before anything else loads; `?tv` (with `?mobile`) previews it.
+ */
+export function isTv(): boolean {
+  if (typeof document === 'undefined') return false
+  return document.documentElement.classList.contains('tv')
+}
+
+/** What the Android app is on, in words: "phone", or "TV" on a television. */
+export function handheldWord(): 'phone' | 'TV' {
+  return isTv() ? 'TV' : 'phone'
+}
+
 /** Whether this is the Android app itself, not a preview of it. */
 export function isAndroid(): boolean {
   return typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
