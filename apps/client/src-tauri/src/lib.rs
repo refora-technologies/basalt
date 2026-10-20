@@ -21,6 +21,76 @@ use basalt_client::proxy::MediaProxy;
 use basalt_client::{Basalt, DiscoveredHost, Status, TransferEvent, UiError};
 use tauri::{Emitter, Manager, State};
 
+#[cfg(target_os = "linux")]
+mod linux_player;
+#[cfg(target_os = "linux")]
+use linux_player::{
+    linux_mpv_command, linux_mpv_destroy, linux_mpv_get_property, linux_mpv_init,
+    linux_mpv_set_property,
+};
+
+/// A line from the page, written to the log: what a test script running in
+/// it reports. Only debug builds write it.
+#[tauri::command]
+fn page_log(text: String) {
+    #[cfg(debug_assertions)]
+    eprintln!("page: {text}");
+    #[cfg(not(debug_assertions))]
+    let _ = text;
+}
+
+/// After the system moved or resized the window from a press on the page,
+/// on Linux: see `linux_player::release_in_page`. Nothing elsewhere.
+#[tauri::command]
+fn release_pointer(window: tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    linux_player::release_in_page(&window);
+    #[cfg(not(target_os = "linux"))]
+    let _ = window;
+}
+
+/// The Linux player's commands everywhere else, so one list names them all.
+/// Never called: the page uses them only on Linux.
+#[cfg(not(target_os = "linux"))]
+mod linux_stand_in {
+    const ELSEWHERE: &str = "only on Linux";
+    #[tauri::command]
+    pub fn linux_mpv_init(
+        options: std::collections::HashMap<String, String>,
+        observed: Vec<Vec<String>>,
+    ) -> Result<(), String> {
+        let _ = (options, observed);
+        Err(ELSEWHERE.into())
+    }
+    #[tauri::command]
+    pub fn linux_mpv_command(args: Vec<String>) -> Result<(), String> {
+        let _ = args;
+        Err(ELSEWHERE.into())
+    }
+    #[tauri::command]
+    pub fn linux_mpv_set_property(name: String, value: String) -> Result<(), String> {
+        let _ = (name, value);
+        Err(ELSEWHERE.into())
+    }
+    #[tauri::command]
+    pub fn linux_mpv_get_property(
+        name: String,
+        format: String,
+    ) -> Result<serde_json::Value, String> {
+        let _ = (name, format);
+        Err(ELSEWHERE.into())
+    }
+    #[tauri::command]
+    pub fn linux_mpv_destroy() -> Result<(), String> {
+        Err(ELSEWHERE.into())
+    }
+}
+#[cfg(not(target_os = "linux"))]
+use linux_stand_in::{
+    linux_mpv_command, linux_mpv_destroy, linux_mpv_get_property, linux_mpv_init,
+    linux_mpv_set_property,
+};
+
 /// Every command answers with this: the value, or an error the interface can
 /// branch on. `UiError` and the response types live in `basalt-client` so their
 /// JSON field names are covered by tests — see that crate's `ui` module for why
@@ -494,7 +564,10 @@ async fn claim_profile(
     pin: String,
     remember: bool,
 ) -> Answer<basalt_proto::msg::ProfileView> {
-    Ok(state.client.claim_profile(&id, &code, &pin, remember).await?)
+    Ok(state
+        .client
+        .claim_profile(&id, &code, &pin, remember)
+        .await?)
 }
 
 /// Profiles this device is signed in to on its other drives.
@@ -1396,7 +1469,8 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
-    #[cfg(desktop)]
+    // Not on Linux, where the app draws the picture itself: see linux_player.
+    #[cfg(all(desktop, not(target_os = "linux")))]
     let builder = builder.plugin(tauri_plugin_libmpv::init());
     #[cfg(mobile)]
     let builder = builder.plugin(tauri_plugin_basalt_android::init());
@@ -1524,9 +1598,40 @@ pub fn run() {
                 });
             }
 
+            // The picture's place under the page, before the page shows.
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.webview_windows().into_values().next() {
+                linux_player::attach(&window);
+            }
+
+            // Debug builds only: a script run in the page once it has loaded,
+            // for testing the app where nobody is there to click.
+            #[cfg(debug_assertions)]
+            if let (Ok(path), Some(window)) = (
+                std::env::var("BASALT_TEST_SCRIPT"),
+                app.webview_windows().into_values().next(),
+            ) {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(4));
+                    match std::fs::read_to_string(&path) {
+                        Ok(script) => {
+                            let _ = window.eval(&script);
+                        }
+                        Err(e) => eprintln!("test script {path}: {e}"),
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            linux_mpv_init,
+            linux_mpv_command,
+            linux_mpv_set_property,
+            linux_mpv_get_property,
+            linux_mpv_destroy,
+            release_pointer,
+            page_log,
             app_version,
             check_update,
             release_notes,

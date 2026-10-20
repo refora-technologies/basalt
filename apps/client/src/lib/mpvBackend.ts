@@ -1,6 +1,7 @@
 import * as desktop from 'tauri-plugin-libmpv-api'
 import type { MpvConfig, MpvObservableProperty } from 'tauri-plugin-libmpv-api'
-import { isAndroid } from './platform'
+import { api } from './api'
+import { isAndroid, isLinuxDesktop } from './platform'
 
 export type { MpvObservableProperty } from 'tauri-plugin-libmpv-api'
 
@@ -11,6 +12,10 @@ export type { MpvObservableProperty } from 'tauri-plugin-libmpv-api'
  * it is the app's own plugin, drawing on a surface beneath the page. Both take
  * the same requests and send the same property changes, so the player above
  * this is one piece of code for both.
+ *
+ * On Linux it is the app's own, drawn into a GL area under the page (see
+ * `linux_player.rs`): the plugin's way, handing mpv the window, puts mpv's
+ * picture over the page there, and does not work on Wayland at all.
  *
  * Only the functions the player uses are here, with the desktop plugin's
  * names and shapes.
@@ -35,7 +40,17 @@ async function invoke<T>(command: string, args: Record<string, unknown>): Promis
   return core.invoke<T>(PLUGIN + command, args)
 }
 
+const LINUX = isLinuxDesktop()
+
 export async function init(config: MpvConfig): Promise<void> {
+  if (LINUX) {
+    const options: Record<string, string> = {}
+    for (const [name, value] of Object.entries(config.initialOptions ?? {})) {
+      if (value !== undefined && value !== null) options[name] = asText(value)
+    }
+    await api.linuxMpvInit(options, config.observedProperties ?? [])
+    return
+  }
   if (!isAndroid()) {
     await desktop.init(config)
     return
@@ -53,6 +68,13 @@ export async function observeProperties<T extends ReadonlyArray<MpvObservablePro
   properties: T,
   callback: (event: PropertyChange) => void,
 ): Promise<() => void> {
+  if (LINUX) {
+    const names = new Set<string>(properties.map((p) => p[0]))
+    const { listen } = await import('@tauri-apps/api/event')
+    return listen<PropertyChange>('basalt-mpv', ({ payload }) => {
+      if (payload.event === 'property-change' && names.has(payload.name)) callback(payload)
+    })
+  }
   if (!isAndroid()) {
     return desktop.observeProperties(properties, (event) =>
       callback(event as unknown as PropertyChange),
@@ -70,6 +92,7 @@ export async function command(
   name: string,
   args: Array<string | number | boolean> = [],
 ): Promise<void> {
+  if (LINUX) return api.linuxMpvCommand([name, ...args.map(asText)])
   if (!isAndroid()) return desktop.command(name, args)
   // Where the sound goes is Android's business, not the player's.
   if (name === 'set' && args[0] === 'audio-device') return
@@ -82,6 +105,7 @@ export async function command(
 }
 
 export async function setProperty(name: string, value: string | number | boolean): Promise<void> {
+  if (LINUX) return api.linuxMpvSetProperty(name, asText(value))
   if (!isAndroid()) return desktop.setProperty(name, value)
   await invoke('mpv_set_property', { name, value: asText(value) })
 }
@@ -90,12 +114,15 @@ export async function getProperty(
   name: string,
   format: 'string' | 'flag' | 'int64' | 'double',
 ): Promise<unknown> {
-  if (!isAndroid()) return desktop.getProperty(name, format)
-  const reply = await invoke<{ value?: unknown }>('mpv_get_property', { name, format })
+  if (!isAndroid() && !LINUX) return desktop.getProperty(name, format)
+  const reply = LINUX
+    ? await api.linuxMpvGetProperty(name, format)
+    : await invoke<{ value?: unknown }>('mpv_get_property', { name, format })
   return reply.value ?? null
 }
 
 export async function destroy(): Promise<void> {
+  if (LINUX) return api.linuxMpvDestroy()
   if (!isAndroid()) return desktop.destroy()
   await invoke('mpv_destroy', {})
 }

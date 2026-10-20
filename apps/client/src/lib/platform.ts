@@ -18,3 +18,8 @@ export function isMobileShell(): boolean {
 export function isAndroid(): boolean {
   return typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)
 }
+
+/** The desktop app on Linux. Android says Linux too, so it is ruled out first. */
+export function isLinuxDesktop(): boolean {
+  return typeof navigator !== 'undefined' && !isAndroid() && /Linux/.test(navigator.userAgent)
+}

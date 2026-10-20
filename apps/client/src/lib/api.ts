@@ -484,6 +484,19 @@ export interface Release {
 }
 
 export const api = {
+  // The player and the window frame on Linux (see linux_player.rs). Called
+  // only there, from mpvBackend.ts and windowFrame.ts.
+  linuxMpvInit: (options: Record<string, string>, observed: ReadonlyArray<ReadonlyArray<unknown>>) =>
+    call<void>('linux_mpv_init', { options, observed }),
+  linuxMpvCommand: (args: string[]) => call<void>('linux_mpv_command', { args }),
+  linuxMpvSetProperty: (name: string, value: string) => call<void>('linux_mpv_set_property', { name, value }),
+  linuxMpvGetProperty: (name: string, format: string) =>
+    call<{ value?: unknown }>('linux_mpv_get_property', { name, format }),
+  linuxMpvDestroy: () => call<void>('linux_mpv_destroy'),
+  releasePointer: () => call<void>('release_pointer'),
+  /** A line in the log, from debug builds only: what a test script reports. */
+  pageLog: (text: string) => call<void>('page_log', { text }),
+
   /** Which version this is, as the release tags spell it. */
   appVersion: (): Promise<string> => call<string>('app_version'),
   /** The release notes of one version as published on GitHub, or null when it has none. */

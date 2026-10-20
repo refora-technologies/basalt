@@ -336,6 +336,8 @@ dependencies = [
  "basalt-proto",
  "basalt-update",
  "base64 0.23.1",
+ "gtk",
+ "libloading 0.8.9",
  "serde",
  "serde_json",
  "tauri",

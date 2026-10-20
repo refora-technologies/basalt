@@ -2,7 +2,7 @@
 name = "basalt-client-shell"
 version = "1.5.1"
 edition = "2021"
-description = "Basalt client shell: Windows and Android"
+description = "Basalt client shell: Windows, Linux and Android"
 rust-version = "1.82"
 
 [lib]
@@ -36,3 +36,9 @@ tauri-plugin-basalt-android = { path = "plugins/basalt-android" }
 # has no Android side, and the Android app brings its own.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-libmpv = "0.3.2"
+
+# On Linux the app draws the picture itself, under the page: see
+# src/linux_player.rs. GTK as Tauri has it; libmpv opened at run time.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+libloading = "0.8"
