@@ -83,6 +83,39 @@ function addResizeEdges(): void {
 }
 
 /**
+ * The mouse wheel, as the app hands it over on Linux (see `wheel` in
+ * linux_player.rs): WebKit drawing the page directly stops passing it on.
+ * Offered to the page first, as a wheel event, for whatever handles one
+ * itself; then it scrolls what is under the pointer, the nearest thing that
+ * can scroll that way.
+ */
+export function wheelAt(x: number, y: number, dx: number, dy: number, ctrlKey: boolean): void {
+  const target = document.elementFromPoint(x, y) ?? document.body
+  const event = new WheelEvent('wheel', {
+    deltaX: dx,
+    deltaY: dy,
+    deltaMode: 0,
+    clientX: x,
+    clientY: y,
+    ctrlKey,
+    bubbles: true,
+    cancelable: true,
+  })
+  if (!target.dispatchEvent(event) || ctrlKey) return
+  for (let el: Element | null = target; el; el = el.parentElement) {
+    const style = getComputedStyle(el)
+    const down = dy !== 0 && /(auto|scroll|overlay)/.test(style.overflowY) && el.scrollHeight > el.clientHeight
+    const across = dx !== 0 && /(auto|scroll|overlay)/.test(style.overflowX) && el.scrollWidth > el.clientWidth
+    if (!down && !across) continue
+    const [top, left] = [el.scrollTop, el.scrollLeft]
+    el.scrollBy({ top: down ? dy : 0, left: across ? dx : 0, behavior: 'instant' })
+    // At its end already: the next one out may still go.
+    if (el.scrollTop !== top || el.scrollLeft !== left) return
+  }
+  document.scrollingElement?.scrollBy({ top: dy, left: dx, behavior: 'instant' })
+}
+
+/**
  * On Linux: dragging, resizing, and rounded corners that square off while
  * maximised or full screen.
  */
@@ -90,6 +123,7 @@ export function shapeWindow(): void {
   if (!inTauri() || !isLinuxDesktop()) return
   const root = document.documentElement
   root.dataset.shape = 'rounded'
+  ;(window as { __basaltWheel?: typeof wheelAt }).__basaltWheel = wheelAt
   dragFromDragAreas()
   addResizeEdges()
   void currentWindow().then(async (win) => {

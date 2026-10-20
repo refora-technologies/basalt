@@ -505,9 +505,6 @@ pub fn linux_mpv_destroy() -> Result<(), String> {
 /// stop anyone who sets it otherwise.
 fn compose(page: &webkit2gtk::WebView, composited: bool) {
     use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebViewExt};
-    if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_some() {
-        return;
-    }
     eprintln!(
         "linux player: page {}",
         if composited {
@@ -558,6 +555,7 @@ pub fn attach<R: Runtime>(window: &tauri::WebviewWindow<R>) {
         use gtk::prelude::*;
         let page = webview.inner();
         compose(&page, false);
+        page.connect_scroll_event(wheel);
         PAGE.with(|slot| *slot.borrow_mut() = Some(page.clone()));
         let Some(column) = page.parent() else {
             eprintln!("linux player: the page has no column; no picture here");
@@ -575,6 +573,49 @@ pub fn attach<R: Runtime>(window: &tauri::WebviewWindow<R>) {
         });
         COLUMN.with(|slot| *slot.borrow_mut() = Some(column));
     });
+}
+
+/// The mouse wheel, handed to the page while WebKit draws it directly.
+///
+/// Drawing directly was asked of WebKit through its settings, the only way
+/// that lets the player switch to compositing for a film, and in that way
+/// WebKit stops passing the wheel to the page at all: nothing scrolled. GTK
+/// still has it here, so it goes to the page's own handler in
+/// `lib/windowFrame.ts`. Composited, WebKit passes it on itself.
+fn wheel(page: &webkit2gtk::WebView, event: &gtk::gdk::EventScroll) -> glib::Propagation {
+    use gtk::gdk::{ModifierType, ScrollDirection};
+    if COMPOSITED.with(|c| c.get()) {
+        return glib::Propagation::Proceed;
+    }
+    // One notch, in CSS pixels, as WebKit scrolls by one; a touchpad's
+    // smooth amounts are lines, about a third of that.
+    const NOTCH: f64 = 87.0;
+    const LINE: f64 = 29.0;
+    let (mut dx, mut dy) = match event.direction() {
+        ScrollDirection::Up => (0.0, -NOTCH),
+        ScrollDirection::Down => (0.0, NOTCH),
+        ScrollDirection::Left => (-NOTCH, 0.0),
+        ScrollDirection::Right => (NOTCH, 0.0),
+        _ => {
+            let (x, y) = event.delta();
+            (x * LINE * 3.0, y * LINE * 3.0)
+        }
+    };
+    let state = event.state();
+    if state.contains(ModifierType::SHIFT_MASK) && dx == 0.0 {
+        (dx, dy) = (dy, 0.0);
+    }
+    let (x, y) = event.position();
+    let ctrl = state.contains(ModifierType::CONTROL_MASK);
+    let script = format!(
+        "window.__basaltWheel && window.__basaltWheel({x:.1}, {y:.1}, {dx:.1}, {dy:.1}, {ctrl})"
+    );
+    #[allow(deprecated)]
+    {
+        use webkit2gtk::WebViewExt;
+        page.run_javascript(&script, None::<&gtk::gio::Cancellable>, |_| {});
+    }
+    glib::Propagation::Stop
 }
 
 /// Makes mpv's render context, once mpv has started.
