@@ -44,7 +44,15 @@ pub struct Player {
 struct Candidate {
     name: &'static str,
     executables: &'static [&'static str],
+    #[cfg_attr(not(windows), allow(dead_code))]
     fallback_paths: &'static [&'static str],
+    /// On Linux: its commands, looked for on the path, then where Flatpak
+    /// and Snap put their launchers (`~/` is the home folder).
+    linux: &'static [&'static str],
+    /// On Linux: its desktop files, as the system names the default player
+    /// for a kind of file.
+    #[cfg_attr(windows, allow(dead_code))]
+    desktop: &'static [&'static str],
 }
 
 /// In order of preference when Windows' default for the file is none of
@@ -58,6 +66,13 @@ const CANDIDATES: &[Candidate] = &[
             r"C:\Program Files\VideoLAN\VLC\vlc.exe",
             r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
         ],
+        linux: &[
+            "vlc",
+            "/var/lib/flatpak/exports/bin/org.videolan.VLC",
+            "~/.local/share/flatpak/exports/bin/org.videolan.VLC",
+            "/snap/bin/vlc",
+        ],
+        desktop: &["vlc.desktop", "org.videolan.VLC.desktop", "vlc_vlc.desktop"],
     },
     Candidate {
         name: "mpv",
@@ -66,6 +81,12 @@ const CANDIDATES: &[Candidate] = &[
             r"C:\Program Files\mpv\mpv.exe",
             r"C:\Program Files\mpv-x86_64\mpv.exe",
         ],
+        linux: &[
+            "mpv",
+            "/var/lib/flatpak/exports/bin/io.mpv.Mpv",
+            "~/.local/share/flatpak/exports/bin/io.mpv.Mpv",
+        ],
+        desktop: &["mpv.desktop", "io.mpv.Mpv.desktop"],
     },
     Candidate {
         name: "MPC-HC",
@@ -75,6 +96,8 @@ const CANDIDATES: &[Candidate] = &[
             r"C:\Program Files (x86)\MPC-HC\mpc-hc.exe",
             r"C:\Program Files (x86)\K-Lite Codec Pack\MPC-HC64\mpc-hc64.exe",
         ],
+        linux: &[],
+        desktop: &[],
     },
     Candidate {
         name: "MPC-BE",
@@ -83,6 +106,8 @@ const CANDIDATES: &[Candidate] = &[
             r"C:\Program Files\MPC-BE\mpc-be64.exe",
             r"C:\Program Files (x86)\MPC-BE\mpc-be.exe",
         ],
+        linux: &[],
+        desktop: &[],
     },
     Candidate {
         name: "PotPlayer",
@@ -91,11 +116,19 @@ const CANDIDATES: &[Candidate] = &[
             r"C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe",
             r"C:\Program Files (x86)\DAUM\PotPlayer\PotPlayerMini.exe",
         ],
+        linux: &[],
+        desktop: &[],
     },
     Candidate {
         name: "SMPlayer",
         executables: &["smplayer.exe"],
         fallback_paths: &[r"C:\Program Files\SMPlayer\smplayer.exe"],
+        linux: &[
+            "smplayer",
+            "/var/lib/flatpak/exports/bin/info.smplayer.SMPlayer",
+            "~/.local/share/flatpak/exports/bin/info.smplayer.SMPlayer",
+        ],
+        desktop: &["smplayer.desktop", "info.smplayer.SMPlayer.desktop"],
     },
     Candidate {
         name: "KMPlayer",
@@ -104,6 +137,8 @@ const CANDIDATES: &[Candidate] = &[
             r"C:\Program Files\KMPlayer 64X\KMPlayer64.exe",
             r"C:\Program Files (x86)\The KMPlayer\KMPlayer.exe",
         ],
+        linux: &[],
+        desktop: &[],
     },
     Candidate {
         name: "GOM Player",
@@ -112,6 +147,46 @@ const CANDIDATES: &[Candidate] = &[
             r"C:\Program Files\GRETECH\GomPlayer\GOM64.exe",
             r"C:\Program Files (x86)\GRETECH\GomPlayer\GOM.exe",
         ],
+        linux: &[],
+        desktop: &[],
+    },
+    // Linux's own, after the ones both have: GNOME's and KDE's players, and
+    // GNOME's Videos, which opens an address too.
+    Candidate {
+        name: "Celluloid",
+        executables: &[],
+        fallback_paths: &[],
+        linux: &[
+            "celluloid",
+            "/var/lib/flatpak/exports/bin/io.github.celluloid_player.Celluloid",
+            "~/.local/share/flatpak/exports/bin/io.github.celluloid_player.Celluloid",
+        ],
+        desktop: &[
+            "io.github.celluloid_player.Celluloid.desktop",
+            "celluloid.desktop",
+        ],
+    },
+    Candidate {
+        name: "Haruna",
+        executables: &[],
+        fallback_paths: &[],
+        linux: &[
+            "haruna",
+            "/var/lib/flatpak/exports/bin/org.kde.haruna",
+            "~/.local/share/flatpak/exports/bin/org.kde.haruna",
+        ],
+        desktop: &["org.kde.haruna.desktop"],
+    },
+    Candidate {
+        name: "Videos",
+        executables: &[],
+        fallback_paths: &[],
+        linux: &[
+            "totem",
+            "/var/lib/flatpak/exports/bin/org.gnome.Totem",
+            "~/.local/share/flatpak/exports/bin/org.gnome.Totem",
+        ],
+        desktop: &["org.gnome.Totem.desktop"],
     },
 ];
 
@@ -156,7 +231,12 @@ pub fn chosen(path: &Path) -> Option<Player> {
     let file = path.file_name()?.to_string_lossy().to_string();
     let name = CANDIDATES
         .iter()
-        .find(|c| c.executables.iter().any(|e| e.eq_ignore_ascii_case(&file)))
+        .find(|c| {
+            c.executables.iter().any(|e| e.eq_ignore_ascii_case(&file))
+                || c.linux
+                    .iter()
+                    .any(|e| e.rsplit('/').next() == Some(file.as_str()))
+        })
         .map(|c| c.name.to_string())
         .unwrap_or_else(|| display_name(path));
     Some(Player {
@@ -182,7 +262,25 @@ pub fn launch(player: &Player, url: &str) -> std::io::Result<()> {
     command.spawn().map(|_| ())
 }
 
+/// Where one candidate is installed on Linux, if it is: on the path, or as a
+/// Flatpak or Snap.
+#[cfg(not(windows))]
+fn locate(candidate: &Candidate, _registered: &[PathBuf]) -> Option<PathBuf> {
+    candidate.linux.iter().find_map(|entry| {
+        if let Some(rest) = entry.strip_prefix("~/") {
+            let path = PathBuf::from(std::env::var_os("HOME")?).join(rest);
+            path.is_file().then_some(path)
+        } else if entry.starts_with('/') {
+            let path = PathBuf::from(entry);
+            path.is_file().then_some(path)
+        } else {
+            on_path(entry)
+        }
+    })
+}
+
 /// Where one candidate is installed, if it is.
+#[cfg(windows)]
 fn locate(candidate: &Candidate, registered: &[PathBuf]) -> Option<PathBuf> {
     for exe in candidate.executables {
         // Where Windows says the program is. This is the answer that survives
@@ -219,6 +317,7 @@ fn normalise_extension(extension: &str) -> String {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn file_is(path: &Path, exe: &str) -> bool {
     path.file_name()
         .is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(exe))
@@ -270,9 +369,28 @@ fn default_program(extension: &str) -> Option<PathBuf> {
     open_command(&prog_id)
 }
 
+/// The player Linux opens `extension` with, when it is one of the players
+/// here: the desktop asked through `xdg-mime`, which every desktop keeps to.
 #[cfg(not(windows))]
-fn default_program(_extension: &str) -> Option<PathBuf> {
-    None
+fn default_program(extension: &str) -> Option<PathBuf> {
+    let mime = match extension {
+        ".mp4" | ".m4v" => "video/mp4",
+        ".avi" => "video/x-msvideo",
+        ".webm" => "video/webm",
+        ".mov" => "video/quicktime",
+        ".ts" => "video/mp2t",
+        _ => "video/x-matroska",
+    };
+    let output = std::process::Command::new("xdg-mime")
+        .args(["query", "default", mime])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let desktop = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let candidate = CANDIDATES
+        .iter()
+        .find(|c| c.desktop.iter().any(|d| d.eq_ignore_ascii_case(&desktop)))?;
+    locate(candidate, &[])
 }
 
 /// Every program registered to open `extension` or the common video types.
@@ -548,13 +666,34 @@ mod tests {
     fn every_candidate_is_complete_and_uniquely_named() {
         assert!(!CANDIDATES.is_empty());
         for candidate in CANDIDATES {
-            assert!(!candidate.executables.is_empty(), "{}", candidate.name);
+            assert!(
+                !candidate.executables.is_empty() || !candidate.linux.is_empty(),
+                "{}",
+                candidate.name
+            );
             for exe in candidate.executables {
                 assert!(
                     !exe.contains('\\') && !exe.contains('/'),
                     "{exe} should be a bare executable name"
                 );
             }
+            // A command, or a launcher's whole path.
+            for entry in candidate.linux {
+                assert!(
+                    !entry.contains('\\')
+                        && (!entry.contains('/')
+                            || entry.starts_with('/')
+                            || entry.starts_with("~/")),
+                    "{entry} should be a command or an absolute path"
+                );
+            }
+            // Players with a Linux command are named by Linux's default too.
+            assert_eq!(
+                candidate.linux.is_empty(),
+                candidate.desktop.is_empty(),
+                "{}",
+                candidate.name
+            );
         }
         let names: std::collections::HashSet<_> = CANDIDATES.iter().map(|c| c.name).collect();
         assert_eq!(names.len(), CANDIDATES.len(), "duplicate player names");
