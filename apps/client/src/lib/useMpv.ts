@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as mpv from './mpvBackend'
 import { inTauri } from './api'
-import { isAndroid } from './platform'
+import { isAndroid, isLinuxDesktop } from './platform'
 import { usePreviewMpv } from './previewMpv'
 import { hasLetters, type Script, scriptForLanguage, scriptOfText } from './subtitleFonts'
 import {
   DEFAULT_STYLE,
+  RAISES,
   loadStyle,
   saveStyle,
   styleFamily,
@@ -207,6 +208,28 @@ export interface MpvState {
 export interface ConvertedSource {
   base: string
   duration: number
+}
+
+/** mpv's own bottom margin for subtitles, in its scaled pixels. */
+const SUBTITLE_MARGIN_AT_REST = 22
+
+/**
+ * Whether subtitles are lifted over the controls by their position rather
+ * than their margin. The system's mpv on Linux is often older (Ubuntu 22.04
+ * has 0.34), which applies a margin changed while playing only to the next
+ * line, and drops the one showing: the line stayed behind the controls, or
+ * vanished. Its position it applies at once.
+ */
+const LIFT_BY_POSITION = isLinuxDesktop()
+
+/**
+ * The subtitle position (percent of the height, 100 at the bottom) for a
+ * chosen height and a lift in mpv's scaled pixels, of a 720-high picture.
+ */
+export function liftedPosition(raise: number, lift: number): number {
+  const chosen = RAISES[raise] ?? 100
+  const extra = Math.max(0, lift - SUBTITLE_MARGIN_AT_REST) / 7.2
+  return Math.max(0, Math.round((chosen - extra) * 10) / 10)
 }
 
 /**
@@ -616,6 +639,8 @@ function useAppMpv(): Mpv {
   const style = useRef<SubtitleStyle>(state.subtitleStyle)
   /** mpv's own outline, read before any style changes it. */
   const outline = useRef<number | null>(null)
+  /** How far subtitles are lifted off the bottom, as the page last asked. */
+  const margin = useRef(SUBTITLE_MARGIN_AT_REST)
   /** On a phone: the script the subtitles showing are written in, and its font. */
   const script = useRef<{ script: Script | null; family: string | null }>({ script: null, family: null })
 
@@ -633,6 +658,11 @@ function useAppMpv(): Mpv {
       }
       for (const [name, value] of styleProperties(look, outline.current)) {
         try {
+          // On Linux the height carries the lift over the controls too.
+          if (name === 'sub-pos' && LIFT_BY_POSITION) {
+            await set(name, liftedPosition(look.raise, margin.current))
+            continue
+          }
           await set(name, value)
         } catch {
           // An mpv without the property keeps its own look for that part.
@@ -1270,7 +1300,13 @@ function useAppMpv(): Mpv {
 
   const setSubtitleMargin = useCallback(
     async (pixels: number) => {
-      if (inTauri()) await set('sub-margin-y', Math.round(pixels))
+      if (!inTauri()) return
+      margin.current = pixels
+      if (LIFT_BY_POSITION) {
+        await set('sub-pos', liftedPosition(style.current.raise, pixels))
+      } else {
+        await set('sub-margin-y', Math.round(pixels))
+      }
     },
     [set],
   )

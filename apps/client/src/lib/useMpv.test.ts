@@ -7,6 +7,7 @@ import {
   type OpeningProbe,
   type OpeningWatch,
   type MpvTrack,
+  liftedPosition,
   tracksToKeep,
   worthReadingAgain,
 } from './useMpv'
@@ -191,5 +192,23 @@ describe('tracks in a conversion', () => {
     expect(worthReadingAgain(100, null)).toBe(false)
     expect(worthReadingAgain(null, 160)).toBe(false)
     expect(worthReadingAgain(0, 160)).toBe(false)
+  })
+})
+
+describe('subtitles lifted by their position', () => {
+  /// Linux's older mpv moves a line by its position at once, and by its
+  /// margin only from the next line on.
+  it('sits at the chosen height at rest', () => {
+    expect(liftedPosition(0, 22)).toBe(100)
+    expect(liftedPosition(2, 22)).toBe(88)
+  })
+
+  it('goes up by the lift over the controls, from wherever it was chosen', () => {
+    expect(liftedPosition(0, 96)).toBeCloseTo(89.7, 1)
+    expect(liftedPosition(2, 96)).toBeCloseTo(77.7, 1)
+  })
+
+  it('never goes off the top', () => {
+    expect(liftedPosition(3, 5000)).toBe(0)
   })
 })
