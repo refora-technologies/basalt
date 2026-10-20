@@ -204,8 +204,8 @@ describe('subtitles lifted by their position', () => {
   })
 
   it('goes up by the lift over the controls, from wherever it was chosen', () => {
-    expect(liftedPosition(0, 96)).toBeCloseTo(89.7, 1)
-    expect(liftedPosition(2, 96)).toBeCloseTo(77.7, 1)
+    expect(liftedPosition(0, 96)).toBe(90)
+    expect(liftedPosition(2, 96)).toBe(78)
   })
 
   it('never goes off the top', () => {

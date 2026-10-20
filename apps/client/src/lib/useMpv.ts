@@ -229,7 +229,8 @@ const LIFT_BY_POSITION = isLinuxDesktop()
 export function liftedPosition(raise: number, lift: number): number {
   const chosen = RAISES[raise] ?? 100
   const extra = Math.max(0, lift - SUBTITLE_MARGIN_AT_REST) / 7.2
-  return Math.max(0, Math.round((chosen - extra) * 10) / 10)
+  // Whole percent: mpv before 0.35 refuses a fraction here.
+  return Math.max(0, Math.round(chosen - extra))
 }
 
 /**
