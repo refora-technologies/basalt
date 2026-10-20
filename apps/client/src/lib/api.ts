@@ -950,6 +950,23 @@ function mockHosts(): DiscoveredHost[] {
       seen: true,
     })
   }
+  // `?manyhosts`: a busy network, to see the list scroll and group.
+  if (previewFlag('manyhosts')) {
+    const rooms = ['KITCHEN', 'GARAGE', 'DEN', 'STUDIO', 'LOFT', 'CELLAR', 'NURSERY', 'PORCH']
+    rooms.forEach((room, i) => {
+      hosts.push({
+        hostId: `${(i + 1).toString(16)}`.repeat(32),
+        hostName: `${room}-PC`,
+        vault: i % 3 === 0 ? 'Shared' : `${room[0]}${room.slice(1).toLowerCase()} files`,
+        address: `192.168.1.${60 + i}:7742`,
+        requiresPin: true,
+        hasVault: true,
+        paired: i < 3,
+        needsSetup: false,
+        seen: i !== 1,
+      })
+    })
+  }
   // `?unseen`: a drive this device paired with that the search missed, as on
   // a network that blocks searching or with its computer asleep.
   if (previewFlag('unseen')) {
