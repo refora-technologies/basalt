@@ -1605,7 +1605,8 @@ pub fn run() {
             }
 
             // Debug builds only: a script run in the page once it has loaded,
-            // for testing the app where nobody is there to click.
+            // and again each time the file changes, for testing the app step
+            // by step where nobody is there to click.
             #[cfg(debug_assertions)]
             if let (Ok(path), Some(window)) = (
                 std::env::var("BASALT_TEST_SCRIPT"),
@@ -1613,11 +1614,16 @@ pub fn run() {
             ) {
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(4));
-                    match std::fs::read_to_string(&path) {
-                        Ok(script) => {
-                            let _ = window.eval(&script);
+                    let mut last = None;
+                    loop {
+                        let changed = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                        if changed.is_some() && changed != last {
+                            last = changed;
+                            if let Ok(script) = std::fs::read_to_string(&path) {
+                                let _ = window.eval(&script);
+                            }
                         }
-                        Err(e) => eprintln!("test script {path}: {e}"),
+                        std::thread::sleep(std::time::Duration::from_millis(500));
                     }
                 });
             }

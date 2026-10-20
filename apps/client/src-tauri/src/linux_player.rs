@@ -160,6 +160,9 @@ impl Lib {
 struct Player {
     lib: Lib,
     handle: Handle,
+    /// Whether `loadfile` takes a position before its options, as mpv does
+    /// from 0.38. The system's mpv is older on many: Ubuntu 22.04 has 0.34.
+    loadfile_index: bool,
 }
 // SAFETY: libmpv's client API may be called from any thread on one handle.
 unsafe impl Send for Player {}
@@ -223,7 +226,24 @@ pub fn linux_mpv_init<R: Runtime>(
     if code < 0 {
         return Err(format!("mpv could not start: {}", lib.error(code)));
     }
-    let player = PLAYER.get_or_init(|| Player { lib, handle });
+    // SAFETY: an initialised handle and a C string; the answer is mpv's.
+    let version = unsafe {
+        let text = (lib.get_property_string)(handle, c"mpv-version".as_ptr());
+        if text.is_null() {
+            String::new()
+        } else {
+            let version = CStr::from_ptr(text).to_string_lossy().into_owned();
+            (lib.free)(text.cast());
+            version
+        }
+    };
+    let loadfile_index = takes_loadfile_index(&version);
+    eprintln!("linux player: {version}");
+    let player = PLAYER.get_or_init(|| Player {
+        lib,
+        handle,
+        loadfile_index,
+    });
     let picture = c("vo-configured")?;
     // SAFETY: an initialised handle and a C string.
     unsafe { (player.lib.observe_property)(handle, OWN, picture.as_ptr(), FORMAT_FLAG) };
@@ -334,9 +354,41 @@ unsafe fn value_of(format: c_int, data: *const c_void) -> Value {
     }
 }
 
+/// Whether this mpv's `loadfile` takes a position before its options: from
+/// 0.38 on. `mpv v0.41.0-1050-ge76a35ec9`, `mpv 0.34.1`, `mpv 0.40.0-dirty`.
+fn takes_loadfile_index(version: &str) -> bool {
+    let number = version
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("")
+        .trim_start_matches('v');
+    let mut parts = number
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|p| p.parse::<u32>().ok());
+    match (parts.next(), parts.next()) {
+        (Some(major), Some(minor)) => major > 0 || minor >= 38,
+        // Built from git with no number: new.
+        _ => true,
+    }
+}
+
+/// `loadfile` as this mpv takes it: without the position the page sends,
+/// where it is older than 0.38.
+fn for_this_mpv(mut args: Vec<String>, loadfile_index: bool) -> Vec<String> {
+    if !loadfile_index
+        && args.first().is_some_and(|a| a == "loadfile")
+        && args.len() >= 5
+        && args[3].parse::<i64>().is_ok()
+    {
+        args.remove(3);
+    }
+    args
+}
+
 #[tauri::command]
 pub fn linux_mpv_command(args: Vec<String>) -> Result<(), String> {
     let player = player()?;
+    let args = for_this_mpv(args, player.loadfile_index);
     let owned = args.iter().map(|a| c(a)).collect::<Result<Vec<_>, _>>()?;
     let mut pointers: Vec<*const c_char> = owned.iter().map(|a| a.as_ptr()).collect();
     pointers.push(std::ptr::null());
@@ -732,4 +784,28 @@ pub fn release_in_page<R: Runtime>(window: &tauri::WebviewWindow<R>) {
         event.set_device(Some(&pointer));
         gtk::main_do_event(&mut event);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_mpv_is_told_loadfile_without_a_position() {
+        assert!(takes_loadfile_index("mpv v0.41.0-1050-ge76a35ec9"));
+        assert!(takes_loadfile_index("mpv 0.38.0"));
+        assert!(takes_loadfile_index("mpv v0.40.0-dirty"));
+        assert!(!takes_loadfile_index("mpv 0.34.1"));
+        assert!(!takes_loadfile_index("mpv 0.37.0"));
+        let page = |s: &[&str]| s.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let sent = page(&["loadfile", "http://x/f.mkv", "replace", "0", "pause=no"]);
+        assert_eq!(for_this_mpv(sent.clone(), true), sent);
+        assert_eq!(
+            for_this_mpv(sent, false),
+            page(&["loadfile", "http://x/f.mkv", "replace", "pause=no"])
+        );
+        // Anything else is left as it is.
+        let other = page(&["seek", "10", "absolute+exact"]);
+        assert_eq!(for_this_mpv(other.clone(), false), other);
+    }
 }
