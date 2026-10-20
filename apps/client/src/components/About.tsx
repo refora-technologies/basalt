@@ -24,9 +24,12 @@ import {
   WEBSITE,
   openExternal,
 } from '@/lib/links'
-import { isAndroid } from '@/lib/platform'
+import { isAndroid, isLinuxDesktop } from '@/lib/platform'
 import { checkForUpdate, offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
 import { cn } from '@/lib/utils'
+
+/** The computer this copy runs on, as the card names it. */
+const DESKTOP = isLinuxDesktop() ? 'Linux' : 'Windows'
 
 const ISSUES = `${REPO}/issues/new`
 
@@ -68,7 +71,7 @@ export function About({ product }: { product: string }): React.JSX.Element {
         return
       }
       const version = await api.appVersion().catch(() => '')
-      setInstalled({ version, device: phone ? 'Android' : 'Windows' })
+      setInstalled({ version, device: phone ? 'Android' : DESKTOP })
     })()
   }, [phone])
 
@@ -139,7 +142,7 @@ export function About({ product }: { product: string }): React.JSX.Element {
       )}
 
       <p className="mt-4 font-mono text-[10px] text-textFaint">
-        {phone ? 'Android' : 'Windows'} · GPLv3 · Refora Technologies
+        {phone ? 'Android' : DESKTOP} · GPLv3 · Refora Technologies
       </p>
       <p className="mt-1 font-mono text-[10px] text-textFaint">© 2026 Refora Technologies</p>
     </div>
