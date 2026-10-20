@@ -198,6 +198,16 @@ pub fn linux_mpv_init<R: Runtime>(
         return Ok(());
     }
     let lib = Lib::open()?;
+    // mpv reads and writes numbers the C way, and will not start otherwise:
+    // GTK set the desktop's own way as the app started, and with it, on
+    // most computers but a test container, mpv refused and nothing played.
+    // The page shows numbers itself, so nothing else here reads them.
+    extern "C" {
+        fn setlocale(category: c_int, locale: *const c_char) -> *mut c_char;
+    }
+    const LC_NUMERIC: c_int = 1;
+    // SAFETY: on the GTK thread, before mpv or anything else reads numbers.
+    unsafe { setlocale(LC_NUMERIC, c"C".as_ptr()) };
     // SAFETY: a new handle, configured and initialised here before anything
     // else can reach it.
     let handle = unsafe { (lib.create)() };
@@ -739,11 +749,112 @@ struct Offscreen {
     display: *mut c_void,
     surface: *mut c_void,
     context: *mut c_void,
-    make_current: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> u32,
+    make_current: MakeCurrent,
 }
 
 impl Offscreen {
+    /// mpv's GL context. Mesa's surfaceless display first: it needs no
+    /// window system, so it is the same under X11 and Wayland. Then the
+    /// system's own display with a tiny surface, and without one: Mesa has no
+    /// such surfaces on Wayland, and NVIDIA has no surfaceless display.
     fn new() -> Result<Self, String> {
+        const PLATFORM_SURFACELESS_MESA: u32 = 0x31DD;
+        // SAFETY: EGL's loader, by its documented name.
+        let lib = unsafe { libloading::Library::new("libEGL.so.1") }
+            .map_err(|e| format!("no EGL: {e}"))?;
+        let egl = Egl::load(&lib)?;
+        let mut last = String::from("no way to make a GL context");
+        let displays = [
+            egl.platform_display.map(|get| {
+                // SAFETY: EGL's own call, for the surfaceless platform.
+                unsafe {
+                    get(
+                        PLATFORM_SURFACELESS_MESA,
+                        std::ptr::null_mut(),
+                        std::ptr::null(),
+                    )
+                }
+            }),
+            // SAFETY: EGL's own call, for the system's display.
+            Some(unsafe { (egl.get_display)(std::ptr::null_mut()) }),
+        ];
+        for (n, display) in displays.into_iter().enumerate() {
+            let Some(display) = display.filter(|d| !d.is_null()) else {
+                continue;
+            };
+            for with_surface in [false, true] {
+                match egl.context(display, with_surface) {
+                    Ok((surface, context)) => {
+                        eprintln!(
+                            "linux player: GL on the {} display{}",
+                            if n == 0 { "surfaceless" } else { "system's" },
+                            if with_surface { ", with a surface" } else { "" }
+                        );
+                        return Ok(Offscreen {
+                            display,
+                            surface,
+                            context,
+                            make_current: egl.make_current,
+                            _lib: lib,
+                        });
+                    }
+                    Err(e) => last = e,
+                }
+            }
+        }
+        Err(last)
+    }
+
+    fn make_current(&self) -> bool {
+        // SAFETY: the display, surface (or none) and context this made.
+        unsafe { (self.make_current)(self.display, self.surface, self.surface, self.context) != 0 }
+    }
+}
+
+type MakeCurrent = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> u32;
+
+/// The EGL calls a context takes.
+struct Egl {
+    get_display: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    platform_display: Option<unsafe extern "C" fn(u32, *mut c_void, *const isize) -> *mut c_void>,
+    initialize: unsafe extern "C" fn(*mut c_void, *mut i32, *mut i32) -> u32,
+    bind_api: unsafe extern "C" fn(u32) -> u32,
+    choose: unsafe extern "C" fn(*mut c_void, *const i32, *mut *mut c_void, i32, *mut i32) -> u32,
+    pbuffer: unsafe extern "C" fn(*mut c_void, *mut c_void, *const i32) -> *mut c_void,
+    create: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i32) -> *mut c_void,
+    make_current: MakeCurrent,
+}
+
+impl Egl {
+    fn load(lib: &libloading::Library) -> Result<Self, String> {
+        // SAFETY: EGL's functions, by their documented names and signatures.
+        unsafe {
+            macro_rules! sym {
+                ($name:literal) => {
+                    *lib.get($name)
+                        .map_err(|e| format!("EGL has no {}: {e}", stringify!($name)))?
+                };
+            }
+            Ok(Egl {
+                get_display: sym!(b"eglGetDisplay"),
+                platform_display: lib.get(b"eglGetPlatformDisplay").ok().map(|s| *s),
+                initialize: sym!(b"eglInitialize"),
+                bind_api: sym!(b"eglBindAPI"),
+                choose: sym!(b"eglChooseConfig"),
+                pbuffer: sym!(b"eglCreatePbufferSurface"),
+                create: sym!(b"eglCreateContext"),
+                make_current: sym!(b"eglMakeCurrent"),
+            })
+        }
+    }
+
+    /// A desktop OpenGL context on `display`, current, with a tiny surface
+    /// of its own or with none at all.
+    fn context(
+        &self,
+        display: *mut c_void,
+        with_surface: bool,
+    ) -> Result<(*mut c_void, *mut c_void), String> {
         const OPENGL_API: u32 = 0x30A2;
         const SURFACE_TYPE: i32 = 0x3033;
         const PBUFFER_BIT: i32 = 0x0001;
@@ -755,53 +866,19 @@ impl Offscreen {
         const WIDTH: i32 = 0x3057;
         const HEIGHT: i32 = 0x3056;
         const NONE: i32 = 0x3038;
-        // SAFETY: EGL's functions, by their documented names and signatures,
-        // called in the order EGL asks.
+        // SAFETY: EGL's calls, in the order EGL asks, on a display it gave.
         unsafe {
-            let lib =
-                libloading::Library::new("libEGL.so.1").map_err(|e| format!("no EGL: {e}"))?;
-            macro_rules! sym {
-                ($name:literal) => {
-                    *lib.get($name)
-                        .map_err(|e| format!("EGL has no {}: {e}", stringify!($name)))?
-                };
-            }
-            let get_display: unsafe extern "C" fn(*mut c_void) -> *mut c_void =
-                sym!(b"eglGetDisplay");
-            let initialize: unsafe extern "C" fn(*mut c_void, *mut i32, *mut i32) -> u32 =
-                sym!(b"eglInitialize");
-            let bind_api: unsafe extern "C" fn(u32) -> u32 = sym!(b"eglBindAPI");
-            let choose: unsafe extern "C" fn(
-                *mut c_void,
-                *const i32,
-                *mut *mut c_void,
-                i32,
-                *mut i32,
-            ) -> u32 = sym!(b"eglChooseConfig");
-            let pbuffer: unsafe extern "C" fn(*mut c_void, *mut c_void, *const i32) -> *mut c_void =
-                sym!(b"eglCreatePbufferSurface");
-            let create: unsafe extern "C" fn(
-                *mut c_void,
-                *mut c_void,
-                *mut c_void,
-                *const i32,
-            ) -> *mut c_void = sym!(b"eglCreateContext");
-            let make_current = sym!(b"eglMakeCurrent");
-
-            let display = get_display(std::ptr::null_mut());
-            if display.is_null() {
-                return Err("no EGL display".into());
-            }
             let (mut major, mut minor) = (0, 0);
-            if initialize(display, &mut major, &mut minor) == 0 {
+            if (self.initialize)(display, &mut major, &mut minor) == 0 {
                 return Err("EGL would not start".into());
             }
-            if bind_api(OPENGL_API) == 0 {
+            if (self.bind_api)(OPENGL_API) == 0 {
                 return Err("EGL has no desktop OpenGL".into());
             }
+            let surface_type = if with_surface { PBUFFER_BIT } else { 0 };
             let wanted = [
                 SURFACE_TYPE,
-                PBUFFER_BIT,
+                surface_type,
                 RENDERABLE_TYPE,
                 OPENGL_BIT,
                 RED_SIZE,
@@ -814,28 +891,30 @@ impl Offscreen {
             ];
             let mut config = std::ptr::null_mut();
             let mut found = 0;
-            if choose(display, wanted.as_ptr(), &mut config, 1, &mut found) == 0 || found == 0 {
+            if (self.choose)(display, wanted.as_ptr(), &mut config, 1, &mut found) == 0
+                || found == 0
+            {
                 return Err("no EGL configuration for OpenGL".into());
             }
-            let size = [WIDTH, 16, HEIGHT, 16, NONE];
-            let surface = pbuffer(display, config, size.as_ptr());
-            let context = create(display, config, std::ptr::null_mut(), [NONE].as_ptr());
-            if surface.is_null() || context.is_null() {
+            let surface = if with_surface {
+                let size = [WIDTH, 16, HEIGHT, 16, NONE];
+                let surface = (self.pbuffer)(display, config, size.as_ptr());
+                if surface.is_null() {
+                    return Err("EGL could not make a surface".into());
+                }
+                surface
+            } else {
+                std::ptr::null_mut()
+            };
+            let context = (self.create)(display, config, std::ptr::null_mut(), [NONE].as_ptr());
+            if context.is_null() {
                 return Err("EGL could not make a GL context".into());
             }
-            Ok(Offscreen {
-                _lib: lib,
-                display,
-                surface,
-                context,
-                make_current,
-            })
+            if (self.make_current)(display, surface, surface, context) == 0 {
+                return Err("EGL could not use the GL context".into());
+            }
+            Ok((surface, context))
         }
-    }
-
-    fn make_current(&self) -> bool {
-        // SAFETY: the display, surface and context this made.
-        unsafe { (self.make_current)(self.display, self.surface, self.surface, self.context) != 0 }
     }
 }
 
