@@ -6,6 +6,9 @@ import {
   OPENING,
   type OpeningProbe,
   type OpeningWatch,
+  type MpvTrack,
+  tracksToKeep,
+  worthReadingAgain,
 } from './useMpv'
 
 describe('judgeOpening', () => {
@@ -149,4 +152,44 @@ describe('the lighter mode on a phone', () => {
     expect(needsLighterPlayback(false, 'no', 3840, 2160)).toBe(false)
   })
 
+})
+
+describe('tracks in a conversion', () => {
+  const track = (id: number, kind: 'sub' | 'audio', external = false): MpvTrack => ({
+    id,
+    kind,
+    label: '',
+    external,
+    lang: '',
+    title: '',
+    forced: false,
+    isDefault: false,
+    hearingImpaired: false,
+  })
+  const tracks = [track(1, 'audio'), track(2, 'audio'), track(1, 'sub'), track(2, 'sub'), track(3, 'sub', true)]
+
+  /// mpv reads a conversion once, keeping only the tracks chosen as it reads;
+  /// opened again, it has to know them from the start.
+  it('opens the film again with the subtitles and sound chosen', () => {
+    expect(tracksToKeep(2, 2, tracks)).toEqual(['sid=2', 'aid=2'])
+  })
+
+  it('opens it with no subtitles when they were off', () => {
+    expect(tracksToKeep(false, 1, tracks)).toEqual(['sid=no', 'aid=1'])
+    expect(tracksToKeep(null, null, tracks)).toEqual(['sid=no'])
+  })
+
+  /// The file is added again once the film plays; its number would point at
+  /// nothing until then.
+  it('leaves a subtitle file of its own to be added again', () => {
+    expect(tracksToKeep(3, 1, tracks)).toEqual(['sid=no', 'aid=1'])
+  })
+
+  it('reads a conversion again only when it has arrived well ahead', () => {
+    expect(worthReadingAgain(100, 160)).toBe(true)
+    expect(worthReadingAgain(100, 101.5)).toBe(false)
+    expect(worthReadingAgain(100, null)).toBe(false)
+    expect(worthReadingAgain(null, 160)).toBe(false)
+    expect(worthReadingAgain(0, 160)).toBe(false)
+  })
 })

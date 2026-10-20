@@ -198,6 +198,30 @@ export interface ConvertedSource {
   duration: number
 }
 
+/**
+ * Seconds of a conversion that may have arrived without a track just chosen,
+ * and be played out rather than read again.
+ */
+const READ_AHEAD_LEFT = 2
+
+/**
+ * The tracks chosen, as options for opening the same film again. A subtitle
+ * file of its own is left off: it comes back when the files are added again.
+ */
+export function tracksToKeep(sid: unknown, aid: unknown, tracks: MpvTrack[]): string[] {
+  const sub = Number(sid) || 0
+  const audio = Number(aid) || 0
+  const external = tracks.some((t) => t.kind === 'sub' && t.id === sub && t.external)
+  return [`sid=${sub > 0 && !external ? sub : 'no'}`, ...(audio > 0 ? [`aid=${audio}`] : [])]
+}
+
+/** Whether a conversion has arrived far enough ahead to be read again. */
+export function worthReadingAgain(position: unknown, cachedTo: unknown): boolean {
+  const at = Number(position)
+  if (!Number.isFinite(at) || at <= 0) return false
+  return (Number(cachedTo) || at) - at > READ_AHEAD_LEFT
+}
+
 /** The URL of a conversion from a point in the film. */
 export function convertedUrl(base: string, seconds: number): string {
   return `${base}?convert=${Math.max(0, seconds).toFixed(3)}`
@@ -506,6 +530,19 @@ function useAppMpv(): Mpv {
 
   /** Which read of the track list is the latest; older ones are dropped. */
   const trackRead = useRef(0)
+  /** The track list as last read, for code that runs outside a render. */
+  const trackList = useRef<MpvTrack[]>([])
+
+  /** The film open, as its URL: a conversion of it is the same film. */
+  const film = useRef<string | null>(null)
+  /** Subtitle files added to the film open, in the order they were added. */
+  const addedSubs = useRef<string[]>([])
+  /**
+   * Subtitle files to add again once the film, opened again, plays, and the
+   * one of them that was showing. mpv drops added files with the file they
+   * were added to, so a seek that started a new conversion lost them.
+   */
+  const putBack = useRef<{ generation: number; files: string[]; showing: string | null } | null>(null)
 
   /**
    * The subtitle and audio tracks, read one property at a time.
@@ -545,8 +582,40 @@ function useAppMpv(): Mpv {
       const label = title || lang || `Track ${id}`
       tracks.push({ id, kind, label, external, lang, title, forced, isDefault, hearingImpaired })
     }
-    if (mine === trackRead.current) setState((s) => ({ ...s, tracks }))
+    if (mine === trackRead.current) {
+      trackList.current = tracks
+      setState((s) => ({ ...s, tracks }))
+    }
   }, [])
+
+  /**
+   * The tracks chosen in the film open, as options for opening it again. Set
+   * as it opens, not after: a conversion is read ahead of the picture, and
+   * only for the tracks chosen at the time.
+   */
+  const chosenTracks = useCallback(async (): Promise<string[]> => {
+    const [sid, aid] = await Promise.all([readProperty('sid', 'int64'), readProperty('aid', 'int64')])
+    return tracksToKeep(sid, aid, trackList.current)
+  }, [])
+
+  /** The subtitle files put back, once the film opened again plays. */
+  const restoreAdded = useCallback(
+    async (mine: number) => {
+      const back = putBack.current
+      if (!back || back.generation !== mine) return
+      putBack.current = null
+      for (const file of back.files) {
+        try {
+          // `auto` adds it without showing it; only the one that was showing is.
+          await mpv.command('sub-add', [file, file === back.showing ? 'select' : 'auto'])
+        } catch {
+          // A file that can no longer be read is simply not offered again.
+        }
+      }
+      await readTracks()
+    },
+    [readTracks],
+  )
 
   // One init for the life of the window.
   useEffect(() => {
@@ -809,17 +878,31 @@ function useAppMpv(): Mpv {
         // Read here as well as on a change of count: the next episode usually
         // has the same number of tracks as the last, and then no change comes.
         void readTracks()
+        void restoreAdded(mine)
         if (next.verdict === 'video' && !strainChecked) void checkStrain(mine)
       }
       return
     }
-  }, [readTracks, checkStrain])
+  }, [readTracks, restoreAdded, checkStrain])
 
   const load = useCallback(
     async (url: string, startAt: number, source?: ConvertedSource) => {
       if (!inTauri()) return
       const mine = ++generation.current
       eof.current = false
+      // The same film opened again (a conversion from further on, or the
+      // original back) keeps the subtitles and sound chosen for it.
+      const key = source?.base ?? url
+      const again = loaded.current && film.current === key
+      film.current = key
+      const keep = again ? await chosenTracks() : []
+      if (again && addedSubs.current.length > 0) {
+        const showing = (await readProperty('current-tracks/sub/external-filename', 'string')) ?? null
+        putBack.current = { generation: mine, files: [...addedSubs.current], showing: showing && String(showing) }
+      } else {
+        putBack.current = null
+        if (!again) addedSubs.current = []
+      }
       converted.current = source ? { ...source, from: startAt } : null
       setState((s) => ({
         ...s,
@@ -852,8 +935,8 @@ function useAppMpv(): Mpv {
         // times, which mpv would otherwise count from zero.
         const options = (
           source
-            ? ['pause=no', 'rebase-start-time=no']
-            : ['pause=no', startAt > 1 ? `start=${startAt.toFixed(3)}` : '']
+            ? ['pause=no', 'rebase-start-time=no', ...keep]
+            : ['pause=no', startAt > 1 ? `start=${startAt.toFixed(3)}` : '', ...keep]
         )
           .filter(Boolean)
           .join(',')
@@ -866,13 +949,16 @@ function useAppMpv(): Mpv {
       }
       void watchOpening(source ? convertedUrl(source.base, startAt) : url, mine)
     },
-    [set, watchOpening, undoLighter],
+    [set, watchOpening, undoLighter, chosenTracks],
   )
 
   const stop = useCallback(async () => {
     generation.current++
     eof.current = false
     converted.current = null
+    film.current = null
+    addedSubs.current = []
+    putBack.current = null
     void undoLighter()
     setState((s) => ({
       ...s,
@@ -995,18 +1081,48 @@ function useAppMpv(): Mpv {
     if (inTauri()) await mpv.command('cycle', ['mute'])
   }, [])
 
+  /**
+   * After another track is chosen in a conversion: the conversion again from
+   * here, when what has arrived runs on ahead.
+   *
+   * mpv keeps only the chosen tracks of what it reads, and it cannot read a
+   * conversion again. A subtitle chosen while a minute had arrived showed
+   * nothing for that minute, nor on a seek back within it; it came back only
+   * when a seek further on started a new conversion. A moment or two ahead
+   * is left to play out instead.
+   */
+  const readAgainFor = useCallback(
+    async (inFile: boolean) => {
+      const source = converted.current
+      if (!source || !inFile) return
+      const [position, cachedTo] = await Promise.all([
+        readProperty('time-pos', 'double'),
+        readProperty('demuxer-cache-time', 'double'),
+      ])
+      if (!worthReadingAgain(position, cachedTo)) return
+      await load(source.base, Number(position), { base: source.base, duration: source.duration })
+    },
+    [load],
+  )
+
   const selectSubtitle = useCallback(
     async (id: number | null) => {
-      if (inTauri()) await set('sid', id === null ? 'no' : id)
+      if (!inTauri()) return
+      await set('sid', id === null ? 'no' : id)
+      const track = trackList.current.find((t) => t.kind === 'sub' && t.id === id)
+      await readAgainFor(track !== undefined && !track.external)
     },
-    [set],
+    [set, readAgainFor],
   )
 
   const selectAudio = useCallback(
     async (id: number) => {
-      if (inTauri()) await set('aid', id)
+      if (!inTauri()) return
+      await set('aid', id)
+      const track = trackList.current.find((t) => t.kind === 'audio' && t.id === id)
+      await readAgainFor(track !== undefined && !track.external)
     },
-    [set],
+    [set, readAgainFor],
   )
 
   const addSubtitle = useCallback(async (path: string) => {
@@ -1014,6 +1130,7 @@ function useAppMpv(): Mpv {
     // `select` makes it the active track, which is what someone who just
     // chose a file expects to happen.
     await mpv.command('sub-add', [path, 'select'])
+    if (!addedSubs.current.includes(path)) addedSubs.current.push(path)
     await readTracks()
   }, [readTracks])
 
