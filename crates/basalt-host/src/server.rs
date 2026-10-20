@@ -2924,7 +2924,12 @@ pub async fn serve(server: BoundServer) -> Result<()> {
     // Announce on the local network for as long as this host is serving, so
     // clients never have to be told an address. A failure here is not fatal —
     // a host nobody can discover is still a host somebody can reach directly.
-    {
+    //
+    // Not a host only this machine can reach, as tests run: those answered
+    // on the real network, and a device nearby listed a drive per test run.
+    let local = listener.local_addr()?;
+    let on_network = !local.ip().is_loopback();
+    if on_network {
         let host = Arc::clone(&host);
         tokio::spawn(async move {
             if let Err(e) = basalt_net::discovery::respond(move || host.beacon()).await {
@@ -2934,8 +2939,9 @@ pub async fn serve(server: BoundServer) -> Result<()> {
     }
     // And by mDNS, for networks that drop broadcasts, for as long as this
     // loop runs.
-    let _announced =
-        crate::announce::announce(&host.identity.host_id, listener.local_addr()?.port());
+    let _announced = on_network
+        .then(|| crate::announce::announce(&host.identity.host_id, local.port()))
+        .flatten();
 
     let unsigned = Arc::new(Unsigned::default());
     loop {

@@ -190,7 +190,12 @@ async fn disconnect(state: State<'_, AppState>) -> Answer<Status> {
 
 #[tauri::command]
 async fn forget_host(state: State<'_, AppState>, host_id: String) -> Answer<Status> {
-    state.watch.lock().expect("watch lock").take();
+    // Only the drive in use has a watch to end. Forgetting another one, from
+    // the drive list, used to end it too, and live changes stopped arriving.
+    let in_use = state.client.status().map(|info| info.host_id);
+    if in_use.as_deref() == Some(host_id.as_str()) {
+        state.watch.lock().expect("watch lock").take();
+    }
     state.client.forget(&host_id).await?;
     Ok(status_of(&state.client))
 }
