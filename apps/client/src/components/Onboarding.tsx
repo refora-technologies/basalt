@@ -238,13 +238,13 @@ const PAGES: Array<{ eyebrow: string; title: string; body: (phone: boolean) => s
     eyebrow: 'Welcome to Basalt',
     title: 'Your own drive, on every device',
     body: () =>
-      'Basalt opens the files on your own computer from your phone and every other device: films and shows to stream, photos, music, documents, anything. No cloud in between.',
+      'Basalt opens the files on your own computer from your phone and every other device: films and shows to stream, photos, music, documents, anything. Yours, and private by default.',
   },
   {
     eyebrow: 'Where it starts',
     title: 'Your files stay on your computer',
     body: () =>
-      'Everything stays where it already is, on your computer and its drives. Basalt never sends it to a cloud or keeps a copy anywhere else.',
+      'Everything stays where it already is, on your computer and its drives. Basalt doesn’t upload it anywhere or keep copies of its own.',
   },
   {
     eyebrow: 'Two apps, one drive',
