@@ -128,6 +128,14 @@ html[data-shape='rounded'] body::after {
   pointer-events: none;
 }
 
+/* Decorative CSS loops play a few times on Linux, as the scripted ones do
+   (LOOPS in lib/motion.ts): drawn by the processor there, a dot pinging for
+   ever cost most of a core. Spinners keep turning: they mean something. */
+html[data-shape] .animate-ping,
+html[data-shape] .animate-pulse {
+  animation-iteration-count: 3;
+}
+
 /* The edges to resize by: thin, above everything, gone when maximised.
    `--edge` is set to the width Tauri resizes from (see lib/windowFrame.ts). */
 .resize-edge {

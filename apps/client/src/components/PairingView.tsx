@@ -20,6 +20,7 @@ import { isMobileShell } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { wrongHostText } from '@/lib/wrongHost'
 import { useBack } from '@/mobile/useBack'
+import { LOOPS } from '@/lib/motion'
 
 const PIN_LENGTH = 6
 
@@ -321,7 +322,7 @@ export function PairingView({
         <div className="mb-6 flex shrink-0 flex-col items-center text-center">
           <motion.span
             animate={{ opacity: [0.55, 1, 0.55] }}
-            transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
+            transition={{ duration: 4, repeat: LOOPS, ease: 'easeInOut' }}
             className="text-basalt"
           >
             <HexMark size={34} />

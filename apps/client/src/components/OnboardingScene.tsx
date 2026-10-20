@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Laptop, Monitor, Smartphone } from 'lucide-react'
 import { HexMark } from './HexMark'
 import type { DiscoveredHost } from '@/lib/api'
+import { LOOPS } from '@/lib/motion'
 
 /**
  * The picture above the introduction's words.
@@ -170,7 +171,7 @@ export function OnboardingScene({
                 strokeWidth={1}
                 style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
                 animate={{ scale: [1, 0.94, 1] }}
-                transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut', delay: i * 0.12 }}
+                transition={{ duration: 2.4, repeat: LOOPS, ease: 'easeInOut', delay: i * 0.12 }}
               />
             ))}
             {/* One wave moving outward, so the search reads as active. */}
@@ -182,7 +183,7 @@ export function OnboardingScene({
               strokeWidth={1.2}
               initial={{ r: 38, strokeOpacity: 0.5 }}
               animate={{ r: 104, strokeOpacity: 0 }}
-              transition={{ duration: 2.4, repeat: Infinity, ease: 'easeOut' }}
+              transition={{ duration: 2.4, repeat: LOOPS, ease: 'easeOut' }}
             />
           </motion.g>
         )}
@@ -205,8 +206,10 @@ export function OnboardingScene({
           strokeDasharray="1.5 5"
           strokeLinecap="round"
           style={{ transformBox: 'fill-box', transformOrigin: 'center' }}
-          animate={{ rotate: 360 }}
-          transition={{ duration: 60, repeat: Infinity, ease: 'linear' }}
+          // Turning only while it is seen: faded out on the other pages, it
+          // went on turning, and being drawn, all the same.
+          animate={hub ? { rotate: 360 } : undefined}
+          transition={{ duration: 60, repeat: LOOPS, ease: 'linear' }}
         />
         <circle cx={CX} cy={ROW} r={108} fill="none" stroke="#ffffff" strokeOpacity={0.05} />
       </motion.g>
@@ -284,7 +287,7 @@ export function OnboardingScene({
           >
             <motion.g
               animate={hub ? { y: [0, -3, 0] } : { y: 0 }}
-              transition={hub ? { duration: 3 + i * 0.35, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.3 }}
+              transition={hub ? { duration: 3 + i * 0.35, repeat: LOOPS, ease: 'easeInOut' } : { duration: 0.3 }}
             >
               <ItemCard index={i} id={id} />
             </motion.g>
