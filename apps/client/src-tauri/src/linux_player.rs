@@ -5,9 +5,9 @@
 //! not work: WebKitGTK draws into the window itself, so mpv's window would
 //! cover the page, controls and all, and on Wayland mpv cannot be handed a
 //! window at all. So the app draws the picture itself: mpv's render API
-//! (`vo=libmpv`) into a `GtkGLArea`, with the page laid over it in a
-//! `GtkOverlay`, as Celluloid does. The page is unchanged: transparent where
-//! the picture is, as on Windows.
+//! (`vo=libmpv`) in a GL context of its own, and each frame painted onto the
+//! window just before GTK draws the page over it (see `attach`). The page is
+//! unchanged: transparent where the picture is, as on Windows.
 //!
 //! libmpv is opened when the player starts, `libmpv.so.2` then `.so.1`, so
 //! the packages depend on the system's mpv library rather than carrying one.
@@ -210,6 +210,13 @@ pub fn linux_mpv_init<R: Runtime>(
         Ok(unsafe { (lib.set_option_string)(handle, name.as_ptr(), value.as_ptr()) })
     };
     set("vo", "libmpv")?;
+    // A smaller read-ahead than mpv's own 150 MB and 50 MB back: the computers
+    // Linux runs on are often short of memory, and this still holds a minute
+    // ahead and half a minute back of a conversion.
+    if !options.contains_key("demuxer-max-bytes") {
+        set("demuxer-max-bytes", "64MiB")?;
+        set("demuxer-max-back-bytes", "32MiB")?;
+    }
     for (name, value) in &options {
         // Where it draws is decided here; and a sound device named on another
         // system means nothing on this one.
@@ -258,13 +265,7 @@ pub fn linux_mpv_init<R: Runtime>(
     // The render context, before anything is opened: a file opened first
     // finds no picture output, and mpv drops its video for good. On GTK's
     // thread, which owns the area; this command usually runs there already.
-    let make = || {
-        AREA.with(|area| {
-            if let Some(area) = area.borrow().as_ref() {
-                start_rendering(area);
-            }
-        })
-    };
+    let make = start_rendering;
     if glib::MainContext::default().is_owner() {
         make();
     } else {
@@ -484,63 +485,105 @@ pub fn linux_mpv_destroy() -> Result<(), String> {
 // Drawing
 // ---------------------------------------------------------------------------
 
-thread_local! {
-    /// The GL area, on the GTK thread that owns it.
-    static AREA: std::cell::RefCell<Option<gtk::GLArea>> = const { std::cell::RefCell::new(None) };
-    /// mpv's render context, made once on the GTK thread with the area's GL
-    /// context current.
-    static RENDER: std::cell::Cell<Handle> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+/// WebKit draws the page directly, never composited.
+///
+/// Composited, WebKit keeps a second copy of the window and, without a
+/// graphics card, draws every frame through software GL: on a virtual
+/// machine the introduction alone took four cores and 600 MB, and the window
+/// stopped answering. Drawn directly it is light, as Basalt Host is. Set
+/// here rather than by `WEBKIT_DISABLE_COMPOSITING_MODE`, which would also
+/// stop anyone who sets it otherwise.
+fn compose(page: &webkit2gtk::WebView, composited: bool) {
+    use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebViewExt};
+    if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_some() {
+        return;
+    }
+    eprintln!(
+        "linux player: page {}",
+        if composited {
+            "composited"
+        } else {
+            "drawn directly"
+        }
+    );
+    if let Some(settings) = WebViewExt::settings(page) {
+        settings.set_hardware_acceleration_policy(if composited {
+            HardwareAccelerationPolicy::Always
+        } else {
+            HardwareAccelerationPolicy::Never
+        });
+    }
 }
 
-/// Puts a GL area under the page, in the window's own widgets. On the GTK
-/// thread, before the page shows anything.
+thread_local! {
+    /// The page, to change how WebKit draws it: see `compose`.
+    static PAGE: std::cell::RefCell<Option<webkit2gtk::WebView>> = const { std::cell::RefCell::new(None) };
+    /// Whether the page is composited now.
+    static COMPOSITED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The column Tauri put the page in. The picture is painted onto it,
+    /// before GTK draws the page over it.
+    static COLUMN: std::cell::RefCell<Option<gtk::Widget>> = const { std::cell::RefCell::new(None) };
+    /// mpv's own GL context, out of sight of GTK and WebKit.
+    static OFFSCREEN: std::cell::RefCell<Option<Offscreen>> = const { std::cell::RefCell::new(None) };
+    /// mpv's render context, made once on the GTK thread with that context
+    /// current.
+    static RENDER: std::cell::Cell<Handle> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    /// What mpv draws into: a framebuffer, its texture, and their size.
+    static TARGET: std::cell::Cell<(u32, u32, c_int, c_int)> = const { std::cell::Cell::new((0, 0, 0, 0)) };
+}
+
+/// Paints the picture under the page, which stays where Tauri put it. On
+/// the GTK thread, before the page shows anything.
+///
+/// mpv draws each frame in a GL context of its own, which neither GTK nor
+/// WebKit sees, and the frame is painted under the page as any picture is.
+/// The ways that let GTK do it went wrong: a GL area in an overlay with the
+/// page made every click close the app (Tauri's resizing looks for the
+/// window two steps above the page), was drawn under the page at every frame
+/// with nothing playing, and showed nothing at all once WebKit drew directly;
+/// a GL picture handed to GTK covered the page, controls and all, unless the
+/// page was composited, which is what made the app so heavy.
 pub fn attach<R: Runtime>(window: &tauri::WebviewWindow<R>) {
     let _ = window.with_webview(|webview| {
         use gtk::prelude::*;
         let page = webview.inner();
-        let Some(parent) = page.parent() else { return };
-        let Ok(parent) = parent.downcast::<gtk::Container>() else {
+        compose(&page, false);
+        PAGE.with(|slot| *slot.borrow_mut() = Some(page.clone()));
+        let Some(column) = page.parent() else {
+            eprintln!("linux player: the page has no column; no picture here");
             return;
         };
-        let overlay = gtk::Overlay::new();
-        let area = gtk::GLArea::new();
-        area.set_has_alpha(true);
-        area.connect_realize(|area| {
-            area.make_current();
-            match area.error() {
-                None => start_rendering(area),
-                Some(e) => eprintln!("linux player: no GL here: {e}"),
-            }
+        // After the page, behind it: WebKit drawing directly copies its
+        // pixels in, transparent ones too, so a picture painted first was
+        // wiped. Painted after, "under" what is there, it shows only where
+        // the page lets it, and the controls stay on top.
+        column.connect_local("draw", true, |args| {
+            let column = args[0].get::<gtk::Widget>().ok()?;
+            let cr = args[1].get::<gtk::cairo::Context>().ok()?;
+            draw(&column, &cr);
+            Some(false.to_value())
         });
-        area.connect_render(|area, _| {
-            draw(area);
-            glib::Propagation::Stop
-        });
-        parent.remove(&page);
-        overlay.add(&area);
-        overlay.add_overlay(&page);
-        match parent.clone().downcast::<gtk::Box>() {
-            Ok(column) => column.pack_start(&overlay, true, true, 0),
-            Err(parent) => parent.add(&overlay),
-        }
-        overlay.show_all();
-        AREA.with(|slot| *slot.borrow_mut() = Some(area));
+        COLUMN.with(|slot| *slot.borrow_mut() = Some(column));
     });
 }
 
-/// Makes mpv's render context, when both mpv and the area are there.
-fn start_rendering(area: &gtk::GLArea) {
-    use gtk::prelude::*;
+/// Makes mpv's render context, once mpv has started.
+fn start_rendering() {
     let Some(player) = PLAYER.get() else { return };
     if !RENDER.with(|r| r.get()).is_null() {
         return;
     }
-    if !area.is_realized() {
-        eprintln!("linux player: the GL area is not shown yet");
-        return;
-    }
-    area.make_current();
-    if area.error().is_some() {
+    let ready = OFFSCREEN.with(|o| {
+        let mut slot = o.borrow_mut();
+        if slot.is_none() {
+            match Offscreen::new() {
+                Ok(offscreen) => *slot = Some(offscreen),
+                Err(e) => eprintln!("linux player: no GL here: {e}"),
+            }
+        }
+        slot.as_ref().is_some_and(Offscreen::make_current)
+    });
+    if !ready {
         return;
     }
     let mut init = OpenGlInitParams {
@@ -563,20 +606,20 @@ fn start_rendering(area: &gtk::GLArea) {
             data: std::ptr::null_mut(),
         },
     ];
-    let mut context: Handle = std::ptr::null_mut();
-    // SAFETY: the area's GL context is current, and the parameters live
-    // through the call.
+    let mut render: Handle = std::ptr::null_mut();
+    // SAFETY: mpv's GL context is current, and the parameters live through
+    // the call.
     let code =
-        unsafe { (player.lib.render_create)(&mut context, player.handle, params.as_mut_ptr()) };
-    if code < 0 || context.is_null() {
+        unsafe { (player.lib.render_create)(&mut render, player.handle, params.as_mut_ptr()) };
+    if code < 0 || render.is_null() {
         eprintln!("mpv could not draw here: {}", player.lib.error(code));
         return;
     }
-    RENDER.with(|r| r.set(context));
+    RENDER.with(|r| r.set(render));
     eprintln!("linux player: drawing with GL");
     // SAFETY: a context just made; the callback only queues a redraw.
     unsafe {
-        (player.lib.render_set_update_callback)(context, Some(on_update), std::ptr::null_mut())
+        (player.lib.render_set_update_callback)(render, Some(on_update), std::ptr::null_mut())
     };
 }
 
@@ -587,41 +630,70 @@ unsafe extern "C" fn on_update(_: *mut c_void) {
 
 fn redraw() {
     glib::idle_add_once(|| {
-        AREA.with(|area| {
-            if let Some(area) = area.borrow().as_ref() {
+        let picture = PICTURE.load(Ordering::SeqCst);
+        if picture && !COMPOSITED.with(|c| c.get()) {
+            COMPOSITED.with(|c| c.set(true));
+            PAGE.with(|page| page.borrow().as_ref().map(|page| compose(page, true)));
+        } else if !picture && COMPOSITED.with(|c| c.get()) {
+            // Back to drawing directly once the page has closed the player
+            // and is opaque again: switched while it was still see-through,
+            // WebKit drew nothing at all from then on.
+            glib::timeout_add_local_once(std::time::Duration::from_millis(1500), || {
+                if !PICTURE.load(Ordering::SeqCst) && COMPOSITED.with(|c| c.get()) {
+                    COMPOSITED.with(|c| c.set(false));
+                    PAGE.with(|page| page.borrow().as_ref().map(|page| compose(page, false)));
+                }
+            });
+        }
+        COLUMN.with(|column| {
+            if let Some(column) = column.borrow().as_ref() {
                 use gtk::prelude::*;
-                area.queue_render();
+                column.queue_draw();
             }
         })
     });
 }
 
-/// One frame, into the area's framebuffer: mpv's picture, or nothing at all
-/// while there is none.
-fn draw(area: &gtk::GLArea) {
+/// The picture, under the page: drawn by mpv offscreen, read back, and
+/// painted where the page is about to be drawn. Nothing while there is no
+/// picture.
+fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
     use gtk::prelude::*;
-    let gl = gl();
-    let context = RENDER.with(|r| r.get());
-    let Some(player) = PLAYER.get() else {
-        gl.clear_transparent();
-        return;
-    };
-    if context.is_null() || !PICTURE.load(Ordering::SeqCst) {
-        gl.clear_transparent();
+    if !PICTURE.load(Ordering::SeqCst) {
         return;
     }
-    let scale = area.scale_factor();
-    let mut fbo = OpenGlFbo {
-        fbo: gl.framebuffer(),
-        w: area.allocated_width() * scale,
-        h: area.allocated_height() * scale,
+    let render = RENDER.with(|r| r.get());
+    let Some(player) = PLAYER.get() else { return };
+    if render.is_null()
+        || !OFFSCREEN.with(|o| o.borrow().as_ref().is_some_and(Offscreen::make_current))
+    {
+        return;
+    }
+    let gl = gl();
+    let scale = column.scale_factor();
+    let (w, h) = (
+        column.allocated_width() * scale,
+        column.allocated_height() * scale,
+    );
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let Some((fbo, _)) = gl.target(w, h) else {
+        return;
+    };
+    let mut target = OpenGlFbo {
+        fbo: fbo as c_int,
+        w,
+        h,
         internal_format: 0,
     };
-    let mut flip: c_int = 1;
+    // As GL keeps it, bottom row first; read back from the top, it comes
+    // out the right way up, as cairo keeps an image.
+    let mut flip: c_int = 0;
     let mut params = [
         RenderParam {
             kind: RENDER_PARAM_OPENGL_FBO,
-            data: (&raw mut fbo).cast(),
+            data: (&raw mut target).cast(),
         },
         RenderParam {
             kind: RENDER_PARAM_FLIP_Y,
@@ -632,9 +704,26 @@ fn draw(area: &gtk::GLArea) {
             data: std::ptr::null_mut(),
         },
     ];
-    // SAFETY: the area's GL context is current while it renders, and the
-    // parameters live through the call.
-    unsafe { (player.lib.render_render)(context, params.as_mut_ptr()) };
+    // SAFETY: mpv's GL context is current, and the parameters live through
+    // the call.
+    unsafe { (player.lib.render_render)(render, params.as_mut_ptr()) };
+
+    let Ok(mut frame) = gtk::cairo::ImageSurface::create(gtk::cairo::Format::Rgb24, w, h) else {
+        return;
+    };
+    let stride = frame.stride();
+    {
+        let Ok(mut pixels) = frame.data() else { return };
+        gl.read(fbo, w, h, stride, &mut pixels);
+    }
+    frame.mark_dirty();
+    frame.set_device_scale(f64::from(scale), f64::from(scale));
+    let _ = cr.save();
+    cr.set_operator(gtk::cairo::Operator::DestOver);
+    if cr.set_source_surface(&frame, 0.0, 0.0).is_ok() {
+        let _ = cr.paint();
+    }
+    let _ = cr.restore();
 }
 
 // ---------------------------------------------------------------------------
@@ -643,15 +732,128 @@ fn draw(area: &gtk::GLArea) {
 
 type GetProc = unsafe extern "C" fn(*const c_char) -> *mut c_void;
 
-/// How GL functions are found: through EGL where GTK drew with it (always on
-/// Wayland), otherwise GLX.
+/// mpv's GL context: EGL, with a tiny surface of its own it never shows.
+/// mpv draws into a framebuffer, and the frame is read back from there.
+struct Offscreen {
+    _lib: libloading::Library,
+    display: *mut c_void,
+    surface: *mut c_void,
+    context: *mut c_void,
+    make_current: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> u32,
+}
+
+impl Offscreen {
+    fn new() -> Result<Self, String> {
+        const OPENGL_API: u32 = 0x30A2;
+        const SURFACE_TYPE: i32 = 0x3033;
+        const PBUFFER_BIT: i32 = 0x0001;
+        const RENDERABLE_TYPE: i32 = 0x3040;
+        const OPENGL_BIT: i32 = 0x0008;
+        const RED_SIZE: i32 = 0x3024;
+        const GREEN_SIZE: i32 = 0x3023;
+        const BLUE_SIZE: i32 = 0x3022;
+        const WIDTH: i32 = 0x3057;
+        const HEIGHT: i32 = 0x3056;
+        const NONE: i32 = 0x3038;
+        // SAFETY: EGL's functions, by their documented names and signatures,
+        // called in the order EGL asks.
+        unsafe {
+            let lib =
+                libloading::Library::new("libEGL.so.1").map_err(|e| format!("no EGL: {e}"))?;
+            macro_rules! sym {
+                ($name:literal) => {
+                    *lib.get($name)
+                        .map_err(|e| format!("EGL has no {}: {e}", stringify!($name)))?
+                };
+            }
+            let get_display: unsafe extern "C" fn(*mut c_void) -> *mut c_void =
+                sym!(b"eglGetDisplay");
+            let initialize: unsafe extern "C" fn(*mut c_void, *mut i32, *mut i32) -> u32 =
+                sym!(b"eglInitialize");
+            let bind_api: unsafe extern "C" fn(u32) -> u32 = sym!(b"eglBindAPI");
+            let choose: unsafe extern "C" fn(
+                *mut c_void,
+                *const i32,
+                *mut *mut c_void,
+                i32,
+                *mut i32,
+            ) -> u32 = sym!(b"eglChooseConfig");
+            let pbuffer: unsafe extern "C" fn(*mut c_void, *mut c_void, *const i32) -> *mut c_void =
+                sym!(b"eglCreatePbufferSurface");
+            let create: unsafe extern "C" fn(
+                *mut c_void,
+                *mut c_void,
+                *mut c_void,
+                *const i32,
+            ) -> *mut c_void = sym!(b"eglCreateContext");
+            let make_current = sym!(b"eglMakeCurrent");
+
+            let display = get_display(std::ptr::null_mut());
+            if display.is_null() {
+                return Err("no EGL display".into());
+            }
+            let (mut major, mut minor) = (0, 0);
+            if initialize(display, &mut major, &mut minor) == 0 {
+                return Err("EGL would not start".into());
+            }
+            if bind_api(OPENGL_API) == 0 {
+                return Err("EGL has no desktop OpenGL".into());
+            }
+            let wanted = [
+                SURFACE_TYPE,
+                PBUFFER_BIT,
+                RENDERABLE_TYPE,
+                OPENGL_BIT,
+                RED_SIZE,
+                8,
+                GREEN_SIZE,
+                8,
+                BLUE_SIZE,
+                8,
+                NONE,
+            ];
+            let mut config = std::ptr::null_mut();
+            let mut found = 0;
+            if choose(display, wanted.as_ptr(), &mut config, 1, &mut found) == 0 || found == 0 {
+                return Err("no EGL configuration for OpenGL".into());
+            }
+            let size = [WIDTH, 16, HEIGHT, 16, NONE];
+            let surface = pbuffer(display, config, size.as_ptr());
+            let context = create(display, config, std::ptr::null_mut(), [NONE].as_ptr());
+            if surface.is_null() || context.is_null() {
+                return Err("EGL could not make a GL context".into());
+            }
+            Ok(Offscreen {
+                _lib: lib,
+                display,
+                surface,
+                context,
+                make_current,
+            })
+        }
+    }
+
+    fn make_current(&self) -> bool {
+        // SAFETY: the display, surface and context this made.
+        unsafe { (self.make_current)(self.display, self.surface, self.surface, self.context) != 0 }
+    }
+}
+
+/// How GL functions are found: through EGL, with mpv's context current; and
+/// the few this file calls itself.
 struct Gl {
-    _libs: Vec<libloading::Library>,
+    _lib: Option<libloading::Library>,
     egl: Option<GetProc>,
-    glx: Option<GetProc>,
-    get_integer: Option<unsafe extern "C" fn(u32, *mut c_int)>,
-    clear_color: Option<unsafe extern "C" fn(f32, f32, f32, f32)>,
-    clear: Option<unsafe extern "C" fn(u32)>,
+    gen_framebuffers: Option<unsafe extern "C" fn(c_int, *mut u32)>,
+    bind_framebuffer: Option<unsafe extern "C" fn(u32, u32)>,
+    framebuffer_texture: Option<unsafe extern "C" fn(u32, u32, u32, u32, c_int)>,
+    gen_textures: Option<unsafe extern "C" fn(c_int, *mut u32)>,
+    bind_texture: Option<unsafe extern "C" fn(u32, u32)>,
+    tex_image: Option<
+        unsafe extern "C" fn(u32, c_int, c_int, c_int, c_int, c_int, u32, u32, *const c_void),
+    >,
+    pixel_store: Option<unsafe extern "C" fn(u32, c_int)>,
+    read_pixels: Option<unsafe extern "C" fn(c_int, c_int, c_int, c_int, u32, u32, *mut c_void)>,
 }
 // SAFETY: function pointers into system libraries, used on GTK's thread.
 unsafe impl Send for Gl {}
@@ -661,41 +863,43 @@ static GL: OnceLock<Gl> = OnceLock::new();
 
 fn gl() -> &'static Gl {
     GL.get_or_init(|| {
-        let mut libs = Vec::new();
-        let mut egl = None;
-        let mut glx = None;
-        // SAFETY: system GL loaders, looked up by their documented names.
-        unsafe {
-            if let Ok(lib) = libloading::Library::new("libEGL.so.1") {
-                let current: Option<unsafe extern "C" fn() -> *mut c_void> =
-                    lib.get(b"eglGetCurrentContext").ok().map(|s| *s);
-                if current.is_some_and(|f| !f().is_null()) {
-                    egl = lib.get::<GetProc>(b"eglGetProcAddress").ok().map(|s| *s);
-                }
-                libs.push(lib);
-            }
-            if egl.is_none() {
-                if let Ok(lib) = libloading::Library::new("libGL.so.1") {
-                    glx = lib.get::<GetProc>(b"glXGetProcAddressARB").ok().map(|s| *s);
-                    libs.push(lib);
-                }
-            }
-        }
+        // SAFETY: EGL's loader, by its documented name.
+        let lib = unsafe { libloading::Library::new("libEGL.so.1") }.ok();
+        // SAFETY: as above.
+        let egl = lib.as_ref().and_then(|lib| {
+            unsafe { lib.get::<GetProc>(b"eglGetProcAddress") }
+                .ok()
+                .map(|s| *s)
+        });
         let mut gl = Gl {
-            _libs: libs,
+            _lib: lib,
             egl,
-            glx,
-            get_integer: None,
-            clear_color: None,
-            clear: None,
+            gen_framebuffers: None,
+            bind_framebuffer: None,
+            framebuffer_texture: None,
+            gen_textures: None,
+            bind_texture: None,
+            tex_image: None,
+            pixel_store: None,
+            read_pixels: None,
         };
         // SAFETY: the names are GL's, and each pointer is given its signature.
         unsafe {
-            gl.get_integer =
-                std::mem::transmute::<*mut c_void, Option<_>>(gl.find(c"glGetIntegerv"));
-            gl.clear_color =
-                std::mem::transmute::<*mut c_void, Option<_>>(gl.find(c"glClearColor"));
-            gl.clear = std::mem::transmute::<*mut c_void, Option<_>>(gl.find(c"glClear"));
+            gl.gen_framebuffers =
+                std::mem::transmute::<*mut c_void, Option<_>>(gl.find(c"glGenFramebuffers"));
+            gl.bind_framebuffer =
+                std::mem::transmute::<*mut c_void, Option<_>>(gl.find(c"glBindFramebuffer"));
+            gl.framebuffer_texture =
+                std::mem::transmute::<*mut c_void, Option<_>>(gl.find(c"glFramebufferTexture2D"));
+            gl.gen_textures =
+                std::mem::transmute::<*mut c_void, Option<_>>(gl.find(c"glGenTextures"));
+            gl.bind_texture =
+                std::mem::transmute::<*mut c_void, Option<_>>(gl.find(c"glBindTexture"));
+            gl.tex_image = std::mem::transmute::<*mut c_void, Option<_>>(gl.find(c"glTexImage2D"));
+            gl.pixel_store =
+                std::mem::transmute::<*mut c_void, Option<_>>(gl.find(c"glPixelStorei"));
+            gl.read_pixels =
+                std::mem::transmute::<*mut c_void, Option<_>>(gl.find(c"glReadPixels"));
         }
         gl
     })
@@ -703,35 +907,86 @@ fn gl() -> &'static Gl {
 
 impl Gl {
     fn find(&self, name: &CStr) -> *mut c_void {
-        // SAFETY: a GL loader and a C string.
+        match self.egl {
+            // SAFETY: EGL's loader and a C string.
+            Some(egl) => unsafe { egl(name.as_ptr()) },
+            None => std::ptr::null_mut(),
+        }
+    }
+
+    /// A framebuffer and its texture, `w` by `h`, made the first time and
+    /// made again when the window changes size.
+    fn target(&self, w: c_int, h: c_int) -> Option<(u32, u32)> {
+        const FRAMEBUFFER: u32 = 0x8D40;
+        const COLOR_ATTACHMENT0: u32 = 0x8CE0;
+        const TEXTURE_2D: u32 = 0x0DE1;
+        const RGBA8: c_int = 0x8058;
+        const RGBA: u32 = 0x1908;
+        const UNSIGNED_BYTE: u32 = 0x1401;
+        let (gen_fb, bind_fb, attach, gen_tex, bind_tex, image) = (
+            self.gen_framebuffers?,
+            self.bind_framebuffer?,
+            self.framebuffer_texture?,
+            self.gen_textures?,
+            self.bind_texture?,
+            self.tex_image?,
+        );
+        let (mut fbo, mut texture, was_w, was_h) = TARGET.with(|t| t.get());
+        // SAFETY: plain GL calls with mpv's context current, on names this
+        // made.
         unsafe {
-            match (self.egl, self.glx) {
-                (Some(egl), _) => egl(name.as_ptr()),
-                (None, Some(glx)) => glx(name.as_ptr()),
-                _ => std::ptr::null_mut(),
+            if fbo == 0 {
+                gen_fb(1, &mut fbo);
+                gen_tex(1, &mut texture);
+            }
+            if (w, h) != (was_w, was_h) {
+                bind_tex(TEXTURE_2D, texture);
+                image(
+                    TEXTURE_2D,
+                    0,
+                    RGBA8,
+                    w,
+                    h,
+                    0,
+                    RGBA,
+                    UNSIGNED_BYTE,
+                    std::ptr::null(),
+                );
+                bind_fb(FRAMEBUFFER, fbo);
+                attach(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, texture, 0);
+                bind_fb(FRAMEBUFFER, 0);
+                bind_tex(TEXTURE_2D, 0);
             }
         }
+        TARGET.with(|t| t.set((fbo, texture, w, h)));
+        Some((fbo, texture))
     }
 
-    /// The framebuffer GTK has bound for the area to draw into.
-    fn framebuffer(&self) -> c_int {
-        const FRAMEBUFFER_BINDING: u32 = 0x8CA6;
-        let mut fbo: c_int = 0;
-        if let Some(get) = self.get_integer {
-            // SAFETY: one integer's room for one integer.
-            unsafe { get(FRAMEBUFFER_BINDING, &mut fbo) };
+    /// The frame in `fbo`, into `pixels`, as cairo keeps an RGB image:
+    /// blue, green, red and a spare byte, `stride` bytes a row.
+    fn read(&self, fbo: u32, w: c_int, h: c_int, stride: i32, pixels: &mut [u8]) {
+        const FRAMEBUFFER: u32 = 0x8D40;
+        const PACK_ROW_LENGTH: u32 = 0x0D02;
+        const PACK_ALIGNMENT: u32 = 0x0D05;
+        const BGRA: u32 = 0x80E1;
+        const UNSIGNED_BYTE: u32 = 0x1401;
+        let (Some(bind_fb), Some(store), Some(read)) =
+            (self.bind_framebuffer, self.pixel_store, self.read_pixels)
+        else {
+            return;
+        };
+        if pixels.len() < (stride * h) as usize {
+            return;
         }
-        fbo
-    }
-
-    fn clear_transparent(&self) {
-        const COLOR_BUFFER_BIT: u32 = 0x4000;
-        if let (Some(color), Some(clear)) = (self.clear_color, self.clear) {
-            // SAFETY: plain GL calls with the area's context current.
-            unsafe {
-                color(0.0, 0.0, 0.0, 0.0);
-                clear(COLOR_BUFFER_BIT);
-            }
+        // SAFETY: a framebuffer this made, read into a buffer of `stride`
+        // bytes for each of `h` rows, as the row length says.
+        unsafe {
+            bind_fb(FRAMEBUFFER, fbo);
+            store(PACK_ALIGNMENT, 4);
+            store(PACK_ROW_LENGTH, stride / 4);
+            read(0, 0, w, h, BGRA, UNSIGNED_BYTE, pixels.as_mut_ptr().cast());
+            store(PACK_ROW_LENGTH, 0);
+            bind_fb(FRAMEBUFFER, 0);
         }
     }
 }
