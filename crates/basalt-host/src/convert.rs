@@ -943,7 +943,7 @@ impl Converter {
         let ffmpeg = capability.ffmpeg.clone().ok_or("no ffmpeg here")?;
         // A machine without room for even the first step is stopped by its
         // system rather than slowed, and that stopped the whole host.
-        if let Some(why) = cannot_measure(self.has_sample()) {
+        if let Some(why) = cannot_measure() {
             return Err(why);
         }
         let sample = make_sample(&ffmpeg, &self.sample_dir()).await?;
@@ -1211,10 +1211,6 @@ async fn make_sample(ffmpeg: &Path, dir: &Path) -> Result<PathBuf, String> {
 /// The measuring sample, as kept.
 const SAMPLE_NAME: &str = "sample-4k-hevc10.mkv";
 
-/// Free memory making the sample takes: 0.8 GB measured on twelve cores,
-/// with the processor's encoder (graphics encoders take far less).
-const SAMPLE_NEEDS: u64 = 900 << 20;
-
 /// Why measuring stopped while the sample was being made.
 const TOO_SLOW_FOR_SAMPLE: &str = "Measuring stopped: making three seconds of a 4K sample took \
      over five minutes, so this computer is too slow to convert 4K films as they are watched.";
@@ -1238,9 +1234,15 @@ const SPARE: u64 = 160 << 20;
 const SHORT_WHILE_MEASURING: &str =
     "Measuring stopped: this computer ran short of memory while converting the 4K sample.";
 
-/// Free memory always left alone while measuring, for the system, the host
-/// and anything else running.
-const KEEP_FREE: u64 = 768 << 20;
+/// Free memory below which work being watched is stopped, before the
+/// system stops the whole host.
+const STOP_BELOW: u64 = 384 << 20;
+
+/// Free memory a measuring step plans to leave: the same room a real
+/// conversion leaves, over the point where it would be stopped. It used to
+/// be 768 MB, more than real conversions keep, and a 6 GB laptop with
+/// 1.2 GB free was refused though its host converts there.
+const KEEP_FREE: u64 = STOP_BELOW + SPARE;
 
 /// The least one conversion is counted as taking, whatever was read.
 const LEAST_EACH: u64 = 256 << 20;
@@ -1365,7 +1367,7 @@ async fn finish_watching_memory(
         }
         if let Some(free) = free_memory() {
             lowest_free = Some(lowest_free.map_or(free, |lowest| lowest.min(free)));
-            if free < KEEP_FREE / 2 {
+            if free < STOP_BELOW {
                 return Err(LOW_MEMORY.into());
             }
         }
@@ -1401,22 +1403,17 @@ const TOOK_TOO_LONG: &str = "took far too long";
 const SILENT: &str = "nothing came out in time";
 
 /// The least free memory measuring starts with: room for one conversion as
-/// lean as they go, and to make the sample first when it is not made yet.
-fn measure_needs(sample_made: bool) -> u64 {
-    let one = LEAN_NEEDS + KEEP_FREE;
-    if sample_made {
-        one
-    } else {
-        // Making the sample is only stopped when free memory falls below
-        // half of what is kept free.
-        one.max(SAMPLE_NEEDS + KEEP_FREE / 2 + SPARE)
-    }
+/// lean as they go. Making the sample is not counted on top: it is watched
+/// like every step, and stopped if memory runs short. Counted, it refused a
+/// laptop whose graphics make the sample in a few megabytes.
+fn measure_needs() -> u64 {
+    LEAN_NEEDS + KEEP_FREE
 }
 
 /// Why this machine cannot be measured now, in words for the person who
 /// asked, or `None` when it can be: not even one 4K conversion would fit.
-pub fn cannot_measure(sample_made: bool) -> Option<String> {
-    let needs = measure_needs(sample_made);
+pub fn cannot_measure() -> Option<String> {
+    let needs = measure_needs();
     let free = free_memory().filter(|free| *free < needs)?;
     Some(format!(
         "Not measured: converting even one 4K film needs about {} of free memory, and this \
@@ -1611,15 +1608,15 @@ mod tests {
 
     const GB: u64 = 1 << 30;
 
-    /// The complaint this came from: a machine with 2 GB free was refused
-    /// outright, though it had room for a conversion or two.
+    /// The complaints this came from: a machine with 2 GB free was refused
+    /// outright, and then a 6 GB laptop with 1.2 GB free, though its host
+    /// converts there: a real conversion starts with 640 MB free.
     #[test]
     fn a_machine_short_of_memory_is_still_measured() {
-        assert_eq!(measure_needs(true), LEAN_NEEDS + KEEP_FREE);
-        assert!(measure_needs(true) < 2 * GB);
-        assert!(measure_needs(false) < 3 * GB / 2);
-        // Only the sample still to make asks for more.
-        assert!(measure_needs(false) > measure_needs(true));
+        assert!(measure_needs() < 6 * GB / 5);
+        assert!(LEAN_NEEDS + SPARE < measure_needs());
+        // Planned room stays above the point where work is stopped.
+        const { assert!(KEEP_FREE > STOP_BELOW) };
     }
 
     #[test]
@@ -1639,8 +1636,8 @@ mod tests {
         // Graphics have no leaner way.
         let graphics = 300 << 20;
         assert_eq!(
-            fits(5, Some(2 * GB), graphics, false, false),
-            Fit::Short(5 * graphics + KEEP_FREE)
+            fits(6, Some(2 * GB), graphics, false, false),
+            Fit::Short(6 * graphics + KEEP_FREE)
         );
         // Where memory cannot be read, the system is left to it.
         assert_eq!(fits(6, None, each, true, false), Fit::Full);

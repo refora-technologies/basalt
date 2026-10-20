@@ -724,7 +724,7 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         if (previewFlag('lowmem')) {
           throw new ApiError(
             'error',
-            'Not measured: converting even one 4K film needs about 1.2 GB of free memory, and this computer has 0.9 GB free. Close other apps, or give it more memory, and measure again.',
+            'Not measured: converting even one 4K film needs about 1.0 GB of free memory, and this computer has 0.7 GB free. Close other apps, or give it more memory, and measure again.',
           )
         }
         sample.status.conversion.measuring = true

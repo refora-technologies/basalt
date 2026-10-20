@@ -2266,7 +2266,7 @@ impl Host {
         if self.converter.is_measuring() {
             return Ok(());
         }
-        if let Some(why) = crate::convert::cannot_measure(self.converter.has_sample()) {
+        if let Some(why) = crate::convert::cannot_measure() {
             self.converter.set_problem(Some(why.clone()));
             return Err(why);
         }
