@@ -252,17 +252,22 @@ html:not(.mobile) ::-webkit-scrollbar-thumb:hover {
     opacity 200ms ease-out;
 }
 
-/* On a phone, no blur behind anything. Android's WebView redraws a blurred
+/* On a phone, and on Linux, where WebKit draws the page with the processor
+   (see linux_player.rs), no blur behind anything. Android's WebView redraws a blurred
    backdrop every frame something moves over it, which is the costliest thing
    a page can ask of it, and at a phone's size the blur behind a button over a
    film was barely visible. The see-through colours stay. The large soft
    shadow is traded for a tighter one for the same reason. */
 html.mobile *,
 html.mobile *::before,
-html.mobile *::after {
+html.mobile *::after,
+html[data-shape] *,
+html[data-shape] *::before,
+html[data-shape] *::after {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
-html.mobile .shadow-lift {
+html.mobile .shadow-lift,
+html[data-shape] .shadow-lift {
   box-shadow: 0 8px 20px -8px rgba(0, 0, 0, 0.6);
 }
