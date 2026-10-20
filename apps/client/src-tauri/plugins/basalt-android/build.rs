@@ -54,6 +54,7 @@ const COMMANDS: &[&str] = &[
     "mpv_set_property",
     "mpv_get_property",
     "mpv_add_subtitle",
+    "mpv_subtitle_font",
     "mpv_destroy",
 ];
 

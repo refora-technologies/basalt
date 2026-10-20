@@ -3,6 +3,15 @@ import * as mpv from './mpvBackend'
 import { inTauri } from './api'
 import { isAndroid } from './platform'
 import { usePreviewMpv } from './previewMpv'
+import { hasLetters, type Script, scriptForLanguage, scriptOfText } from './subtitleFonts'
+import {
+  DEFAULT_STYLE,
+  loadStyle,
+  saveStyle,
+  styleFamily,
+  styleProperties,
+  type SubtitleStyle,
+} from './subtitleStyle'
 
 /**
  * The player, which is mpv rendering behind the window.
@@ -173,6 +182,8 @@ export interface MpvState {
   audioId: number | null
   /** Seconds the subtitles are shifted by. Positive shows them later. */
   subtitleDelay: number
+  /** How subtitles look, as chosen on this device. */
+  subtitleStyle: SubtitleStyle
   /**
    * The picture size, when the file is playing in the lighter mode: too big
    * for this phone to decode in hardware. See [`needsLighterPlayback`].
@@ -457,6 +468,7 @@ const EMPTY: MpvState = {
   subtitleId: null,
   audioId: null,
   subtitleDelay: 0,
+  subtitleStyle: DEFAULT_STYLE,
   lighter: null,
   strain: null,
   converted: false,
@@ -496,6 +508,8 @@ export interface Mpv extends MpvState {
   setSubtitleDelay: (seconds: number) => Promise<void>
   /** Lifts the subtitles off the bottom edge, in pixels. */
   setSubtitleMargin: (pixels: number) => Promise<void>
+  /** Changes how subtitles look, at once, and keeps it. */
+  setSubtitleStyle: (style: SubtitleStyle) => Promise<void>
 }
 
 /**
@@ -509,7 +523,7 @@ export function useMpv(): Mpv {
 }
 
 function useAppMpv(): Mpv {
-  const [state, setState] = useState<MpvState>(EMPTY)
+  const [state, setState] = useState<MpvState>(() => ({ ...EMPTY, subtitleStyle: loadStyle() }))
   const started = useRef(false)
   const loaded = useRef(false)
   /** mpv's own end-of-file flag, as last reported. */
@@ -598,6 +612,53 @@ function useAppMpv(): Mpv {
     return tracksToKeep(sid, aid, trackList.current)
   }, [])
 
+  /** How subtitles look, as last chosen. */
+  const style = useRef<SubtitleStyle>(state.subtitleStyle)
+  /** mpv's own outline, read before any style changes it. */
+  const outline = useRef<number | null>(null)
+  /** On a phone: the script the subtitles showing are written in, and its font. */
+  const script = useRef<{ script: Script | null; family: string | null }>({ script: null, family: null })
+
+  /** The font subtitles are drawn in: the script's own on a phone, or the style's. */
+  const applyFont = useCallback(async () => {
+    const platform = isAndroid() ? 'android' : navigator.userAgent.includes('Windows') ? 'windows' : 'linux'
+    // The style's fonts read Latin, Greek and Cyrillic only.
+    await set('sub-font', script.current.family ?? styleFamily(style.current.font, platform))
+  }, [set])
+
+  const applyStyle = useCallback(
+    async (look: SubtitleStyle) => {
+      if (outline.current === null) {
+        outline.current = Number(await readProperty('sub-border-size', 'double')) || 1.65
+      }
+      for (const [name, value] of styleProperties(look, outline.current)) {
+        try {
+          await set(name, value)
+        } catch {
+          // An mpv without the property keeps its own look for that part.
+        }
+      }
+      await applyFont()
+    },
+    [set, applyFont],
+  )
+
+  /**
+   * On a phone, the font for the script `to` linked in and named: see
+   * `subtitleFonts.ts`. Whether a track already showing has to start again
+   * to read it, which mpv does only as a track starts.
+   */
+  const fontForScript = useCallback(
+    async (to: Script | null): Promise<boolean> => {
+      if (!isAndroid() || script.current.script === to) return false
+      const { family, changed } = await mpv.subtitleFont(to ?? '')
+      script.current = { script: to, family }
+      await applyFont()
+      return changed
+    },
+    [applyFont],
+  )
+
   /** The subtitle files put back, once the film opened again plays. */
   const restoreAdded = useCallback(
     async (mine: number) => {
@@ -648,6 +709,7 @@ function useAppMpv(): Mpv {
           observedProperties: OBSERVED,
         })
         setState((s) => ({ ...s, ready: true }))
+        await applyStyle(style.current)
 
         stop = await mpv.observeProperties(OBSERVED, (event) => {
           const { name, data } = event as { name: string; data: unknown }
@@ -1105,14 +1167,63 @@ function useAppMpv(): Mpv {
     [load],
   )
 
+  /** Which choice of subtitles is being read for its script; newer ones stop older. */
+  const scriptWatch = useRef(0)
+
+  /**
+   * On a phone, the script of subtitles whose language is not given, read
+   * from their first line with letters, which can be minutes in. A font
+   * linked in only then needs the track started again.
+   */
+  const watchScript = useCallback(
+    async (id: number, inFile: boolean) => {
+      if (!isAndroid()) return
+      const mine = ++scriptWatch.current
+      const since = Date.now()
+      while (mine === scriptWatch.current && Date.now() - since < 30 * 60_000) {
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+        if (mine !== scriptWatch.current) return
+        const text = String((await readProperty('sub-text', 'string')) ?? '')
+        if (!hasLetters(text)) continue
+        if (await fontForScript(scriptOfText(text))) {
+          await set('sid', 'no')
+          await set('sid', id)
+          await readAgainFor(inFile)
+        }
+        return
+      }
+    },
+    [fontForScript, set, readAgainFor],
+  )
+
+  /**
+   * Subtitles about to show: on a phone, in a font for their script, by
+   * their language where it is given, else by their first line. Whether
+   * the track has to start again for it.
+   */
+  const fitFont = useCallback(
+    async (track: MpvTrack | undefined): Promise<boolean> => {
+      scriptWatch.current++
+      if (!isAndroid() || !track) return false
+      const known = scriptForLanguage(track.lang, track.title)
+      if (known === null) {
+        void watchScript(track.id, !track.external)
+        return false
+      }
+      return fontForScript(known)
+    },
+    [watchScript, fontForScript],
+  )
+
   const selectSubtitle = useCallback(
     async (id: number | null) => {
       if (!inTauri()) return
-      await set('sid', id === null ? 'no' : id)
       const track = trackList.current.find((t) => t.kind === 'sub' && t.id === id)
+      if ((await fitFont(track)) && id !== null) await set('sid', 'no')
+      await set('sid', id === null ? 'no' : id)
       await readAgainFor(track !== undefined && !track.external)
     },
-    [set, readAgainFor],
+    [set, readAgainFor, fitFont],
   )
 
   const selectAudio = useCallback(
@@ -1132,7 +1243,23 @@ function useAppMpv(): Mpv {
     await mpv.command('sub-add', [path, 'select'])
     if (!addedSubs.current.includes(path)) addedSubs.current.push(path)
     await readTracks()
-  }, [readTracks])
+    // Read whole as it was added, so starting it again costs nothing.
+    const id = Number(await readProperty('sid', 'int64')) || 0
+    if (await fitFont(trackList.current.find((t) => t.kind === 'sub' && t.id === id))) {
+      await set('sid', 'no')
+      await set('sid', id)
+    }
+  }, [readTracks, fitFont, set])
+
+  const setSubtitleStyle = useCallback(
+    async (look: SubtitleStyle) => {
+      style.current = look
+      saveStyle(look)
+      setState((s) => ({ ...s, subtitleStyle: look }))
+      if (inTauri()) await applyStyle(look)
+    },
+    [applyStyle],
+  )
 
   const setSubtitleDelay = useCallback(
     async (seconds: number) => {
@@ -1167,5 +1294,6 @@ function useAppMpv(): Mpv {
     addSubtitle,
     setSubtitleDelay,
     setSubtitleMargin,
+    setSubtitleStyle,
   }
 }

@@ -1,3 +1,4 @@
+import { loadStyle, saveStyle, type SubtitleStyle } from './subtitleStyle'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ConvertedSource, Mpv, MpvState, MpvTrack } from './useMpv'
 import * as showcase from './showcase'
@@ -41,6 +42,7 @@ const IDLE: MpvState = {
   subtitleId: null,
   audioId: null,
   subtitleDelay: 0,
+  subtitleStyle: loadStyle(),
   lighter: null,
   strain: null,
   converted: false,
@@ -152,6 +154,10 @@ export function usePreviewMpv(): Mpv {
     }, []),
     setSubtitleDelay: useCallback(async (seconds: number) => setState((s) => ({ ...s, subtitleDelay: seconds })), []),
     setSubtitleMargin: useCallback(async () => {}, []),
+    setSubtitleStyle: useCallback(async (look: SubtitleStyle) => {
+      saveStyle(look)
+      setState((s) => ({ ...s, subtitleStyle: look }))
+    }, []),
   }
 }
 

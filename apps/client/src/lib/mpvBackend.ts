@@ -99,3 +99,14 @@ export async function destroy(): Promise<void> {
   if (!isAndroid()) return desktop.destroy()
   await invoke('mpv_destroy', {})
 }
+
+/**
+ * On a phone, links in the font for a script subtitles are written in, and
+ * says its family and whether mpv's font folder changed. Nothing elsewhere:
+ * a computer finds fonts for any script by itself.
+ */
+export async function subtitleFont(script: string): Promise<{ family: string | null; changed: boolean }> {
+  if (!isAndroid()) return { family: null, changed: false }
+  const reply = await invoke<{ family?: string; changed?: boolean }>('mpv_subtitle_font', { script })
+  return { family: reply.family ?? null, changed: Boolean(reply.changed) }
+}

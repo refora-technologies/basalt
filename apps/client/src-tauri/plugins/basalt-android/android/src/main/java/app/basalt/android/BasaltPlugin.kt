@@ -190,6 +190,11 @@ class MpvSubtitleArgs {
 }
 
 @InvokeArg
+class MpvFontArgs {
+  var script: String? = null
+}
+
+@InvokeArg
 class MpvPropertyArgs {
   lateinit var name: String
   var value: String? = null
@@ -880,6 +885,16 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     } catch (e: Exception) {
       invoke.reject("That file could not be opened: ${e.message}")
     }
+  }
+
+  /** The font for a script, linked in for subtitles: see [MpvPlayer.subtitleFont]. */
+  @Command
+  fun mpvSubtitleFont(invoke: Invoke) {
+    val args = invoke.parseArgs(MpvFontArgs::class.java)
+    val (family, changed) = player.subtitleFont(args.script ?: "")
+    val reply = JSObject().put("changed", changed)
+    if (family != null) reply.put("family", family)
+    invoke.resolve(reply)
   }
 
   @Command
