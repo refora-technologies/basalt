@@ -100,6 +100,8 @@ const sample: ManageView = {
       available: true,
       detected: true,
       measured: { by: 'NVIDIA graphics', atOnce: 3, speed: 6.4, at: now() - 86400 * 2 },
+      explained:
+        '3 at once on NVIDIA graphics, one at 6.4× real time. Memory is the limit: 4 at once needs about 3.4 GB free, and there was 3.1 GB.',
       measuring: false,
       note: null,
       byHand: null,
@@ -279,13 +281,15 @@ function apply(action: ManageAction): boolean {
       if (new URLSearchParams(window.location.search).has('lowmem')) {
         throw new ApiError(
           'error',
-          'Not measured: it needs about 2.5 GB of free memory, and this computer has 1.4 GB free. Close other apps, or give it more memory, and measure again.',
+          'Not measured: converting even one 4K film needs about 1.2 GB of free memory, and this computer has 0.9 GB free. Close other apps, or give it more memory, and measure again.',
         )
       }
       status.conversion.measuring = true
       setTimeout(() => {
         status.conversion.measuring = false
         status.conversion.measured = { by: 'NVIDIA graphics', atOnce: 3, speed: 6.6, at: now() }
+        status.conversion.explained =
+          '3 at once on NVIDIA graphics, one at 6.6× real time. 4 at once ran at 1.0× real time, too slow to keep up: processing power is the limit.'
       }, 3500)
       break
     case 'setSections':

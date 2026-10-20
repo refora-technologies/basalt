@@ -131,6 +131,8 @@ export interface ManagedHostStatus {
       at: number
       memory?: boolean
     } | null
+    /** What was measured and what stopped it going higher, in words. Absent from older hosts. */
+    explained?: string | null
     measuring: boolean
     note: string | null
     byHand: number | null

@@ -23,9 +23,12 @@ export function conversionDetail(c: ConversionStatus): string {
   if (c.limit === 0) {
     return 'This computer is too slow to convert 4K as it is watched. Devices play it in a lighter mode instead.'
   }
-  const on = c.measured ? `, on its ${c.measured.by}` : ''
+  const on = c.measured ? `, on ${c.measured.by}` : ''
   return `A phone that can’t play a 4K film gets it converted to 1080p as it watches${on}.`
 }
+
+/** Until it is measured, which only happens when somebody asks. */
+const NOT_MEASURED = 'Not measured yet, so one at a time. Measure to see how many this computer keeps up with.'
 
 /**
  * How many devices at once, what is being converted now, and measuring again.
@@ -69,10 +72,13 @@ export function ConversionPanel({
             {conversion.measuring
               ? 'Measuring: converting a 4K sample to see how many devices this computer can keep up with…'
               : measured
-                ? `Measured: ${measured.atOnce} at once, one at ${measured.speed}× real time, on ${measured.by}${
-                    measured.memory ? ', as many as memory allows' : ''
-                  }.`
-                : (conversion.note ?? 'Not measured yet.')}
+                ? `Measured: ${
+                    conversion.explained ??
+                    `${measured.atOnce} at once, one at ${measured.speed}× real time, on ${measured.by}${
+                      measured.memory ? ', as many as memory allows' : ''
+                    }.`
+                  }`
+                : (conversion.note ?? NOT_MEASURED)}
           </p>
         </div>
         <button

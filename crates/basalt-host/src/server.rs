@@ -2222,6 +2222,7 @@ impl Host {
             enabled: converter.enabled(),
             available: capability.as_ref().is_some_and(|c| c.can_convert()),
             detected: capability.is_some(),
+            explained: converter.measured().map(|measured| measured.explain()),
             measured: converter.measured(),
             measuring: converter.is_measuring(),
             note: if converter.is_measuring() {
@@ -2265,7 +2266,7 @@ impl Host {
         if self.converter.is_measuring() {
             return Ok(());
         }
-        if let Some(why) = crate::convert::cannot_measure() {
+        if let Some(why) = crate::convert::cannot_measure(self.converter.has_sample()) {
             self.converter.set_problem(Some(why.clone()));
             return Err(why);
         }
@@ -2908,28 +2909,14 @@ pub async fn serve(server: BoundServer) -> Result<()> {
                 }
                 None => tracing::info!("ffmpeg is here but nothing can convert with it"),
             }
-            // Measured once, the first time there is something to measure,
-            // so the window can say how many devices it serves at once, and
-            // once more when conversions have changed since. Only an
-            // installed host: a test or a development copy using the
-            // computer's own ffmpeg would spend minutes of every run on it.
-            let unfinished = host.config.lock().expect("config lock").convert_measuring;
-            if unfinished {
+            // Never measured by itself: it works the machine hard for a
+            // minute, and nobody who just opened the host expects that. Until
+            // someone measures, one conversion at a time.
+            if host.config.lock().expect("config lock").convert_measuring {
                 tracing::warn!(
-                    "the last measurement of video conversion did not finish, so it is not \
-                     started again by itself; the system may have stopped it for want of memory"
+                    "the last measurement of video conversion did not finish; the system may \
+                     have stopped it for want of memory"
                 );
-            }
-            if capability.can_convert()
-                && host.converter.installed()
-                && !unfinished
-                && !host
-                    .converter
-                    .measured()
-                    .is_some_and(|measured| measured.current())
-                && let Err(why) = host.measure_conversion()
-            {
-                tracing::info!("{why}");
             }
         });
     }
