@@ -440,7 +440,7 @@ pub fn linux_mpv_get_property(name: String, format: String) -> Result<Value, Str
                     FORMAT_FLAG,
                     (&raw mut flag).cast(),
                 ) >= 0)
-                    .then(|| Value::Bool(flag != 0))
+                    .then_some(Value::Bool(flag != 0))
             }
             "int64" => {
                 let mut number: i64 = 0;

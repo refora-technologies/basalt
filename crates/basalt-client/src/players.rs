@@ -447,11 +447,6 @@ fn app_path(exe: &str) -> Option<PathBuf> {
     })
 }
 
-#[cfg(not(windows))]
-fn app_path(_exe: &str) -> Option<PathBuf> {
-    None
-}
-
 /// Reads `Applications\<exe>\shell\open\command`, which most players write
 /// so as to appear in Windows' "Open with" list.
 #[cfg(windows)]
@@ -462,11 +457,6 @@ fn application_command(exe: &str) -> Option<PathBuf> {
         None,
     )?;
     program_in_command(&command)
-}
-
-#[cfg(not(windows))]
-fn application_command(_exe: &str) -> Option<PathBuf> {
-    None
 }
 
 /// Looks for an executable on `PATH`.
@@ -576,8 +566,11 @@ mod tests {
     #[test]
     fn a_missing_program_is_not_found_rather_than_a_panic() {
         assert!(on_path("definitely-not-a-real-player-9f2a.exe").is_none());
-        assert!(app_path("definitely-not-a-real-player-9f2a.exe").is_none());
-        assert!(application_command("definitely-not-a-real-player-9f2a.exe").is_none());
+        #[cfg(windows)]
+        {
+            assert!(app_path("definitely-not-a-real-player-9f2a.exe").is_none());
+            assert!(application_command("definitely-not-a-real-player-9f2a.exe").is_none());
+        }
     }
 
     #[test]

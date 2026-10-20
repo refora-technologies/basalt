@@ -24,6 +24,8 @@ use tauri::{Emitter, Manager, State};
 #[cfg(target_os = "linux")]
 mod linux_player;
 #[cfg(target_os = "linux")]
+mod linux_update;
+#[cfg(target_os = "linux")]
 use linux_player::{
     linux_mpv_command, linux_mpv_destroy, linux_mpv_get_property, linux_mpv_init,
     linux_mpv_set_property,
@@ -1420,26 +1422,49 @@ async fn download_update(app: tauri::AppHandle, release: basalt_update::Release)
 /// exactly how somebody ends up "updating" and finding the same version.
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
+    // Linux: a package, installed the way this copy was, and the new copy
+    // started once it is in. See linux_update.
+    #[cfg(target_os = "linux")]
+    {
+        let next = linux_update::install(std::path::Path::new(&path))
+            .await
+            .map_err(|message| UiError {
+                kind: "error".into(),
+                message,
+            })?;
+        std::process::Command::new(&next)
+            .spawn()
+            .map_err(|e| UiError {
+                kind: "error".into(),
+                message: format!("the update is installed; start Basalt again ({e})"),
+            })?;
+        app.exit(0);
+        Ok(())
+    }
+
     // As an update, not a first install: /UPDATE goes over the installed copy
     // without uninstalling it or asking anything, and keeps the user's
     // shortcuts as they are; /P shows only a progress bar, closing this app if
     // it is still running; /R starts it again when the new version is in.
     // One press of "Restart to update", and nothing else to click.
-    std::process::Command::new(&path)
-        .args(["/P", "/UPDATE", "/R"])
-        .spawn()
-        .map_err(|e| UiError {
-            kind: "error".into(),
-            message: format!("couldn’t start the installer: {e}"),
-        })?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::process::Command::new(&path)
+            .args(["/P", "/UPDATE", "/R"])
+            .spawn()
+            .map_err(|e| UiError {
+                kind: "error".into(),
+                message: format!("couldn’t start the installer: {e}"),
+            })?;
 
-    // A moment for the installer to be up before this window disappears,
-    // so the screen is never empty with nothing apparently happening.
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-        app.exit(0);
-    });
-    Ok(())
+        // A moment for the installer to be up before this window disappears,
+        // so the screen is never empty with nothing apparently happening.
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            app.exit(0);
+        });
+        Ok(())
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
