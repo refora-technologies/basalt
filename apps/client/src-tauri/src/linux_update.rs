@@ -31,7 +31,9 @@ pub async fn install(path: &Path) -> Result<PathBuf, String> {
                 )
             })?;
             match status.code() {
-                Some(0) => std::env::current_exe().map_err(|e| e.to_string()),
+                Some(0) => std::env::current_exe()
+                    .map(|exe| installed(&exe))
+                    .map_err(|e| e.to_string()),
                 // pkexec: the password was not given, or the person said no.
                 Some(126 | 127) => {
                     Err("The update was not installed: permission was not given.".into())
@@ -89,6 +91,17 @@ fn replace_appimage(new: &Path) -> Result<PathBuf, String> {
     Ok(current)
 }
 
+/// The program the package put where this one was. Once replaced, the
+/// system names the running program's old file "basalt (deleted)", and
+/// starting that found nothing: the update was in, and Basalt simply closed.
+fn installed(running: &Path) -> PathBuf {
+    let text = running.to_string_lossy();
+    match text.strip_suffix(" (deleted)") {
+        Some(path) => PathBuf::from(path),
+        None => running.to_path_buf(),
+    }
+}
+
 fn on_path(program: &str) -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
     std::env::split_paths(&paths)
@@ -99,6 +112,18 @@ fn on_path(program: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_new_copy_is_started_where_the_old_one_was() {
+        assert_eq!(
+            installed(Path::new("/usr/bin/basalt (deleted)")),
+            Path::new("/usr/bin/basalt")
+        );
+        assert_eq!(
+            installed(Path::new("/usr/bin/basalt")),
+            Path::new("/usr/bin/basalt")
+        );
+    }
 
     #[test]
     fn a_package_goes_through_the_manager_the_system_has() {
