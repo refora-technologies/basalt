@@ -4,8 +4,8 @@ import { useRef } from 'react'
  * A press that is either a tap or, held, a long press — never both, and
  * neither if the finger moved to scroll.
  *
- * By key too, for a television's remote: OK is the tap, and OK held (the
- * remote repeats it while held) or the menu key is the long press. So the
+ * By key too, for a television's remote: OK is the tap, and OK held (as
+ * long as a finger would be) or the menu key is the long press. So the
  * thing can be reached by the remote at all, it takes the focus.
  */
 export function useLongPress(
@@ -74,10 +74,23 @@ export function useLongPress(
       if (e.key !== 'Enter') return
       // Not the button's own click as well: the tap comes as OK is let go.
       e.preventDefault()
-      if (!e.repeat) {
-        fired.current = false
+      if (!held.current) {
+        // OK held as long as a finger would be is the long press. By time,
+        // as a finger's is: a TV's WebView sends the remote's repeats as
+        // fresh presses, not marked as repeats.
         held.current = true
-      } else if (held.current && !fired.current) {
+        fired.current = false
+        clear()
+        timer.current = setTimeout(() => {
+          timer.current = null
+          if (held.current && !fired.current) {
+            fired.current = true
+            onLong()
+          }
+        }, 450)
+      } else if (!fired.current) {
+        // A second press before the first was let go: the remote repeating.
+        clear()
         fired.current = true
         onLong()
       }
@@ -85,6 +98,7 @@ export function useLongPress(
     onKeyUp: (e) => {
       if (e.target !== e.currentTarget || e.key !== 'Enter' || !held.current) return
       held.current = false
+      clear()
       if (!fired.current) onTap()
     },
     tabIndex: 0,

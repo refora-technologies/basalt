@@ -1268,7 +1268,10 @@ export function PlayerOverlay({
     // Left and right seek unless a control has the focus; OK presses the
     // focused control, or pauses.
     if (TV) {
-      const onControl = Boolean(target?.closest('[data-player] button, [data-player] [role="radio"]'))
+      // A menu open over the film (subtitles, quality) takes every arrow.
+      const onControl =
+        Boolean(target?.closest('[data-player] button, [data-player] [role="radio"]')) ||
+        Boolean(document.querySelector('[data-player] [data-remote-scope]'))
       const tvKey = ((): boolean => {
         switch (e.key) {
           case 'ArrowUp':
@@ -2069,7 +2072,9 @@ export function PlayerOverlay({
                   className="h-1 w-0 cursor-pointer appearance-none rounded-full bg-white/[0.14] opacity-0 transition-all duration-200 accent-basalt group-hover/vol:w-20 group-hover/vol:opacity-100"
                 />
               </div>
-              {(!TOUCH || mpv.picture) && (
+              {/* A television's picture is already the whole screen, and
+                  never turns. */}
+              {!TV && (!TOUCH || mpv.picture) && (
                 <ControlButton
                   icon={TOUCH && turned === 'landscape' ? Minimize2 : Maximize2}
                   label={TOUCH ? 'Turn the picture' : 'Fullscreen (f)'}
@@ -2136,6 +2141,8 @@ function QualityMenu({
       exit={{ opacity: 0, y: 6, scale: 0.98 }}
       transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
       style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT, ...MENU_CORNER }}
+      // A layer of its own for a TV remote, which starts on what is chosen.
+      data-remote-scope=""
       className={cn(MENU_PLACE, !TOUCH && 'w-[340px]')}
     >
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/[0.07] pl-4 pr-2">
@@ -2190,6 +2197,7 @@ function QualityChoice({
     <button
       onClick={onClick}
       disabled={disabled}
+      aria-current={active || undefined}
       className={cn(
         'flex w-full items-start gap-3 px-4 py-2.5 text-left transition-colors duration-150',
         disabled ? 'opacity-45' : 'hover:bg-white/[0.05]',
@@ -2267,6 +2275,8 @@ function SubtitleMenu({
       // As tall as the screen allows and no taller: on a phone turned on its
       // side a long list ran off the top, title and all. The list scrolls.
       style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT, ...MENU_CORNER }}
+      // A layer of its own for a TV remote, which starts on what is chosen.
+      data-remote-scope=""
       className={cn(MENU_PLACE, !TOUCH && 'w-[320px]')}
     >
       <div
@@ -2483,6 +2493,7 @@ function Choice({
   return (
     <button
       onClick={onClick}
+      aria-current={active || undefined}
       className={cn(
         'flex w-full items-center gap-2.5 px-4 py-[7px] text-left text-[12.5px] transition-colors duration-100',
         active ? 'text-text' : 'text-textDim hover:bg-white/[0.04] hover:text-text',

@@ -165,6 +165,15 @@ html.tv :focus {
   outline-offset: 3px !important;
   scroll-margin: 12px;
 }
+/* In the player's menus the ring goes inside the row: the menu's edges
+   would cut one drawn outside. */
+html.tv [data-player] [data-remote-scope] :focus {
+  outline-offset: -3px !important;
+}
+/* Things that draw their own focus ring (a profile's circle). */
+html.tv [data-own-focus]:focus {
+  outline: none !important;
+}
 html.tv [role='row']:focus {
   outline-offset: -3px !important;
   background-color: rgba(255, 255, 255, 0.08);

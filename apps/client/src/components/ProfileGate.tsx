@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, Check, ChevronRight, Laptop, Loader2, Lock, Plus } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, Laptop, Loader2, Lock, Plus, Smartphone, Tv } from 'lucide-react'
 import {
   api,
   ApiError,
@@ -11,6 +11,7 @@ import {
 } from '@/lib/api'
 import { PROFILE_COLORS, profileColor, validPin } from '@/lib/useIdentity'
 import { EASE_OUT } from '@/lib/motion'
+import { isMobileShell, isTv } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { HexMark } from './HexMark'
 import { useBack } from '@/mobile/useBack'
@@ -255,7 +256,7 @@ export function ProfileGate({
                   className="group flex w-full items-center gap-3.5 rounded-xl border border-white/[0.09] bg-panel/80 px-4 py-3.5 text-left transition-[background-color,border-color] duration-200 hover:border-white/20 hover:bg-panel2 disabled:opacity-60"
                 >
                   <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white/[0.06] text-textDim transition-colors group-hover:text-text">
-                    {busy ? <Loader2 size={17} className="animate-spin" /> : <Laptop size={17} />}
+                    {busy ? <Loader2 size={17} className="animate-spin" /> : <ThisDevice />}
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-[13px] font-medium text-text">
@@ -350,6 +351,9 @@ function ProfileTile({
       whileHover={{ y: -3 }}
       whileTap={{ scale: 0.97 }}
       onClick={onClick}
+      // A TV remote starts on the first profile, not on Drives above.
+      data-remote-first={index === 0 ? '' : undefined}
+      data-own-focus=""
       className="group flex w-[104px] flex-col items-center outline-none"
     >
       <span className="rounded-full ring-2 ring-transparent ring-offset-4 ring-offset-ink transition-[box-shadow] duration-200 group-hover:ring-white/50 group-focus-visible:ring-white/70">
@@ -885,4 +889,11 @@ function privateNote(rules: ProfileRules): string {
   }
   if (rules.requireProfile) return 'This drive asks everyone to sign in to a profile.'
   return 'Only someone who manages this host can add profiles.'
+}
+
+/** This device's own icon: a TV, a phone, or a computer. */
+function ThisDevice(): React.JSX.Element {
+  if (isTv()) return <Tv size={17} />
+  if (isMobileShell()) return <Smartphone size={17} />
+  return <Laptop size={17} />
 }

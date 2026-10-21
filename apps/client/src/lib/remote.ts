@@ -120,12 +120,6 @@ function pressables(within: Element): HTMLElement[] {
   )
 }
 
-/**
- * Where the focus last was, and in what: when what had it goes away (a folder
- * opened, a list changed), the next press goes on from there.
- */
-let last: { box: Box; within: Element } | null = null
-
 /** Moves the focus one step `direction`. Whether it moved. */
 export function move(direction: Direction): boolean {
   const within = scope()
@@ -133,28 +127,25 @@ export function move(direction: Direction): boolean {
   if (all.length === 0) return false
   const current = document.activeElement as HTMLElement | null
   const lost = !current || current === document.body || !within.contains(current)
-  // The press lands on whatever is now where the focus was: the first row
-  // of a folder just opened, say.
-  if (lost && last && last.within === within) {
-    const near = closest(last.box, all)
-    if (near) {
-      focus(near)
-      return true
-    }
-  }
-  // Nothing in front has had the focus yet: where the screen says to start,
-  // or where it says it is (the chosen tab or section), else the first
-  // thing, top left.
+  // Nothing in front has had the focus yet, or what had it went away with
+  // the screen it was on: where the screen says to start; on a whole screen
+  // the first thing in its content (past the side rail and the bar above);
+  // in a menu or sheet what is chosen in it; else the first thing, top left.
   if (lost) {
-    const chosen =
+    const topLeft = (els: HTMLElement[]): HTMLElement | undefined =>
+      [...els].sort((a, b) => {
+        const ba = a.getBoundingClientRect()
+        const bb = b.getBoundingClientRect()
+        return ba.top - bb.top || ba.left - bb.left
+      })[0]
+    const start =
       all.find((el) => el.matches('[data-remote-first]')) ??
-      all.find((el) => el.matches('[aria-current="page"], [aria-selected="true"]'))
-    const first = [...all].sort((a, b) => {
-      const ba = a.getBoundingClientRect()
-      const bb = b.getBoundingClientRect()
-      return ba.top - bb.top || ba.left - bb.left
-    })[0]
-    focus(chosen ?? first!)
+      (within === document.body ? topLeft(all.filter((el) => el.closest('main'))) : undefined) ??
+      all.find((el) =>
+        el.matches('[aria-current="page"], [aria-current="true"], [aria-selected="true"], [aria-checked="true"]'),
+      ) ??
+      topLeft(all)
+    focus(start!)
     return true
   }
   const from = current.getBoundingClientRect()
@@ -189,23 +180,6 @@ export function seenFrom(el: Element, current: Element, from: Box, direction: Di
   return box
 }
 
-/** Of `all`, the one whose middle is nearest `box`'s. */
-function closest(box: Box, all: HTMLElement[]): HTMLElement | null {
-  const middle = (b: Box): [number, number] => [(b.left + b.right) / 2, (b.top + b.bottom) / 2]
-  const [x, y] = middle(box)
-  let best: HTMLElement | null = null
-  let bestDistance = Infinity
-  for (const el of all) {
-    const [ex, ey] = middle(el.getBoundingClientRect())
-    const d = Math.hypot(ex - x, ey - y)
-    if (d < bestDistance) {
-      best = el
-      bestDistance = d
-    }
-  }
-  return best
-}
-
 function focus(el: HTMLElement): void {
   el.focus({ preventScroll: true })
   el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
@@ -230,15 +204,6 @@ let started = false
 export function startRemote(): void {
   if (started || typeof window === 'undefined') return
   started = true
-  document.addEventListener('focusin', (e) => {
-    const el = e.target
-    if (!(el instanceof HTMLElement)) return
-    const box = el.getBoundingClientRect()
-    last = {
-      box: { left: box.left, top: box.top, right: box.right, bottom: box.bottom },
-      within: scope(),
-    }
-  })
   window.addEventListener('keydown', (e) => {
     if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return
     const direction = KEYS[e.key]
