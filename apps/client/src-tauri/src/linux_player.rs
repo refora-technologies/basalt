@@ -38,6 +38,7 @@ const RENDER_PARAM_API_TYPE: c_int = 1;
 const RENDER_PARAM_OPENGL_INIT_PARAMS: c_int = 2;
 const RENDER_PARAM_OPENGL_FBO: c_int = 3;
 const RENDER_PARAM_FLIP_Y: c_int = 4;
+const RENDER_PARAM_BLOCK_FOR_TARGET_TIME: c_int = 12;
 
 /// The property the player watches for itself, apart from the page's: whether
 /// there is a picture to draw. Told apart by its reply number.
@@ -102,6 +103,7 @@ struct Lib {
     render_render: unsafe extern "C" fn(Handle, *mut RenderParam) -> c_int,
     render_update: unsafe extern "C" fn(Handle) -> u64,
     render_free: unsafe extern "C" fn(Handle),
+    render_report_swap: unsafe extern "C" fn(Handle),
 }
 
 impl Lib {
@@ -147,6 +149,7 @@ impl Lib {
                 render_render: sym!(b"mpv_render_context_render"),
                 render_update: sym!(b"mpv_render_context_update"),
                 render_free: sym!(b"mpv_render_context_free"),
+                render_report_swap: sym!(b"mpv_render_context_report_swap"),
                 _lib: lib,
             })
         }
@@ -536,6 +539,7 @@ fn stop_rendering() {
         }
     }
     TARGET.with(|t| t.set((0, 0, 0, 0)));
+    FRAME.with(|f| f.borrow_mut().take());
     OFFSCREEN.with(|o| o.borrow_mut().take());
     extern "C" {
         fn malloc_trim(pad: usize) -> c_int;
@@ -589,6 +593,8 @@ thread_local! {
     /// mpv's render context, made on the GTK thread with that context
     /// current, and let go of when the player closes.
     static RENDER: std::cell::Cell<Handle> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    /// The image each frame is read back into, kept between frames.
+    static FRAME: std::cell::RefCell<Option<gtk::cairo::ImageSurface>> = const { std::cell::RefCell::new(None) };
     /// What mpv draws into: a framebuffer, its texture, and their size.
     static TARGET: std::cell::Cell<(u32, u32, c_int, c_int)> = const { std::cell::Cell::new((0, 0, 0, 0)) };
 }
@@ -754,38 +760,47 @@ fn redraw() {
         // format) is done here, as mpv asks after each of its signals. Left
         // undone, mpv gave up on the frames waiting on it, and from mpv 0.41
         // the picture often stayed black under the subtitles.
-        update_render();
+        // A new frame is drawn and read back as soon as mpv has it, and
+        // the window shows the latest whenever it next draws. Drawn only as
+        // the window drew, mpv waited on the window, took its frames for
+        // late and dropped a fifth of them where windows are slow to show.
+        let new_frame = update_render() & UPDATE_FRAME != 0;
         COLUMN.with(|column| {
             if let Some(column) = column.borrow().as_ref() {
                 use gtk::prelude::*;
+                if picture && new_frame {
+                    render_frame(column);
+                }
                 column.queue_draw();
             }
         })
     });
 }
 
+/// mpv_render_context_update's flag: there is a new frame to draw.
+const UPDATE_FRAME: u64 = 1;
+
 /// Runs what mpv has queued for the thread that draws, in mpv's GL context.
-fn update_render() {
+/// What mpv says is to be done now (a new frame, say).
+fn update_render() -> u64 {
     let render = RENDER.with(|r| r.get());
-    let Some(player) = PLAYER.get() else { return };
+    let Some(player) = PLAYER.get() else { return 0 };
     if render.is_null()
         || !OFFSCREEN.with(|o| o.borrow().as_ref().is_some_and(Offscreen::make_current))
     {
-        return;
+        return 0;
     }
     // SAFETY: a live render context, on the thread that draws, with its GL
     // context current.
-    unsafe { (player.lib.render_update)(render) };
+    let flags = unsafe { (player.lib.render_update)(render) };
+    release_gl();
+    flags
 }
 
-/// The picture, under the page: drawn by mpv offscreen, read back, and
-/// painted where the page is about to be drawn. Nothing while there is no
-/// picture.
-fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
+/// mpv's frame drawn offscreen and read back into the image the window
+/// shows (`FRAME`), at the column's size.
+fn render_frame(column: &gtk::Widget) {
     use gtk::prelude::*;
-    if !PICTURE.load(Ordering::SeqCst) {
-        return;
-    }
     let render = RENDER.with(|r| r.get());
     let Some(player) = PLAYER.get() else { return };
     if render.is_null()
@@ -814,6 +829,9 @@ fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
     // As GL keeps it, bottom row first; read back from the top, it comes
     // out the right way up, as cairo keeps an image.
     let mut flip: c_int = 0;
+    // Not waiting for the frame's moment to come: mpv paces itself, and
+    // waiting here held the window up.
+    let mut wait: c_int = 0;
     let mut params = [
         RenderParam {
             kind: RENDER_PARAM_OPENGL_FBO,
@@ -824,44 +842,90 @@ fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
             data: (&raw mut flip).cast(),
         },
         RenderParam {
+            kind: RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+            data: (&raw mut wait).cast(),
+        },
+        RenderParam {
             kind: RENDER_PARAM_INVALID,
             data: std::ptr::null_mut(),
         },
     ];
     // SAFETY: mpv's GL context is current, and the parameters live through
-    // the calls.
-    unsafe {
-        (player.lib.render_update)(render);
-        (player.lib.render_render)(render, params.as_mut_ptr());
-    }
+    // the call.
+    unsafe { (player.lib.render_render)(render, params.as_mut_ptr()) };
 
-    let Ok(mut frame) = gtk::cairo::ImageSurface::create(gtk::cairo::Format::Rgb24, w, h) else {
-        return;
+    // One image, kept from frame to frame while the size stays: a new one
+    // each time was a few megabytes made and thrown away 24 times a second.
+    let kept = FRAME.with(|f| f.borrow_mut().take());
+    let mut frame = match kept {
+        Some(frame) if frame.width() == w && frame.height() == h => frame,
+        _ => match gtk::cairo::ImageSurface::create(gtk::cairo::Format::Rgb24, w, h) {
+            Ok(frame) => frame,
+            Err(_) => return,
+        },
     };
     let stride = frame.stride();
     {
-        let Ok(mut pixels) = frame.data() else { return };
+        let Ok(mut pixels) = frame.data() else {
+            release_gl();
+            return;
+        };
         gl.read(fbo, w, h, stride, &mut pixels);
     }
+    release_gl();
     frame.mark_dirty();
     frame.set_device_scale(f64::from(scale), f64::from(scale));
-    let _ = cr.save();
-    // Inside the window's rounded corners, as the page is (styles.css),
-    // unless it fills the screen and is square.
-    if !square(column) {
-        rounded(
-            cr,
-            f64::from(column.allocated_width()),
-            f64::from(column.allocated_height()),
-            CORNER,
-        );
-        cr.clip();
+    // SAFETY: the render context just drawn with, on this thread: tells mpv
+    // the frame is out, for its timing.
+    unsafe { (player.lib.render_report_swap)(render) };
+    FRAME.with(|f| *f.borrow_mut() = Some(frame));
+}
+
+/// The picture, under the page: the latest frame mpv drew, painted where the
+/// page is about to be drawn. Nothing while there is no picture.
+fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
+    use gtk::prelude::*;
+    if !PICTURE.load(Ordering::SeqCst) {
+        return;
     }
-    cr.set_operator(gtk::cairo::Operator::DestOver);
-    if cr.set_source_surface(&frame, 0.0, 0.0).is_ok() {
-        let _ = cr.paint();
+    // None yet, or the window changed size: drawn again for it now (paused,
+    // mpv sends no new frame).
+    let scale = column.scale_factor();
+    let size = (
+        column.allocated_width() * scale,
+        column.allocated_height() * scale,
+    );
+    let fits = FRAME.with(|f| {
+        f.borrow()
+            .as_ref()
+            .is_some_and(|frame| (frame.width(), frame.height()) == size)
+    });
+    if !fits {
+        let _ = update_render();
+        render_frame(column);
     }
-    let _ = cr.restore();
+    FRAME.with(|f| {
+        let Some(frame) = f.borrow().clone() else {
+            return;
+        };
+        let _ = cr.save();
+        // Inside the window's rounded corners, as the page is (styles.css),
+        // unless it fills the screen and is square.
+        if !square(column) {
+            rounded(
+                cr,
+                f64::from(column.allocated_width()),
+                f64::from(column.allocated_height()),
+                CORNER,
+            );
+            cr.clip();
+        }
+        cr.set_operator(gtk::cairo::Operator::DestOver);
+        if cr.set_source_surface(&frame, 0.0, 0.0).is_ok() {
+            let _ = cr.paint();
+        }
+        let _ = cr.restore();
+    });
 }
 
 /// The radius of the window's corners: the page's, in styles.css.
@@ -972,6 +1036,24 @@ impl Offscreen {
         // SAFETY: the display, surface (or none) and context this made.
         unsafe { (self.make_current)(self.display, self.surface, self.surface, self.context) != 0 }
     }
+
+    /// Lets go of the context on this thread, which GTK draws on too: left
+    /// current, GTK's own GL (the composited page) could land in it.
+    fn release(&self) {
+        let none = std::ptr::null_mut();
+        // SAFETY: the display this made; no surface or context is current
+        // after it.
+        unsafe { (self.make_current)(self.display, none, none, none) };
+    }
+}
+
+/// Lets go of mpv's GL context, if there is one.
+fn release_gl() {
+    OFFSCREEN.with(|o| {
+        if let Some(offscreen) = o.borrow().as_ref() {
+            offscreen.release();
+        }
+    });
 }
 
 impl Drop for Offscreen {
