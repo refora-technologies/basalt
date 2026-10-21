@@ -16,6 +16,8 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 sha2 = "0.11.0"
+# Release signatures, as minisign makes them: see `signature`.
+minisign-verify = "0.3"
 
 # `rustls-no-provider` rather than `rustls`, for the same reason as the host:
 # the default pulls aws-lc-rs and with it a cmake build dependency this
@@ -29,3 +31,7 @@ reqwest = { version = "0.13", default-features = false, features = [
     "stream",
 ] }
 futures-util = { version = "0.3", default-features = false }
+
+[dev-dependencies]
+# Signing in tests, with keys made for them.
+minisign = "0.10"

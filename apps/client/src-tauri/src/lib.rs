@@ -1397,8 +1397,8 @@ async fn release_notes(version: String) -> Answer<Option<String>> {
 
 /// Downloads an offered release, reporting progress, and returns its path.
 ///
-/// The file is verified against the checksum published beside it before this
-/// returns; an installer that fails is deleted rather than handed back.
+/// The file is verified against the release's signed list of digests before
+/// this returns; an installer that fails is deleted rather than handed back.
 #[tauri::command]
 async fn download_update(app: tauri::AppHandle, release: basalt_update::Release) -> Answer<String> {
     let into = scratch_dir(&app).join("Basalt Updates");

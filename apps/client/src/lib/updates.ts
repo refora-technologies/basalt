@@ -110,7 +110,7 @@ async function checkPlay(): Promise<Release | null> {
     installerName: '',
     installerUrl: '',
     installerBytes: 0,
-    checksumUrl: null,
+    sumsUrl: null,
   }
 }
 
@@ -154,7 +154,7 @@ function listenForProgress(): Promise<void> {
   return listening
 }
 
-/** Downloads the offered release, verified against its published checksum. */
+/** Downloads the offered release, verified against its signed list of digests. */
 export async function downloadUpdate(): Promise<void> {
   if (state.kind !== 'available') return
   if (PLAY_STORE) return downloadFromPlay(state.release)

@@ -480,7 +480,8 @@ export interface Release {
   installerName: string
   installerUrl: string
   installerBytes: number
-  checksumUrl: string | null
+  /** The release's signed SHA256SUMS. */
+  sumsUrl: string | null
 }
 
 export const api = {
@@ -897,7 +898,7 @@ const MOCK_RELEASE: Release = {
   installerName: 'Basalt-Client-9.9.0-setup.exe',
   installerUrl: 'https://example.test/Basalt-Client-9.9.0-setup.exe',
   installerBytes: 35_600_000,
-  checksumUrl: 'https://example.test/Basalt-Client-9.9.0-setup.exe.sha256',
+  sumsUrl: 'https://example.test/SHA256SUMS',
 }
 
 /**

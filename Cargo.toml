@@ -9,6 +9,7 @@ members = [
     "crates/basalt-trust",
     "crates/basalt-catalog",
     "tools/catalog-build",
+    "tools/release-sign",
     "bench",
 ]
 # The Tauri shell builds through its own toolchain and pulls in a very large

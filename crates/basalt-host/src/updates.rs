@@ -580,6 +580,10 @@ fn describe(e: &basalt_update::UpdateError) -> String {
              later."
                 .into()
         }
+        E::Unsigned | E::BadSignature => {
+            "This download isn't signed by Basalt's publisher, so it wasn't downloaded. Get the              new version from the website instead."
+                .into()
+        }
         E::Stalled => "The download stopped part way. Try again.".into(),
         E::NoInstaller => "The new version has no download for this computer yet.".into(),
         other => other.to_string(),

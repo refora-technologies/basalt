@@ -97,7 +97,8 @@ and that is all it does.
   says so; plug it back in and it is shared again, with nothing to redo.
 - **Keeps itself up to date.** The host installs new versions by itself when
   nothing is playing, and the apps show what changed before they update. Every
-  download is checked against its published checksum first.
+  release is signed, and an update that isn't signed by Basalt's publisher is
+  refused before it is downloaded.
 
 ### Private by design
 
@@ -209,14 +210,14 @@ nothing more, so more viewers cost it almost nothing.
 | Android app | Tauri v2 mobile, the same React interface, a Kotlin plugin |
 | Playback and thumbnails | libmpv, on Windows and Android |
 | Film recognition | A bundled catalogue of film and series titles from Wikidata |
-| Integrity | BLAKE3 per transfer, SHA-256 on updates |
+| Integrity | BLAKE3 per transfer; updates by SHA-256, signed with Basalt's release key |
 
 ## Installation
 
-Download the latest version. These links always give the newest release, and
-each file has a `.sha256` beside it on the
+Download the latest version. These links always give the newest release. To
+check what you downloaded, the
 [releases page](https://github.com/refora-technologies/basalt/releases/latest)
-if you want to check what you downloaded.
+has a signed `SHA256SUMS`; [SECURITY.md](SECURITY.md#signed-releases) says how.
 
 **Basalt**, on every device that should reach the drive:
 
@@ -284,7 +285,7 @@ profiles, Manage host and troubleshooting are in the
 Basalt Host updates itself when nothing is playing; you can turn that off in
 its settings or in Manage host. The apps check for updates on their own and
 show what is in the new version before you install it. On Android the update is
-downloaded, checked against its published checksum, and handed to Android's own
+downloaded, checked against the release's signed checksums, and handed to Android's own
 installer; the first time, Android asks you to allow Basalt to install it.
 
 ## Configuration & Usage

@@ -8,7 +8,7 @@
 //!
 //! What is left is the part no mock can vouch for: that the published release
 //! is actually shaped the way the app expects, and that the installer sitting
-//! on it matches the checksum published beside it. Run them after publishing:
+//! on it matches the release's signed list of digests. Run them after publishing:
 //!
 //! ```text
 //! cargo test -p basalt-update -- --ignored --nocapture
@@ -35,9 +35,9 @@ async fn the_published_release_offers_an_installer_to_both_apps() {
 
         assert!(offer.installer_bytes > 0, "{product:?} installer is empty");
         assert!(
-            offer.checksum_url.is_some(),
-            "{product:?} has no .sha256 beside its installer, so the app will \
-             refuse the download rather than install something unverified",
+            offer.sums_url.is_some(),
+            "{product:?}'s release has no SHA256SUMS, so the app will refuse \
+             the download rather than install something unverified",
         );
         assert!(
             !offer.notes.is_empty(),
