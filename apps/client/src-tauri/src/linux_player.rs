@@ -101,6 +101,7 @@ struct Lib {
         unsafe extern "C" fn(Handle, Option<unsafe extern "C" fn(*mut c_void)>, *mut c_void),
     render_render: unsafe extern "C" fn(Handle, *mut RenderParam) -> c_int,
     render_update: unsafe extern "C" fn(Handle) -> u64,
+    render_free: unsafe extern "C" fn(Handle),
 }
 
 impl Lib {
@@ -145,6 +146,7 @@ impl Lib {
                 render_set_update_callback: sym!(b"mpv_render_context_set_update_callback"),
                 render_render: sym!(b"mpv_render_context_render"),
                 render_update: sym!(b"mpv_render_context_update"),
+                render_free: sym!(b"mpv_render_context_free"),
                 _lib: lib,
             })
         }
@@ -401,6 +403,11 @@ fn for_this_mpv(mut args: Vec<String>, loadfile_index: bool) -> Vec<String> {
 #[tauri::command]
 pub fn linux_mpv_command(args: Vec<String>) -> Result<(), String> {
     let player = player()?;
+    // A film after the player last closed: the picture's output again
+    // first, or mpv opens the film with none and drops its video.
+    if args.first().is_some_and(|a| a == "loadfile") && RENDER.with(|r| r.get()).is_null() {
+        on_gtk(start_rendering);
+    }
     let args = for_this_mpv(args, player.loadfile_index);
     let owned = args.iter().map(|a| c(a)).collect::<Result<Vec<_>, _>>()?;
     let mut pointers: Vec<*const c_char> = owned.iter().map(|a| a.as_ptr()).collect();
@@ -409,6 +416,10 @@ pub fn linux_mpv_command(args: Vec<String>) -> Result<(), String> {
     let code = unsafe { (player.lib.command)(player.handle, pointers.as_ptr()) };
     if code < 0 {
         return Err(format!("{}: {}", args.join(" "), player.lib.error(code)));
+    }
+    // The page stops mpv as the player closes.
+    if args.first().is_some_and(|a| a == "stop") {
+        on_gtk(stop_rendering);
     }
     Ok(())
 }
@@ -493,6 +504,47 @@ pub fn linux_mpv_destroy() -> Result<(), String> {
     Ok(())
 }
 
+/// Runs `f` on GTK's thread, which owns the drawing, and waits for it.
+fn on_gtk(f: fn()) {
+    let context = glib::MainContext::default();
+    if context.is_owner() {
+        f();
+        return;
+    }
+    let (done, wait) = std::sync::mpsc::channel();
+    context.invoke(move || {
+        f();
+        let _ = done.send(());
+    });
+    let _ = wait.recv_timeout(std::time::Duration::from_secs(5));
+}
+
+/// Lets go of everything drawing took once the player closes: mpv's render
+/// context, the GL context and the driver behind it, and the memory freed
+/// with them, which the system would otherwise not get back. A film after
+/// that makes them again (see `linux_mpv_command`).
+fn stop_rendering() {
+    let Some(player) = PLAYER.get() else { return };
+    let render = RENDER.with(|r| r.replace(std::ptr::null_mut()));
+    if !render.is_null() {
+        let current = OFFSCREEN.with(|o| o.borrow().as_ref().is_some_and(Offscreen::make_current));
+        if current {
+            // SAFETY: the render context made in `start_rendering`, freed
+            // once, on this thread, with its GL context current; mpv takes
+            // down its video output first.
+            unsafe { (player.lib.render_free)(render) };
+        }
+    }
+    TARGET.with(|t| t.set((0, 0, 0, 0)));
+    OFFSCREEN.with(|o| o.borrow_mut().take());
+    extern "C" {
+        fn malloc_trim(pad: usize) -> c_int;
+    }
+    // SAFETY: glibc's own call; it only hands free memory back.
+    unsafe { malloc_trim(0) };
+    eprintln!("linux player: drawing let go");
+}
+
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
@@ -534,8 +586,8 @@ thread_local! {
     static COLUMN: std::cell::RefCell<Option<gtk::Widget>> = const { std::cell::RefCell::new(None) };
     /// mpv's own GL context, out of sight of GTK and WebKit.
     static OFFSCREEN: std::cell::RefCell<Option<Offscreen>> = const { std::cell::RefCell::new(None) };
-    /// mpv's render context, made once on the GTK thread with that context
-    /// current.
+    /// mpv's render context, made on the GTK thread with that context
+    /// current, and let go of when the player closes.
     static RENDER: std::cell::Cell<Handle> = const { std::cell::Cell::new(std::ptr::null_mut()) };
     /// What mpv draws into: a framebuffer, its texture, and their size.
     static TARGET: std::cell::Cell<(u32, u32, c_int, c_int)> = const { std::cell::Cell::new((0, 0, 0, 0)) };
@@ -851,6 +903,12 @@ struct Offscreen {
     surface: *mut c_void,
     context: *mut c_void,
     make_current: MakeCurrent,
+    destroy_context: DestroyContext,
+    destroy_surface: DestroySurface,
+    terminate: Terminate,
+    /// The display is this context's alone (Mesa's surfaceless one), so it
+    /// can be ended with it; the system's may be shared.
+    own_display: bool,
 }
 
 impl Offscreen {
@@ -896,6 +954,10 @@ impl Offscreen {
                             surface,
                             context,
                             make_current: egl.make_current,
+                            destroy_context: egl.destroy_context,
+                            destroy_surface: egl.destroy_surface,
+                            terminate: egl.terminate,
+                            own_display: n == 0,
                             _lib: lib,
                         });
                     }
@@ -912,7 +974,30 @@ impl Offscreen {
     }
 }
 
+impl Drop for Offscreen {
+    /// The context and all it held: with software GL, mpv's textures and
+    /// framebuffers are ordinary memory, and the driver's own is much more.
+    fn drop(&mut self) {
+        let none = std::ptr::null_mut();
+        // SAFETY: the display, surface and context this made, let go of
+        // first; nothing uses them after this.
+        unsafe {
+            (self.make_current)(self.display, none, none, none);
+            (self.destroy_context)(self.display, self.context);
+            if !self.surface.is_null() {
+                (self.destroy_surface)(self.display, self.surface);
+            }
+            if self.own_display {
+                (self.terminate)(self.display);
+            }
+        }
+    }
+}
+
 type MakeCurrent = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> u32;
+type DestroyContext = unsafe extern "C" fn(*mut c_void, *mut c_void) -> u32;
+type DestroySurface = unsafe extern "C" fn(*mut c_void, *mut c_void) -> u32;
+type Terminate = unsafe extern "C" fn(*mut c_void) -> u32;
 
 /// The EGL calls a context takes.
 struct Egl {
@@ -924,6 +1009,9 @@ struct Egl {
     pbuffer: unsafe extern "C" fn(*mut c_void, *mut c_void, *const i32) -> *mut c_void,
     create: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i32) -> *mut c_void,
     make_current: MakeCurrent,
+    destroy_context: DestroyContext,
+    destroy_surface: DestroySurface,
+    terminate: Terminate,
 }
 
 impl Egl {
@@ -945,6 +1033,9 @@ impl Egl {
                 pbuffer: sym!(b"eglCreatePbufferSurface"),
                 create: sym!(b"eglCreateContext"),
                 make_current: sym!(b"eglMakeCurrent"),
+                destroy_context: sym!(b"eglDestroyContext"),
+                destroy_surface: sym!(b"eglDestroySurface"),
+                terminate: sym!(b"eglTerminate"),
             })
         }
     }
