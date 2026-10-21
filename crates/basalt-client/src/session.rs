@@ -229,6 +229,7 @@ async fn open(
             protocol: PROTOCOL_VERSION,
             device_name: me.name.clone(),
             device_id: me.id.clone(),
+            form: Some(crate::store::device_form()),
         },
     )
     .await?;

@@ -16,7 +16,7 @@ import { type MenuAction, useContextMenu } from './ui/ContextMenu'
 import { ActionSheet } from '@/mobile/Sheet'
 import { ApiError, api, type DiscoveredHost, type Status } from '@/lib/api'
 import { useLongPress } from '@/lib/useLongPress'
-import { isMobileShell } from '@/lib/platform'
+import { isMobileShell, isTv } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { wrongHostText } from '@/lib/wrongHost'
 import { useBack } from '@/mobile/useBack'
@@ -25,6 +25,7 @@ import { LOOPS } from '@/lib/motion'
 const PIN_LENGTH = 6
 
 const TOUCH = isMobileShell()
+const TV = isTv()
 
 /** A drive as the list names it: its drive, or the computer when none is shared. */
 function driveName(host: DiscoveredHost): string {
@@ -172,6 +173,16 @@ export function PairingView({
         } finally {
           if (live.current) setBusy(false)
         }
+        return
+      }
+      // A TV leaves managing the host to a phone or computer, so it must not
+      // be the device that sets one up: it would become the host's only
+      // manager, with no way to choose the drive or let anyone else manage.
+      if (TV && host.needsSetup && !host.paired) {
+        setError(
+          `${host.hostName} isn’t set up yet. Set it up from Basalt on your phone or computer, then choose it here.`,
+        )
+        setBusy(false)
         return
       }
       try {
@@ -792,7 +803,13 @@ function HostRow({
         </div>
         <div className="mt-0.5 flex items-center gap-2 font-mono text-[10.5px] text-textFaint">
           <span className="truncate">
-            {setup ? 'set it up from here' : host.hasVault ? host.hostName : 'no drive shared yet'}
+            {setup
+              ? TV
+                ? 'set it up from your phone or computer'
+                : 'set it up from here'
+              : host.hasVault
+                ? host.hostName
+                : 'no drive shared yet'}
           </span>
           <span className="shrink-0">·</span>
           {/* In place of the id: the name needs the room more. */}

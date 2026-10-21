@@ -1107,6 +1107,7 @@ impl Host {
         let mut changed = registry.retire_token(&device.token_hash);
         if let Some(hello) = hello {
             changed |= registry.observe(&device.token_hash, &hello.device_id, &hello.device_name);
+            changed |= registry.observe_form(&device.token_hash, hello.form);
         }
         let device = registry
             .device(&device.token_hash)
@@ -3306,6 +3307,9 @@ where
                     key,
                     req.key_signature.as_deref(),
                 )?;
+                // What kind of device it is, from this connection's hello, so it
+                // is drawn as one from the start rather than from its next visit.
+                let form = session.hello.as_ref().and_then(|hello| hello.form);
                 let finished = {
                     let mut registry = host.registry.lock().expect("registry lock");
                     registry
@@ -3321,6 +3325,9 @@ where
                             if setup {
                                 registry.set_owner(&device.token_hash, true)?;
                                 device.owner = true;
+                            }
+                            if registry.observe_form(&device.token_hash, form) {
+                                device.form = form;
                             }
                             Ok((device, confirm))
                         })
@@ -3374,10 +3381,20 @@ where
 
             // Pairing also authenticates this connection, so the client can go
             // straight on to browsing without a second round trip.
-            session.device = {
+            let form = session.hello.as_ref().and_then(|hello| hello.form);
+            let (device, drawn) = {
                 let mut registry = host.registry.lock().expect("registry lock");
-                registry.authenticate(&token)
+                let found = registry.authenticate(&token);
+                let drawn = found
+                    .as_ref()
+                    .is_some_and(|device| registry.observe_form(&device.token_hash, form));
+                let device = found.and_then(|device| registry.device(&device.token_hash).cloned());
+                (device, drawn)
             };
+            if drawn {
+                host.persist()?;
+            }
+            session.device = device;
             session.by_key = false;
             session.signed_key = None;
             // A device that had a key and pairs again with a token (an older
@@ -3445,11 +3462,12 @@ where
                         // it did not have when it paired, a new name — is
                         // taken in on every connection.
                         let changed = session.hello.as_ref().is_some_and(|hello| {
-                            registry.observe(
+                            let named = registry.observe(
                                 &device.token_hash,
                                 &hello.device_id,
                                 &hello.device_name,
-                            )
+                            );
+                            registry.observe_form(&device.token_hash, hello.form) | named
                         });
                         let current = registry.device(&device.token_hash).cloned();
                         (current, changed, device.key().to_string())

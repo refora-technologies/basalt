@@ -4,6 +4,7 @@ import ReactDOM from 'react-dom/client'
 import { suppressNativeContextMenu } from './lib/nativeMenu'
 import { noteLaunch } from './lib/review'
 import { android } from './lib/android'
+import { api } from './lib/api'
 import { isAndroid, isMobileShell } from './lib/platform'
 import { startHalo } from './lib/focusHalo'
 import { startRemote } from './lib/remote'
@@ -45,6 +46,13 @@ async function onTelevision(): Promise<boolean> {
 }
 
 void onTelevision().then(async (tv) => {
+  // Told before anything connects, so the host draws this device as what it
+  // is. A computer needs no telling. 600 is Android's own line between a
+  // phone and a tablet, measured on the screen's shorter side.
+  if (isAndroid()) {
+    const tablet = Math.min(screen.width, screen.height) >= 600
+    void api.setDeviceForm(tv ? 'tv' : tablet ? 'tablet' : 'phone').catch(() => {})
+  }
   if (tv) {
     document.documentElement.classList.add('tv')
     startRemote()
