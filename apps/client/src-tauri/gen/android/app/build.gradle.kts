@@ -73,12 +73,16 @@ android {
             if (System.getenv("BASALT_CHANNEL") == "play") {
                 sourceSets.getByName("release").manifest.srcFile("src/play/AndroidManifest.xml")
             }
-            // 64-bit ARM, which is every phone of the last several years. The
-            // player's libraries come for four kinds of processor, and the
-            // others would only make the download larger for nobody.
+            // 64-bit ARM, which is every phone of the last several years, and
+            // 32-bit ARM, which many televisions and TV sticks still run even
+            // on 64-bit chips (Chromecast with Google TV among them): without
+            // it Google Play shows them Basalt as incompatible. Play sends
+            // each device only its own, so phones download nothing more. The
+            // player's x86 libraries are only for emulators.
             ndk {
                 abiFilters.clear()
                 abiFilters.add("arm64-v8a")
+                abiFilters.add("armeabi-v7a")
             }
             isMinifyEnabled = true
             proguardFiles(
@@ -98,6 +102,23 @@ android {
 
 rust {
     rootDirRel = "../../../"
+}
+
+// A release packs the player for every processor in its abiFilters, and the
+// app's own code must be built for each of them too, or a device of a missing
+// kind is offered an app that cannot start. Tauri builds only the `--target`s
+// it is given: npx tauri android build --target aarch64 --target armv7.
+if (gradle.startParameter.taskNames.any { it.contains("Release") }) {
+    val built = (findProperty("targetList") as? String)?.split(',')
+        ?: listOf("aarch64", "armv7", "i686", "x86_64")
+    val needs = mapOf("arm64-v8a" to "aarch64", "armeabi-v7a" to "armv7", "x86" to "i686", "x86_64" to "x86_64")
+    val missing = android.buildTypes.getByName("release").ndk.abiFilters
+        .mapNotNull { needs[it] }
+        .filter { it !in built }
+    require(missing.isEmpty()) {
+        "This release would carry no Basalt code for ${missing.joinToString()}: " +
+            "build with " + missing.joinToString(" ") { "--target $it" } + " as well."
+    }
 }
 
 dependencies {

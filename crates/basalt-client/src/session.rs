@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use basalt_net::framing::{
-    call_json, call_unit, read_response, read_response_header, write_request,
+    MAX_BUFFERED_RESPONSE, call_json, call_unit, read_response, read_response_header, write_request,
 };
 use basalt_net::socket;
 use basalt_net::tls::{Trust, client_config, sni_name};
@@ -1086,7 +1086,13 @@ impl Session {
         let (status, len) = read_response_header(&mut self.stream).await?;
         if status != basalt_proto::STATUS_OK {
             // Drain the error body so the connection stays usable, then report
-            // it the same way a buffered read would.
+            // it the same way a buffered read would. An error is a sentence,
+            // so a body claiming more is not one, and is not read into memory.
+            if len > MAX_BUFFERED_RESPONSE {
+                return Err(ClientError::Protocol(format!(
+                    "the host answered with an error of {len} bytes"
+                )));
+            }
             let mut body = vec![0u8; len as usize];
             self.stream.read_exact(&mut body).await?;
             return Err(ClientError::Net(basalt_net::NetError::Remote(
@@ -1102,7 +1108,10 @@ impl Session {
         let mut remaining = len;
         let mut buf = vec![0u8; 256 * 1024];
         while remaining > 0 {
-            let want = buf.len().min(remaining as usize);
+            // Compared as u64: on a 32-bit Android, `remaining as usize` would
+            // lose the top of anything over 4 GB, and exactly 4 GB would ask
+            // for nothing at all.
+            let want = remaining.min(buf.len() as u64) as usize;
             let n = self.stream.read(&mut buf[..want]).await?;
             if n == 0 {
                 return Err(ClientError::Protocol(format!(
