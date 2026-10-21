@@ -82,15 +82,23 @@ export function distance(from: Box, to: Box, direction: Direction): number | nul
   return Math.max(0, along) + 2 * aside
 }
 
-/** The nearest of `candidates` from `from` going `direction`, if any. */
+/**
+ * The nearest of `candidates` from `from` going `direction`, if any.
+ *
+ * Left and right stay in the row: past the last button of the player's row,
+ * right used to jump to the close button in the far corner. Only what is
+ * reachable from `anywhere` (the side rail) is found outside the row.
+ */
 export function nearest<T>(
   from: Box,
-  candidates: Array<{ item: T; box: Box }>,
+  candidates: Array<{ item: T; box: Box; anywhere?: boolean }>,
   direction: Direction,
 ): T | null {
+  const across = direction === 'left' || direction === 'right'
   let best: T | null = null
   let bestDistance = Infinity
-  for (const { item, box } of candidates) {
+  for (const { item, box, anywhere } of candidates) {
+    if (across && !anywhere && !(box.top < from.bottom && box.bottom > from.top)) continue
     const d = distance(from, box, direction)
     if (d !== null && d < bestDistance) {
       best = item
@@ -127,38 +135,71 @@ export function move(direction: Direction): boolean {
   if (all.length === 0) return false
   const current = document.activeElement as HTMLElement | null
   const lost = !current || current === document.body || !within.contains(current)
-  // Nothing in front has had the focus yet, or what had it went away with
-  // the screen it was on: where the screen says to start; on a whole screen
-  // the first thing in its content (past the side rail and the bar above);
-  // in a menu or sheet what is chosen in it; else the first thing, top left.
   if (lost) {
-    const topLeft = (els: HTMLElement[]): HTMLElement | undefined =>
-      [...els].sort((a, b) => {
-        const ba = a.getBoundingClientRect()
-        const bb = b.getBoundingClientRect()
-        return ba.top - bb.top || ba.left - bb.left
-      })[0]
-    const start =
-      all.find((el) => el.matches('[data-remote-first]')) ??
-      (within === document.body ? topLeft(all.filter((el) => el.closest('main'))) : undefined) ??
-      all.find((el) =>
-        el.matches('[aria-current="page"], [aria-current="true"], [aria-selected="true"], [aria-checked="true"]'),
-      ) ??
-      topLeft(all)
-    focus(start!)
+    focus(startOf(within, all))
     return true
   }
-  const from = current.getBoundingClientRect()
+  // From the middle of something that fills most of the screen (a photo),
+  // as what sits over it (the bar above it, the strip below) is neither
+  // above nor below its edges.
+  const whole = current.getBoundingClientRect()
+  const big = whole.width * whole.height > 0.4 * window.innerWidth * window.innerHeight
+  const middle = { x: (whole.left + whole.right) / 2, y: (whole.top + whole.bottom) / 2 }
+  const from = big ? { left: middle.x, right: middle.x, top: middle.y, bottom: middle.y } : whole
   const next = nearest(
     from,
     all
       .filter((el) => el !== current)
-      .map((el) => ({ item: el, box: seenFrom(el, current, from, direction) })),
+      .map((el) => ({
+        item: el,
+        box: seenFrom(el, current, from, direction),
+        anywhere: el.closest('nav') !== null,
+      })),
     direction,
   )
   if (!next) return false
   focus(next)
   return true
+}
+
+/**
+ * Where the focus starts in `within`, when nothing there has it: where the
+ * screen says to start; on a whole screen the first thing in its content
+ * (past the side rail and the bar above); in a menu or sheet what is chosen
+ * in it; else the first thing, top left.
+ */
+function startOf(within: Element, all: HTMLElement[]): HTMLElement {
+  const topLeft = (els: HTMLElement[]): HTMLElement | undefined =>
+    [...els].sort((a, b) => {
+      const ba = a.getBoundingClientRect()
+      const bb = b.getBoundingClientRect()
+      return ba.top - bb.top || ba.left - bb.left
+    })[0]
+  return (
+    all.find((el) => el.matches('[data-remote-first]')) ??
+    (within === document.body ? topLeft(all.filter((el) => el.closest('main'))) : undefined) ??
+    all.find((el) =>
+      el.matches('[aria-current="page"], [aria-current="true"], [aria-selected="true"], [aria-checked="true"]'),
+    ) ??
+    topLeft(all)!
+  )
+}
+
+/**
+ * Puts the focus in front when it is not: a menu or sheet just opened, or the
+ * screen changed under it. TV apps show where the remote is at once; waiting
+ * for a press left the ring on what was behind a menu.
+ */
+function settle(): void {
+  const within = scope()
+  const current = document.activeElement
+  if (current && current !== document.body && within.contains(current)) return
+  const all = pressables(within)
+  // A screen still loading its content waits for it, rather than starting
+  // on the side rail; a press before then starts wherever it can.
+  const content = within === document.body && document.querySelector('main') !== null
+  if (content && !all.some((el) => el.closest('main'))) return
+  if (all.length > 0) focus(startOf(within, all))
 }
 
 /**
@@ -204,6 +245,20 @@ let started = false
 export function startRemote(): void {
   if (started || typeof window === 'undefined') return
   started = true
+  // Checked a few times a second rather than on every change: a layer that
+  // opens animates in, and is settled into once it has.
+  let unsettled = 0
+  setInterval(() => {
+    const within = scope()
+    const current = document.activeElement
+    const lost = !current || current === document.body || !within.contains(current)
+    // Twice in a row, so a screen half-way through changing is left alone.
+    unsettled = lost ? unsettled + 1 : 0
+    if (unsettled >= 2) {
+      unsettled = 0
+      settle()
+    }
+  }, 150)
   window.addEventListener('keydown', (e) => {
     if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return
     const direction = KEYS[e.key]

@@ -195,7 +195,7 @@ export function ProfileGate({
                   onClick={() => setStep({ kind: 'create' })}
                   className="group flex w-[104px] flex-col items-center"
                 >
-                  <span className="flex h-[76px] w-[76px] items-center justify-center rounded-full border border-dashed border-white/20 text-textFaint transition-colors duration-200 group-hover:border-white/40 group-hover:text-text">
+                  <span data-focus-ring="" className="flex h-[76px] w-[76px] items-center justify-center rounded-full border border-dashed border-white/20 text-textFaint transition-colors duration-200 group-hover:border-white/40 group-hover:text-text">
                     <Plus size={24} strokeWidth={1.6} />
                   </span>
                   <span className="mt-2.5 text-[12.5px] text-textDim transition-colors group-hover:text-text">
@@ -353,10 +353,12 @@ function ProfileTile({
       onClick={onClick}
       // A TV remote starts on the first profile, not on Drives above.
       data-remote-first={index === 0 ? '' : undefined}
-      data-own-focus=""
       className="group flex w-[104px] flex-col items-center outline-none"
     >
-      <span className="rounded-full ring-2 ring-transparent ring-offset-4 ring-offset-ink transition-[box-shadow] duration-200 group-hover:ring-white/50 group-focus-visible:ring-white/70">
+      <span
+        data-focus-ring=""
+        className="rounded-full ring-2 ring-transparent ring-offset-4 ring-offset-ink transition-[box-shadow] duration-200 group-hover:ring-white/50 group-focus-visible:ring-white/70"
+      >
         <Avatar name={name} color={color} size={76} />
       </span>
       <span className="mt-2.5 max-w-full truncate text-[13px] font-medium text-textDim transition-colors group-hover:text-text">

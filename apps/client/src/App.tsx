@@ -79,7 +79,7 @@ import { ProfileGate } from '@/components/ProfileGate'
 import { scrollKeyOf } from '@/lib/useScrollMemory'
 import { stemOf, trackInfo } from '@/lib/mediaInfo'
 import { isWaiting, useVault, waitingLabel } from '@/lib/useVault'
-import { handheldWord, isMobileShell } from '@/lib/platform'
+import { handheldWord, isMobileShell, isTv } from '@/lib/platform'
 import { android, type PhoneFile } from '@/lib/android'
 import { MobileApp } from '@/mobile/MobileApp'
 import { filterKind, isKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
@@ -975,7 +975,11 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         }
       }
 
-      items.push({
+      // A television keeps no files and has no one to share them with, and
+      // changing the drive from a sofa with a remote is a slip waiting to
+      // happen: there, what is on the drive is watched, starred and looked at.
+      const tv = isTv()
+      if (!tv) items.push({
         id: 'download',
         label: many ? `Download ${label}…` : 'Download…',
         icon: Download,
@@ -985,7 +989,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         run: () => void downloadMany(chosen),
       })
 
-      if (writable) {
+      if (writable && !tv) {
         items.push(
           {
             id: 'cut',

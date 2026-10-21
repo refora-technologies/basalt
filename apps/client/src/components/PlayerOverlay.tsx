@@ -1276,14 +1276,21 @@ export function PlayerOverlay({
         switch (e.key) {
           case 'ArrowUp':
           case 'ArrowDown':
-            return false
+            // The first press brings the controls back, on play and pause
+            // (the focus may have been put on close while play waited for
+            // the film); the next ones move among them.
+            if (controlsUp) return false
+            document.querySelector<HTMLElement>('[data-player] [data-remote-first]')?.focus()
+            return true
           case 'ArrowLeft':
           case 'ArrowRight':
             if (onControl && controlsUp) return false
             void mpv.seekBy(e.key === 'ArrowRight' ? 10 : -10)
             return true
           case 'Enter':
-            if (onControl) return false
+            // A control keeps the focus while the controls are put away; OK
+            // then pauses, whichever it is, and never closes the film.
+            if (onControl && controlsUp) return false
             void mpv.togglePause()
             return true
           default:
@@ -2605,7 +2612,9 @@ export function Scrubber({
       aria-valuenow={Math.round(at)}
       aria-valuemin={0}
       aria-valuemax={100}
-      tabIndex={0}
+      // Not for a TV remote to land on: its left and right seek already,
+      // and on the bar they were kept by it and went nowhere else.
+      tabIndex={TV ? -1 : 0}
       // The bar takes a finger's sideways movement for itself. Without this
       // the phone's browser took it for a scroll, cancelled the pointer, and
       // only the first touch ever seeked.

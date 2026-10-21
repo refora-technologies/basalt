@@ -5,6 +5,7 @@ import { suppressNativeContextMenu } from './lib/nativeMenu'
 import { noteLaunch } from './lib/review'
 import { android } from './lib/android'
 import { isAndroid, isMobileShell } from './lib/platform'
+import { startHalo } from './lib/focusHalo'
 import { startRemote } from './lib/remote'
 import { startUpdateChecks } from './lib/updates'
 import { shapeWindow } from './lib/windowFrame'
@@ -46,6 +47,7 @@ void onTelevision().then(async (tv) => {
   if (tv) {
     document.documentElement.classList.add('tv')
     startRemote()
+    startHalo()
   }
   const { App } = await import('./App')
   render(App)

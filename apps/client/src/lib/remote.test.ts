@@ -38,6 +38,18 @@ describe('nearest', () => {
     expect(nearest(here, [aside, ahead], 'down')).toBe('ahead')
   })
 
+  // The bug this guards: past the last button of the player's row, right
+  // jumped to the close button in the far corner.
+  it('keeps left and right in the row', () => {
+    const corner = { item: 'close', box: box(900, -400, 40, 40) }
+    expect(nearest(here, [corner], 'right')).toBeNull()
+  })
+
+  it('reaches the side rail from any row', () => {
+    const rail = { item: 'rail', box: box(-90, -300, 60, 40), anywhere: true }
+    expect(nearest(here, [rail], 'left')).toBe('rail')
+  })
+
   it('finds nothing when nothing is that way', () => {
     expect(nearest(here, [{ item: 'above', box: box(0, -100, 100, 40) }], 'down')).toBeNull()
   })

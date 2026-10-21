@@ -5,7 +5,7 @@ import { OnboardingScene } from './OnboardingScene'
 import { api, type DiscoveredHost } from '@/lib/api'
 import { android } from '@/lib/android'
 import { HOST_DOWNLOAD, WEBSITE, openExternal } from '@/lib/links'
-import { handheldWord, isMobileShell } from '@/lib/platform'
+import { handheldWord, isMobileShell, isTv } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { useBack } from '@/mobile/useBack'
 
@@ -322,7 +322,12 @@ function Finding({
           : 'Install Basalt Host on the computer with your files, or on this one if they’re here. It appears on this page as soon as it starts.'}
       </Body>
       <div className="mt-5 flex flex-col gap-2">
-        {phone ? (
+        {isTv() ? (
+          // Nothing to open or send the link with on a television.
+          <p className="text-[14px] text-text">
+            Open {WEBSITE.replace('https://', '')} on your computer to download it.
+          </p>
+        ) : phone ? (
           <>
             <Primary
               icon={<Send size={15} />}

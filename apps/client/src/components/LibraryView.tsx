@@ -298,7 +298,7 @@ function Card({
       // near, so a long library scrolls like a short one.
       style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 320px' }}
     >
-      <div className="relative overflow-hidden rounded-md">
+      <div data-focus-ring="" className="relative overflow-hidden rounded-md">
         <Poster
           title={item.title}
           year={item.year ?? undefined}

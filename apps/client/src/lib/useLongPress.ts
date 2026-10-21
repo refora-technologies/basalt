@@ -1,6 +1,29 @@
 import { useRef } from 'react'
 
 /**
+ * OK, held for a long press, goes on repeating until it is let go. What the
+ * long press opened takes the focus at once (see lib/remote.ts), and the
+ * repeats pressed its first item: holding OK on a folder opened the folder,
+ * by the "Open" of its menu. The rest of that press is swallowed here.
+ */
+let swallowing = false
+let listening = false
+
+function swallowRestOfPress(): void {
+  swallowing = true
+  if (listening || typeof window === 'undefined') return
+  listening = true
+  const swallow = (e: KeyboardEvent): void => {
+    if (!swallowing || e.key !== 'Enter') return
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    if (e.type === 'keyup') swallowing = false
+  }
+  window.addEventListener('keydown', swallow, { capture: true })
+  window.addEventListener('keyup', swallow, { capture: true })
+}
+
+/**
  * A press that is either a tap or, held, a long press — never both, and
  * neither if the finger moved to scroll.
  *
@@ -85,6 +108,8 @@ export function useLongPress(
           timer.current = null
           if (held.current && !fired.current) {
             fired.current = true
+            held.current = false
+            swallowRestOfPress()
             onLong()
           }
         }, 450)
@@ -92,6 +117,8 @@ export function useLongPress(
         // A second press before the first was let go: the remote repeating.
         clear()
         fired.current = true
+        held.current = false
+        swallowRestOfPress()
         onLong()
       }
     },

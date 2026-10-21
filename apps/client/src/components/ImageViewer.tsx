@@ -5,11 +5,13 @@ import type { MediaFile } from '@/lib/api'
 import { folderOf, formatOf, stemOf } from '@/lib/mediaInfo'
 import { GRID_THUMB, VIEW_THUMB, fileUrl, isDisplayable, thumbUrl } from '@/lib/thumbs'
 import { cn, formatBytes } from '@/lib/utils'
-import { isMobileShell } from '@/lib/platform'
+import { isMobileShell, isTv } from '@/lib/platform'
 import { Sheet } from '@/mobile/Sheet'
 
 /** Fingers rather than a pointer; see `Stage` for the gestures. */
 const TOUCH = isMobileShell()
+/** On a television: see `lib/remote.ts`. */
+const TV = isTv()
 
 /**
  * The photo viewer: one photo, as large as the window allows, on black.
@@ -41,7 +43,8 @@ export function ImageViewer({
   base: string
   onIndexChange: (index: number) => void
   onClose: () => void
-  onDownload: (path: string) => void
+  /** None where nothing is kept on the device: a television. */
+  onDownload?: (path: string) => void
 }): React.JSX.Element {
   const photo = index !== null ? photos[index] : undefined
   const [info, setInfo] = useState(false)
@@ -74,6 +77,8 @@ export function ImageViewer({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.16 }}
+          // The remote stays in here while it is open.
+          data-remote-scope=""
           className="fixed inset-0 z-40 flex flex-col bg-[#050506]"
         >
           <div
@@ -109,16 +114,26 @@ export function ImageViewer({
                 active={info}
                 onClick={() => setInfo((v) => !v)}
               />
-              <ToolButton
-                icon={Download}
-                label="Download"
-                onClick={() => onDownload(photo.path)}
-              />
+              {onDownload && (
+                <ToolButton
+                  icon={Download}
+                  label="Download"
+                  onClick={() => onDownload(photo.path)}
+                />
+              )}
               {!TOUCH && <ToolButton icon={X} label="Close (Esc)" onClick={onClose} />}
             </div>
           </div>
 
-          <div className="relative flex min-h-0 flex-1">
+          <div
+            className="relative flex min-h-0 flex-1"
+            // On a television the remote starts on the photo itself, with
+            // no ring over it: left and right go through the photos, up
+            // reaches the bar above, down the strip below.
+            tabIndex={TV ? 0 : undefined}
+            data-remote-first={TV ? '' : undefined}
+            data-no-ring={TV ? '' : undefined}
+          >
             <Stage
               key={photo.path}
               photo={photo}
@@ -250,8 +265,10 @@ function Stage({
       }
       e.preventDefault()
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    // On a television first, before the remote: its left and right go
+    // through the photos, not between the buttons.
+    window.addEventListener('keydown', onKey, { capture: TV })
+    return () => window.removeEventListener('keydown', onKey, { capture: TV })
   }, [onClose, onNext, onPrevious, onToggleInfo, zoomBy])
 
   const zoomed = view.scale > 1
