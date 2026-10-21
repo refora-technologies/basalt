@@ -188,6 +188,15 @@ export function PairingView({
       try {
         const start = await api.beginPairing(host.address)
         if (!live.current) return
+        // The same, for a host reached by its address: only asking to pair
+        // tells whether it waits to be set up.
+        if (TV && start.setup) {
+          void api.cancelPairing().catch(() => {})
+          setError(
+            `${host.hostName} isn’t set up yet. Set it up from Basalt on your phone or computer, then choose it here.`,
+          )
+          return
+        }
         setChosen(host)
         setNeedsPin(start.requiresPin)
         setSetup(start.setup)
@@ -265,9 +274,11 @@ export function PairingView({
         setError(
           e instanceof ApiError && e.kind === 'offline'
             ? `Nothing answered at ${address}. The address is shown in Basalt Host’s window.`
-            : e instanceof Error
-              ? e.message
-              : String(e),
+            : e instanceof Error && /could not resolve/.test(e.message)
+              ? `No computer called ${address} was found on this network. Check the name, or type the address shown in Basalt Host’s window.`
+              : e instanceof Error
+                ? e.message
+                : String(e),
         )
         setBusy(false)
         return

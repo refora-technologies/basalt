@@ -283,6 +283,8 @@ function DeviceDetail({
   const phone = layout === 'phone'
   const you = device.id === view.you
   const only = lastManager(view.devices, device.id)
+  // A TV cannot manage: see `set_owner` on the host.
+  const tv = deviceIcon(device) === Tv
   const Icon = you && phone ? (isTv() ? Tv : Smartphone) : deviceIcon(device)
 
   const askManages = async (next: boolean): Promise<boolean> => {
@@ -390,16 +392,20 @@ function DeviceDetail({
           <Toggle
             title="Manages this host"
             description={
-              !device.keyed && !device.owner
-                ? 'Update Basalt on this device first. Then it can manage the host.'
-                : only
-                  ? 'The only device that manages this host. Let another device manage it first.'
-                  : device.owner
-                    ? 'Can change everything on this screen, from anywhere it connects.'
-                    : 'Off. It can use the drive, but not change these settings.'
+              tv && !device.owner
+                ? 'A TV can’t manage the host. Let a phone or computer manage it.'
+                : tv && !only
+                  ? 'A TV can’t use this. Turn it off and let a phone or computer manage the host.'
+                  : !device.keyed && !device.owner
+                    ? 'Update Basalt on this device first. Then it can manage the host.'
+                    : only
+                      ? 'The only device that manages this host. Let another device manage it first.'
+                      : device.owner
+                        ? 'Can change everything on this screen, from anywhere it connects.'
+                        : 'Off. It can use the drive, but not change these settings.'
             }
             checked={device.owner}
-            disabled={(!device.keyed && !device.owner) || only}
+            disabled={(tv && !device.owner) || (!device.keyed && !device.owner) || only}
             ask={askManages}
             onChange={manages}
           />

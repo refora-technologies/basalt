@@ -253,6 +253,8 @@ export function ProfileGate({
                 <button
                   onClick={() => void asDevice()}
                   disabled={busy}
+                  // With no profiles yet, where a TV remote starts: the way in.
+                  data-remote-first={ordered.length === 0 ? '' : undefined}
                   className="group flex w-full items-center gap-3.5 rounded-xl border border-white/[0.09] bg-panel/80 px-4 py-3.5 text-left transition-[background-color,border-color] duration-200 hover:border-white/20 hover:bg-panel2 disabled:opacity-60"
                 >
                   <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white/[0.06] text-textDim transition-colors group-hover:text-text">

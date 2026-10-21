@@ -396,6 +396,8 @@ function Primary({
     <motion.button
       whileTap={{ scale: 0.98 }}
       onClick={onClick}
+      // The page's main action: where a TV remote starts, not the way back.
+      data-remote-first=""
       className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-full bg-white px-6 text-[14px] font-semibold text-black transition-opacity first:mt-0 hover:opacity-90"
     >
       {!trailing && icon}

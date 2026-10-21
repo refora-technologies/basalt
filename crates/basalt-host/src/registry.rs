@@ -848,6 +848,14 @@ impl Registry {
             .iter_mut()
             .find(|d| d.token_hash == token_hash)
             .ok_or_else(|| HostError::NotFound("that device".into()))?;
+        // A TV leaves managing to a phone or computer and has no way to
+        // manage. Made a manager, it could end up the only one, once the
+        // others are gone, and the host would have nobody able to change it.
+        if owner && device.form == Some(basalt_proto::msg::DeviceForm::Tv) {
+            return Err(HostError::BadRequest(
+                "a TV can't manage the host; let a phone or computer manage it instead".into(),
+            ));
+        }
         if owner && !device.keyed() {
             return Err(HostError::BadRequest(
                 "only a device signing in with a key can manage the host; it moves to one the next \
@@ -1633,6 +1641,21 @@ mod tests {
         );
         assert_eq!(registry.device(&hash).unwrap().form, Some(DeviceForm::Tv));
         assert!(!registry.observe_form("not a device", Some(DeviceForm::Phone)));
+    }
+
+    /// A TV cannot be made a manager: it has no way to manage, and could be
+    /// left the only one. It can still stop being one.
+    #[test]
+    fn a_tv_is_not_made_a_manager() {
+        use basalt_proto::msg::DeviceForm;
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let hash = hash_token(&pair_as(&mut registry, now, "Living room TV", DEVICE_A));
+        registry.observe_form(&hash, Some(DeviceForm::Tv));
+        let refused = registry.set_owner(&hash, true).unwrap_err().to_string();
+        assert!(refused.contains("TV"), "{refused}");
+        assert!(!registry.device(&hash).unwrap().owner);
+        assert!(registry.set_owner(&hash, false).is_ok());
     }
 
     /// Devices paired before ids existed say what they are when they next
