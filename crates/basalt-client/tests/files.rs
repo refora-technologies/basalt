@@ -177,12 +177,26 @@ async fn every_kind_of_name_lists_reads_renames_and_deletes() {
             .await
             .unwrap_or_else(|e| panic!("delete {name}: {e}"));
     }
+    // Only what this test made: a virus scanner may leave a file of its own
+    // beside one just written for a moment ("RENAMED 1 ….TXT.tmp" was seen).
     let left = names(&client.list("names").await.unwrap());
+    let ours: Vec<&String> = left
+        .iter()
+        .filter(|n| n.starts_with("copy ") || n.starts_with("renamed "))
+        .collect();
+    let copies: Vec<String> = NAMES
+        .iter()
+        .enumerate()
+        .map(|(i, name)| format!("copy {i} {name}"))
+        .collect();
     assert_eq!(
-        left.len(),
-        NAMES.len(),
+        ours.len(),
+        copies.len(),
         "one copy of each remains: {left:?}"
     );
+    for copy in &copies {
+        assert!(left.contains(copy), "{copy} is missing from {left:?}");
+    }
 }
 
 #[tokio::test]

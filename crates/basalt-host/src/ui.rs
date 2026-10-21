@@ -117,6 +117,8 @@ pub struct ConversionStatus {
     pub detected: bool,
     /// What was measured, once it has been.
     pub measured: Option<crate::convert::Measured>,
+    /// What was measured and what stopped it going higher, in words.
+    pub explained: Option<String>,
     /// Measuring now.
     pub measuring: bool,
     /// Why it is not measured, in words, when that is worth saying: the last
@@ -428,6 +430,7 @@ mod tests {
                 available: true,
                 detected: true,
                 measured: None,
+                explained: None,
                 measuring: false,
                 note: None,
                 by_hand: None,
@@ -477,6 +480,7 @@ mod tests {
                 "byHand",
                 "detected",
                 "enabled",
+                "explained",
                 "limit",
                 "measured",
                 "measuring",

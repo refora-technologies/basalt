@@ -15,6 +15,7 @@ const calls = vi.hoisted(() => ({
   identify: [] as string[],
   connect: [] as Array<[string, string | undefined]>,
   pair: [] as string[],
+  forgot: [] as string[],
   /** Who answers at a typed address, or nothing. */
   answer: null as DiscoveredHost | null,
   /** What a search turns up. */
@@ -44,11 +45,16 @@ vi.mock('@/lib/api', async (importOriginal) => {
         return Promise.resolve({ requiresPin: true, setup: false })
       },
       cancelPairing: () => Promise.resolve(),
+      forgetHost: (hostId: string) => {
+        calls.forgot.push(hostId)
+        calls.discovered = calls.discovered.filter((h) => h.hostId !== hostId)
+        return Promise.resolve({ connected: true } as never)
+      },
     },
   }
 })
 
-import { PairingView } from './PairingView'
+import { groupHosts, PairingView } from './PairingView'
 
 // Lets React flush updates inside act(), as a test environment should.
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -79,6 +85,7 @@ beforeEach(() => {
   calls.identify = []
   calls.connect = []
   calls.pair = []
+  calls.forgot = []
   calls.answer = null
   calls.discovered = []
 })
@@ -170,5 +177,61 @@ describe('a paired host the search did not find', () => {
     await waitFor(() => expect(calls.connect).toEqual([[attic.hostId, attic.address]]))
     expect(calls.pair).toEqual([])
     await waitFor(() => expect(onPaired).toHaveBeenCalled())
+  })
+})
+
+describe('a long list of drives', () => {
+  const host = (id: string, name: string, more: Partial<DiscoveredHost> = {}): DiscoveredHost => ({
+    ...living,
+    hostId: id.repeat(8),
+    hostName: `${name.toUpperCase()}-PC`,
+    vault: name,
+    ...more,
+  })
+  const inUse = host('11111111', 'Home', { paired: true })
+  const office = host('22222222', 'Office', { paired: true })
+  const fresh = host('33333333', 'Neighbour')
+  const away = host('44444444', 'Attic', { paired: true, seen: false })
+
+  it('is in groups: yours with the one in use first, new ones, then those not found', () => {
+    const groups = groupHosts([fresh, office, away, inUse], inUse.hostId)
+    expect(groups.map((g) => [g.title, g.hosts.map((h) => h.vault)])).toEqual([
+      ['Your drives', ['Home', 'Office']],
+      ['New on this network', ['Neighbour']],
+      ['Not found right now', ['Attic']],
+    ])
+  })
+
+  it('leaves out groups with nothing in them', () => {
+    expect(groupHosts([fresh], null).map((g) => g.title)).toEqual(['New on this network'])
+  })
+
+  it('forgets a paired drive from its menu, after asking', async () => {
+    calls.discovered = [inUse, office]
+    render(createElement(PairingView, { onPaired: vi.fn(), currentHostId: inUse.hostId, onBack: vi.fn() }))
+    const row = (await screen.findByText('Office')).closest('button')!
+    await act(async () => {
+      fireEvent.contextMenu(row, { clientX: 10, clientY: 10 })
+    })
+    await act(async () => {
+      fireEvent.click(await screen.findByText('Forget this drive…'))
+    })
+    // Nothing forgotten until it is confirmed.
+    expect(calls.forgot).toEqual([])
+    await act(async () => {
+      fireEvent.click(await screen.findByText('Forget'))
+    })
+    await waitFor(() => expect(calls.forgot).toEqual([office.hostId]))
+    await waitFor(() => expect(screen.queryByText('Office')).toBeNull())
+  })
+
+  it('offers nothing to forget for the drive in use', async () => {
+    calls.discovered = [inUse]
+    render(createElement(PairingView, { onPaired: vi.fn(), currentHostId: inUse.hostId, onBack: vi.fn() }))
+    const row = (await screen.findByText('Home')).closest('button')!
+    await act(async () => {
+      fireEvent.contextMenu(row, { clientX: 10, clientY: 10 })
+    })
+    expect(screen.queryByText('Forget this drive…')).toBeNull()
   })
 })

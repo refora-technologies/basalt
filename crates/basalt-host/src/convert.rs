@@ -359,9 +359,37 @@ pub struct Measured {
     #[serde(default)]
     pub settings: u32,
     /// Whether memory, not speed, set `at_once`: one more at a time would
-    /// have kept up, but would not have fitted.
+    /// have kept up, but would not have fitted. Kept for apps that read only
+    /// this; `limit` says more.
     #[serde(default)]
     pub memory: bool,
+    /// What stopped the count going higher. None in a measurement from
+    /// before it was kept.
+    #[serde(default)]
+    pub limit: Option<Limit>,
+    /// One more at once, when speed stopped it: how much faster than real
+    /// time the slowest of them ran.
+    #[serde(default)]
+    pub next_speed: Option<f64>,
+    /// One more at once, when memory stopped it: the free memory it would
+    /// have needed, when that was worked out before trying.
+    #[serde(default)]
+    pub needed: Option<u64>,
+    /// The free memory there was then.
+    #[serde(default)]
+    pub had: Option<u64>,
+}
+
+/// What stopped a measurement counting higher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Limit {
+    /// One more at once did not keep up: processing power.
+    Speed,
+    /// One more at once would not fit in memory, or ran short of it.
+    Memory,
+    /// It kept up with as many as it is ever tried with.
+    Most,
 }
 
 /// The conversion settings measurements are taken with, counted up whenever
@@ -375,6 +403,61 @@ impl Measured {
     /// Whether this was measured with the settings conversions use now.
     pub fn current(&self) -> bool {
         self.settings >= MEASURED_WITH
+    }
+
+    /// What was measured, and what stopped it going higher, in words for the
+    /// host's window and Manage host.
+    pub fn explain(&self) -> String {
+        let n = self.at_once;
+        let next = n + 1;
+        let mut said = if n == 0 {
+            format!(
+                "Too slow to convert 4K films as they are watched: one ran at {:.1}× real time on {}.",
+                self.speed, self.by
+            )
+        } else {
+            let mut said = format!(
+                "{n} at once on {}, one at {:.1}× real time.",
+                self.by, self.speed
+            );
+            match self.limit {
+                Some(Limit::Speed) => said.push_str(&match self.next_speed {
+                    Some(speed) => format!(
+                        " {next} at once ran at {speed:.1}× real time, too slow to keep up: \
+                         processing power is the limit."
+                    ),
+                    None => {
+                        format!(" {next} at once did not keep up: processing power is the limit.")
+                    }
+                }),
+                Some(Limit::Memory) => said.push_str(&match (self.needed, self.had) {
+                    (Some(needed), Some(had)) => {
+                        let (needed, had) = (gigabytes(needed), gigabytes(had));
+                        // Close enough to read the same: "3.1 GB, and there was 3.1 GB".
+                        let had = if had == needed {
+                            "a little less".to_string()
+                        } else {
+                            had
+                        };
+                        format!(
+                            " Memory is the limit: {next} at once needs about {needed} free, and \
+                             there was {had}."
+                        )
+                    }
+                    _ => format!(" Memory is the limit: it ran short with {next} at once."),
+                }),
+                Some(Limit::Most) => {
+                    said.push_str(&format!(" It kept up with {n}, the most it is tried with."))
+                }
+                None if self.memory => said.push_str(" As many as memory allows."),
+                None => {}
+            }
+            said
+        };
+        if !self.current() {
+            said.push_str(" Conversions have changed since: measure again for a current number.");
+        }
+        said
     }
 }
 
@@ -835,7 +918,13 @@ impl Converter {
 
     /// Measures how many 4K films this machine can convert at once and keep
     /// up: a demanding 4K 10-bit HEVC sample, converted once, then twice at
-    /// the same time, and so on, until it no longer keeps up.
+    /// the same time, and so on, until it no longer keeps up, would not fit
+    /// in memory, or reaches [`MOST_MEASURED`].
+    ///
+    /// Step by step, each step checked against the memory free at the time:
+    /// a machine short of memory is measured as far as it goes and told what
+    /// stopped it, rather than refused outright. Only a machine without room
+    /// for even one conversion is refused, in words.
     ///
     /// Tens of seconds on a slow machine, once; the result is kept.
     pub async fn measure(&self) -> Result<Measured, String> {
@@ -852,22 +941,21 @@ impl Converter {
 
         let capability = self.capability().await;
         let ffmpeg = capability.ffmpeg.clone().ok_or("no ffmpeg here")?;
-        // Memory first: making the sample and converting it is a 4K film's
-        // worth of work, and a machine without room for it is stopped by its
-        // system rather than slowed. That stopped the whole host, measuring
-        // again at every start.
+        // A machine without room for even the first step is stopped by its
+        // system rather than slowed, and that stopped the whole host.
         if let Some(why) = cannot_measure() {
             return Err(why);
         }
-        let free = free_memory();
-        let sample = make_sample(&ffmpeg, &self.config_dir.join("converter")).await?;
+        let sample = make_sample(&ffmpeg, &self.sample_dir()).await?;
 
         // The first route that converts the sample at all. That first run also
         // wakes the graphics driver, which takes seconds the first time and
-        // never again, so it is not what is timed: one more run is.
+        // never again, so it is not what is timed: the steps are.
         let mut found = None;
         for &route in &capability.routes {
-            match run_at_once(&ffmpeg, route, &sample, 1).await {
+            let lean = route == Route::Software
+                && free_memory().is_some_and(|free| free < one_needs() + KEEP_FREE);
+            match run_at_once(&ffmpeg, route, &sample, 1, lean).await {
                 Ok(_) => {
                     found = Some(route);
                     break;
@@ -877,39 +965,71 @@ impl Converter {
             }
         }
         let route = found.ok_or("nothing here could convert the sample")?;
-        let one = run_at_once(&ffmpeg, route, &sample, 1).await.map_err(|e| {
-            if e == LOW_MEMORY {
-                SHORT_WHILE_MEASURING.into()
-            } else {
-                e
-            }
-        })?;
-        let speed = one.speed;
-        // What one conversion took, from how far free memory fell while it
-        // ran: never less than a floor, since a reading taken between two
-        // samples can miss the worst of it.
-        let each = match (free, one.lowest_free) {
-            (Some(before), Some(lowest)) => before.saturating_sub(lowest).max(LEAST_EACH),
-            _ => LEAST_EACH,
-        };
-        let mut at_once = u32::from(speed >= KEEPS_UP);
-        let mut memory = false;
-        if at_once == 1 {
-            for streams in 2..=MOST_MEASURED {
-                // Not tried at all when it would not fit with room to spare.
-                if free.is_some_and(|free| free < u64::from(streams) * each + KEEP_FREE) {
-                    memory = true;
+        let software = route == Route::Software;
+
+        let mut at_once = 0;
+        let mut speed = 0.0;
+        // What one conversion took, read at the first step.
+        let mut each: Option<u64> = None;
+        let mut lean = false;
+        let mut limit = Limit::Most;
+        let (mut next_speed, mut needed, mut had) = (None, None, None);
+        for streams in 1..=MOST_MEASURED {
+            let free = free_memory();
+            match fits(
+                streams,
+                free,
+                each.unwrap_or_else(one_needs),
+                software,
+                lean,
+            ) {
+                Fit::Full => {}
+                Fit::Lean => lean = true,
+                Fit::Short(need) => {
+                    limit = Limit::Memory;
+                    needed = Some(need);
+                    had = free;
                     break;
                 }
-                match run_at_once(&ffmpeg, route, &sample, streams).await {
-                    Ok(run) if run.speed >= KEEPS_UP => at_once = streams,
-                    Err(e) if e == LOW_MEMORY => {
-                        memory = true;
-                        break;
-                    }
-                    _ => break,
-                }
             }
+            let run = match run_at_once(&ffmpeg, route, &sample, streams, lean).await {
+                Ok(run) => run,
+                Err(e) if e == LOW_MEMORY && streams == 1 => {
+                    return Err(SHORT_WHILE_MEASURING.into());
+                }
+                Err(e) if e == LOW_MEMORY => {
+                    limit = Limit::Memory;
+                    had = free;
+                    break;
+                }
+                Err(e) if streams == 1 => return Err(e),
+                // More at once than the graphics take, as a consumer NVIDIA
+                // card refuses past a few: no more keep up.
+                Err(_) => {
+                    limit = Limit::Speed;
+                    break;
+                }
+            };
+            if streams == 1 {
+                speed = run.speed;
+                // From how far free memory fell while it ran: never less than
+                // a floor, since a reading taken between two samples can miss
+                // the worst of it.
+                each = Some(match (free, run.lowest_free) {
+                    (Some(before), Some(lowest)) => before.saturating_sub(lowest).max(LEAST_EACH),
+                    _ => LEAST_EACH,
+                });
+            }
+            if run.speed < KEEPS_UP {
+                limit = Limit::Speed;
+                next_speed = Some((run.speed * 10.0).round() / 10.0);
+                break;
+            }
+            at_once = streams;
+        }
+        // Memory fell between the check before measuring and the first step.
+        if at_once == 0 && limit == Limit::Memory {
+            return Err(SHORT_WHILE_MEASURING.into());
         }
         let measured = Measured {
             by: route.describe().to_string(),
@@ -917,22 +1037,57 @@ impl Converter {
             speed: (speed * 10.0).round() / 10.0,
             at: unix_now(),
             settings: MEASURED_WITH,
-            memory,
+            memory: limit == Limit::Memory,
+            limit: Some(limit),
+            next_speed,
+            needed,
+            had,
         };
         *self.preferred.lock().expect("route lock") = Some(route);
         *self.measured.lock().expect("measured lock") = Some(measured.clone());
-        tracing::info!(
-            "measured video conversion: {} at once on {}, {:.1}x real time for one{}",
-            measured.at_once,
-            measured.by,
-            measured.speed,
-            if measured.memory {
-                ", as many as memory allows"
-            } else {
-                ""
-            }
-        );
+        tracing::info!("measured video conversion: {}", measured.explain());
         Ok(measured)
+    }
+
+    /// Where the measuring sample is made and kept.
+    fn sample_dir(&self) -> PathBuf {
+        self.config_dir.join("converter")
+    }
+
+    /// Whether the measuring sample has been made already.
+    pub fn has_sample(&self) -> bool {
+        std::fs::metadata(self.sample_dir().join(SAMPLE_NAME)).is_ok_and(|m| m.len() > 0)
+    }
+}
+
+/// Whether `streams` conversions at once fit in memory, leaving
+/// [`KEEP_FREE`] alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fit {
+    /// As conversions normally run.
+    Full,
+    /// Only with the processor decoding on fewer threads, as conversions run
+    /// when memory is short.
+    Lean,
+    /// Not at all: the free memory they would need.
+    Short(u64),
+}
+
+/// Whether `streams` at once fit in `free`, each taking `each` as it runs
+/// normally. Once lean, stays lean, so the steps compare like with like.
+fn fits(streams: u32, free: Option<u64>, each: u64, software: bool, lean: bool) -> Fit {
+    let need = |each: u64| u64::from(streams) * each + KEEP_FREE;
+    let lean_each = LEAN_NEEDS.min(each);
+    let Some(free) = free else {
+        // Where memory cannot be read, the system is left to it.
+        return if lean { Fit::Lean } else { Fit::Full };
+    };
+    if !lean && free >= need(each) {
+        Fit::Full
+    } else if software && free >= need(lean_each) {
+        Fit::Lean
+    } else {
+        Fit::Short(need(if software { lean_each } else { each }))
     }
 }
 
@@ -958,7 +1113,7 @@ const SAMPLE_LOOPS: u32 = 4;
 /// A test picture with grain over it: plain colour bars decode far faster
 /// than any real film, and would have promised more than the machine can do.
 async fn make_sample(ffmpeg: &Path, dir: &Path) -> Result<PathBuf, String> {
-    let sample = dir.join("sample-4k-hevc10.mkv");
+    let sample = dir.join(SAMPLE_NAME);
     if std::fs::metadata(&sample).is_ok_and(|m| m.len() > 0) {
         return Ok(sample);
     }
@@ -989,11 +1144,17 @@ async fn make_sample(ffmpeg: &Path, dir: &Path) -> Result<PathBuf, String> {
             "-pix_fmt",
             "p010le",
         ],
+        // On one thread pool, without wavefront threads or looking ahead:
+        // 0.8 GB, where x265 as it comes took 1.9 GB on twelve cores, and
+        // the sample was the dearest part of measuring by far. Slower, at
+        // twelve seconds rather than three, but made once.
         &[
             "-c:v",
             "libx265",
             "-preset",
             "ultrafast",
+            "-x265-params",
+            "pools=1:frame-threads=1:wpp=0:rc-lookahead=0:bframes=0",
             "-pix_fmt",
             "yuv420p10le",
         ],
@@ -1034,6 +1195,12 @@ async fn make_sample(ffmpeg: &Path, dir: &Path) -> Result<PathBuf, String> {
                 let _ = std::fs::remove_file(&partial);
                 return Err(SHORT_WHILE_MEASURING.into());
             }
+            // Five minutes for three seconds of picture: far too slow to
+            // convert anything as it is watched, whatever encoder comes next.
+            Err(e) if e == TOOK_TOO_LONG => {
+                let _ = std::fs::remove_file(&partial);
+                return Err(TOO_SLOW_FOR_SAMPLE.into());
+            }
             Err(_) => {}
         }
     }
@@ -1041,10 +1208,12 @@ async fn make_sample(ffmpeg: &Path, dir: &Path) -> Result<PathBuf, String> {
     Err("no HEVC encoder here could make the sample".into())
 }
 
-/// Free memory a machine needs before it is measured at all. Making the 4K
-/// sample took 2.1 GB on a 12-core machine, and one conversion of it 1.1 GB;
-/// fewer cores take less.
-const MEASURE_NEEDS: u64 = 2560 << 20;
+/// The measuring sample, as kept.
+const SAMPLE_NAME: &str = "sample-4k-hevc10.mkv";
+
+/// Why measuring stopped while the sample was being made.
+const TOO_SLOW_FOR_SAMPLE: &str = "Measuring stopped: making three seconds of a 4K sample took \
+     over five minutes, so this computer is too slow to convert 4K films as they are watched.";
 
 /// Roughly the memory one conversion takes on this machine. It grows with
 /// the processor, which decodes with a thread per core: measured at 420 MB
@@ -1055,8 +1224,8 @@ fn one_needs() -> u64 {
 }
 
 /// One conversion decoding with two threads, for when memory is tight: about
-/// 410 MB on four cores, and a quarter slower.
-const LEAN_NEEDS: u64 = 420 << 20;
+/// 410 MB on four cores and 480 MB on twelve, and a quarter slower.
+const LEAN_NEEDS: u64 = 480 << 20;
 
 /// Left free besides, for the system and the host.
 const SPARE: u64 = 160 << 20;
@@ -1065,9 +1234,15 @@ const SPARE: u64 = 160 << 20;
 const SHORT_WHILE_MEASURING: &str =
     "Measuring stopped: this computer ran short of memory while converting the 4K sample.";
 
-/// Free memory always left alone while measuring, for the system, the host
-/// and anything else running.
-const KEEP_FREE: u64 = 768 << 20;
+/// Free memory below which work being watched is stopped, before the
+/// system stops the whole host.
+const STOP_BELOW: u64 = 384 << 20;
+
+/// Free memory a measuring step plans to leave: the same room a real
+/// conversion leaves, over the point where it would be stopped. It used to
+/// be 768 MB, more than real conversions keep, and a 6 GB laptop with
+/// 1.2 GB free was refused though its host converts there.
+const KEEP_FREE: u64 = STOP_BELOW + SPARE;
 
 /// The least one conversion is counted as taking, whatever was read.
 const LEAST_EACH: u64 = 256 << 20;
@@ -1126,8 +1301,12 @@ async fn run_at_once(
     route: Route,
     sample: &Path,
     streams: u32,
+    lean: bool,
 ) -> Result<Run, String> {
     let mut args = arguments(route, sample, 0.0, false);
+    if lean && route == Route::Software {
+        decode_lean(&mut args);
+    }
     let input = args.iter().position(|a| a == "-i").ok_or("no input")?;
     args.splice(
         input..input,
@@ -1188,12 +1367,12 @@ async fn finish_watching_memory(
         }
         if let Some(free) = free_memory() {
             lowest_free = Some(lowest_free.map_or(free, |lowest| lowest.min(free)));
-            if free < KEEP_FREE / 2 {
+            if free < STOP_BELOW {
                 return Err(LOW_MEMORY.into());
             }
         }
         if started.elapsed() > longest {
-            return Err("took far too long".into());
+            return Err(TOOK_TOO_LONG.into());
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
@@ -1217,17 +1396,29 @@ fn first_bytes(route: Route) -> std::time::Duration {
     }
 }
 
+/// Why work being watched was stopped: it ran far past its time.
+const TOOK_TOO_LONG: &str = "took far too long";
+
 /// What a route that showed nothing in time is said to have done.
 const SILENT: &str = "nothing came out in time";
 
+/// The least free memory measuring starts with: room for one conversion as
+/// lean as they go. Making the sample is not counted on top: it is watched
+/// like every step, and stopped if memory runs short. Counted, it refused a
+/// laptop whose graphics make the sample in a few megabytes.
+fn measure_needs() -> u64 {
+    LEAN_NEEDS + KEEP_FREE
+}
+
 /// Why this machine cannot be measured now, in words for the person who
-/// asked, or `None` when it can be.
+/// asked, or `None` when it can be: not even one 4K conversion would fit.
 pub fn cannot_measure() -> Option<String> {
-    let free = free_memory().filter(|free| *free < MEASURE_NEEDS)?;
+    let needs = measure_needs();
+    let free = free_memory().filter(|free| *free < needs)?;
     Some(format!(
-        "Not measured: it needs about {} of free memory, and this computer has {} free. Close \
-         other apps, or give it more memory, and measure again.",
-        gigabytes(MEASURE_NEEDS),
+        "Not measured: converting even one 4K film needs about {} of free memory, and this \
+         computer has {} free. Close other apps, or give it more memory, and measure again.",
+        gigabytes(needs),
         gigabytes(free)
     ))
 }
@@ -1235,6 +1426,14 @@ pub fn cannot_measure() -> Option<String> {
 /// Bytes as people read an amount of memory: "2.5 GB".
 fn gigabytes(bytes: u64) -> String {
     format!("{:.1} GB", bytes as f64 / f64::from(1u32 << 30))
+}
+
+/// The processor decoding on two threads rather than one per core, each
+/// holding 4K frames: for when memory is short.
+fn decode_lean(args: &mut Vec<String>) {
+    if let Some(at) = args.iter().position(|a| a == "-i") {
+        args.splice(at..at, ["-threads".to_string(), "2".to_string()]);
+    }
 }
 
 /// Runs one route until it produces its first bytes, or fails.
@@ -1247,13 +1446,8 @@ async fn try_route(
     lean: bool,
 ) -> Result<(Child, ChildStdout, Vec<u8>, std::sync::Arc<Mutex<String>>), String> {
     let mut args = arguments(route, input, start, subtitles);
-    // The processor decodes with a thread per core, each holding 4K frames:
-    // two of them, when memory is short.
-    if lean
-        && route == Route::Software
-        && let Some(at) = args.iter().position(|a| a == "-i")
-    {
-        args.splice(at..at, ["-threads".to_string(), "2".to_string()]);
+    if lean && route == Route::Software {
+        decode_lean(&mut args);
     }
     let mut child = quiet(ffmpeg)
         .args(args)
@@ -1412,6 +1606,115 @@ mod tests {
         assert!(new.current());
     }
 
+    const GB: u64 = 1 << 30;
+
+    /// The complaints this came from: a machine with 2 GB free was refused
+    /// outright, and then a 6 GB laptop with 1.2 GB free, though its host
+    /// converts there: a real conversion starts with 640 MB free.
+    #[test]
+    fn a_machine_short_of_memory_is_still_measured() {
+        assert!(measure_needs() < 6 * GB / 5);
+        assert!(LEAN_NEEDS + SPARE < measure_needs());
+        // Planned room stays above the point where work is stopped.
+        const { assert!(KEEP_FREE > STOP_BELOW) };
+    }
+
+    #[test]
+    fn each_step_is_checked_against_the_memory_free_then() {
+        let each = 900 << 20;
+        // Plenty: as conversions normally run.
+        assert_eq!(fits(2, Some(4 * GB), each, true, false), Fit::Full);
+        // Not for three as they normally run, but leaner they fit.
+        assert_eq!(fits(3, Some(3 * GB), each, true, false), Fit::Lean);
+        // Once lean, the steps stay lean.
+        assert_eq!(fits(2, Some(4 * GB), each, true, true), Fit::Lean);
+        // Not at all: what it would have needed, as lean as they go.
+        assert_eq!(
+            fits(4, Some(2 * GB), each, true, false),
+            Fit::Short(4 * LEAN_NEEDS + KEEP_FREE)
+        );
+        // Graphics have no leaner way.
+        let graphics = 300 << 20;
+        assert_eq!(
+            fits(6, Some(2 * GB), graphics, false, false),
+            Fit::Short(6 * graphics + KEEP_FREE)
+        );
+        // Where memory cannot be read, the system is left to it.
+        assert_eq!(fits(6, None, each, true, false), Fit::Full);
+    }
+
+    fn measured(at_once: u32, limit: Option<Limit>) -> Measured {
+        Measured {
+            by: "the processor".into(),
+            at_once,
+            speed: 2.4,
+            at: 0,
+            settings: MEASURED_WITH,
+            memory: limit == Some(Limit::Memory),
+            limit,
+            next_speed: None,
+            needed: None,
+            had: None,
+        }
+    }
+
+    #[test]
+    fn a_measurement_says_what_stopped_it() {
+        let speed = Measured {
+            next_speed: Some(0.9),
+            ..measured(2, Some(Limit::Speed))
+        };
+        assert_eq!(
+            speed.explain(),
+            "2 at once on the processor, one at 2.4× real time. 3 at once ran at 0.9× real \
+             time, too slow to keep up: processing power is the limit."
+        );
+        let memory = Measured {
+            needed: Some(3 * GB + GB / 2),
+            had: Some(2 * GB + GB / 5),
+            ..measured(2, Some(Limit::Memory))
+        };
+        assert_eq!(
+            memory.explain(),
+            "2 at once on the processor, one at 2.4× real time. Memory is the limit: 3 at once \
+             needs about 3.5 GB free, and there was 2.2 GB."
+        );
+        // As this computer measured: 3.35 GB needed, 3.29 GB there.
+        let close = Measured {
+            needed: Some(3_348_185_088),
+            had: Some(3_285_741_568),
+            ..measured(3, Some(Limit::Memory))
+        };
+        assert!(
+            close
+                .explain()
+                .ends_with("4 at once needs about 3.1 GB free, and there was a little less.")
+        );
+        assert!(
+            measured(1, Some(Limit::Memory))
+                .explain()
+                .ends_with("Memory is the limit: it ran short with 2 at once.")
+        );
+        assert!(
+            measured(6, Some(Limit::Most))
+                .explain()
+                .ends_with("It kept up with 6, the most it is tried with.")
+        );
+        assert!(
+            measured(0, Some(Limit::Speed))
+                .explain()
+                .starts_with("Too slow to convert 4K films as they are watched")
+        );
+        let old = Measured {
+            settings: 1,
+            ..measured(1, None)
+        };
+        assert!(
+            old.explain()
+                .ends_with("measure again for a current number.")
+        );
+    }
+
     #[tokio::test]
     async fn the_settings_decide_whether_a_conversion_may_start() {
         let converter = Converter::new(std::env::temp_dir());
@@ -1430,6 +1733,10 @@ mod tests {
             at: 0,
             settings: MEASURED_WITH,
             memory: false,
+            limit: Some(Limit::Speed),
+            next_speed: None,
+            needed: None,
+            had: None,
         };
         converter.restore(true, None, Some(slow));
         assert!(matches!(converter.admit(0), Err(ConvertError::TooSlow)));

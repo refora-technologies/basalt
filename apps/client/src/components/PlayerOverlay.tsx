@@ -12,12 +12,14 @@ import {
   Music,
   Pause,
   Play,
+  ChevronLeft,
   Plus,
   SkipBack,
   SkipForward,
   Subtitles,
   Volume2,
   VolumeX,
+  Type,
   X,
   RotateCcw,
   RotateCw,
@@ -25,6 +27,7 @@ import {
   SunDim,
   Volume1,
 } from 'lucide-react'
+import { SubtitleStylePanel } from './SubtitleStylePanel'
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
 import { ApiError, api, inTauri, type SubtitleTrack } from '@/lib/api'
@@ -2180,6 +2183,8 @@ function SubtitleMenu({
   const others = more.filter((f) => !loadedNames.has(f.path.split('/').pop() ?? f.path))
   // A few at first: a drive can offer dozens, and the menu is for watching.
   const [allOthers, setAllOthers] = useState(false)
+  // How they look, in place of the list.
+  const [styling, setStyling] = useState(false)
   const shownOthers = allOthers ? others : others.slice(0, 6)
 
   const nudge = (by: number): void => {
@@ -2200,17 +2205,60 @@ function SubtitleMenu({
       style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT, ...MENU_CORNER }}
       className={cn(MENU_PLACE, !TOUCH && 'w-[320px]')}
     >
-      <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/[0.07] pl-4 pr-2">
-        <span className="text-[12.5px] font-semibold text-text">Subtitles</span>
-        <button
-          onClick={onClose}
-          aria-label="Close subtitle menu"
-          className="flex h-7 w-7 items-center justify-center rounded-md text-textFaint transition-colors duration-150 hover:bg-white/[0.07] hover:text-text"
-        >
-          <X size={14} />
-        </button>
+      <div
+        className={cn(
+          'flex shrink-0 items-center justify-between border-b border-white/[0.07] pr-2',
+          TOUCH ? 'h-12' : 'h-10',
+          styling ? 'pl-1' : 'pl-4',
+        )}
+      >
+        {styling ? (
+          <button
+            onClick={() => setStyling(false)}
+            aria-label="Back to subtitles"
+            className={cn(
+              'flex items-center gap-1 rounded-md pl-1 pr-2 text-[12.5px] font-semibold text-text transition-colors duration-150 hover:bg-white/[0.07]',
+              TOUCH ? 'h-10' : 'h-7',
+            )}
+          >
+            <ChevronLeft size={15} />
+            Subtitle style
+          </button>
+        ) : (
+          <span className="text-[12.5px] font-semibold text-text">Subtitles</span>
+        )}
+        <div className="flex items-center gap-1">
+          {!styling && (
+            <button
+              onClick={() => setStyling(true)}
+              className={cn(
+                'flex items-center gap-1.5 rounded-md px-2 text-[11.5px] text-textDim transition-colors duration-150 hover:bg-white/[0.07] hover:text-text',
+                TOUCH ? 'h-10' : 'h-7',
+              )}
+            >
+              <Type size={13} />
+              Style
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            aria-label="Close subtitle menu"
+            className={cn(
+              'flex items-center justify-center rounded-md text-textFaint transition-colors duration-150 hover:bg-white/[0.07] hover:text-text',
+              TOUCH ? 'h-10 w-10' : 'h-7 w-7',
+            )}
+          >
+            <X size={14} />
+          </button>
+        </div>
       </div>
 
+      {styling ? (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <SubtitleStylePanel style={mpv.subtitleStyle} onChange={(look) => void mpv.setSubtitleStyle(look)} />
+        </div>
+      ) : (
+      <>
       <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
         <Choice label="Off" active={mpv.subtitleId === null} onClick={() => onChoose(null)} />
         {inFile.map((track) => {
@@ -2326,6 +2374,8 @@ function SubtitleMenu({
           Plus if the subtitles are early, minus if they are late.
         </p>
       </div>
+      </>
+      )}
     </motion.div>
   )
 }

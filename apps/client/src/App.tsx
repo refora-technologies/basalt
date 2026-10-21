@@ -99,6 +99,7 @@ import {
   pickSaveLocation,
 } from '@/lib/dialogs'
 import { cn, formatBytes } from '@/lib/utils'
+import { LOOPS } from '@/lib/motion'
 
 const LIBRARY_KEYS: NavKey[] = ['videos', 'music', 'photos']
 
@@ -2042,7 +2043,7 @@ function Splash({ failed }: { failed: boolean }): React.JSX.Element {
       <div className="backdrop" />
       <motion.span
         animate={{ opacity: [0.35, 1, 0.35] }}
-        transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
+        transition={{ duration: 2.4, repeat: LOOPS, ease: 'easeInOut' }}
         className="relative z-10 text-basalt"
       >
         <HexMark size={30} />

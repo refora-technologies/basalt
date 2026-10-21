@@ -80,6 +80,7 @@ class MpvPlayer(
     // mpv.conf in it, so nothing else is read.
     val configDir = File(activity.filesDir, "mpv")
     installSubtitleFont(configDir)
+    linkStyleFonts()
     MPVLib.setOptionString("config", "yes")
     MPVLib.setOptionString("config-dir", configDir.path)
     MPVLib.init()
@@ -129,6 +130,87 @@ class MpvPlayer(
       partial.renameTo(target)
     } catch (e: Exception) {
       // Without it subtitles do not show, but nothing else is affected.
+    }
+  }
+
+  /**
+   * mpv's font folder, beside `subfont.ttf`. libass reads every font in it,
+   * whole, each time a subtitle track starts, and finds a font only by the
+   * family it is asked for: it cannot fall back to another for letters the
+   * first lacks. With only `subfont.ttf`, Tamil, Chinese, Thai and every
+   * other script without Latin letters drew as empty boxes.
+   *
+   * So the phone's fonts are linked in, not copied, and only those needed:
+   * the serif and monospace a subtitle style can ask for, which are small,
+   * and the one script the chosen subtitles are written in. The Chinese,
+   * Japanese and Korean font alone is 32 MB.
+   */
+  private val fontsDir: File
+    get() = File(activity.filesDir, "mpv/fonts")
+
+  private fun linkStyleFonts() {
+    for (name in listOf("NotoSerif-Regular.ttf", "NotoSerif-Bold.ttf", "DroidSansMono.ttf")) {
+      link(File(SYSTEM_FONTS, name), "style-$name")
+    }
+  }
+
+  /**
+   * Links the font for `script` in place of the last script's, and says its
+   * family, for `sub-font`, and whether the folder changed: a subtitle track
+   * already showing has to start again to read it. Null family when the
+   * script needs no font of its own, or the phone has none for it.
+   */
+  fun subtitleFont(script: String): Pair<String?, Boolean> {
+    val wanted = fontFor(script)
+    val dir = fontsDir
+    val before = dir.listFiles()?.filter { it.name.startsWith("script-") }?.map { it.name }?.toSet() ?: emptySet()
+    val after = wanted?.second?.map { "script-${it.name}" }?.toSet() ?: emptySet()
+    if (before == after) return Pair(wanted?.first, false)
+    for (name in before - after) File(dir, name).delete()
+    for (file in wanted?.second ?: emptyList()) link(file, "script-${file.name}")
+    return Pair(wanted?.first, true)
+  }
+
+  /** A script's family and its files on this phone, regular and bold. */
+  private fun fontFor(script: String): Pair<String, List<File>>? {
+    val cjk = mapOf("cjk-sc" to "SC", "cjk-tc" to "TC", "cjk-jp" to "JP", "cjk-kr" to "KR")[script]
+    if (cjk != null) {
+      // One collection holds all four on most phones; some ship each apart.
+      File(SYSTEM_FONTS, "NotoSansCJK-Regular.ttc").takeIf { it.canRead() }?.let {
+        return Pair("Noto Sans CJK $cjk", listOf(it))
+      }
+      return found("Noto Sans $cjk", listOf("NotoSans$cjk-Regular.otf", "NotoSans$cjk-Regular.ttf"))
+    }
+    if (script == "arabic") {
+      return found("Noto Naskh Arabic", listOf("NotoNaskhArabic-Regular.ttf", "NotoNaskhArabic-Bold.ttf"))
+    }
+    val name = SCRIPTS[script] ?: return null
+    return found(
+      "Noto Sans $name",
+      listOf("NotoSans$name-VF.ttf", "NotoSans$name-Regular.ttf", "NotoSans$name-Regular.otf", "NotoSans$name-Bold.ttf"),
+    )
+  }
+
+  private fun found(family: String, names: List<String>): Pair<String, List<File>>? {
+    val files = names.map { File(SYSTEM_FONTS, it) }.filter { it.canRead() && it.length() > 0 }
+    return if (files.isEmpty()) null else Pair(family, files)
+  }
+
+  /** A font linked into mpv's folder, or copied where a link cannot be made. */
+  private fun link(source: File, name: String) {
+    if (!source.canRead()) return
+    val dir = fontsDir
+    val target = File(dir, name)
+    if (target.exists()) return
+    try {
+      dir.mkdirs()
+      android.system.Os.symlink(source.path, target.path)
+    } catch (e: Exception) {
+      try {
+        if (source.length() < 2_000_000) source.copyTo(target, overwrite = true)
+      } catch (e: Exception) {
+        // Without it these subtitles draw as boxes; nothing else is affected.
+      }
     }
   }
 
@@ -227,3 +309,30 @@ class MpvPlayer(
   override fun eventProperty(property: String, value: String) = changed(property, value)
   override fun event(eventId: Int) {}
 }
+
+private val SYSTEM_FONTS = File("/system/fonts")
+
+/**
+ * Scripts the app names, and the word Noto's files and families use for
+ * each: `NotoSansTamil-VF.ttf`, family "Noto Sans Tamil". Latin, Greek and
+ * Cyrillic are in `subfont.ttf` already.
+ */
+private val SCRIPTS = mapOf(
+  "tamil" to "Tamil",
+  "telugu" to "Telugu",
+  "kannada" to "Kannada",
+  "malayalam" to "Malayalam",
+  "bengali" to "Bengali",
+  "gujarati" to "Gujarati",
+  "gurmukhi" to "Gurmukhi",
+  "devanagari" to "Devanagari",
+  "sinhala" to "Sinhala",
+  "thai" to "Thai",
+  "lao" to "Lao",
+  "khmer" to "Khmer",
+  "myanmar" to "Myanmar",
+  "hebrew" to "Hebrew",
+  "armenian" to "Armenian",
+  "georgian" to "Georgian",
+  "ethiopic" to "Ethiopic",
+)

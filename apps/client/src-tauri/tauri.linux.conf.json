@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "mainBinaryName": "basalt",
+  "app": {
+    "windows": [
+      {
+        "title": "Basalt",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 880,
+        "minHeight": 560,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "theme": "Dark",
+        "backgroundColor": "#00000000",
+        "dragDropEnabled": true
+      }
+    ]
+  },
+  "bundle": {
+    "targets": [
+      "deb",
+      "rpm",
+      "appimage"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ],
+    "resources": [],
+    "linux": {
+      "deb": {
+        "depends": [
+          "libmpv2 | libmpv1",
+          "ca-certificates"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "mpv-libs",
+          "ca-certificates"
+        ]
+      }
+    }
+  }
+}

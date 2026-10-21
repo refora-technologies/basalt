@@ -106,6 +106,55 @@ body.player-open [data-player] * {
   border: 1px solid rgba(255, 255, 255, 0.07);
 }
 
+/* ---- The window's own corners, on Linux (see lib/windowFrame.ts) ----
+   The window is transparent there and the page is the frame: clipped to a
+   rounded shape with a hairline edge, as Windows 11 draws every window.
+   `contain: paint` holds the fixed backdrop and dialogs inside the shape. */
+html[data-shape] {
+  background: transparent;
+}
+html[data-shape='rounded'] body {
+  border-radius: 10px;
+  clip-path: inset(0 round 10px);
+  contain: paint;
+}
+html[data-shape='rounded'] body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+  pointer-events: none;
+}
+
+/* Decorative CSS loops play a few times on Linux, as the scripted ones do
+   (LOOPS in lib/motion.ts): drawn by the processor there, a dot pinging for
+   ever cost most of a core. Spinners keep turning: they mean something. */
+html[data-shape] .animate-ping,
+html[data-shape] .animate-pulse {
+  animation-iteration-count: 3;
+}
+
+/* The edges to resize by: thin, above everything, gone when maximised.
+   `--edge` is set to the width Tauri resizes from (see lib/windowFrame.ts). */
+.resize-edge {
+  position: fixed;
+  z-index: 1001;
+  --corner: max(12px, calc(var(--edge, 5px) * 2));
+}
+html[data-shape='square'] .resize-edge {
+  display: none;
+}
+.resize-edge[data-edge='North'] { top: 0; left: var(--corner); right: var(--corner); height: var(--edge, 5px); }
+.resize-edge[data-edge='South'] { bottom: 0; left: var(--corner); right: var(--corner); height: var(--edge, 5px); }
+.resize-edge[data-edge='West'] { left: 0; top: var(--corner); bottom: var(--corner); width: var(--edge, 5px); }
+.resize-edge[data-edge='East'] { right: 0; top: var(--corner); bottom: var(--corner); width: var(--edge, 5px); }
+.resize-edge[data-edge='NorthWest'] { top: 0; left: 0; width: var(--corner); height: var(--corner); }
+.resize-edge[data-edge='NorthEast'] { top: 0; right: 0; width: var(--corner); height: var(--corner); }
+.resize-edge[data-edge='SouthWest'] { bottom: 0; left: 0; width: var(--corner); height: var(--corner); }
+.resize-edge[data-edge='SouthEast'] { bottom: 0; right: 0; width: var(--corner); height: var(--corner); }
+
 /* Frameless window drag regions. */
 .drag {
   -webkit-app-region: drag;
@@ -203,17 +252,22 @@ html:not(.mobile) ::-webkit-scrollbar-thumb:hover {
     opacity 200ms ease-out;
 }
 
-/* On a phone, no blur behind anything. Android's WebView redraws a blurred
+/* On a phone, and on Linux, where WebKit draws the page with the processor
+   (see linux_player.rs), no blur behind anything. Android's WebView redraws a blurred
    backdrop every frame something moves over it, which is the costliest thing
    a page can ask of it, and at a phone's size the blur behind a button over a
    film was barely visible. The see-through colours stay. The large soft
    shadow is traded for a tighter one for the same reason. */
 html.mobile *,
 html.mobile *::before,
-html.mobile *::after {
+html.mobile *::after,
+html[data-shape] *,
+html[data-shape] *::before,
+html[data-shape] *::after {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
-html.mobile .shadow-lift {
+html.mobile .shadow-lift,
+html[data-shape] .shadow-lift {
   box-shadow: 0 8px 20px -8px rgba(0, 0, 0, 0.6);
 }

@@ -47,6 +47,7 @@ What the Basalt interface may ask of Android directly. Opening files and creatin
 - `allow-mpv-set-property`
 - `allow-mpv-get-property`
 - `allow-mpv-add-subtitle`
+- `allow-mpv-subtitle-font`
 - `allow-mpv-destroy`
 
 ## Permission Table
@@ -678,6 +679,32 @@ Enables the mpv_set_property command without any pre-configured scope.
 <td>
 
 Denies the mpv_set_property command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-mpv-subtitle-font`
+
+</td>
+<td>
+
+Enables the mpv_subtitle_font command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-mpv-subtitle-font`
+
+</td>
+<td>
+
+Denies the mpv_subtitle_font command without any pre-configured scope.
 
 </td>
 </tr>

@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as mpv from './mpvBackend'
 import { inTauri } from './api'
-import { isAndroid } from './platform'
+import { isAndroid, isLinuxDesktop } from './platform'
 import { usePreviewMpv } from './previewMpv'
+import { hasLetters, type Script, scriptForLanguage, scriptOfText } from './subtitleFonts'
+import {
+  DEFAULT_STYLE,
+  RAISES,
+  loadStyle,
+  saveStyle,
+  styleFamily,
+  styleProperties,
+  type SubtitleStyle,
+} from './subtitleStyle'
 
 /**
  * The player, which is mpv rendering behind the window.
@@ -173,6 +183,8 @@ export interface MpvState {
   audioId: number | null
   /** Seconds the subtitles are shifted by. Positive shows them later. */
   subtitleDelay: number
+  /** How subtitles look, as chosen on this device. */
+  subtitleStyle: SubtitleStyle
   /**
    * The picture size, when the file is playing in the lighter mode: too big
    * for this phone to decode in hardware. See [`needsLighterPlayback`].
@@ -196,6 +208,53 @@ export interface MpvState {
 export interface ConvertedSource {
   base: string
   duration: number
+}
+
+/** mpv's own bottom margin for subtitles, in its scaled pixels. */
+const SUBTITLE_MARGIN_AT_REST = 22
+
+/**
+ * Whether subtitles are lifted over the controls by their position rather
+ * than their margin. The system's mpv on Linux is often older (Ubuntu 22.04
+ * has 0.34), which applies a margin changed while playing only to the next
+ * line, and drops the one showing: the line stayed behind the controls, or
+ * vanished. Its position it applies at once.
+ */
+const LIFT_BY_POSITION = isLinuxDesktop()
+
+/**
+ * The subtitle position (percent of the height, 100 at the bottom) for a
+ * chosen height and a lift in mpv's scaled pixels, of a 720-high picture.
+ */
+export function liftedPosition(raise: number, lift: number): number {
+  const chosen = RAISES[raise] ?? 100
+  const extra = Math.max(0, lift - SUBTITLE_MARGIN_AT_REST) / 7.2
+  // Whole percent: mpv before 0.35 refuses a fraction here.
+  return Math.max(0, Math.round(chosen - extra))
+}
+
+/**
+ * Seconds of a conversion that may have arrived without a track just chosen,
+ * and be played out rather than read again.
+ */
+const READ_AHEAD_LEFT = 2
+
+/**
+ * The tracks chosen, as options for opening the same film again. A subtitle
+ * file of its own is left off: it comes back when the files are added again.
+ */
+export function tracksToKeep(sid: unknown, aid: unknown, tracks: MpvTrack[]): string[] {
+  const sub = Number(sid) || 0
+  const audio = Number(aid) || 0
+  const external = tracks.some((t) => t.kind === 'sub' && t.id === sub && t.external)
+  return [`sid=${sub > 0 && !external ? sub : 'no'}`, ...(audio > 0 ? [`aid=${audio}`] : [])]
+}
+
+/** Whether a conversion has arrived far enough ahead to be read again. */
+export function worthReadingAgain(position: unknown, cachedTo: unknown): boolean {
+  const at = Number(position)
+  if (!Number.isFinite(at) || at <= 0) return false
+  return (Number(cachedTo) || at) - at > READ_AHEAD_LEFT
 }
 
 /** The URL of a conversion from a point in the film. */
@@ -433,6 +492,7 @@ const EMPTY: MpvState = {
   subtitleId: null,
   audioId: null,
   subtitleDelay: 0,
+  subtitleStyle: DEFAULT_STYLE,
   lighter: null,
   strain: null,
   converted: false,
@@ -472,6 +532,8 @@ export interface Mpv extends MpvState {
   setSubtitleDelay: (seconds: number) => Promise<void>
   /** Lifts the subtitles off the bottom edge, in pixels. */
   setSubtitleMargin: (pixels: number) => Promise<void>
+  /** Changes how subtitles look, at once, and keeps it. */
+  setSubtitleStyle: (style: SubtitleStyle) => Promise<void>
 }
 
 /**
@@ -485,7 +547,7 @@ export function useMpv(): Mpv {
 }
 
 function useAppMpv(): Mpv {
-  const [state, setState] = useState<MpvState>(EMPTY)
+  const [state, setState] = useState<MpvState>(() => ({ ...EMPTY, subtitleStyle: loadStyle() }))
   const started = useRef(false)
   const loaded = useRef(false)
   /** mpv's own end-of-file flag, as last reported. */
@@ -506,6 +568,19 @@ function useAppMpv(): Mpv {
 
   /** Which read of the track list is the latest; older ones are dropped. */
   const trackRead = useRef(0)
+  /** The track list as last read, for code that runs outside a render. */
+  const trackList = useRef<MpvTrack[]>([])
+
+  /** The film open, as its URL: a conversion of it is the same film. */
+  const film = useRef<string | null>(null)
+  /** Subtitle files added to the film open, in the order they were added. */
+  const addedSubs = useRef<string[]>([])
+  /**
+   * Subtitle files to add again once the film, opened again, plays, and the
+   * one of them that was showing. mpv drops added files with the file they
+   * were added to, so a seek that started a new conversion lost them.
+   */
+  const putBack = useRef<{ generation: number; files: string[]; showing: string | null } | null>(null)
 
   /**
    * The subtitle and audio tracks, read one property at a time.
@@ -545,8 +620,94 @@ function useAppMpv(): Mpv {
       const label = title || lang || `Track ${id}`
       tracks.push({ id, kind, label, external, lang, title, forced, isDefault, hearingImpaired })
     }
-    if (mine === trackRead.current) setState((s) => ({ ...s, tracks }))
+    if (mine === trackRead.current) {
+      trackList.current = tracks
+      setState((s) => ({ ...s, tracks }))
+    }
   }, [])
+
+  /**
+   * The tracks chosen in the film open, as options for opening it again. Set
+   * as it opens, not after: a conversion is read ahead of the picture, and
+   * only for the tracks chosen at the time.
+   */
+  const chosenTracks = useCallback(async (): Promise<string[]> => {
+    const [sid, aid] = await Promise.all([readProperty('sid', 'int64'), readProperty('aid', 'int64')])
+    return tracksToKeep(sid, aid, trackList.current)
+  }, [])
+
+  /** How subtitles look, as last chosen. */
+  const style = useRef<SubtitleStyle>(state.subtitleStyle)
+  /** mpv's own outline, read before any style changes it. */
+  const outline = useRef<number | null>(null)
+  /** How far subtitles are lifted off the bottom, as the page last asked. */
+  const margin = useRef(SUBTITLE_MARGIN_AT_REST)
+  /** On a phone: the script the subtitles showing are written in, and its font. */
+  const script = useRef<{ script: Script | null; family: string | null }>({ script: null, family: null })
+
+  /** The font subtitles are drawn in: the script's own on a phone, or the style's. */
+  const applyFont = useCallback(async () => {
+    const platform = isAndroid() ? 'android' : navigator.userAgent.includes('Windows') ? 'windows' : 'linux'
+    // The style's fonts read Latin, Greek and Cyrillic only.
+    await set('sub-font', script.current.family ?? styleFamily(style.current.font, platform))
+  }, [set])
+
+  const applyStyle = useCallback(
+    async (look: SubtitleStyle) => {
+      if (outline.current === null) {
+        outline.current = Number(await readProperty('sub-border-size', 'double')) || 1.65
+      }
+      for (const [name, value] of styleProperties(look, outline.current)) {
+        try {
+          // On Linux the height carries the lift over the controls too.
+          if (name === 'sub-pos' && LIFT_BY_POSITION) {
+            await set(name, liftedPosition(look.raise, margin.current))
+            continue
+          }
+          await set(name, value)
+        } catch {
+          // An mpv without the property keeps its own look for that part.
+        }
+      }
+      await applyFont()
+    },
+    [set, applyFont],
+  )
+
+  /**
+   * On a phone, the font for the script `to` linked in and named: see
+   * `subtitleFonts.ts`. Whether a track already showing has to start again
+   * to read it, which mpv does only as a track starts.
+   */
+  const fontForScript = useCallback(
+    async (to: Script | null): Promise<boolean> => {
+      if (!isAndroid() || script.current.script === to) return false
+      const { family, changed } = await mpv.subtitleFont(to ?? '')
+      script.current = { script: to, family }
+      await applyFont()
+      return changed
+    },
+    [applyFont],
+  )
+
+  /** The subtitle files put back, once the film opened again plays. */
+  const restoreAdded = useCallback(
+    async (mine: number) => {
+      const back = putBack.current
+      if (!back || back.generation !== mine) return
+      putBack.current = null
+      for (const file of back.files) {
+        try {
+          // `auto` adds it without showing it; only the one that was showing is.
+          await mpv.command('sub-add', [file, file === back.showing ? 'select' : 'auto'])
+        } catch {
+          // A file that can no longer be read is simply not offered again.
+        }
+      }
+      await readTracks()
+    },
+    [readTracks],
+  )
 
   // One init for the life of the window.
   useEffect(() => {
@@ -579,6 +740,7 @@ function useAppMpv(): Mpv {
           observedProperties: OBSERVED,
         })
         setState((s) => ({ ...s, ready: true }))
+        await applyStyle(style.current)
 
         stop = await mpv.observeProperties(OBSERVED, (event) => {
           const { name, data } = event as { name: string; data: unknown }
@@ -809,17 +971,31 @@ function useAppMpv(): Mpv {
         // Read here as well as on a change of count: the next episode usually
         // has the same number of tracks as the last, and then no change comes.
         void readTracks()
+        void restoreAdded(mine)
         if (next.verdict === 'video' && !strainChecked) void checkStrain(mine)
       }
       return
     }
-  }, [readTracks, checkStrain])
+  }, [readTracks, restoreAdded, checkStrain])
 
   const load = useCallback(
     async (url: string, startAt: number, source?: ConvertedSource) => {
       if (!inTauri()) return
       const mine = ++generation.current
       eof.current = false
+      // The same film opened again (a conversion from further on, or the
+      // original back) keeps the subtitles and sound chosen for it.
+      const key = source?.base ?? url
+      const again = loaded.current && film.current === key
+      film.current = key
+      const keep = again ? await chosenTracks() : []
+      if (again && addedSubs.current.length > 0) {
+        const showing = (await readProperty('current-tracks/sub/external-filename', 'string')) ?? null
+        putBack.current = { generation: mine, files: [...addedSubs.current], showing: showing && String(showing) }
+      } else {
+        putBack.current = null
+        if (!again) addedSubs.current = []
+      }
       converted.current = source ? { ...source, from: startAt } : null
       setState((s) => ({
         ...s,
@@ -852,8 +1028,8 @@ function useAppMpv(): Mpv {
         // times, which mpv would otherwise count from zero.
         const options = (
           source
-            ? ['pause=no', 'rebase-start-time=no']
-            : ['pause=no', startAt > 1 ? `start=${startAt.toFixed(3)}` : '']
+            ? ['pause=no', 'rebase-start-time=no', ...keep]
+            : ['pause=no', startAt > 1 ? `start=${startAt.toFixed(3)}` : '', ...keep]
         )
           .filter(Boolean)
           .join(',')
@@ -866,13 +1042,16 @@ function useAppMpv(): Mpv {
       }
       void watchOpening(source ? convertedUrl(source.base, startAt) : url, mine)
     },
-    [set, watchOpening, undoLighter],
+    [set, watchOpening, undoLighter, chosenTracks],
   )
 
   const stop = useCallback(async () => {
     generation.current++
     eof.current = false
     converted.current = null
+    film.current = null
+    addedSubs.current = []
+    putBack.current = null
     void undoLighter()
     setState((s) => ({
       ...s,
@@ -995,18 +1174,97 @@ function useAppMpv(): Mpv {
     if (inTauri()) await mpv.command('cycle', ['mute'])
   }, [])
 
+  /**
+   * After another track is chosen in a conversion: the conversion again from
+   * here, when what has arrived runs on ahead.
+   *
+   * mpv keeps only the chosen tracks of what it reads, and it cannot read a
+   * conversion again. A subtitle chosen while a minute had arrived showed
+   * nothing for that minute, nor on a seek back within it; it came back only
+   * when a seek further on started a new conversion. A moment or two ahead
+   * is left to play out instead.
+   */
+  const readAgainFor = useCallback(
+    async (inFile: boolean) => {
+      const source = converted.current
+      if (!source || !inFile) return
+      const [position, cachedTo] = await Promise.all([
+        readProperty('time-pos', 'double'),
+        readProperty('demuxer-cache-time', 'double'),
+      ])
+      if (!worthReadingAgain(position, cachedTo)) return
+      await load(source.base, Number(position), { base: source.base, duration: source.duration })
+    },
+    [load],
+  )
+
+  /** Which choice of subtitles is being read for its script; newer ones stop older. */
+  const scriptWatch = useRef(0)
+
+  /**
+   * On a phone, the script of subtitles whose language is not given, read
+   * from their first line with letters, which can be minutes in. A font
+   * linked in only then needs the track started again.
+   */
+  const watchScript = useCallback(
+    async (id: number, inFile: boolean) => {
+      if (!isAndroid()) return
+      const mine = ++scriptWatch.current
+      const since = Date.now()
+      while (mine === scriptWatch.current && Date.now() - since < 30 * 60_000) {
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+        if (mine !== scriptWatch.current) return
+        const text = String((await readProperty('sub-text', 'string')) ?? '')
+        if (!hasLetters(text)) continue
+        if (await fontForScript(scriptOfText(text))) {
+          await set('sid', 'no')
+          await set('sid', id)
+          await readAgainFor(inFile)
+        }
+        return
+      }
+    },
+    [fontForScript, set, readAgainFor],
+  )
+
+  /**
+   * Subtitles about to show: on a phone, in a font for their script, by
+   * their language where it is given, else by their first line. Whether
+   * the track has to start again for it.
+   */
+  const fitFont = useCallback(
+    async (track: MpvTrack | undefined): Promise<boolean> => {
+      scriptWatch.current++
+      if (!isAndroid() || !track) return false
+      const known = scriptForLanguage(track.lang, track.title)
+      if (known === null) {
+        void watchScript(track.id, !track.external)
+        return false
+      }
+      return fontForScript(known)
+    },
+    [watchScript, fontForScript],
+  )
+
   const selectSubtitle = useCallback(
     async (id: number | null) => {
-      if (inTauri()) await set('sid', id === null ? 'no' : id)
+      if (!inTauri()) return
+      const track = trackList.current.find((t) => t.kind === 'sub' && t.id === id)
+      if ((await fitFont(track)) && id !== null) await set('sid', 'no')
+      await set('sid', id === null ? 'no' : id)
+      await readAgainFor(track !== undefined && !track.external)
     },
-    [set],
+    [set, readAgainFor, fitFont],
   )
 
   const selectAudio = useCallback(
     async (id: number) => {
-      if (inTauri()) await set('aid', id)
+      if (!inTauri()) return
+      await set('aid', id)
+      const track = trackList.current.find((t) => t.kind === 'audio' && t.id === id)
+      await readAgainFor(track !== undefined && !track.external)
     },
-    [set],
+    [set, readAgainFor],
   )
 
   const addSubtitle = useCallback(async (path: string) => {
@@ -1014,8 +1272,25 @@ function useAppMpv(): Mpv {
     // `select` makes it the active track, which is what someone who just
     // chose a file expects to happen.
     await mpv.command('sub-add', [path, 'select'])
+    if (!addedSubs.current.includes(path)) addedSubs.current.push(path)
     await readTracks()
-  }, [readTracks])
+    // Read whole as it was added, so starting it again costs nothing.
+    const id = Number(await readProperty('sid', 'int64')) || 0
+    if (await fitFont(trackList.current.find((t) => t.kind === 'sub' && t.id === id))) {
+      await set('sid', 'no')
+      await set('sid', id)
+    }
+  }, [readTracks, fitFont, set])
+
+  const setSubtitleStyle = useCallback(
+    async (look: SubtitleStyle) => {
+      style.current = look
+      saveStyle(look)
+      setState((s) => ({ ...s, subtitleStyle: look }))
+      if (inTauri()) await applyStyle(look)
+    },
+    [applyStyle],
+  )
 
   const setSubtitleDelay = useCallback(
     async (seconds: number) => {
@@ -1026,7 +1301,13 @@ function useAppMpv(): Mpv {
 
   const setSubtitleMargin = useCallback(
     async (pixels: number) => {
-      if (inTauri()) await set('sub-margin-y', Math.round(pixels))
+      if (!inTauri()) return
+      margin.current = pixels
+      if (LIFT_BY_POSITION) {
+        await set('sub-pos', liftedPosition(style.current.raise, pixels))
+      } else {
+        await set('sub-margin-y', Math.round(pixels))
+      }
     },
     [set],
   )
@@ -1050,5 +1331,6 @@ function useAppMpv(): Mpv {
     addSubtitle,
     setSubtitleDelay,
     setSubtitleMargin,
+    setSubtitleStyle,
   }
 }

@@ -21,6 +21,78 @@ use basalt_client::proxy::MediaProxy;
 use basalt_client::{Basalt, DiscoveredHost, Status, TransferEvent, UiError};
 use tauri::{Emitter, Manager, State};
 
+#[cfg(target_os = "linux")]
+mod linux_player;
+#[cfg(target_os = "linux")]
+mod linux_update;
+#[cfg(target_os = "linux")]
+use linux_player::{
+    linux_mpv_command, linux_mpv_destroy, linux_mpv_get_property, linux_mpv_init,
+    linux_mpv_set_property,
+};
+
+/// A line from the page, written to the log: what a test script running in
+/// it reports. Only debug builds write it.
+#[tauri::command]
+fn page_log(text: String) {
+    #[cfg(debug_assertions)]
+    eprintln!("page: {text}");
+    #[cfg(not(debug_assertions))]
+    let _ = text;
+}
+
+/// After the system moved or resized the window from a press on the page,
+/// on Linux: see `linux_player::release_in_page`. Nothing elsewhere.
+#[tauri::command]
+fn release_pointer(window: tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    linux_player::release_in_page(&window);
+    #[cfg(not(target_os = "linux"))]
+    let _ = window;
+}
+
+/// The Linux player's commands everywhere else, so one list names them all.
+/// Never called: the page uses them only on Linux.
+#[cfg(not(target_os = "linux"))]
+mod linux_stand_in {
+    const ELSEWHERE: &str = "only on Linux";
+    #[tauri::command]
+    pub fn linux_mpv_init(
+        options: std::collections::HashMap<String, String>,
+        observed: Vec<Vec<String>>,
+    ) -> Result<(), String> {
+        let _ = (options, observed);
+        Err(ELSEWHERE.into())
+    }
+    #[tauri::command]
+    pub fn linux_mpv_command(args: Vec<String>) -> Result<(), String> {
+        let _ = args;
+        Err(ELSEWHERE.into())
+    }
+    #[tauri::command]
+    pub fn linux_mpv_set_property(name: String, value: String) -> Result<(), String> {
+        let _ = (name, value);
+        Err(ELSEWHERE.into())
+    }
+    #[tauri::command]
+    pub fn linux_mpv_get_property(
+        name: String,
+        format: String,
+    ) -> Result<serde_json::Value, String> {
+        let _ = (name, format);
+        Err(ELSEWHERE.into())
+    }
+    #[tauri::command]
+    pub fn linux_mpv_destroy() -> Result<(), String> {
+        Err(ELSEWHERE.into())
+    }
+}
+#[cfg(not(target_os = "linux"))]
+use linux_stand_in::{
+    linux_mpv_command, linux_mpv_destroy, linux_mpv_get_property, linux_mpv_init,
+    linux_mpv_set_property,
+};
+
 /// Every command answers with this: the value, or an error the interface can
 /// branch on. `UiError` and the response types live in `basalt-client` so their
 /// JSON field names are covered by tests — see that crate's `ui` module for why
@@ -190,7 +262,12 @@ async fn disconnect(state: State<'_, AppState>) -> Answer<Status> {
 
 #[tauri::command]
 async fn forget_host(state: State<'_, AppState>, host_id: String) -> Answer<Status> {
-    state.watch.lock().expect("watch lock").take();
+    // Only the drive in use has a watch to end. Forgetting another one, from
+    // the drive list, used to end it too, and live changes stopped arriving.
+    let in_use = state.client.status().map(|info| info.host_id);
+    if in_use.as_deref() == Some(host_id.as_str()) {
+        state.watch.lock().expect("watch lock").take();
+    }
     state.client.forget(&host_id).await?;
     Ok(status_of(&state.client))
 }
@@ -489,7 +566,10 @@ async fn claim_profile(
     pin: String,
     remember: bool,
 ) -> Answer<basalt_proto::msg::ProfileView> {
-    Ok(state.client.claim_profile(&id, &code, &pin, remember).await?)
+    Ok(state
+        .client
+        .claim_profile(&id, &code, &pin, remember)
+        .await?)
 }
 
 /// Profiles this device is signed in to on its other drives.
@@ -1342,26 +1422,49 @@ async fn download_update(app: tauri::AppHandle, release: basalt_update::Release)
 /// exactly how somebody ends up "updating" and finding the same version.
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
+    // Linux: a package, installed the way this copy was, and the new copy
+    // started once it is in. See linux_update.
+    #[cfg(target_os = "linux")]
+    {
+        let next = linux_update::install(std::path::Path::new(&path))
+            .await
+            .map_err(|message| UiError {
+                kind: "error".into(),
+                message,
+            })?;
+        std::process::Command::new(&next)
+            .spawn()
+            .map_err(|e| UiError {
+                kind: "error".into(),
+                message: format!("the update is installed; start Basalt again ({e})"),
+            })?;
+        app.exit(0);
+        Ok(())
+    }
+
     // As an update, not a first install: /UPDATE goes over the installed copy
     // without uninstalling it or asking anything, and keeps the user's
     // shortcuts as they are; /P shows only a progress bar, closing this app if
     // it is still running; /R starts it again when the new version is in.
     // One press of "Restart to update", and nothing else to click.
-    std::process::Command::new(&path)
-        .args(["/P", "/UPDATE", "/R"])
-        .spawn()
-        .map_err(|e| UiError {
-            kind: "error".into(),
-            message: format!("couldn’t start the installer: {e}"),
-        })?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::process::Command::new(&path)
+            .args(["/P", "/UPDATE", "/R"])
+            .spawn()
+            .map_err(|e| UiError {
+                kind: "error".into(),
+                message: format!("couldn’t start the installer: {e}"),
+            })?;
 
-    // A moment for the installer to be up before this window disappears,
-    // so the screen is never empty with nothing apparently happening.
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-        app.exit(0);
-    });
-    Ok(())
+        // A moment for the installer to be up before this window disappears,
+        // so the screen is never empty with nothing apparently happening.
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            app.exit(0);
+        });
+        Ok(())
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1391,7 +1494,8 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
-    #[cfg(desktop)]
+    // Not on Linux, where the app draws the picture itself: see linux_player.
+    #[cfg(all(desktop, not(target_os = "linux")))]
     let builder = builder.plugin(tauri_plugin_libmpv::init());
     #[cfg(mobile)]
     let builder = builder.plugin(tauri_plugin_basalt_android::init());
@@ -1519,9 +1623,46 @@ pub fn run() {
                 });
             }
 
+            // The picture's place under the page, before the page shows.
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.webview_windows().into_values().next() {
+                linux_player::attach(&window);
+            }
+
+            // Debug builds only: a script run in the page once it has loaded,
+            // and again each time the file changes, for testing the app step
+            // by step where nobody is there to click.
+            #[cfg(debug_assertions)]
+            if let (Ok(path), Some(window)) = (
+                std::env::var("BASALT_TEST_SCRIPT"),
+                app.webview_windows().into_values().next(),
+            ) {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(4));
+                    let mut last = None;
+                    loop {
+                        let changed = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                        if changed.is_some() && changed != last {
+                            last = changed;
+                            if let Ok(script) = std::fs::read_to_string(&path) {
+                                let _ = window.eval(&script);
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            linux_mpv_init,
+            linux_mpv_command,
+            linux_mpv_set_property,
+            linux_mpv_get_property,
+            linux_mpv_destroy,
+            release_pointer,
+            page_log,
             app_version,
             check_update,
             release_notes,

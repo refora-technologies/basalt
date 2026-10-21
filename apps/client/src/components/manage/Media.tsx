@@ -258,10 +258,12 @@ export function ConversionGroup({ m, view }: Tools): React.JSX.Element {
                     {measuring
                       ? 'Measuring: converting a 4K sample to see how many devices this host can keep up with…'
                       : c.measured
-                        ? `Measured ${ago(c.measured.at)} on ${c.measured.by}: one at ${c.measured.speed}× real time${
-                            c.measured.memory ? ', as many as memory allows' : ''
-                          }.`
-                        : (c.note ?? 'Not measured yet.')}
+                        ? c.explained
+                          ? `Measured ${ago(c.measured.at)}: ${c.explained}`
+                          : `Measured ${ago(c.measured.at)} on ${c.measured.by}: one at ${c.measured.speed}× real time${
+                              c.measured.memory ? ', as many as memory allows' : ''
+                            }.`
+                        : (c.note ?? 'Not measured yet, so one at a time. Measure to see how many the host keeps up with.')}
                   </p>
                 </div>
                 <Pill onClick={() => void m.act({ do: 'measureConversion' })} busy={measuring}>

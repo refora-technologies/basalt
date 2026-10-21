@@ -5,16 +5,31 @@ import {
   ArrowRight,
   HardDrive,
   Loader2,
+  MoreHorizontal,
   RefreshCw,
   ShieldCheck,
+  Trash2,
 } from 'lucide-react'
 import { HexMark } from './HexMark'
+import { useConfirm } from './ui/ConfirmDialog'
+import { type MenuAction, useContextMenu } from './ui/ContextMenu'
+import { ActionSheet } from '@/mobile/Sheet'
 import { ApiError, api, type DiscoveredHost, type Status } from '@/lib/api'
+import { useLongPress } from '@/lib/useLongPress'
+import { isMobileShell } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { wrongHostText } from '@/lib/wrongHost'
 import { useBack } from '@/mobile/useBack'
+import { LOOPS } from '@/lib/motion'
 
 const PIN_LENGTH = 6
+
+const TOUCH = isMobileShell()
+
+/** A drive as the list names it: its drive, or the computer when none is shared. */
+function driveName(host: DiscoveredHost): string {
+  return host.hasVault && host.vault.trim() ? host.vault : host.hostName
+}
 
 /**
  * First contact.
@@ -189,6 +204,37 @@ export function PairingView({
     [busy, onPaired, onBack, currentHostId, scan],
   )
 
+  const { confirm, dialog } = useConfirm()
+
+  /**
+   * A paired drive taken off this device's list. Only this device forgets it:
+   * the host still lists the device until its owner removes it there, and
+   * the files are not touched. Using it again means pairing with the PIN.
+   */
+  const forget = useCallback(
+    async (host: DiscoveredHost) => {
+      const name = driveName(host)
+      const ok = await confirm({
+        title: `Forget ${name}?`,
+        message: `This device stops using ${name} on ${host.hostName}. Nothing on that computer changes. To use it again, pair with its PIN.`,
+        confirmLabel: 'Forget',
+        danger: true,
+      })
+      if (!ok || !live.current) return
+      try {
+        await api.forgetHost(host.hostId)
+        if (!live.current) return
+        missed.current.delete(host.hostId)
+        setHosts((before) => before?.filter((h) => h.hostId !== host.hostId) ?? before)
+        // Still on the network, it comes back as a host to pair with.
+        void look(true)
+      } catch (e) {
+        if (live.current) setError(e instanceof Error ? e.message : String(e))
+      }
+    },
+    [confirm, look],
+  )
+
   /**
    * An address typed in. Asked who answers there first, so a host this device
    * has paired with is reconnected to, as choosing it from the list would.
@@ -261,19 +307,22 @@ export function PairingView({
   })
 
   return (
-    <div className="relative flex h-full flex-col items-center justify-center px-8">
+    <div className="relative flex h-full flex-col items-center justify-center px-8 py-8">
       <div className="backdrop" />
+      {dialog}
 
+      {/* As tall as the window and no taller: with many drives the list
+          scrolls between the title and the buttons, which stay in view. */}
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-        className="relative z-10 w-full max-w-[400px]"
+        className="relative z-10 flex max-h-full w-full max-w-[400px] flex-col"
       >
-        <div className="mb-7 flex flex-col items-center text-center">
+        <div className="mb-6 flex shrink-0 flex-col items-center text-center">
           <motion.span
             animate={{ opacity: [0.55, 1, 0.55] }}
-            transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
+            transition={{ duration: 4, repeat: LOOPS, ease: 'easeInOut' }}
             className="text-basalt"
           >
             <HexMark size={34} />
@@ -299,7 +348,7 @@ export function PairingView({
         </div>
 
         {notice && picking && (
-          <div className="mb-4 rounded-lg border border-danger/25 bg-dangerBg px-3.5 py-3 text-[12px] leading-relaxed text-danger">
+          <div className="mb-4 shrink-0 rounded-lg border border-danger/25 bg-dangerBg px-3.5 py-3 text-[12px] leading-relaxed text-danger">
             {notice}
           </div>
         )}
@@ -312,13 +361,14 @@ export function PairingView({
               busy={busy}
               currentHostId={currentHostId ?? null}
               onChoose={(host) => void choose(host)}
+              onForget={(host) => void forget(host)}
               onAddress={(address) => void chooseAddress(address)}
               onRescan={() => void scan()}
             />
             {onHowItWorks && (
               <button
                 onClick={onHowItWorks}
-                className="mt-1 flex w-full items-center justify-center gap-1.5 py-2 text-[11px] text-textFaint transition-colors hover:text-textDim"
+                className="mt-1 flex w-full shrink-0 items-center justify-center gap-1.5 py-2 text-[11px] text-textFaint transition-colors hover:text-textDim"
               >
                 New to Basalt? See how it works
                 <ArrowRight size={11} />
@@ -327,7 +377,7 @@ export function PairingView({
             {onBack && (
               <button
                 onClick={onBack}
-                className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md py-2 text-[11.5px] text-textDim transition-colors hover:text-text"
+                className="mt-2 flex w-full shrink-0 items-center justify-center gap-1.5 rounded-md py-2 text-[11.5px] text-textDim transition-colors hover:text-text"
               >
                 <ArrowLeft size={12} />
                 Back
@@ -339,6 +389,7 @@ export function PairingView({
             initial={{ opacity: 0, x: 12 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+            className="min-h-0 overflow-y-auto"
           >
             {needsPin && setup ? (
               <SetupCodeInput value={pin} onChange={setPin} onSubmit={submitPin} busy={busy} />
@@ -397,7 +448,7 @@ export function PairingView({
               initial={{ opacity: 0, y: -4 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
-              className="mt-4 text-center text-[11px] leading-relaxed text-danger"
+              className="mt-4 shrink-0 text-center text-[11px] leading-relaxed text-danger"
             >
               {error}
             </motion.p>
@@ -409,7 +460,14 @@ export function PairingView({
 }
 
 /**
- * The hosts on this network.
+ * The hosts on this network, and the drives this device has paired with.
+ *
+ * In groups once there is more than one kind: drives this device uses, hosts
+ * new to it, and paired drives not found just now, greyed, last. Only the
+ * list scrolls, so with many drives the title and the buttons stay in view.
+ *
+ * A paired drive can be forgotten from here: right-click, or the button that
+ * shows on hover, on a computer; a long press on a phone.
  *
  * The empty state is the one that matters: somebody staring at it has a host
  * they believe is running, so it says what to check rather than only that
@@ -421,6 +479,7 @@ function HostList({
   busy,
   currentHostId,
   onChoose,
+  onForget,
   onAddress,
   onRescan,
 }: {
@@ -429,9 +488,32 @@ function HostList({
   busy: boolean
   currentHostId: string | null
   onChoose: (host: DiscoveredHost) => void
+  onForget: (host: DiscoveredHost) => void
   onAddress: (address: string) => void
   onRescan: () => void
 }): React.JSX.Element {
+  const menu = useContextMenu()
+  const [sheet, setSheet] = useState<DiscoveredHost | null>(null)
+  // Which ends of the list have more past them, for a fade there: without
+  // it a list cut at a row boundary looked complete.
+  const scroller = useRef<HTMLDivElement | null>(null)
+  const [more, setMore] = useState({ above: false, below: false })
+  const measure = useCallback(() => {
+    const el = scroller.current
+    if (!el) return
+    const above = el.scrollTop > 2
+    const below = el.scrollTop + el.clientHeight < el.scrollHeight - 2
+    setMore((was) => (was.above === above && was.below === below ? was : { above, below }))
+  }, [])
+  useEffect(() => {
+    measure()
+    const el = scroller.current
+    if (!el || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  })
+
   if (hosts === null) {
     return (
       <div className="flex flex-col items-center gap-3 py-8">
@@ -441,50 +523,129 @@ function HostList({
     )
   }
 
+  const current = (h: DiscoveredHost): boolean => !!currentHostId && h.hostId === currentHostId
+  const groups = groupHosts(hosts, currentHostId)
+  const titled = groups.length > 1
+
+  /** What a drive offers besides opening: forgetting it, when paired and not in use. */
+  const actionsFor = (host: DiscoveredHost): MenuAction[] =>
+    host.paired && !current(host)
+      ? [
+          { id: 'open', label: 'Open', icon: ArrowRight, run: () => onChoose(host) },
+          {
+            id: 'forget',
+            label: 'Forget this drive…',
+            icon: Trash2,
+            danger: true,
+            separatorBefore: true,
+            run: () => onForget(host),
+          },
+        ]
+      : []
+
   return (
-    <div>
-      <AnimatePresence initial={false}>
-        {hosts.map((host) => (
-          <motion.div
-            key={host.hostId}
-            layout
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-          >
-            <HostRow
-              host={host}
-              busy={busy}
-              current={!!currentHostId && host.hostId === currentHostId}
-              onChoose={() => onChoose(host)}
-            />
-          </motion.div>
-        ))}
-      </AnimatePresence>
-
-      {hosts.length === 0 && (
-        <div className="rounded-lg border border-dashed border-white/[0.09] px-4 py-7 text-center">
-          <p className="text-[12.5px] text-textDim">No hosts on this network.</p>
-          <p className="mx-auto mt-2 max-w-[300px] text-[11px] leading-relaxed text-textFaint">
-            Check that Basalt Host is running on the other computer (look for its
-            icon near the clock) and that both are on the same network.
-          </p>
-        </div>
-      )}
-
-      <button
-        onClick={onRescan}
-        disabled={scanning}
-        className="mt-3 flex w-full items-center justify-center gap-2 rounded-md py-2 text-[11px] text-textFaint transition-colors hover:text-textDim disabled:opacity-50"
+    <>
+      {menu.node}
+      <div
+        ref={scroller}
+        onScroll={measure}
+        className="-mx-1 min-h-0 overflow-y-auto px-1"
+        style={{
+          maskImage: `linear-gradient(to bottom, ${more.above ? 'transparent' : 'black'}, black 28px, black calc(100% - 28px), ${more.below ? 'transparent' : 'black'})`,
+        }}
       >
-        <RefreshCw size={11} className={cn(scanning && 'animate-spin')} />
-        {scanning ? 'Looking…' : 'Look again'}
-      </button>
+        {groups.map((group) => (
+          <div key={group.title}>
+            {titled && (
+              <div className="mb-1.5 mt-3 px-1 font-mono text-[9.5px] uppercase tracking-[0.12em] text-textFaint first:mt-0">
+                {group.title}
+              </div>
+            )}
+            <AnimatePresence initial={false}>
+              {group.hosts.map((host) => {
+                const actions = actionsFor(host)
+                return (
+                  <motion.div
+                    key={host.hostId}
+                    layout
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+                  >
+                    <HostRow
+                      host={host}
+                      busy={busy}
+                      current={current(host)}
+                      onChoose={() => onChoose(host)}
+                      onMenu={
+                        actions.length === 0
+                          ? undefined
+                          : (at) => (TOUCH ? setSheet(host) : menu.open(at, actions))
+                      }
+                    />
+                  </motion.div>
+                )
+              })}
+            </AnimatePresence>
+          </div>
+        ))}
 
-      <AddressEntry busy={busy} onAddress={onAddress} />
-    </div>
+        {hosts.length === 0 && (
+          <div className="rounded-lg border border-dashed border-white/[0.09] px-4 py-7 text-center">
+            <p className="text-[12.5px] text-textDim">No hosts on this network.</p>
+            <p className="mx-auto mt-2 max-w-[300px] text-[11px] leading-relaxed text-textFaint">
+              Check that Basalt Host is running on the other computer (look for its
+              icon near the clock) and that both are on the same network.
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="shrink-0">
+        <button
+          onClick={onRescan}
+          disabled={scanning}
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-md py-2 text-[11px] text-textFaint transition-colors hover:text-textDim disabled:opacity-50"
+        >
+          <RefreshCw size={11} className={cn(scanning && 'animate-spin')} />
+          {scanning ? 'Looking…' : 'Look again'}
+        </button>
+
+        <AddressEntry busy={busy} onAddress={onAddress} />
+      </div>
+
+      {TOUCH && (
+        <ActionSheet
+          open={sheet !== null}
+          onClose={() => setSheet(null)}
+          title={sheet ? driveName(sheet) : undefined}
+          subtitle={sheet?.hostName}
+          actions={sheet ? actionsFor(sheet) : []}
+        />
+      )}
+    </>
   )
+}
+
+/**
+ * The list in its groups, those with nothing in them left out: drives this
+ * device uses (the one in use first), hosts new to it, and paired drives the
+ * search did not find just now.
+ */
+export function groupHosts(
+  hosts: DiscoveredHost[],
+  currentHostId: string | null,
+): Array<{ title: string; hosts: DiscoveredHost[] }> {
+  const current = (h: DiscoveredHost): boolean => !!currentHostId && h.hostId === currentHostId
+  const here = hosts.filter((h) => h.seen !== false || current(h))
+  const yours = here.filter((h) => h.paired || current(h))
+  yours.sort((a, b) => Number(current(b)) - Number(current(a)))
+  return [
+    { title: 'Your drives', hosts: yours },
+    { title: 'New on this network', hosts: here.filter((h) => !h.paired && !current(h)) },
+    { title: 'Not found right now', hosts: hosts.filter((h) => h.seen === false && !current(h)) },
+  ].filter((group) => group.hosts.length > 0)
 }
 
 /**
@@ -556,12 +717,15 @@ function HostRow({
   busy,
   current = false,
   onChoose,
+  onMenu,
 }: {
   host: DiscoveredHost
   busy: boolean
   /** The drive this device is using now. */
   current?: boolean
   onChoose: () => void
+  /** What else it offers, opened at a point: absent when nothing. */
+  onMenu?: (at: { clientX: number; clientY: number }) => void
 }): React.JSX.Element {
   // A host with no drive chosen yet has nothing to offer. Listed anyway,
   // because seeing the machine and being told why it is unavailable beats an
@@ -573,16 +737,30 @@ function HostRow({
   // Paired, and not found by the search just now: dimmed, and still chosen
   // with a tap, which tries everywhere it might be.
   const away = host.seen === false
+  // A long press on a phone, as everywhere else in the app; a tap opens it.
+  const press = useLongPress(
+    () => onMenu?.({ clientX: 0, clientY: 0 }),
+    () => {
+      if (!disabled) onChoose()
+    },
+  )
+  const touchMenu = TOUCH && onMenu
 
   return (
+    <div className="group relative mb-2">
     <motion.button
       whileHover={disabled ? undefined : { y: -1 }}
       whileTap={disabled ? undefined : { scale: 0.99 }}
       transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-      onClick={disabled ? undefined : onChoose}
+      onClick={disabled || touchMenu ? undefined : onChoose}
+      {...(touchMenu ? press : {})}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        if (onMenu && !TOUCH) onMenu(e)
+      }}
       disabled={disabled}
       className={cn(
-        'mb-2 flex w-full items-center gap-3 rounded-lg border border-white/[0.07] bg-panel2 px-3.5 py-3 text-left transition-colors',
+        'flex w-full items-center gap-3 rounded-lg border border-white/[0.07] bg-panel2 px-3.5 py-3 text-left transition-colors',
         disabled ? 'cursor-not-allowed opacity-45' : 'hover:border-white/[0.16]',
         away && !disabled && 'opacity-60 hover:opacity-100',
       )}
@@ -618,7 +796,7 @@ function HostRow({
       </div>
 
       {ready && (
-        <span className="shrink-0 text-textFaint">
+        <span className={cn('shrink-0 text-textFaint', onMenu && !TOUCH && 'group-hover:invisible')}>
           {setup ? (
             <ArrowRight size={14} />
           ) : host.requiresPin && !host.paired ? (
@@ -634,6 +812,21 @@ function HostRow({
         </span>
       )}
     </motion.button>
+    {/* On a computer: only on hover or focus, over the arrow, so the list
+        reads as it always did. */}
+    {onMenu && !TOUCH && (
+      <button
+        onClick={(e) => {
+          const box = e.currentTarget.getBoundingClientRect()
+          onMenu({ clientX: box.right - 4, clientY: box.bottom + 2 })
+        }}
+        aria-label={`More for ${driveName(host)}`}
+        className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-textFaint opacity-0 transition-opacity hover:bg-white/[0.08] hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
+      >
+        <MoreHorizontal size={15} />
+      </button>
+    )}
+    </div>
   )
 }
 

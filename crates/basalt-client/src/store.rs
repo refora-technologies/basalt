@@ -258,11 +258,33 @@ impl ClientStore {
 
 /// Where the client keeps its store.
 pub fn default_path() -> PathBuf {
-    let base = std::env::var_os("APPDATA")
+    config_base(
+        std::env::var_os("APPDATA"),
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("HOME"),
+    )
+    .join("Basalt")
+    .join("client.json")
+}
+
+/// Where the record goes: Windows' APPDATA, or on Linux the XDG folder, which
+/// is `~/.config` when it is not set, as it usually is not. It fell back to
+/// the folder the app was started from, and on Linux the paired drives were
+/// kept wherever that happened to be.
+fn config_base(
+    appdata: Option<std::ffi::OsString>,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    appdata
+        .filter(|a| !a.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("Basalt").join("client.json")
+        .or_else(|| xdg.filter(|x| !x.is_empty()).map(PathBuf::from))
+        .or_else(|| {
+            home.filter(|h| !h.is_empty())
+                .map(|h| PathBuf::from(h).join(".config"))
+        })
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// This device's lasting id: the same after Basalt is uninstalled and
@@ -332,7 +354,20 @@ fn system_hint() -> Option<String> {
     (!machine.is_empty()).then(|| format!("{machine}|{}", profile.to_lowercase()))
 }
 
-#[cfg(not(windows))]
+/// Linux: the machine's id, which systemd and D-Bus keep for the life of the
+/// installation, with the user's home, so two people on one computer stay
+/// two devices.
+#[cfg(target_os = "linux")]
+fn system_hint() -> Option<String> {
+    let machine = ["/etc/machine-id", "/var/lib/dbus/machine-id"]
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())?;
+    let machine = machine.trim();
+    let home = std::env::var("HOME").unwrap_or_default();
+    (!machine.is_empty()).then(|| format!("{machine}|{home}"))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn system_hint() -> Option<String> {
     None
 }
@@ -515,6 +550,29 @@ pub(crate) mod secret {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On Linux the record went beside wherever the app was started.
+    #[test]
+    fn the_record_goes_where_each_system_keeps_settings() {
+        let os = |s: &str| Some(std::ffi::OsString::from(s));
+        assert_eq!(
+            config_base(os("C:/Users/a/AppData/Roaming"), None, None),
+            PathBuf::from("C:/Users/a/AppData/Roaming")
+        );
+        assert_eq!(
+            config_base(None, os("/home/a/.cfg"), os("/home/a")),
+            PathBuf::from("/home/a/.cfg")
+        );
+        assert_eq!(
+            config_base(None, None, os("/home/a")),
+            PathBuf::from("/home/a").join(".config")
+        );
+        assert_eq!(
+            config_base(None, os(""), os("/home/a")),
+            PathBuf::from("/home/a").join(".config")
+        );
+        assert_eq!(config_base(None, None, None), PathBuf::from("."));
+    }
 
     struct TempDir(PathBuf);
 

@@ -164,6 +164,8 @@ export interface ConversionStatus {
   /** Has been looked at yet. */
   detected: boolean
   measured: ConversionMeasured | null
+  /** What was measured and what stopped it going higher, in words. Absent from older hosts. */
+  explained?: string | null
   measuring: boolean
   /** Why it is not measured, when that is worth saying. */
   note: string | null
@@ -419,6 +421,8 @@ const sample: {
       available: true,
       detected: true,
       measured: { by: 'Intel graphics', atOnce: 2, speed: 3.4, at: Math.floor(Date.now() / 1000) - 86400 },
+      explained:
+        '2 at once on Intel graphics, one at 3.4× real time. 3 at once ran at 0.9× real time, too slow to keep up: processing power is the limit.',
       measuring: false,
       note: null,
       byHand: null,
@@ -720,7 +724,7 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         if (previewFlag('lowmem')) {
           throw new ApiError(
             'error',
-            'Not measured: it needs about 2.5 GB of free memory, and this computer has 1.4 GB free. Close other apps, or give it more memory, and measure again.',
+            'Not measured: converting even one 4K film needs about 1.0 GB of free memory, and this computer has 0.7 GB free. Close other apps, or give it more memory, and measure again.',
           )
         }
         sample.status.conversion.measuring = true
@@ -733,6 +737,8 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
             speed: 3.4,
             at: Math.floor(Date.now() / 1000),
           }
+          sample.status.conversion.explained =
+            '2 at once on Intel graphics, one at 3.4× real time. Memory is the limit: 3 at once needs about 3.2 GB free, and there was 2.6 GB.'
           if (sample.status.conversion.byHand === null) sample.status.conversion.limit = 2
         }, 3000)
         return sample.status

@@ -46,5 +46,6 @@ permissions = [
     "allow-mpv-set-property",
     "allow-mpv-get-property",
     "allow-mpv-add-subtitle",
+    "allow-mpv-subtitle-font",
     "allow-mpv-destroy",
 ]
