@@ -100,6 +100,7 @@ struct Lib {
     render_set_update_callback:
         unsafe extern "C" fn(Handle, Option<unsafe extern "C" fn(*mut c_void)>, *mut c_void),
     render_render: unsafe extern "C" fn(Handle, *mut RenderParam) -> c_int,
+    render_update: unsafe extern "C" fn(Handle) -> u64,
 }
 
 impl Lib {
@@ -143,6 +144,7 @@ impl Lib {
                 render_create: sym!(b"mpv_render_context_create"),
                 render_set_update_callback: sym!(b"mpv_render_context_set_update_callback"),
                 render_render: sym!(b"mpv_render_context_render"),
+                render_update: sym!(b"mpv_render_context_update"),
                 _lib: lib,
             })
         }
@@ -696,6 +698,11 @@ fn redraw() {
                 }
             });
         }
+        // What mpv has left for this thread (a new picture size, a new
+        // format) is done here, as mpv asks after each of its signals. Left
+        // undone, mpv gave up on the frames waiting on it, and from mpv 0.41
+        // the picture often stayed black under the subtitles.
+        update_render();
         COLUMN.with(|column| {
             if let Some(column) = column.borrow().as_ref() {
                 use gtk::prelude::*;
@@ -703,6 +710,20 @@ fn redraw() {
             }
         })
     });
+}
+
+/// Runs what mpv has queued for the thread that draws, in mpv's GL context.
+fn update_render() {
+    let render = RENDER.with(|r| r.get());
+    let Some(player) = PLAYER.get() else { return };
+    if render.is_null()
+        || !OFFSCREEN.with(|o| o.borrow().as_ref().is_some_and(Offscreen::make_current))
+    {
+        return;
+    }
+    // SAFETY: a live render context, on the thread that draws, with its GL
+    // context current.
+    unsafe { (player.lib.render_update)(render) };
 }
 
 /// The picture, under the page: drawn by mpv offscreen, read back, and
@@ -756,8 +777,11 @@ fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
         },
     ];
     // SAFETY: mpv's GL context is current, and the parameters live through
-    // the call.
-    unsafe { (player.lib.render_render)(render, params.as_mut_ptr()) };
+    // the calls.
+    unsafe {
+        (player.lib.render_update)(render);
+        (player.lib.render_render)(render, params.as_mut_ptr());
+    }
 
     let Ok(mut frame) = gtk::cairo::ImageSurface::create(gtk::cairo::Format::Rgb24, w, h) else {
         return;
@@ -770,11 +794,47 @@ fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
     frame.mark_dirty();
     frame.set_device_scale(f64::from(scale), f64::from(scale));
     let _ = cr.save();
+    // Inside the window's rounded corners, as the page is (styles.css),
+    // unless it fills the screen and is square.
+    if !square(column) {
+        rounded(
+            cr,
+            f64::from(column.allocated_width()),
+            f64::from(column.allocated_height()),
+            CORNER,
+        );
+        cr.clip();
+    }
     cr.set_operator(gtk::cairo::Operator::DestOver);
     if cr.set_source_surface(&frame, 0.0, 0.0).is_ok() {
         let _ = cr.paint();
     }
     let _ = cr.restore();
+}
+
+/// The radius of the window's corners: the page's, in styles.css.
+const CORNER: f64 = 10.0;
+
+/// Whether the window is maximised or full screen, when the page squares its
+/// corners off (lib/windowFrame.ts).
+fn square(column: &gtk::Widget) -> bool {
+    use gtk::prelude::*;
+    let Some(window) = column.window() else {
+        return false;
+    };
+    let state = window.toplevel().state();
+    state.intersects(gtk::gdk::WindowState::MAXIMIZED | gtk::gdk::WindowState::FULLSCREEN)
+}
+
+/// A rectangle `width` by `height` with corners of `radius`, as `cr`'s path.
+fn rounded(cr: &gtk::cairo::Context, width: f64, height: f64, radius: f64) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    cr.new_path();
+    cr.arc(width - radius, radius, radius, -FRAC_PI_2, 0.0);
+    cr.arc(width - radius, height - radius, radius, 0.0, FRAC_PI_2);
+    cr.arc(radius, height - radius, radius, FRAC_PI_2, PI);
+    cr.arc(radius, radius, radius, PI, 3.0 * FRAC_PI_2);
+    cr.close_path();
 }
 
 // ---------------------------------------------------------------------------
