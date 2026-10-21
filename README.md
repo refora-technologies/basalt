@@ -353,6 +353,7 @@ On Linux with Docker:
 
 ```
 packaging/build-desktop-linux.sh OUT_DIR   # Basalt Host with a window: .deb, .rpm, AppImage
+packaging/build-client-linux.sh OUT_DIR    # the Basalt app: .deb, .rpm, AppImage
 packaging/build-server.sh OUT_DIR          # with no screen: .deb, .rpm, .tar.gz, amd64 and arm64
 docker build -f docker/Dockerfile -t basalt-host .
 ```

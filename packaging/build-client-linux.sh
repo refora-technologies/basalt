@@ -44,6 +44,21 @@ docker run --rm \
         # Only the packages of this build: the cache keeps older ones too.
         rm -rf /target/release/bundle
         npx tauri build
+
+        # The AppImage without the Wayland libraries the bundler copied in
+        # from this Ubuntu 22.04: newer systems graphics drivers do not work
+        # with them, and on Ubuntu 26.04 the page could not start at all
+        # ("Could not create default EGL display"). Every Linux desktop has
+        # its own, as GTK needs them. Repacked with the appimagetool the
+        # bundler fetched for itself.
+        image=$(ls /target/release/bundle/appimage/*.AppImage)
+        rm -rf /tmp/repack && mkdir -p /tmp/repack/tool && cd /tmp/repack
+        "$image" --appimage-extract >/dev/null
+        rm -f squashfs-root/usr/lib/libwayland-*
+        (cd tool && /root/.cache/tauri/linuxdeploy-plugin-appimage.AppImage --appimage-extract >/dev/null)
+        ARCH=x86_64 tool/squashfs-root/usr/bin/appimagetool --no-appstream squashfs-root "$image" >/dev/null 2>&1
+        ls squashfs-root/usr/lib | grep -q "^libwayland-" && { echo "Wayland libraries still in the AppImage"; exit 1; }
+        cd /src/apps/client
     '
 
 bundle=/var/lib/docker/volumes/basalt-client-release/_data/release/bundle

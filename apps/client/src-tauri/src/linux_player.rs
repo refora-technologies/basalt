@@ -38,6 +38,7 @@ const RENDER_PARAM_API_TYPE: c_int = 1;
 const RENDER_PARAM_OPENGL_INIT_PARAMS: c_int = 2;
 const RENDER_PARAM_OPENGL_FBO: c_int = 3;
 const RENDER_PARAM_FLIP_Y: c_int = 4;
+const RENDER_PARAM_BLOCK_FOR_TARGET_TIME: c_int = 12;
 
 /// The property the player watches for itself, apart from the page's: whether
 /// there is a picture to draw. Told apart by its reply number.
@@ -100,6 +101,9 @@ struct Lib {
     render_set_update_callback:
         unsafe extern "C" fn(Handle, Option<unsafe extern "C" fn(*mut c_void)>, *mut c_void),
     render_render: unsafe extern "C" fn(Handle, *mut RenderParam) -> c_int,
+    render_update: unsafe extern "C" fn(Handle) -> u64,
+    render_free: unsafe extern "C" fn(Handle),
+    render_report_swap: unsafe extern "C" fn(Handle),
 }
 
 impl Lib {
@@ -143,6 +147,9 @@ impl Lib {
                 render_create: sym!(b"mpv_render_context_create"),
                 render_set_update_callback: sym!(b"mpv_render_context_set_update_callback"),
                 render_render: sym!(b"mpv_render_context_render"),
+                render_update: sym!(b"mpv_render_context_update"),
+                render_free: sym!(b"mpv_render_context_free"),
+                render_report_swap: sym!(b"mpv_render_context_report_swap"),
                 _lib: lib,
             })
         }
@@ -399,6 +406,11 @@ fn for_this_mpv(mut args: Vec<String>, loadfile_index: bool) -> Vec<String> {
 #[tauri::command]
 pub fn linux_mpv_command(args: Vec<String>) -> Result<(), String> {
     let player = player()?;
+    // A film after the player last closed: the picture's output again
+    // first, or mpv opens the film with none and drops its video.
+    if args.first().is_some_and(|a| a == "loadfile") && RENDER.with(|r| r.get()).is_null() {
+        on_gtk(start_rendering);
+    }
     let args = for_this_mpv(args, player.loadfile_index);
     let owned = args.iter().map(|a| c(a)).collect::<Result<Vec<_>, _>>()?;
     let mut pointers: Vec<*const c_char> = owned.iter().map(|a| a.as_ptr()).collect();
@@ -407,6 +419,10 @@ pub fn linux_mpv_command(args: Vec<String>) -> Result<(), String> {
     let code = unsafe { (player.lib.command)(player.handle, pointers.as_ptr()) };
     if code < 0 {
         return Err(format!("{}: {}", args.join(" "), player.lib.error(code)));
+    }
+    // The page stops mpv as the player closes.
+    if args.first().is_some_and(|a| a == "stop") {
+        on_gtk(stop_rendering);
     }
     Ok(())
 }
@@ -491,6 +507,48 @@ pub fn linux_mpv_destroy() -> Result<(), String> {
     Ok(())
 }
 
+/// Runs `f` on GTK's thread, which owns the drawing, and waits for it.
+fn on_gtk(f: fn()) {
+    let context = glib::MainContext::default();
+    if context.is_owner() {
+        f();
+        return;
+    }
+    let (done, wait) = std::sync::mpsc::channel();
+    context.invoke(move || {
+        f();
+        let _ = done.send(());
+    });
+    let _ = wait.recv_timeout(std::time::Duration::from_secs(5));
+}
+
+/// Lets go of everything drawing took once the player closes: mpv's render
+/// context, the GL context and the driver behind it, and the memory freed
+/// with them, which the system would otherwise not get back. A film after
+/// that makes them again (see `linux_mpv_command`).
+fn stop_rendering() {
+    let Some(player) = PLAYER.get() else { return };
+    let render = RENDER.with(|r| r.replace(std::ptr::null_mut()));
+    if !render.is_null() {
+        let current = OFFSCREEN.with(|o| o.borrow().as_ref().is_some_and(Offscreen::make_current));
+        if current {
+            // SAFETY: the render context made in `start_rendering`, freed
+            // once, on this thread, with its GL context current; mpv takes
+            // down its video output first.
+            unsafe { (player.lib.render_free)(render) };
+        }
+    }
+    TARGET.with(|t| t.set((0, 0, 0, 0)));
+    FRAME.with(|f| f.borrow_mut().take());
+    OFFSCREEN.with(|o| o.borrow_mut().take());
+    extern "C" {
+        fn malloc_trim(pad: usize) -> c_int;
+    }
+    // SAFETY: glibc's own call; it only hands free memory back.
+    unsafe { malloc_trim(0) };
+    eprintln!("linux player: drawing let go");
+}
+
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
@@ -532,9 +590,11 @@ thread_local! {
     static COLUMN: std::cell::RefCell<Option<gtk::Widget>> = const { std::cell::RefCell::new(None) };
     /// mpv's own GL context, out of sight of GTK and WebKit.
     static OFFSCREEN: std::cell::RefCell<Option<Offscreen>> = const { std::cell::RefCell::new(None) };
-    /// mpv's render context, made once on the GTK thread with that context
-    /// current.
+    /// mpv's render context, made on the GTK thread with that context
+    /// current, and let go of when the player closes.
     static RENDER: std::cell::Cell<Handle> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+    /// The image each frame is read back into, kept between frames.
+    static FRAME: std::cell::RefCell<Option<gtk::cairo::ImageSurface>> = const { std::cell::RefCell::new(None) };
     /// What mpv draws into: a framebuffer, its texture, and their size.
     static TARGET: std::cell::Cell<(u32, u32, c_int, c_int)> = const { std::cell::Cell::new((0, 0, 0, 0)) };
 }
@@ -696,23 +756,51 @@ fn redraw() {
                 }
             });
         }
+        // What mpv has left for this thread (a new picture size, a new
+        // format) is done here, as mpv asks after each of its signals. Left
+        // undone, mpv gave up on the frames waiting on it, and from mpv 0.41
+        // the picture often stayed black under the subtitles.
+        // A new frame is drawn and read back as soon as mpv has it, and
+        // the window shows the latest whenever it next draws. Drawn only as
+        // the window drew, mpv waited on the window, took its frames for
+        // late and dropped a fifth of them where windows are slow to show.
+        let new_frame = update_render() & UPDATE_FRAME != 0;
         COLUMN.with(|column| {
             if let Some(column) = column.borrow().as_ref() {
                 use gtk::prelude::*;
+                if picture && new_frame {
+                    render_frame(column);
+                }
                 column.queue_draw();
             }
         })
     });
 }
 
-/// The picture, under the page: drawn by mpv offscreen, read back, and
-/// painted where the page is about to be drawn. Nothing while there is no
-/// picture.
-fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
-    use gtk::prelude::*;
-    if !PICTURE.load(Ordering::SeqCst) {
-        return;
+/// mpv_render_context_update's flag: there is a new frame to draw.
+const UPDATE_FRAME: u64 = 1;
+
+/// Runs what mpv has queued for the thread that draws, in mpv's GL context.
+/// What mpv says is to be done now (a new frame, say).
+fn update_render() -> u64 {
+    let render = RENDER.with(|r| r.get());
+    let Some(player) = PLAYER.get() else { return 0 };
+    if render.is_null()
+        || !OFFSCREEN.with(|o| o.borrow().as_ref().is_some_and(Offscreen::make_current))
+    {
+        return 0;
     }
+    // SAFETY: a live render context, on the thread that draws, with its GL
+    // context current.
+    let flags = unsafe { (player.lib.render_update)(render) };
+    release_gl();
+    flags
+}
+
+/// mpv's frame drawn offscreen and read back into the image the window
+/// shows (`FRAME`), at the column's size.
+fn render_frame(column: &gtk::Widget) {
+    use gtk::prelude::*;
     let render = RENDER.with(|r| r.get());
     let Some(player) = PLAYER.get() else { return };
     if render.is_null()
@@ -741,6 +829,9 @@ fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
     // As GL keeps it, bottom row first; read back from the top, it comes
     // out the right way up, as cairo keeps an image.
     let mut flip: c_int = 0;
+    // Not waiting for the frame's moment to come: mpv paces itself, and
+    // waiting here held the window up.
+    let mut wait: c_int = 0;
     let mut params = [
         RenderParam {
             kind: RENDER_PARAM_OPENGL_FBO,
@@ -751,6 +842,10 @@ fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
             data: (&raw mut flip).cast(),
         },
         RenderParam {
+            kind: RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+            data: (&raw mut wait).cast(),
+        },
+        RenderParam {
             kind: RENDER_PARAM_INVALID,
             data: std::ptr::null_mut(),
         },
@@ -759,22 +854,103 @@ fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
     // the call.
     unsafe { (player.lib.render_render)(render, params.as_mut_ptr()) };
 
-    let Ok(mut frame) = gtk::cairo::ImageSurface::create(gtk::cairo::Format::Rgb24, w, h) else {
-        return;
+    // One image, kept from frame to frame while the size stays: a new one
+    // each time was a few megabytes made and thrown away 24 times a second.
+    let kept = FRAME.with(|f| f.borrow_mut().take());
+    let mut frame = match kept {
+        Some(frame) if frame.width() == w && frame.height() == h => frame,
+        _ => match gtk::cairo::ImageSurface::create(gtk::cairo::Format::Rgb24, w, h) {
+            Ok(frame) => frame,
+            Err(_) => return,
+        },
     };
     let stride = frame.stride();
     {
-        let Ok(mut pixels) = frame.data() else { return };
+        let Ok(mut pixels) = frame.data() else {
+            release_gl();
+            return;
+        };
         gl.read(fbo, w, h, stride, &mut pixels);
     }
+    release_gl();
     frame.mark_dirty();
     frame.set_device_scale(f64::from(scale), f64::from(scale));
-    let _ = cr.save();
-    cr.set_operator(gtk::cairo::Operator::DestOver);
-    if cr.set_source_surface(&frame, 0.0, 0.0).is_ok() {
-        let _ = cr.paint();
+    // SAFETY: the render context just drawn with, on this thread: tells mpv
+    // the frame is out, for its timing.
+    unsafe { (player.lib.render_report_swap)(render) };
+    FRAME.with(|f| *f.borrow_mut() = Some(frame));
+}
+
+/// The picture, under the page: the latest frame mpv drew, painted where the
+/// page is about to be drawn. Nothing while there is no picture.
+fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
+    use gtk::prelude::*;
+    if !PICTURE.load(Ordering::SeqCst) {
+        return;
     }
-    let _ = cr.restore();
+    // None yet, or the window changed size: drawn again for it now (paused,
+    // mpv sends no new frame).
+    let scale = column.scale_factor();
+    let size = (
+        column.allocated_width() * scale,
+        column.allocated_height() * scale,
+    );
+    let fits = FRAME.with(|f| {
+        f.borrow()
+            .as_ref()
+            .is_some_and(|frame| (frame.width(), frame.height()) == size)
+    });
+    if !fits {
+        let _ = update_render();
+        render_frame(column);
+    }
+    FRAME.with(|f| {
+        let Some(frame) = f.borrow().clone() else {
+            return;
+        };
+        let _ = cr.save();
+        // Inside the window's rounded corners, as the page is (styles.css),
+        // unless it fills the screen and is square.
+        if !square(column) {
+            rounded(
+                cr,
+                f64::from(column.allocated_width()),
+                f64::from(column.allocated_height()),
+                CORNER,
+            );
+            cr.clip();
+        }
+        cr.set_operator(gtk::cairo::Operator::DestOver);
+        if cr.set_source_surface(&frame, 0.0, 0.0).is_ok() {
+            let _ = cr.paint();
+        }
+        let _ = cr.restore();
+    });
+}
+
+/// The radius of the window's corners: the page's, in styles.css.
+const CORNER: f64 = 10.0;
+
+/// Whether the window is maximised or full screen, when the page squares its
+/// corners off (lib/windowFrame.ts).
+fn square(column: &gtk::Widget) -> bool {
+    use gtk::prelude::*;
+    let Some(window) = column.window() else {
+        return false;
+    };
+    let state = window.toplevel().state();
+    state.intersects(gtk::gdk::WindowState::MAXIMIZED | gtk::gdk::WindowState::FULLSCREEN)
+}
+
+/// A rectangle `width` by `height` with corners of `radius`, as `cr`'s path.
+fn rounded(cr: &gtk::cairo::Context, width: f64, height: f64, radius: f64) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    cr.new_path();
+    cr.arc(width - radius, radius, radius, -FRAC_PI_2, 0.0);
+    cr.arc(width - radius, height - radius, radius, 0.0, FRAC_PI_2);
+    cr.arc(radius, height - radius, radius, FRAC_PI_2, PI);
+    cr.arc(radius, radius, radius, PI, 3.0 * FRAC_PI_2);
+    cr.close_path();
 }
 
 // ---------------------------------------------------------------------------
@@ -791,6 +967,12 @@ struct Offscreen {
     surface: *mut c_void,
     context: *mut c_void,
     make_current: MakeCurrent,
+    destroy_context: DestroyContext,
+    destroy_surface: DestroySurface,
+    terminate: Terminate,
+    /// The display is this context's alone (Mesa's surfaceless one), so it
+    /// can be ended with it; the system's may be shared.
+    own_display: bool,
 }
 
 impl Offscreen {
@@ -836,6 +1018,10 @@ impl Offscreen {
                             surface,
                             context,
                             make_current: egl.make_current,
+                            destroy_context: egl.destroy_context,
+                            destroy_surface: egl.destroy_surface,
+                            terminate: egl.terminate,
+                            own_display: n == 0,
                             _lib: lib,
                         });
                     }
@@ -850,9 +1036,50 @@ impl Offscreen {
         // SAFETY: the display, surface (or none) and context this made.
         unsafe { (self.make_current)(self.display, self.surface, self.surface, self.context) != 0 }
     }
+
+    /// Lets go of the context on this thread, which GTK draws on too: left
+    /// current, GTK's own GL (the composited page) could land in it.
+    fn release(&self) {
+        let none = std::ptr::null_mut();
+        // SAFETY: the display this made; no surface or context is current
+        // after it.
+        unsafe { (self.make_current)(self.display, none, none, none) };
+    }
+}
+
+/// Lets go of mpv's GL context, if there is one.
+fn release_gl() {
+    OFFSCREEN.with(|o| {
+        if let Some(offscreen) = o.borrow().as_ref() {
+            offscreen.release();
+        }
+    });
+}
+
+impl Drop for Offscreen {
+    /// The context and all it held: with software GL, mpv's textures and
+    /// framebuffers are ordinary memory, and the driver's own is much more.
+    fn drop(&mut self) {
+        let none = std::ptr::null_mut();
+        // SAFETY: the display, surface and context this made, let go of
+        // first; nothing uses them after this.
+        unsafe {
+            (self.make_current)(self.display, none, none, none);
+            (self.destroy_context)(self.display, self.context);
+            if !self.surface.is_null() {
+                (self.destroy_surface)(self.display, self.surface);
+            }
+            if self.own_display {
+                (self.terminate)(self.display);
+            }
+        }
+    }
 }
 
 type MakeCurrent = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> u32;
+type DestroyContext = unsafe extern "C" fn(*mut c_void, *mut c_void) -> u32;
+type DestroySurface = unsafe extern "C" fn(*mut c_void, *mut c_void) -> u32;
+type Terminate = unsafe extern "C" fn(*mut c_void) -> u32;
 
 /// The EGL calls a context takes.
 struct Egl {
@@ -864,6 +1091,9 @@ struct Egl {
     pbuffer: unsafe extern "C" fn(*mut c_void, *mut c_void, *const i32) -> *mut c_void,
     create: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i32) -> *mut c_void,
     make_current: MakeCurrent,
+    destroy_context: DestroyContext,
+    destroy_surface: DestroySurface,
+    terminate: Terminate,
 }
 
 impl Egl {
@@ -885,6 +1115,9 @@ impl Egl {
                 pbuffer: sym!(b"eglCreatePbufferSurface"),
                 create: sym!(b"eglCreateContext"),
                 make_current: sym!(b"eglMakeCurrent"),
+                destroy_context: sym!(b"eglDestroyContext"),
+                destroy_surface: sym!(b"eglDestroySurface"),
+                terminate: sym!(b"eglTerminate"),
             })
         }
     }

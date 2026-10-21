@@ -47,7 +47,10 @@ export function TransfersPanel({
   const etaSeconds = planningRate > 0 ? remaining / planningRate : 0
 
   return (
-    <div className="shrink-0 border-t border-line bg-ink2/80 backdrop-blur-sm">
+    // Its own layer above the page, as the blur behind it used to make it:
+    // where there is no blur (Linux, the phone), parts of a long page drawn
+    // later covered the bar's words.
+    <div className="relative z-10 shrink-0 border-t border-line bg-ink2/80 backdrop-blur-sm">
       <div className="flex h-9 w-full items-center gap-3 px-4">
         <button
           onClick={onToggle}
