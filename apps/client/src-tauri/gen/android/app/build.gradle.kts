@@ -30,7 +30,7 @@ val signing = Properties().apply {
 }
 
 android {
-    compileSdk = 36
+    compileSdk = 37
     namespace = "app.basalt.client"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
@@ -40,7 +40,7 @@ android {
         // that would make Windows install Basalt a second time beside itself.
         applicationId = "com.reforatech.basalt"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 37
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
