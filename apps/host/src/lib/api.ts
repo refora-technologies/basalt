@@ -210,6 +210,8 @@ export interface DeviceView {
   keyKind: KeyKind | null
   /** The host's owner made it an owner: it vouches for this computer. */
   owner: boolean
+  /** What kind of device it says it is. Absent until it has said. */
+  form?: 'phone' | 'tablet' | 'tv' | 'computer' | 'other' | null
 }
 
 /** Where a device keeps its key: a security chip, sealed by its system, or a file. */

@@ -50,7 +50,7 @@ import {
   type NotConverted,
   type PictureHelp,
 } from '@/lib/pictureHelp'
-import { isAndroid } from '@/lib/platform'
+import { isAndroid, isTv } from '@/lib/platform'
 import {
   chooseDriveFile,
   chooseSubtitle,
@@ -75,6 +75,8 @@ import { useBack } from '@/mobile/useBack'
  * fullscreen button turns the picture instead.
  */
 const TOUCH = isMobileShell()
+/** On a television, driven by a remote: see `lib/remote.ts`. */
+const TV = isTv()
 
 /**
  * The size of a control: what a pointer needs on a computer, what a finger
@@ -1261,8 +1263,74 @@ export function PlayerOverlay({
     )
     if (typing) return
 
+    // On a television the arrows also move between the controls, as the
+    // remote does everywhere else, and its volume is the television's own.
+    // Left and right seek unless a control has the focus; OK presses the
+    // focused control, or pauses.
+    if (TV) {
+      // A menu open over the film (subtitles, quality) takes every arrow.
+      const onControl =
+        Boolean(target?.closest('[data-player] button, [data-player] [role="radio"]')) ||
+        Boolean(document.querySelector('[data-player] [data-remote-scope]'))
+      const tvKey = ((): boolean => {
+        switch (e.key) {
+          case 'ArrowUp':
+          case 'ArrowDown':
+            // The first press brings the controls back, on play and pause
+            // (the focus may have been put on close while play waited for
+            // the film); the next ones move among them.
+            if (controlsUp) return false
+            document.querySelector<HTMLElement>('[data-player] [data-remote-first]')?.focus()
+            return true
+          case 'ArrowLeft':
+          case 'ArrowRight':
+            if (onControl && controlsUp) return false
+            void mpv.seekBy(e.key === 'ArrowRight' ? 10 : -10)
+            return true
+          case 'Enter':
+            // A control keeps the focus while the controls are put away; OK
+            // then pauses, whichever it is, and never closes the film.
+            if (onControl && controlsUp) return false
+            void mpv.togglePause()
+            return true
+          default:
+            return false
+        }
+      })()
+      if (tvKey) e.preventDefault()
+      if (tvKey || e.key.startsWith('Arrow') || e.key === 'Enter') {
+        keepControls()
+        return
+      }
+    }
+
     let handled = true
     switch (e.key) {
+      // A remote's keys, a keyboard's media keys.
+      case 'MediaPlayPause':
+        void mpv.togglePause()
+        break
+      case 'MediaPlay':
+        void mpv.setPaused(false)
+        break
+      case 'MediaPause':
+        void mpv.setPaused(true)
+        break
+      case 'MediaFastForward':
+        void mpv.seekBy(30)
+        break
+      case 'MediaRewind':
+        void mpv.seekBy(-30)
+        break
+      case 'MediaTrackNext':
+        goNext()
+        break
+      case 'MediaTrackPrevious':
+        goPrevious()
+        break
+      case 'MediaStop':
+        void escape()
+        break
       case 'Escape':
         // The menu first, if it is open: Escape putting away the thing in
         // front of you is universal, and ending the film instead is not.
@@ -1326,8 +1394,10 @@ export function PlayerOverlay({
   useEffect(() => {
     if (!open) return undefined
     const listener = (e: KeyboardEvent): void => onKey.current(e)
-    window.addEventListener('keydown', listener)
-    return () => window.removeEventListener('keydown', listener)
+    // Before anything else hears the key, so a key the player takes is not
+    // also taken by the remote's moving between controls.
+    window.addEventListener('keydown', listener, { capture: true })
+    return () => window.removeEventListener('keydown', listener, { capture: true })
   }, [open])
 
   const percent = mpv.duration > 0 ? (mpv.position / mpv.duration) * 100 : 0
@@ -1383,6 +1453,8 @@ export function PlayerOverlay({
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
           data-player=""
+          // The remote moves only among the player's own controls.
+          data-remote-scope=""
           className={cn(
             'fixed inset-0 z-40',
             !mpv.picture && 'bg-black',
@@ -1899,6 +1971,8 @@ export function PlayerOverlay({
                 disabled={mpv.duration === 0}
                 aria-label={mpv.paused ? 'Play' : 'Pause'}
                 title={mpv.paused ? 'Play (Space)' : 'Pause (Space)'}
+                // Where the remote starts, not the close button above it.
+                data-remote-first=""
                 className={cn(
                   'mx-1 flex items-center justify-center rounded-full bg-basalt text-ink transition-transform duration-150 hover:scale-105 disabled:opacity-30 disabled:hover:scale-100',
                   TOUCH ? 'h-12 w-12' : 'h-10 w-10',
@@ -2005,7 +2079,9 @@ export function PlayerOverlay({
                   className="h-1 w-0 cursor-pointer appearance-none rounded-full bg-white/[0.14] opacity-0 transition-all duration-200 accent-basalt group-hover/vol:w-20 group-hover/vol:opacity-100"
                 />
               </div>
-              {(!TOUCH || mpv.picture) && (
+              {/* A television's picture is already the whole screen, and
+                  never turns. */}
+              {!TV && (!TOUCH || mpv.picture) && (
                 <ControlButton
                   icon={TOUCH && turned === 'landscape' ? Minimize2 : Maximize2}
                   label={TOUCH ? 'Turn the picture' : 'Fullscreen (f)'}
@@ -2072,6 +2148,8 @@ function QualityMenu({
       exit={{ opacity: 0, y: 6, scale: 0.98 }}
       transition={{ duration: 0.15, ease: [0.22, 1, 0.36, 1] }}
       style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT, ...MENU_CORNER }}
+      // A layer of its own for a TV remote, which starts on what is chosen.
+      data-remote-scope=""
       className={cn(MENU_PLACE, !TOUCH && 'w-[340px]')}
     >
       <div className="flex h-10 shrink-0 items-center justify-between border-b border-white/[0.07] pl-4 pr-2">
@@ -2126,6 +2204,7 @@ function QualityChoice({
     <button
       onClick={onClick}
       disabled={disabled}
+      aria-current={active || undefined}
       className={cn(
         'flex w-full items-start gap-3 px-4 py-2.5 text-left transition-colors duration-150',
         disabled ? 'opacity-45' : 'hover:bg-white/[0.05]',
@@ -2203,6 +2282,8 @@ function SubtitleMenu({
       // As tall as the screen allows and no taller: on a phone turned on its
       // side a long list ran off the top, title and all. The list scrolls.
       style={{ transformOrigin: 'bottom right', maxHeight: MENU_HEIGHT, ...MENU_CORNER }}
+      // A layer of its own for a TV remote, which starts on what is chosen.
+      data-remote-scope=""
       className={cn(MENU_PLACE, !TOUCH && 'w-[320px]')}
     >
       <div
@@ -2419,6 +2500,7 @@ function Choice({
   return (
     <button
       onClick={onClick}
+      aria-current={active || undefined}
       className={cn(
         'flex w-full items-center gap-2.5 px-4 py-[7px] text-left text-[12.5px] transition-colors duration-100',
         active ? 'text-text' : 'text-textDim hover:bg-white/[0.04] hover:text-text',
@@ -2530,7 +2612,9 @@ export function Scrubber({
       aria-valuenow={Math.round(at)}
       aria-valuemin={0}
       aria-valuemax={100}
-      tabIndex={0}
+      // Not for a TV remote to land on: its left and right seek already,
+      // and on the bar they were kept by it and went nowhere else.
+      tabIndex={TV ? -1 : 0}
       // The bar takes a finger's sideways movement for itself. Without this
       // the phone's browser took it for a scroll, cancelled the pointer, and
       // only the first touch ever seeked.

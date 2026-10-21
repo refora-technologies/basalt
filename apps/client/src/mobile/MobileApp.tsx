@@ -71,13 +71,16 @@ import { fileToEntry } from '@/lib/useCollections'
 import { cn, formatBytes } from '@/lib/utils'
 import { FilesScreen } from './FilesScreen'
 import { Rise } from './presence'
-import { isAndroid } from '@/lib/platform'
+import { handheldWord, isAndroid, isTv } from '@/lib/platform'
 import { offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
 import { ActionSheet, Sheet } from './Sheet'
 import { remaining, type Resumable } from '@/components/ContinueWatching'
 import { useLongPress } from '@/lib/useLongPress'
 import { useBack } from './useBack'
 import { SectionPager, SectionTabs, useSectionLink, type Section } from './SectionPager'
+
+/** On a television: see `lib/remote.ts`. */
+const TV = isTv()
 
 type Tab = 'files' | 'library' | 'recent' | 'more'
 type LibrarySection = 'movies' | 'series' | 'videos' | 'music' | 'photos'
@@ -219,12 +222,20 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
   return <Shell model={model} onChangeDrive={() => setChangingDrive(true)} />
 }
 
-/** Clear of the status bar and the gesture bar. */
+/**
+ * Clear of the status bar and the gesture bar, a camera cutout at the side
+ * of a phone held sideways, and the edges a television may crop.
+ */
 function Safe({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
     <div
       className="relative h-full"
-      style={{ paddingTop: 'var(--inset-top, 0px)', paddingBottom: 'var(--inset-bottom, 0px)' }}
+      style={{
+        paddingTop: 'var(--inset-top, 0px)',
+        paddingBottom: 'var(--inset-bottom, 0px)',
+        paddingLeft: 'var(--inset-left, 0px)',
+        paddingRight: 'var(--inset-right, 0px)',
+      }}
     >
       {children}
     </div>
@@ -271,7 +282,8 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
     viewer,
   } = model
   const wide = useWide()
-  const [tab, setTab] = useState<Tab>('files')
+  // A television opens on the films and shows; a phone on the drive.
+  const [tab, setTab] = useState<Tab>(TV ? 'library' : 'files')
   const [section, setSection] = useState<LibrarySection>('movies')
   const [recentMode, setRecentMode] = useState<'recent' | 'starred'>('recent')
   const [searching, setSearching] = useState(false)
@@ -282,7 +294,8 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   const sectionLink = useSectionLink()
   // Managing the host: a screen of its own, over the tabs, while this device
   // is one the host lets manage it.
-  const canManage = vault.status?.canManage === true
+  // Managing the host is done from a phone or computer, not a television.
+  const canManage = vault.status?.canManage === true && !TV
   const [managing, setManaging] = useState(false)
   useEffect(() => {
     if (!canManage) setManaging(false)
@@ -396,7 +409,9 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   return (
     <div
       className="relative flex h-full bg-ink"
-      style={{ paddingLeft: 'var(--inset-left, 0px)', paddingRight: 'var(--inset-right, 0px)' }}
+      // With the side rail, the rail's panel runs to the edge and keeps its
+      // own buttons clear of it (see Rail).
+      style={{ paddingLeft: wide ? 0 : 'var(--inset-left, 0px)', paddingRight: 'var(--inset-right, 0px)' }}
     >
       {wide && <Rail tab={tab} onTab={goTo} activeTransfers={active.length} attention={offered(update)} />}
 
@@ -522,13 +537,13 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
           {tab === 'more' && (
             <MoreScreen
               model={model}
-              onTransfers={() => setTransfersOpen(true)}
+              onTransfers={TV ? undefined : () => setTransfersOpen(true)}
               onChangeDrive={onChangeDrive}
               onManage={canManage ? () => setManaging(true) : undefined}
             />
           )}
 
-          {tab === 'files' && writable && !selecting && vault.status?.hasDrive !== false && (
+          {tab === 'files' && writable && !TV && !selecting && vault.status?.hasDrive !== false && (
             <Fab onClick={() => setAdding(true)} raised={active.length > 0 || shared.length > 0 || actions.clipboard !== null} />
           )}
         </main>
@@ -568,7 +583,9 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
         </Rise>
 
         {!wide && <BottomNav tab={tab} onTab={goTo} activeTransfers={active.length} attention={offered(update)} />}
-        {wide && <div style={{ height: 'var(--inset-bottom, 0px)' }} className="shrink-0" />}
+        {/* On a television the lists run on to the screen's edge, as a
+            TV's do: only what stays put keeps clear of what a set crops. */}
+        {wide && !TV && <div style={{ height: 'var(--inset-bottom, 0px)' }} className="shrink-0" />}
       </div>
 
       <WhatsNew />
@@ -612,10 +629,14 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
         base={model.mediaBase}
         onIndexChange={(index) => model.setViewer((v) => (v ? { ...v, index } : v))}
         onClose={() => model.setViewer(null)}
-        onDownload={(path) => {
-          const photo = viewer?.photos.find((p) => p.path === path)
-          if (photo) void model.downloadOne(fileToEntry(photo))
-        }}
+        onDownload={
+          TV
+            ? undefined
+            : (path) => {
+                const photo = viewer?.photos.find((p) => p.path === path)
+                if (photo) void model.downloadOne(fileToEntry(photo))
+              }
+        }
       />
       <BackCloses open={viewer !== null} onBack={() => model.setViewer(null)} />
 
@@ -725,8 +746,12 @@ function Rail({
 }): React.JSX.Element {
   return (
     <nav
-      className="flex w-[88px] shrink-0 flex-col items-center gap-3 border-r border-white/[0.06] bg-[#0e0e10]"
-      style={{ paddingTop: 'calc(var(--inset-top, 0px) + 16px)' }}
+      className="flex shrink-0 flex-col items-center gap-3 border-r border-white/[0.06] bg-[#0e0e10]"
+      style={{
+        width: 'calc(88px + var(--inset-left, 0px))',
+        paddingLeft: 'var(--inset-left, 0px)',
+        paddingTop: 'calc(var(--inset-top, 0px) + 16px)',
+      }}
     >
       <HexMark size={26} className="mb-4 text-basalt" />
       {TABS.map(({ key, label, icon: Icon }) => {
@@ -1533,7 +1558,8 @@ function MoreScreen({
   onManage,
 }: {
   model: AppModel
-  onTransfers: () => void
+  /** None on a television, which keeps no downloads. */
+  onTransfers?: () => void
   /** The drive list, to use another drive; this one stays paired. */
   onChangeDrive: () => void
   /** Opens "Manage host"; only for a device the host lets manage it. */
@@ -1631,7 +1657,7 @@ function MoreScreen({
               <KeyRound size={12} className="shrink-0" />
               {vault.status?.signsInWithKey
                 ? vault.status.key === 'chip'
-                  ? 'Signs in with a key in this phone’s security chip'
+                  ? `Signs in with a key in this ${handheldWord()}’s security chip`
                   : 'Signs in with a key of its own'
                 : 'Signs in with its pairing code'}
               {vault.status?.owner && ' · manages host'}
@@ -1673,19 +1699,21 @@ function MoreScreen({
           />
         </Card>
 
-        <Card onClick={onTransfers}>
-          <div className="flex items-center gap-3.5">
-            <Download size={20} className="shrink-0 text-textDim" />
-            <div className="min-w-0 flex-1">
-              <div className="text-[15px] text-text">Transfers</div>
-              <div className="text-[12.5px] text-textFaint">
-                {transfers.active.length > 0
-                  ? `${transfers.active.length} under way`
-                  : 'Downloads are saved to Download/Basalt'}
+        {onTransfers && (
+          <Card onClick={onTransfers}>
+            <div className="flex items-center gap-3.5">
+              <Download size={20} className="shrink-0 text-textDim" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[15px] text-text">Transfers</div>
+                <div className="text-[12.5px] text-textFaint">
+                  {transfers.active.length > 0
+                    ? `${transfers.active.length} under way`
+                    : 'Downloads are saved to Download/Basalt'}
+                </div>
               </div>
             </div>
-          </div>
-        </Card>
+          </Card>
+        )}
 
         <Card onClick={() => model.setNav('starred')}>
           <div className="flex items-center gap-3.5">
@@ -1714,7 +1742,7 @@ function MoreScreen({
             <span className="min-w-0 flex-1">
               <span className="block text-[15px] text-danger">Forget this drive</span>
               <span className="mt-0.5 block text-[12.5px] leading-snug text-textFaint">
-                This phone stops connecting to {vault.status?.hostName ?? 'the host'} until you pair
+                This {handheldWord()} stops connecting to {vault.status?.hostName ?? 'the host'} until you pair
                 again. Nothing on the drive changes.
               </span>
             </span>

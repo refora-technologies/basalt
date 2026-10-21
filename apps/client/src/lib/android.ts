@@ -6,7 +6,7 @@
  * call it without checking where they are.
  */
 import { inTauri } from './api'
-import { isAndroid } from './platform'
+import { isAndroid, isTv } from './platform'
 
 /** A file on the phone, as Android describes one it has handed over. */
 export interface PhoneFile {
@@ -117,7 +117,7 @@ export const android = {
 
   /** The version Android installed: the name people see and Play's number. */
   appVersion: () =>
-    plugin<{ name: string; code: number; device: string; android: string }>('app_version'),
+    plugin<{ name: string; code: number; device: string; android: string; tv?: boolean }>('app_version'),
   /** Text handed to any app that takes it: a link sent to WhatsApp, an email, a PC. */
   shareText: (text: string, title?: string) => plugin<void>('share_text', { text, title }),
   /** A new email in the person's mail app, filled in and not sent. Whether it opened. */
@@ -133,14 +133,25 @@ export const android = {
   playReview: async () => (await plugin<{ asked: boolean }>('play_review'))?.asked ?? false,
 }
 
-/** Applies the system bars' sizes as CSS variables, now and on every change. */
+/**
+ * What a television keeps clear at its edges, which some sets crop (overscan):
+ * 5% of the screen, as Google asks of TV apps, in dp (48 by 27 at 1080p).
+ */
+const TV_EDGES = { top: 27, bottom: 27, left: 48, right: 48 }
+
+/**
+ * Applies the system bars' sizes as CSS variables, now and on every change.
+ * On a television they are at least its safe edges (Android applies them too,
+ * as it writes these itself), so every screen keeps clear of what a set crops.
+ */
 export async function applyInsets(): Promise<void> {
   const insets = await android.insets().catch(() => null)
-  if (!insets) return
+  const tv = isTv()
+  if (!insets && !tv) return
   const style = document.documentElement.style
-  style.setProperty('--inset-top', `${insets.top}px`)
-  style.setProperty('--inset-bottom', `${insets.bottom}px`)
-  style.setProperty('--inset-left', `${insets.left}px`)
-  style.setProperty('--inset-right', `${insets.right}px`)
-  style.setProperty('--keyboard', `${insets.keyboard}px`)
+  for (const side of ['top', 'bottom', 'left', 'right'] as const) {
+    const px = Math.max(insets?.[side] ?? 0, tv ? TV_EDGES[side] : 0)
+    style.setProperty(`--inset-${side}`, `${px}px`)
+  }
+  style.setProperty('--keyboard', `${insets?.keyboard ?? 0}px`)
 }

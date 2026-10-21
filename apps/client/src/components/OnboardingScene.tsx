@@ -1,9 +1,10 @@
 import { useId } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Laptop, Monitor, Smartphone } from 'lucide-react'
+import { Laptop, Monitor, Smartphone, Tv } from 'lucide-react'
 import { HexMark } from './HexMark'
 import type { DiscoveredHost } from '@/lib/api'
 import { LOOPS } from '@/lib/motion'
+import { handheldWord, isTv } from '@/lib/platform'
 
 /**
  * The picture above the introduction's words.
@@ -73,7 +74,7 @@ export function OnboardingScene({
       : 'Your computer'
   const pcSub = searching ? 'BASALT HOST' : step >= 2 ? 'ON YOUR COMPUTER' : 'YOUR FILES STAY HERE'
   const deviceTitle = 'Basalt'
-  const deviceSub = phone ? 'THIS PHONE' : 'THIS COMPUTER'
+  const deviceSub = phone ? `THIS ${handheldWord().toUpperCase()}` : 'THIS COMPUTER'
   // While searching, the rings say it, and the words below; a caption under
   // the tile would sit across the rings.
   const deviceCaptioned = !(searching && !found)
@@ -321,7 +322,9 @@ export function OnboardingScene({
         x={deviceX}
         shown={deviceShown}
         icon={
-          phone ? (
+          phone && isTv() ? (
+            <Tv width={26} height={26} strokeWidth={1.5} color="#f4f4f5" />
+          ) : phone ? (
             <Smartphone width={26} height={26} strokeWidth={1.5} color="#f4f4f5" />
           ) : (
             <Laptop width={26} height={26} strokeWidth={1.5} color="#f4f4f5" />

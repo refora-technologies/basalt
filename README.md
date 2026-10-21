@@ -37,7 +37,7 @@
 the whole household. **Basalt Host** runs on the computer with the drive:
 Windows or Linux, with a screen or without one, such as a home server, a NAS or
 a Raspberry Pi. **Basalt** runs everywhere else, on Windows computers and on
-Android phones and tablets. Every device browses the same files, watches the
+Android phones, tablets and TVs. Every device browses the same files, watches the
 same library, and picks up where the last one left off.
 
 There is nothing to configure. You choose a drive on the host; on another
@@ -153,7 +153,7 @@ and that is all it does.
 - **Plays what a browser cannot.** Built on **mpv**, on Windows and Android
   alike, so HEVC, HDR, E-AC3, DTS, MKV and the rest play straight from the
   drive, with nothing downloaded first.
-- **4K on any phone.** When a device cannot keep up with a film, the host
+- **Plays on any phone or TV.** When a device cannot keep up with a film, the host
   converts it to 1080p as it plays, on its graphics where it has them, with
   the sound and subtitles untouched. The player says so while it prepares,
   picks the film up again if the connection drops, and a quality button
@@ -194,6 +194,17 @@ and that is all it does.
   phone would normally switch to mobile data, Basalt keeps its connection to
   the host.
 
+### On your TV
+
+- **The same app, made for the remote.** On Android TV and Google TV the
+  arrows move one highlight around the library and the files, OK opens and
+  plays, and holding OK opens a film's menu. In the player OK pauses, left and
+  right skip, and the remote's play, pause, rewind and fast-forward keys work.
+- **Keeps to watching.** The TV opens on the library, and leaves uploads,
+  downloads, sharing and managing the host to your phone and computer.
+- **Pauses when you leave.** Press Home during a film and it waits for you,
+  or carries on in a small window on a TV that has one.
+
 ### Several devices at once
 
 There is no device limit and no connection limit. The host serves bytes and
@@ -224,7 +235,7 @@ has a signed `SHA256SUMS`; [SECURITY.md](SECURITY.md#signed-releases) says how.
 | Download | Install on |
 |---|---|
 | **[`Basalt-Client-Setup.exe`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Setup.exe)** | Windows computers |
-| **[`Basalt-Android.apk`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk)** | Android phones and tablets (Android 8.0 or later, 64-bit) |
+| **[`Basalt-Android.apk`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk)** | Android phones, tablets and TVs (Android 8.0 or later) |
 | Basalt for Linux | Coming soon. Until then, open a Linux host's drive from Windows or Android |
 
 **Basalt Host**, on the computer with the drive:
@@ -370,8 +381,12 @@ It needs the Android SDK with NDK 28, JDK 17, and Rust's Android targets:
 rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
 set NDK_HOME=%LOCALAPPDATA%\Android\Sdk\ndk\28.2.13676358
 set JAVA_HOME=C:\Program Files\Java\jdk-17
-cd apps/client && npx tauri android build --apk --target aarch64
+cd apps/client && npx tauri android build --apk --target aarch64 --target armv7
 ```
+
+A release carries 64-bit and 32-bit ARM: phones are 64-bit, but many
+televisions and TV sticks run 32-bit Android. The build stops if a `--target`
+is missing, rather than make an app some devices cannot start.
 
 The phone's player is mpv too, from the `dev.jdtech.mpv:libmpv` package, which
 Gradle fetches by itself; the desktop's Windows libraries are left out.

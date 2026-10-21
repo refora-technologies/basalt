@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use basalt_proto::msg::DeviceForm;
+
 use crate::{ClientError, Result};
 
 /// One host this device has paired with.
@@ -377,6 +379,26 @@ pub fn new_device_id() -> Result<String> {
     basalt_net::pairing::random_nonce()
         .map(|nonce| nonce[..32].to_string())
         .map_err(|e| ClientError::Protocol(format!("no randomness available: {e}")))
+}
+
+/// What kind of device this is, as told by the app's page: the shell knows a
+/// television or a tablet from Android, which nothing down here can ask.
+static FORM: std::sync::Mutex<Option<DeviceForm>> = std::sync::Mutex::new(None);
+
+/// Says what kind of device this is, for its picture in the host's lists.
+pub fn set_device_form(form: DeviceForm) {
+    *FORM.lock().unwrap_or_else(|e| e.into_inner()) = Some(form);
+}
+
+/// What kind of device this is: as told, else a phone on Android and a
+/// computer anywhere else.
+pub fn device_form() -> DeviceForm {
+    let told = *FORM.lock().unwrap_or_else(|e| e.into_inner());
+    told.unwrap_or(if cfg!(target_os = "android") {
+        DeviceForm::Phone
+    } else {
+        DeviceForm::Computer
+    })
 }
 
 /// This device's name, as it will appear on the host.

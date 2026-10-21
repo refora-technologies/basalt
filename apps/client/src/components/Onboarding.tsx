@@ -5,7 +5,7 @@ import { OnboardingScene } from './OnboardingScene'
 import { api, type DiscoveredHost } from '@/lib/api'
 import { android } from '@/lib/android'
 import { HOST_DOWNLOAD, WEBSITE, openExternal } from '@/lib/links'
-import { isMobileShell } from '@/lib/platform'
+import { handheldWord, isMobileShell, isTv } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { useBack } from '@/mobile/useBack'
 
@@ -221,6 +221,8 @@ export function Onboarding({
             <motion.button
               whileTap={{ scale: 0.97 }}
               onClick={() => go(step + 1)}
+              // Where a TV remote starts, rather than on Skip above it.
+              data-remote-first=""
               className="flex h-12 items-center gap-2 rounded-full bg-white px-6 text-[14px] font-semibold text-black transition-opacity hover:opacity-90"
             >
               {step === LAST - 1 ? 'Find my computer' : 'Continue'}
@@ -259,7 +261,7 @@ const PAGES: Array<{ eyebrow: string; title: string; body: (phone: boolean) => s
     title: 'Pair, and it just opens',
     body: (phone) =>
       `Pick your computer from a list and type the six digits it shows. This ${
-        phone ? 'phone' : 'computer'
+        phone ? handheldWord() : 'computer'
       } remembers it, and from then on Basalt opens straight to your drive.`,
   },
 ]
@@ -320,7 +322,12 @@ function Finding({
           : 'Install Basalt Host on the computer with your files, or on this one if they’re here. It appears on this page as soon as it starts.'}
       </Body>
       <div className="mt-5 flex flex-col gap-2">
-        {phone ? (
+        {isTv() ? (
+          // Nothing to open or send the link with on a television.
+          <p className="text-[14px] text-text">
+            Open {WEBSITE.replace('https://', '')} on your computer to download it.
+          </p>
+        ) : phone ? (
           <>
             <Primary
               icon={<Send size={15} />}

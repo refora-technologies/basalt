@@ -5,6 +5,7 @@ import {
   ArrowUp,
   Eye,
   Laptop,
+  Monitor,
   MonitorSmartphone,
   Pencil,
   ShieldCheck,
@@ -16,7 +17,15 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react'
-import { signsIn, signsInWith, spacedPin, type ManagedDevice, type PairingRequest } from '@/lib/manage'
+import {
+  signsIn,
+  signsInWith,
+  spacedPin,
+  type DeviceForm,
+  type ManagedDevice,
+  type PairingRequest,
+} from '@/lib/manage'
+import { handheldWord, isTv } from '@/lib/platform'
 import { cn, formatBytes } from '@/lib/utils'
 import { Card, Group, Pill, Presence, Row, Rows, Tag, Toggle, ago, useLayout } from './parts'
 import { Surface } from './Surface'
@@ -156,18 +165,34 @@ function clock(seconds: number): string {
 
 // ---------------------------------------------------------------------------
 
-/** Which kind of device, guessed from its name, for its picture only. */
-function deviceIcon(name: string): LucideIcon {
+/**
+ * Which kind of device, for its picture only: what the device says it is,
+ * or for one too old to say, a guess from its name. A TV first, as many are
+ * called "... Android TV" and would otherwise be taken for phones.
+ */
+function deviceIcon(device: { name: string; form?: DeviceForm | null }): LucideIcon {
+  const name = device.name
+  const laptop = /laptop|notebook|macbook|surface/i.test(name)
+  switch (device.form) {
+    case 'tv':
+      return Tv
+    case 'phone':
+      return Smartphone
+    case 'tablet':
+      return Tablet
+    case 'computer':
+      return laptop ? Laptop : Monitor
+  }
+  if (/\btv\b|television|shield|fire ?(tv|stick)|firestick|chromecast|bravia|\baft/i.test(name)) return Tv
   if (/phone|pixel|galaxy|android/i.test(name)) return Smartphone
   if (/tablet|ipad|\btab\b/i.test(name)) return Tablet
-  if (/\btv\b|television|shield|fire ?stick/i.test(name)) return Tv
-  if (/laptop|notebook|macbook|surface/i.test(name)) return Laptop
+  if (laptop) return Laptop
   return MonitorSmartphone
 }
 
-/** "this phone" or "this computer", by where the screen is shown. */
+/** "This phone" (or TV) or "This computer", by where the screen is shown. */
 function thisOne(layout: 'phone' | 'desktop'): string {
-  return layout === 'phone' ? 'This phone' : 'This computer'
+  return layout === 'phone' ? `This ${handheldWord()}` : 'This computer'
 }
 
 function lastManager(devices: ManagedDevice[], id: string): boolean {
@@ -200,7 +225,7 @@ export function Devices(tools: Tools): React.JSX.Element {
           {devices.map((device) => {
             const you = device.id === view.you
             // This device is known for what it is, whatever it is called.
-            const Icon = you && layout === 'phone' ? Smartphone : deviceIcon(device.name)
+            const Icon = you && layout === 'phone' ? (isTv() ? Tv : Smartphone) : deviceIcon(device)
             return (
               <Row
                 key={device.id}
@@ -258,7 +283,7 @@ function DeviceDetail({
   const phone = layout === 'phone'
   const you = device.id === view.you
   const only = lastManager(view.devices, device.id)
-  const Icon = you && phone ? Smartphone : deviceIcon(device.name)
+  const Icon = you && phone ? (isTv() ? Tv : Smartphone) : deviceIcon(device)
 
   const askManages = async (next: boolean): Promise<boolean> => {
     if (next) {
@@ -271,7 +296,7 @@ function DeviceDetail({
     }
     if (!you) return true
     return confirm({
-      title: `Stop managing from ${phone ? 'this phone' : 'this computer'}?`,
+      title: `Stop managing from ${phone ? `this ${handheldWord()}` : 'this computer'}?`,
       message:
         'This screen closes. Another device that manages the host, or the host’s own window, can let it manage again.',
       confirmLabel: 'Stop managing',
@@ -287,7 +312,7 @@ function DeviceDetail({
 
   const remove = async (): Promise<void> => {
     const ok = await confirm({
-      title: you ? `Remove ${phone ? 'this phone' : 'this computer'}?` : `Remove ${device.name}?`,
+      title: you ? `Remove ${phone ? `this ${handheldWord()}` : 'this computer'}?` : `Remove ${device.name}?`,
       message: you
         ? 'It’s disconnected right away. To use the drive again, it has to pair again.'
         : 'It’s disconnected right away. To use the drive again, it has to pair again.',

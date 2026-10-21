@@ -502,6 +502,8 @@ export const api = {
   appVersion: (): Promise<string> => call<string>('app_version'),
   /** The release notes of one version as published on GitHub, or null when it has none. */
   releaseNotes: (version: string): Promise<string | null> => call<string | null>('release_notes', { version }),
+  /** What kind of device this is, for its picture in the host's device lists. */
+  setDeviceForm: (form: 'phone' | 'tablet' | 'tv') => call<void>('set_device_form', { form }),
   /** A newer release, or null when this is the newest. */
   checkUpdate: (): Promise<Release | null> => call<Release | null>('check_update'),
   /** Fetches and verifies an installer, returning where it landed. */

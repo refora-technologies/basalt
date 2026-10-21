@@ -24,7 +24,7 @@ import {
   WEBSITE,
   openExternal,
 } from '@/lib/links'
-import { isAndroid, isLinuxDesktop } from '@/lib/platform'
+import { isAndroid, isLinuxDesktop, isTv } from '@/lib/platform'
 import { checkForUpdate, offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
 import { cn } from '@/lib/utils'
 
@@ -117,24 +117,34 @@ export function About({ product }: { product: string }): React.JSX.Element {
 
       <HostBlock phone={phone} />
 
-      <div className="mt-3 overflow-hidden rounded-lg border border-line">
-        {PLAY_STORE && (
-          <Row icon={<Star size={15} />} onClick={() => void openExternal(PLAY_LISTING)}>
-            Rate Basalt on Google Play
+      {/* A television usually has no browser or mail app to open these
+          in: the addresses are given to use on another device instead. */}
+      {isTv() ? (
+        <p className="mt-3 text-[12px] leading-relaxed text-textDim">
+          Feedback and problems: {FEEDBACK_EMAIL}
+          <br />
+          Source code and licences: {WEBSITE.replace('https://', '')}
+        </p>
+      ) : (
+        <div className="mt-3 overflow-hidden rounded-lg border border-line">
+          {PLAY_STORE && (
+            <Row icon={<Star size={15} />} onClick={() => void openExternal(PLAY_LISTING)}>
+              Rate Basalt on Google Play
+            </Row>
+          )}
+          <Row icon={<Mail size={15} />} onClick={() => void feedback()}>
+            Send feedback
           </Row>
-        )}
-        <Row icon={<Mail size={15} />} onClick={() => void feedback()}>
-          Send feedback
-        </Row>
-        {!PLAY_STORE && (
-          <Row icon={<Bug size={15} />} onClick={() => void openExternal(ISSUES)}>
-            Report a problem on GitHub
+          {!PLAY_STORE && (
+            <Row icon={<Bug size={15} />} onClick={() => void openExternal(ISSUES)}>
+              Report a problem on GitHub
+            </Row>
+          )}
+          <Row icon={<Github size={15} />} onClick={() => void openExternal(REPO)}>
+            {PLAY_STORE ? 'Source code and licences' : 'Source code'}
           </Row>
-        )}
-        <Row icon={<Github size={15} />} onClick={() => void openExternal(REPO)}>
-          {PLAY_STORE ? 'Source code and licences' : 'Source code'}
-        </Row>
-      </div>
+        </div>
+      )}
       {noMailApp && (
         <p className="mt-2 text-[11.5px] text-textFaint">
           No mail app opened. Write to {FEEDBACK_EMAIL} from any mail app.
@@ -210,7 +220,11 @@ function HostBlock({ phone }: { phone: boolean }): React.JSX.Element {
         Basalt Host runs on the computer that has your files and shares them with your devices.
         It’s free, like this app.
       </p>
-      {phone ? (
+      {isTv() ? (
+        <p className="mt-3 text-[13px] text-text">
+          Open {WEBSITE.replace('https://', '')} on your computer to download it.
+        </p>
+      ) : phone ? (
         <div className="mt-3.5 flex flex-col gap-2">
           <Big
             primary

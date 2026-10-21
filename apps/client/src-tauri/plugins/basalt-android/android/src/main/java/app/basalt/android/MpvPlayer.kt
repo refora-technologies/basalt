@@ -29,7 +29,8 @@ class MpvPlayer(
   private val activity: Activity,
   private val emit: (JSObject) -> Unit,
 ) : MPVLib.EventObserver, SurfaceHolder.Callback {
-  private var started = false
+  // Set on the main thread, read on the thread for mpv's calls.
+  @Volatile private var started = false
   private var surface: SurfaceView? = null
   private var lastTime = 0L
 

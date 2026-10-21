@@ -28,7 +28,12 @@ export interface ManagedDevice {
   keyKind: KeyKind | null
   /** Manages the host (shown as such; stored as `owner`). */
   owner: boolean
+  /** What kind of device it says it is. Absent from older devices and hosts. */
+  form?: DeviceForm | null
 }
+
+/** What kind of device a device says it is: for its picture only. */
+export type DeviceForm = 'phone' | 'tablet' | 'tv' | 'computer' | 'other'
 
 export interface PairingRequest {
   id: string

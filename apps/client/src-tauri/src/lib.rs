@@ -1395,6 +1395,13 @@ async fn release_notes(version: String) -> Answer<Option<String>> {
         })
 }
 
+/// What kind of device this is, as the page knows it from Android: a phone,
+/// a tablet or a TV. Shown on the host beside the device's name.
+#[tauri::command]
+fn set_device_form(form: basalt_proto::msg::DeviceForm) {
+    basalt_client::store::set_device_form(form);
+}
+
 /// Downloads an offered release, reporting progress, and returns its path.
 ///
 /// The file is verified against the release's signed list of digests before
@@ -1666,6 +1673,7 @@ pub fn run() {
             app_version,
             check_update,
             release_notes,
+            set_device_form,
             download_update,
             install_update,
             status,

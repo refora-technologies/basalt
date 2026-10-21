@@ -602,6 +602,7 @@ async fn raw(addr: SocketAddr, device_id: &str) -> (Tls, String) {
             protocol: PROTOCOL_VERSION,
             device_name: "Hand-made".into(),
             device_id: device_id.into(),
+            form: None,
         },
     )
     .await

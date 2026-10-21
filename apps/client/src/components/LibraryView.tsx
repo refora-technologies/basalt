@@ -298,7 +298,7 @@ function Card({
       // near, so a long library scrolls like a short one.
       style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 320px' }}
     >
-      <div className="relative overflow-hidden rounded-md">
+      <div data-focus-ring="" className="relative overflow-hidden rounded-md">
         <Poster
           title={item.title}
           year={item.year ?? undefined}
@@ -434,9 +434,10 @@ function SeriesSheet({
 
   const episodes = (
     <div className="flex flex-col gap-1 pb-6">
-      {season?.episodes.map((episode) => (
+      {season?.episodes.map((episode, index) => (
         <EpisodeRow
           key={episode.path}
+          first={index === 0}
           episode={episode}
           watched={watched.get(episode.path)}
           onPlay={() => onPlay(episode.path)}
@@ -464,6 +465,8 @@ function SeriesSheet({
       className={cn('fixed inset-0 z-50 bg-ink', !TOUCH && 'sm:bg-ink/95')}
       // Its own seasons scroll sideways; a swipe here is not a change of section.
       data-no-swipe
+      // A page in front of the library: the remote stays in it.
+      data-remote-scope=""
       onMouseDown={onClose}
     >
       <motion.div
@@ -489,7 +492,12 @@ function SeriesSheet({
           // list left room for one episode at a time, so it stands beside
           // the list instead, and the list has the whole height.
           <div className="flex min-h-0 flex-1 gap-6">
-            <div className="flex w-[200px] shrink-0 flex-col overflow-y-auto">
+            <div
+              className="flex w-[200px] shrink-0 flex-col overflow-y-auto"
+              // Back and the seasons, reached by a TV remote's left from any
+              // episode, as the side rail is from any row.
+              data-remote-anywhere=""
+            >
               {back}
               <div className="mt-3 w-[104px] overflow-hidden rounded-md">{poster(false)}</div>
               <h2 className="mt-3 text-[19px] font-semibold leading-tight tracking-tighter text-text">
@@ -572,12 +580,15 @@ function EpisodeRow({
   watched,
   onPlay,
   onMore,
+  first = false,
 }: {
   episode: LibraryEpisode
   watched: Watched | undefined
   onPlay: () => void
   /** A long press, on a phone: see [`LibraryView`]'s `onEpisodeMore`. */
   onMore?: () => void
+  /** Where a TV remote starts on the series' page. */
+  first?: boolean
 }): React.JSX.Element {
   const done = watched ? isFinished(watched) : false
   const part = watched && !done ? watched.fraction : 0
@@ -586,6 +597,7 @@ function EpisodeRow({
   return (
     <button
       {...(onMore ? press : { onClick: onPlay })}
+      data-remote-first={first ? '' : undefined}
       className="group relative flex select-none items-center gap-3 overflow-hidden rounded-md border border-line bg-panel px-3.5 py-2.5 text-left transition-colors hover:bg-panel2 active:bg-panel2"
     >
       <span className="tnum w-7 shrink-0 font-mono text-[12px] text-textFaint">

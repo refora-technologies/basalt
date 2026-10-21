@@ -45,6 +45,25 @@ pub struct HelloRequest {
     /// this field.
     #[serde(default)]
     pub device_id: String,
+    /// What kind of device it is, for its picture in the host's device lists.
+    /// Absent from a client older than this field, whose kind the lists
+    /// guess from its name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<DeviceForm>,
+}
+
+/// What kind of device a device is, as it says: shown, never relied on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeviceForm {
+    Phone,
+    Tablet,
+    Tv,
+    Computer,
+    /// A kind added after this was written: read rather than refused, so a
+    /// newer device can still sign in to an older host.
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1373,6 +1392,24 @@ mod tests {
     fn a_resynchronise_belongs_to_no_particular_folder() {
         assert!(Change::Resynchronise.parent_dirs().is_empty());
         assert!(Change::LibraryChanged.parent_dirs().is_empty());
+    }
+
+    /// A hello says what kind of device it comes from; one from an older app
+    /// says nothing, and a kind added later is read rather than refused, so a
+    /// newer device can still sign in to an older host.
+    #[test]
+    fn a_hello_reads_with_or_without_a_known_device_kind() {
+        let tv: HelloRequest =
+            serde_json::from_str(r#"{"protocol":3,"device_name":"TV","form":"tv"}"#).unwrap();
+        assert_eq!(tv.form, Some(DeviceForm::Tv));
+        let old: HelloRequest =
+            serde_json::from_str(r#"{"protocol":3,"device_name":"Laptop"}"#).unwrap();
+        assert_eq!(old.form, None);
+        let later: HelloRequest =
+            serde_json::from_str(r#"{"protocol":3,"device_name":"Watch","form":"watch"}"#).unwrap();
+        assert_eq!(later.form, Some(DeviceForm::Other));
+        let said = serde_json::to_string(&HelloRequest { form: None, ..tv }).unwrap();
+        assert!(!said.contains("form"), "{said}");
     }
 
     #[test]
