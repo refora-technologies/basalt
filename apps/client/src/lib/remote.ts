@@ -87,7 +87,8 @@ export function distance(from: Box, to: Box, direction: Direction): number | nul
  *
  * Left and right stay in the row: past the last button of the player's row,
  * right used to jump to the close button in the far corner. Only what is
- * reachable from `anywhere` (the side rail) is found outside the row.
+ * reachable from `anywhere` (the side rail, a series' seasons) is found
+ * outside the row.
  */
 export function nearest<T>(
   from: Box,
@@ -153,7 +154,7 @@ export function move(direction: Direction): boolean {
       .map((el) => ({
         item: el,
         box: seenFrom(el, current, from, direction),
-        anywhere: el.closest('nav') !== null,
+        anywhere: el.closest('nav, [data-remote-anywhere]') !== null,
       })),
     direction,
   )

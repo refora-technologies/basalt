@@ -149,6 +149,11 @@ function hugged(el: HTMLElement, box: DOMRect): DOMRect | null {
 /** Whether `el` can be seen: neither it nor anything around it faded out or hidden. */
 function shown(el: HTMLElement): boolean {
   if (el.closest('[aria-hidden="true"], [inert]')) return false
+  // Covered by something in front (a page opened over it): what is drawn at
+  // its middle is not it.
+  const box = el.getBoundingClientRect()
+  const top = document.elementFromPoint((box.left + box.right) / 2, (box.top + box.bottom) / 2)
+  if (top && !el.contains(top) && !top.contains(el)) return false
   // Its own visibility says it all: a hidden wrapper may show some of what
   // is in it again. A fade does not pass down, so every wrapper's counts.
   if (getComputedStyle(el).visibility !== 'visible') return false
