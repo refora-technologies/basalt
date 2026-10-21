@@ -334,11 +334,14 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
         val wanted = if (keyboardOpen) ime.bottom else 0
         if (parent.paddingBottom != wanted) parent.setPadding(0, 0, 0, wanted)
       }
-      val top = bars.top / density
+      // A television may crop the edges of its picture (overscan), so there
+      // the page keeps 5% clear, as Google asks of TV apps: 48 by 27 dp.
+      val tv = television
+      val top = maxOf(bars.top / density, if (tv) 27f else 0f)
       // Over the keyboard, nothing of the page is under the gesture bar.
-      val bottom = if (keyboardOpen) 0f else bars.bottom / density
-      val left = bars.left / density
-      val right = bars.right / density
+      val bottom = maxOf(if (keyboardOpen) 0f else bars.bottom / density, if (tv) 27f else 0f)
+      val left = maxOf(bars.left / density, if (tv) 48f else 0f)
+      val right = maxOf(bars.right / density, if (tv) 48f else 0f)
       val keyboard = ime.bottom / density
       lastInsets = JSObject()
         .put("top", top).put("bottom", bottom).put("left", left).put("right", right)
@@ -409,6 +412,15 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
 
   /** The activity being left: see [Pip.leaving]. */
   fun leaving() = pip.leaving()
+
+  /**
+   * The activity no longer on the screen. On a television a film left behind
+   * pauses (see [Pip.leftUnseen]); a phone keeps its own ways, the small
+   * window or the screen going off with the film still on.
+   */
+  fun stopped() {
+    if (isTelevision()) pip.leftUnseen()
+  }
 
   /** Into the small window or out of it: see [Pip.changed]. */
   fun pictureInPicture(active: Boolean, closed: Boolean) = pip.changed(active, closed)
@@ -1256,6 +1268,8 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
    * so in the mode the system runs in; some set-top boxes only in the
    * features they declare.
    */
+  private val television: Boolean by lazy { isTelevision() }
+
   private fun isTelevision(): Boolean {
     val modes = activity.getSystemService(Context.UI_MODE_SERVICE) as? android.app.UiModeManager
     if (modes?.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION) return true

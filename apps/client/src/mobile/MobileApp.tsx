@@ -222,12 +222,20 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
   return <Shell model={model} onChangeDrive={() => setChangingDrive(true)} />
 }
 
-/** Clear of the status bar and the gesture bar. */
+/**
+ * Clear of the status bar and the gesture bar, a camera cutout at the side
+ * of a phone held sideways, and the edges a television may crop.
+ */
 function Safe({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
     <div
       className="relative h-full"
-      style={{ paddingTop: 'var(--inset-top, 0px)', paddingBottom: 'var(--inset-bottom, 0px)' }}
+      style={{
+        paddingTop: 'var(--inset-top, 0px)',
+        paddingBottom: 'var(--inset-bottom, 0px)',
+        paddingLeft: 'var(--inset-left, 0px)',
+        paddingRight: 'var(--inset-right, 0px)',
+      }}
     >
       {children}
     </div>
@@ -401,7 +409,9 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   return (
     <div
       className="relative flex h-full bg-ink"
-      style={{ paddingLeft: 'var(--inset-left, 0px)', paddingRight: 'var(--inset-right, 0px)' }}
+      // With the side rail, the rail's panel runs to the edge and keeps its
+      // own buttons clear of it (see Rail).
+      style={{ paddingLeft: wide ? 0 : 'var(--inset-left, 0px)', paddingRight: 'var(--inset-right, 0px)' }}
     >
       {wide && <Rail tab={tab} onTab={goTo} activeTransfers={active.length} attention={offered(update)} />}
 
@@ -573,7 +583,9 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
         </Rise>
 
         {!wide && <BottomNav tab={tab} onTab={goTo} activeTransfers={active.length} attention={offered(update)} />}
-        {wide && <div style={{ height: 'var(--inset-bottom, 0px)' }} className="shrink-0" />}
+        {/* On a television the lists run on to the screen's edge, as a
+            TV's do: only what stays put keeps clear of what a set crops. */}
+        {wide && !TV && <div style={{ height: 'var(--inset-bottom, 0px)' }} className="shrink-0" />}
       </div>
 
       <WhatsNew />
@@ -734,8 +746,12 @@ function Rail({
 }): React.JSX.Element {
   return (
     <nav
-      className="flex w-[88px] shrink-0 flex-col items-center gap-3 border-r border-white/[0.06] bg-[#0e0e10]"
-      style={{ paddingTop: 'calc(var(--inset-top, 0px) + 16px)' }}
+      className="flex shrink-0 flex-col items-center gap-3 border-r border-white/[0.06] bg-[#0e0e10]"
+      style={{
+        width: 'calc(88px + var(--inset-left, 0px))',
+        paddingLeft: 'var(--inset-left, 0px)',
+        paddingTop: 'calc(var(--inset-top, 0px) + 16px)',
+      }}
     >
       <HexMark size={26} className="mb-4 text-basalt" />
       {TABS.map(({ key, label, icon: Icon }) => {

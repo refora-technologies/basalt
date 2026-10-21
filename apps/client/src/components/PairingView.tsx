@@ -554,7 +554,7 @@ function HostList({
           maskImage: `linear-gradient(to bottom, ${more.above ? 'transparent' : 'black'}, black 28px, black calc(100% - 28px), ${more.below ? 'transparent' : 'black'})`,
         }}
       >
-        {groups.map((group) => (
+        {groups.map((group, g) => (
           <div key={group.title}>
             {titled && (
               <div className="mb-1.5 mt-3 px-1 font-mono text-[9.5px] uppercase tracking-[0.12em] text-textFaint first:mt-0">
@@ -562,7 +562,7 @@ function HostList({
               </div>
             )}
             <AnimatePresence initial={false}>
-              {group.hosts.map((host) => {
+              {group.hosts.map((host, i) => {
                 const actions = actionsFor(host)
                 return (
                   <motion.div
@@ -577,6 +577,7 @@ function HostList({
                       host={host}
                       busy={busy}
                       current={current(host)}
+                      first={g === 0 && i === 0}
                       onChoose={() => onChoose(host)}
                       onMenu={
                         actions.length === 0
@@ -716,6 +717,7 @@ function HostRow({
   host,
   busy,
   current = false,
+  first = false,
   onChoose,
   onMenu,
 }: {
@@ -723,6 +725,8 @@ function HostRow({
   busy: boolean
   /** The drive this device is using now. */
   current?: boolean
+  /** At the top of the list: where a TV remote starts. */
+  first?: boolean
   onChoose: () => void
   /** What else it offers, opened at a point: absent when nothing. */
   onMenu?: (at: { clientX: number; clientY: number }) => void
@@ -759,6 +763,7 @@ function HostRow({
         if (onMenu && !TOUCH) onMenu(e)
       }}
       disabled={disabled}
+      data-remote-first={first ? '' : undefined}
       className={cn(
         'flex w-full items-center gap-3 rounded-lg border border-white/[0.07] bg-panel2 px-3.5 py-3 text-left transition-colors',
         disabled ? 'cursor-not-allowed opacity-45' : 'hover:border-white/[0.16]',

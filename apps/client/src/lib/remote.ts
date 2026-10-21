@@ -200,7 +200,27 @@ function settle(): void {
   // on the side rail; a press before then starts wherever it can.
   const content = within === document.body && document.querySelector('main') !== null
   if (content && !all.some((el) => el.closest('main'))) return
-  if (all.length > 0) focus(startOf(within, all))
+  if (all.length > 0) {
+    placed = startOf(within, all)
+    focus(placed)
+  }
+}
+
+/**
+ * Where `settle` put the focus, until a key moves it. A screen whose start
+ * comes in late (a list still loading) gets it there when it does, rather
+ * than leaving the person on whatever was in front first.
+ */
+let placed: HTMLElement | null = null
+
+function startCameLate(): void {
+  if (!placed || document.activeElement !== placed) return
+  const within = scope()
+  const start = pressables(within).find((el) => el.matches('[data-remote-first]'))
+  if (start && start !== placed) {
+    placed = start
+    focus(start)
+  }
 }
 
 /**
@@ -259,8 +279,10 @@ export function startRemote(): void {
       unsettled = 0
       settle()
     }
+    startCameLate()
   }, 150)
   window.addEventListener('keydown', (e) => {
+    placed = null
     if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return
     const direction = KEYS[e.key]
     if (!direction) return

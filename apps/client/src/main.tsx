@@ -7,6 +7,7 @@ import { android } from './lib/android'
 import { isAndroid, isMobileShell } from './lib/platform'
 import { startHalo } from './lib/focusHalo'
 import { startRemote } from './lib/remote'
+import { startTvTyping } from './lib/tvTyping'
 import { startUpdateChecks } from './lib/updates'
 import { shapeWindow } from './lib/windowFrame'
 import './styles.css'
@@ -48,6 +49,7 @@ void onTelevision().then(async (tv) => {
     document.documentElement.classList.add('tv')
     startRemote()
     startHalo()
+    startTvTyping()
   }
   const { App } = await import('./App')
   render(App)

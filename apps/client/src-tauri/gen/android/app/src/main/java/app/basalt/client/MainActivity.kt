@@ -25,6 +25,11 @@ class MainActivity : TauriActivity() {
     BasaltPlugin.current?.keepPageRunning()
   }
 
+  override fun onStop() {
+    super.onStop()
+    BasaltPlugin.current?.stopped()
+  }
+
   override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
     super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
     // Out of the small window by its close button, rather than opened back
