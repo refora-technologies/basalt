@@ -72,6 +72,7 @@ import { cn, formatBytes } from '@/lib/utils'
 import { FilesScreen } from './FilesScreen'
 import { Rise } from './presence'
 import { handheldWord, isAndroid, isTv } from '@/lib/platform'
+import { offerPlay } from '@/lib/playMove'
 import { offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
 import { ActionSheet, Sheet } from './Sheet'
 import { remaining, type Resumable } from '@/components/ContinueWatching'
@@ -1161,15 +1162,18 @@ function UpdateStrip({
       : update.kind === 'downloading'
         ? `Downloading… ${update.total > 0 ? Math.round((update.had / update.total) * 100) : 0}%`
         : 'Tap to see what’s new'
+  const toPlay = update.kind === 'available' && offerPlay(update.release)
   return (
     <div className="relative mx-3 mb-2 flex items-center gap-3 overflow-hidden rounded-2xl border border-basalt/30 bg-[#1c1c1f] py-3 pl-4 pr-2 shadow-lift">
       <button onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 text-left">
         <ArrowUpCircle size={19} className="shrink-0 text-basalt" />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13.5px] text-text">
-            Basalt {update.release.version} is available
+            {toPlay ? 'Basalt is now on Google Play' : `Basalt ${update.release.version} is available`}
           </span>
-          <span className="block truncate text-[12px] text-textFaint">{line}</span>
+          <span className="block truncate text-[12px] text-textFaint">
+            {toPlay ? `Tap to get ${update.release.version}` : line}
+          </span>
         </span>
       </button>
       <button

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { AlertCircle, ArrowUpCircle, ExternalLink, Loader2, X } from 'lucide-react'
@@ -17,6 +18,8 @@ import {
   type UpdateState,
 } from '@/lib/updates'
 import { cn, formatBytes } from '@/lib/utils'
+import { keepApk, offerPlay } from '@/lib/playMove'
+import { PlayChoice } from './PlayChoice'
 import { ReleaseNotes } from './ReleaseNotes'
 
 /**
@@ -96,6 +99,19 @@ function Card({ state }: { state: UpdateState }): React.JSX.Element {
 /** The popup's contents, the same in the phone's sheet and the desktop card. */
 function Body({ state }: { state: UpdateState }): React.JSX.Element {
   const release = offered(state) ? state.release : null
+  const [kept, setKept] = useState(false)
+  if (release && state.kind === 'available' && !kept && offerPlay(release)) {
+    return (
+      <PlayChoice
+        release={release}
+        onKeepApk={() => {
+          keepApk()
+          setKept(true)
+        }}
+        onClose={closeWhatsNew}
+      />
+    )
+  }
   const ready = state.kind === 'ready'
   const downloading = state.kind === 'downloading'
   const percent =

@@ -28,6 +28,8 @@ import { isAndroid, isLinuxDesktop, isTv } from '@/lib/platform'
 import { checkForUpdate, offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
 import { cn } from '@/lib/utils'
 import { sendRefusedReport } from '@/lib/refusedReport'
+import { canMoveToPlay, onPlay, stopKeepingApk } from '@/lib/playMove'
+import { PlayGlyph } from './PlayChoice'
 
 /** The computer this copy runs on, as the card names it. */
 const DESKTOP = isLinuxDesktop() ? 'Linux' : 'Windows'
@@ -116,6 +118,8 @@ export function About({ product }: { product: string }): React.JSX.Element {
 
       <Status state={state} installed={installed} />
 
+      {canMoveToPlay() && <MoveToPlay state={state} />}
+
       <HostBlock phone={phone} />
 
       {/* A television usually has no browser or mail app to open these
@@ -157,6 +161,47 @@ export function About({ product }: { product: string }): React.JSX.Element {
       </p>
       <p className="mt-1 font-mono text-[10px] text-textFaint">© 2026 Refora Technologies</p>
     </div>
+  )
+}
+
+/**
+ * For someone who kept the APK: the move to Google Play, from Settings. With
+ * an update on Play waiting, it opens the same popup the update brought;
+ * otherwise Basalt's page in Play.
+ */
+function MoveToPlay({ state }: { state: UpdateState }): React.JSX.Element {
+  // Play only installs over this app with a newer version than it has, so
+  // with none waiting the move happens at the next update, not now.
+  const [next, setNext] = useState(false)
+  const move = (): void => {
+    stopKeepingApk()
+    if (state.kind === 'available' && onPlay(state.release)) openWhatsNew()
+    else setNext(true)
+  }
+  if (next) {
+    return (
+      <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-line bg-ink2 px-3 py-2.5 text-[12px] leading-snug text-textDim">
+        <Check size={14} className="mt-0.5 shrink-0 text-text" />
+        <span>Done. Your next update will come from Google Play.</span>
+      </div>
+    )
+  }
+  return (
+    <button
+      onClick={move}
+      className="mt-3 flex w-full items-center gap-3 rounded-lg border border-line bg-ink2 px-3 py-2.5 text-left transition-colors hover:border-lineBright"
+    >
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/[0.06] text-text">
+        <PlayGlyph size={15} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[12.5px] font-medium text-text">Move to Google Play</span>
+        <span className="mt-0.5 block text-[11.5px] leading-snug text-textFaint">
+          Play installs over this app and keeps Basalt up to date.
+        </span>
+      </span>
+      <ChevronRight size={14} className="shrink-0 text-textFaint" />
+    </button>
   )
 }
 

@@ -49,7 +49,10 @@ export function parseNotes(notes: string): Block[] {
     }
   }
 
-  for (const raw of notes.split(/\r?\n/)) {
+  // Comments are notes to whoever edits the release (the Google Play marker
+  // among them), and GitHub doesn't show them either.
+  const shown = notes.replace(/<!--[\s\S]*?-->/g, '')
+  for (const raw of shown.split(/\r?\n/)) {
     const line = raw.trim()
 
     if (line === '') {

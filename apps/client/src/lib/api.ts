@@ -1023,6 +1023,11 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       // Slow on purpose, like `discover`: the panel has a "Checking…" state
       // and an instant answer would hide it.
       await new Promise((resolve) => setTimeout(resolve, 700))
+      // `?update&onplay`: Google Play has it too, for the APK's choice.
+      if (previewFlag('update') && previewFlag('onplay')) {
+        const marker = `<!-- google-play: ${MOCK_RELEASE.version} -->`
+        return { ...MOCK_RELEASE, notes: `${MOCK_RELEASE.notes}\n${marker}` } as T
+      }
       return (previewFlag('update') ? MOCK_RELEASE : null) as T
     case 'download_update': {
       // Progress arrives as an event in the app, so the preview emits the
