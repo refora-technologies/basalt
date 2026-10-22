@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { KeyRound, Laptop, MoreHorizontal, Trash2, UserRound } from 'lucide-react'
+import { Check, Copy, KeyRound, Laptop, MoreHorizontal, Trash2, UserRound } from 'lucide-react'
 import type { ProfileSummary } from '@/lib/api'
 import { cn, formatAgo } from '@/lib/utils'
+import { copyText } from '@/lib/copyText'
 
 /**
  * The household's profiles, and which devices are signed in to each.
@@ -193,6 +194,7 @@ function ProfileCard({
               <span className="select-all font-mono text-[12.5px] tracking-[0.12em] text-text">
                 {profile.claimCode}
               </span>
+              <CopyCode code={profile.claimCode} />
               <button
                 onClick={onNewCode}
                 className="ml-auto rounded px-1.5 py-0.5 text-[10.5px] text-textFaint transition-colors hover:bg-white/[0.06] hover:text-text"
@@ -297,6 +299,32 @@ function MenuItem({
     >
       <Icon size={13} />
       {label}
+    </button>
+  )
+}
+
+/** Copies a claim code, to send to the person it is for, and says so. */
+function CopyCode({ code }: { code: string }): React.JSX.Element {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={(e) => {
+        const shown = e.currentTarget.previousElementSibling
+        void copyText(code).then((ok) => {
+          if (!ok) {
+            // Refused: the code is selected instead, to copy by hand.
+            if (shown) window.getSelection()?.selectAllChildren(shown)
+            return
+          }
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1500)
+        })
+      }}
+      title="Copy the code"
+      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] text-textFaint transition-colors hover:bg-white/[0.06] hover:text-text"
+    >
+      {copied ? <Check size={11} /> : <Copy size={11} />}
+      {copied ? 'Copied' : 'Copy'}
     </button>
   )
 }
