@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { episodeName } from '@/lib/episodeName'
+import { seasonToShow } from '@/lib/seasonToShow'
 import { isMobileShell } from '@/lib/platform'
 import { itemQuality, qualityOf } from '@/lib/quality'
 import { QualityTag } from './QualityTag'
@@ -386,7 +387,8 @@ function SeriesSheet({
   onPlay: (path: string) => void
   onEpisodeMore?: (item: LibraryItem, episode: LibraryEpisode, season: number) => void
 }): React.JSX.Element {
-  const [season, setSeason] = useState<LibrarySeason | undefined>(item.seasons[0])
+  // Where the person is up to, not always the first season.
+  const [season, setSeason] = useState<LibrarySeason | undefined>(() => seasonToShow(item, watched))
   const sideways = useSideways()
   /** Scrolled into the episodes: the heading steps aside for them. */
   const [compact, setCompact] = useState(false)
