@@ -407,9 +407,21 @@ pub fn device_name() -> String {
     if let Some(name) = android::device_name() {
         return name;
     }
+    // Windows says it in COMPUTERNAME. Linux keeps it in /etc/hostname:
+    // HOSTNAME is a shell's variable, and the app opened from a menu does not
+    // see it, so every Linux computer was listed as "Basalt Client". As the
+    // host finds its own (basalt_host::config::machine_name).
+    let named = |name: String| Some(name.trim().to_string()).filter(|n| !n.is_empty());
     std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "Basalt Client".to_string())
+        .ok()
+        .and_then(named)
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .and_then(named)
+        })
+        .or_else(|| std::env::var("HOSTNAME").ok().and_then(named))
+        .unwrap_or_else(|| "Basalt Client".to_string())
 }
 
 /// A phone has no computer name. What it does have is its maker and model,
