@@ -48,9 +48,8 @@ host by themselves, and keep finding it when the router gives it a different
 address, because they recognise the host itself rather than where it happens to
 be today.
 
-Nothing leaves your home. There is no Basalt server and no cloud in the design:
-the host serves your files to your devices over your own network, encrypted,
-and that is all it does.
+Your files stay yours: the host serves them to your devices over your own
+network, encrypted, and that is all it does.
 
 ## Screenshots
 
@@ -109,8 +108,8 @@ and that is all it does.
 - **A key for every device.** Each device signs in with its own key, created
   on the device and kept in its security chip when it has one. It never leaves
   the device, so a copy of its settings can't open your drive.
-- **Local only.** No account, no cloud, no tracking. Files travel between your
-  own devices and nowhere else. The only requests that leave your network are
+- **Private by default.** Files travel between your own devices and nowhere
+  else, and nothing tracks what you open. The only requests that leave your network are
   the update check, to GitHub, and poster lookups if you turn them on.
 - **Careful with what it keeps.** Profile PINs are stored only as slow, salted
   hashes, and repeated wrong guesses lock a profile for longer each time.
