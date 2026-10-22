@@ -670,6 +670,12 @@ impl Host {
 
         if enabled {
             self.start_scan();
+            // Said at once, and not only when the scan finds something new:
+            // on a drive with nothing to recognise yet the scan changes
+            // nothing, and devices went on showing the library as turned off.
+            // Asking now, they also see it scanning and follow along.
+            self.announce(basalt_proto::msg::Change::LibraryChanged)
+                .await;
         } else {
             self.library.lock().expect("library lock").items.clear();
             if let Some(path) = self.library_path() {
