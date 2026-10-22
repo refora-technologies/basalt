@@ -15,7 +15,14 @@
 use std::path::Path;
 
 /// The value name. Also what appears in Task Manager's Startup tab.
+#[cfg(not(test))]
 const VALUE_NAME: &str = "Basalt Host";
+/// The tests' own entry, never the real one. They once used the real one and
+/// "restored" it by writing it again, from the test program: every test run
+/// pointed the developer's own startup entry at a test program, which Task
+/// Manager showed as `basalt_host-<hash>` and which never started the host.
+#[cfg(test)]
+const VALUE_NAME: &str = "Basalt Host (test)";
 #[cfg(windows)]
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
@@ -52,6 +59,33 @@ pub fn set_enabled(enabled: bool) -> std::io::Result<()> {
     }
     let exe = std::env::current_exe()?;
     write_value(&exe)
+}
+
+/// Points an entry that names some other program at this one: a copy since
+/// moved, or another program altogether, as the tests once wrote there (see
+/// VALUE_NAME). One that names this program, or no entry, is left alone: the
+/// setting stays the person's. Whether anything was written.
+pub fn repair() -> std::io::Result<bool> {
+    let Some(command) = read_value() else {
+        return Ok(false);
+    };
+    let exe = std::env::current_exe()?;
+    if names(&command, &exe) {
+        return Ok(false);
+    }
+    write_value(&exe)?;
+    Ok(true)
+}
+
+/// Whether a registered command starts `exe`: the same program, by its file
+/// name, and a file that is there.
+fn names(command: &str, exe: &Path) -> bool {
+    let program = command
+        .strip_prefix('"')
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| command.split_whitespace().next().unwrap_or(""));
+    let registered = Path::new(program);
+    registered.file_name() == exe.file_name() && registered.exists()
 }
 
 /// The command line that would be registered, quoted for the registry.
@@ -183,7 +217,13 @@ fn autostart_file() -> Option<std::path::PathBuf> {
         .or_else(|| {
             std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
         })?;
-    Some(base.join("autostart").join("basalt-host.desktop"))
+    // The tests' own file, as on Windows: see VALUE_NAME.
+    let name = if cfg!(test) {
+        "basalt-host-test.desktop"
+    } else {
+        "basalt-host.desktop"
+    };
+    Some(base.join("autostart").join(name))
 }
 
 #[cfg(not(windows))]
@@ -262,13 +302,11 @@ mod tests {
         let _ = registered_command();
     }
 
-    // Left in this order deliberately: the test restores whatever it found, so
-    // running the suite does not change the developer's own startup list.
+    // On its own entry (see VALUE_NAME), so the developer's own startup list
+    // is never touched, and left removed afterwards.
     #[cfg(windows)]
     #[test]
     fn turning_it_on_and_off_round_trips() {
-        let was_enabled = is_enabled();
-
         set_enabled(true).expect("writing to HKCU needs no administrator");
         assert!(is_enabled());
         let command = registered_command().unwrap();
@@ -281,9 +319,23 @@ mod tests {
 
         // Removing something already absent is the state asked for.
         set_enabled(false).expect("idempotent");
+    }
 
-        if was_enabled {
-            let _ = set_enabled(true);
-        }
+    /// A command names this program only when it is the same file name and
+    /// the file is there: a test program, or a copy since removed, does not.
+    #[test]
+    fn an_entry_names_this_program_only_when_it_is_this_program() {
+        let exe = std::env::current_exe().unwrap();
+        assert!(names(&command_for(&exe), &exe));
+        let other = exe.with_file_name("basalt-host-shell.exe");
+        assert!(!names(&command_for(&other), &exe));
+        let gone = exe.with_extension("gone");
+        assert!(!names(&command_for(&gone), &gone));
+    }
+
+    /// The tests never use the real entry, whatever they do with theirs.
+    #[test]
+    fn the_tests_have_an_entry_of_their_own() {
+        assert_ne!(VALUE_NAME, "Basalt Host");
     }
 }

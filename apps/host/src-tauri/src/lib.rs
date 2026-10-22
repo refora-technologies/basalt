@@ -996,6 +996,14 @@ pub fn run() {
             build_tray(app.handle())?;
             tracing::info!("tray icon built");
 
+            // A startup entry that names some other program is pointed back
+            // at this one, so the host does start with the computer.
+            match basalt_host::autostart::repair() {
+                Ok(true) => tracing::info!("the startup entry named another program; fixed"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!("could not check the startup entry: {e}"),
+            }
+
             // The system started this at login, not the user: stay out of the
             // way. The host serves whether or not anyone is looking at its
             // window, and the tray icon is there when they want it.
