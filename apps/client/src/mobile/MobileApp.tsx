@@ -51,7 +51,6 @@ import { NoDrive } from '@/components/NoDrive'
 import { PropertiesDetails } from '@/components/PropertiesPanel'
 import { About } from '@/components/About'
 import { WhatsNew } from '@/components/WhatsNew'
-import { ImportantNotice, noteFirstStatus } from '@/components/ImportantNotice'
 import type { NavKey } from '@/components/Sidebar'
 import type { Entry } from '@/components/FileList'
 import {
@@ -135,8 +134,6 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
 
   // Someone who has used Basalt already knows what it is: forgetting a drive
   // later goes straight back to the drive list, not to the introduction.
-  // A device new to Basalt is spared the notice about updating.
-  useEffect(() => noteFirstStatus(vault.status), [vault.status])
   const everPaired = vault.status?.hasPaired === true
   useEffect(() => {
     if (!everPaired) return
@@ -214,7 +211,6 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
               setChangingDrive(true)
             }}
           />
-          <ImportantNotice />
         </div>
       </Safe>
     )
@@ -590,7 +586,6 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       </div>
 
       <WhatsNew />
-      <ImportantNotice />
 
       <Rise
         show={notice !== null}

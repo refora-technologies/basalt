@@ -57,7 +57,6 @@ import { useContextMenu, type MenuAction } from '@/components/ui/ContextMenu'
 import { PromptDialog, type PromptRequest } from '@/components/ui/PromptDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { WhatsNew } from '@/components/WhatsNew'
-import { ImportantNotice, noteFirstStatus } from '@/components/ImportantNotice'
 import { OpenWithDialog, type OpenWithRequest } from '@/components/OpenWithDialog'
 import { preferPlayer, preferredPlayer, type PlayerChoice } from '@/lib/playerChoice'
 import {
@@ -1519,8 +1518,6 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
 
   // Someone who has used Basalt already knows what it is: forgetting a drive
   // later goes straight back to the drive list, not to the introduction.
-  // A device new to Basalt is spared the notice about updating.
-  useEffect(() => noteFirstStatus(vault.status), [vault.status])
   const everPaired = vault.status?.hasPaired === true
   useEffect(() => {
     if (!everPaired) return
@@ -1615,7 +1612,6 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
               setChangingDrive(true)
             }}
           />
-          <ImportantNotice />
         </div>
       </div>
     )
@@ -2019,7 +2015,6 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
       />
       {confirmDialog}
       <WhatsNew />
-      <ImportantNotice />
       {menu.node}
     </div>
   )
