@@ -16,7 +16,7 @@
     <a href="#installation"><b>Host for Linux</b></a> &nbsp;·&nbsp;
     <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Setup.exe"><b>Basalt for Windows</b></a> &nbsp;·&nbsp;
     <a href="#installation"><b>Basalt for Linux</b></a> &nbsp;·&nbsp;
-    <a href="https://play.google.com/store/apps/details?id=com.reforatech.basalt"><b>Basalt on Google Play</b></a>
+    <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk"><b>Basalt for Android</b></a>
   </p>
   <p>
     <a href="https://basalt.reforatech.com">basalt.reforatech.com</a> &nbsp;·&nbsp;
@@ -238,8 +238,7 @@ has a signed `SHA256SUMS`; [SECURITY.md](SECURITY.md#signed-releases) says how.
 | **[`Basalt-Client-Linux-amd64.deb`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Linux-amd64.deb)** | Ubuntu 22.04 or later, Debian 12, Linux Mint 21 or later |
 | **[`Basalt-Client-Linux-x86_64.rpm`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Linux-x86_64.rpm)** | Fedora and similar |
 | **[`Basalt-Client-Linux-x86_64.AppImage`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Linux-x86_64.AppImage)** | Any other Linux desktop |
-| **[Basalt on Google Play](https://play.google.com/store/apps/details?id=com.reforatech.basalt)** | Android phones, tablets, Android TV and Google TV (Android 8.0 or later) |
-| **[`Basalt-Android.apk`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk)** | The same Android app, for devices without Google Play, such as Fire TV |
+| **[`Basalt-Android.apk`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk)** | Android phones, tablets, Android TV, Google TV and Fire TV (Android 8.0 or later). Coming to Google Play soon |
 
 **Basalt Host**, on the computer with the drive:
 
@@ -273,11 +272,11 @@ checks.
 The Windows installers install per user and need no administrator rights. They
 update an existing installation in place and keep its pairing and settings.
 
-On Android, Google Play installs Basalt and keeps it up to date, on phones,
-tablets and TVs alike. The `.apk` is the same app for devices without Google
-Play: open it and allow your browser or file manager to install it when Android
-asks; that permission is only for installing, and can be turned off again
-afterwards. On a Fire TV, the Downloader app fetches the `.apk` from its link.
+On Android, open the `.apk` and allow your browser or file manager to install
+it when Android asks; that permission is only for installing, and can be turned
+off again afterwards. On a TV, the Downloader app fetches the `.apk` from its
+link. Basalt is coming to Google Play; once it is there, the app offers to move
+to it, keeping your drives, profiles and settings.
 
 On Linux, install the `.deb` or `.rpm` with your package manager, for example
 `sudo apt install ./Basalt-Client-Linux-amd64.deb`; it updates through it too.
