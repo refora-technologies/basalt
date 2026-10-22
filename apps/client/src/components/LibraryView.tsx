@@ -1,24 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { episodeName } from '@/lib/episodeName'
+import { useCallback, useMemo, useState } from 'react'
 import { isMobileShell } from '@/lib/platform'
-import { itemQuality, qualityOf } from '@/lib/quality'
+import { itemQuality } from '@/lib/quality'
 import { QualityTag } from './QualityTag'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, ChevronLeft, Clapperboard, Loader2, Play, Tv } from 'lucide-react'
+import { Clapperboard, Loader2, Play, Tv } from 'lucide-react'
 import {
   CONFIDENT,
   isFinished,
   type LibraryEpisode,
   type LibraryItem,
-  type LibrarySeason,
   type Watched,
 } from '@/lib/api'
-import { cn, formatBytes } from '@/lib/utils'
+import { formatBytes } from '@/lib/utils'
 import { Poster } from './Poster'
 import { subtitleBadge, subtitleTitle } from '@/lib/subtitles'
 import { ContinueWatching, resumable, type Resumable } from './ContinueWatching'
-import { useBack } from '@/mobile/useBack'
 import { useLongPress } from '@/lib/useLongPress'
+import { SeriesPage } from './SeriesPage'
 
 /**
  * Films and series, as a wall of posters.
@@ -43,6 +41,7 @@ export function LibraryView({
   onContinueMore,
   onItemMore,
   onEpisodeMore,
+  mediaBase = '',
 }: {
   kind: 'film' | 'series'
   items: LibraryItem[]
@@ -77,6 +76,8 @@ export function LibraryView({
    */
   onItemMore?: (item: LibraryItem) => void
   onEpisodeMore?: (item: LibraryItem, episode: LibraryEpisode, season: number) => void
+  /** Where the host's pictures come from, for each episode's picture. */
+  mediaBase?: string
 }): React.JSX.Element {
   const [open, setOpen] = useState<LibraryItem | null>(null)
 
@@ -199,9 +200,10 @@ export function LibraryView({
 
       <AnimatePresence>
         {open && !playing && (
-          <SeriesSheet
+          <SeriesPage
             item={open}
             watched={watched}
+            mediaBase={mediaBase}
             onClose={() => setOpen(null)}
             onPlay={onPlay}
             onEpisodeMore={TOUCH ? onEpisodeMore : undefined}
@@ -298,7 +300,7 @@ function Card({
       // near, so a long library scrolls like a short one.
       style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 320px' }}
     >
-      <div className="relative overflow-hidden rounded-md">
+      <div data-focus-ring="" className="relative overflow-hidden rounded-md">
         <Poster
           title={item.title}
           year={item.year ?? undefined}
@@ -369,271 +371,6 @@ function Card({
   )
 }
 
-/** A series opened up: its seasons and episodes. */
-/** On a phone, where the sheet is a page of its own rather than over a window. */
+/** On a phone, where long presses stand in for what hovering shows. */
 const TOUCH = isMobileShell()
-
-function SeriesSheet({
-  item,
-  watched,
-  onClose,
-  onPlay,
-  onEpisodeMore,
-}: {
-  item: LibraryItem
-  watched: Map<string, Watched>
-  onClose: () => void
-  onPlay: (path: string) => void
-  onEpisodeMore?: (item: LibraryItem, episode: LibraryEpisode, season: number) => void
-}): React.JSX.Element {
-  const [season, setSeason] = useState<LibrarySeason | undefined>(item.seasons[0])
-  const sideways = useSideways()
-  /** Scrolled into the episodes: the heading steps aside for them. */
-  const [compact, setCompact] = useState(false)
-
-  // On a phone, back closes the series and shows the posters again, as the
-  // Back button does, rather than leaving the library for Files.
-  useBack(true, () => {
-    onClose()
-    return true
-  })
-
-  const back = (
-    <button
-      onClick={onClose}
-      className="flex w-fit items-center gap-1.5 rounded-sm px-2 py-1 text-[11.5px] text-textFaint transition-colors hover:text-text"
-    >
-      <ChevronLeft size={13} />
-      Back
-    </button>
-  )
-
-  const meta = [item.year, `${item.seasons.length} ${item.seasons.length === 1 ? 'season' : 'seasons'}`, formatBytes(item.size)]
-    .filter(Boolean)
-    .join(' · ')
-
-  const seasons =
-    item.seasons.length > 1 ? (
-      <div className="flex flex-wrap gap-1.5">
-        {item.seasons.map((s) => (
-          <button
-            key={s.number}
-            onClick={() => setSeason(s)}
-            className={cn(
-              'rounded-sm px-2.5 py-1 font-mono text-[11px] transition-colors',
-              s.number === season?.number
-                ? 'basalt-edge text-text'
-                : 'text-textFaint hover:bg-panel2 hover:text-textDim',
-            )}
-          >
-            {s.number === 0 ? 'Specials' : `S${String(s.number).padStart(2, '0')}`}
-          </button>
-        ))}
-      </div>
-    ) : null
-
-  const episodes = (
-    <div className="flex flex-col gap-1 pb-6">
-      {season?.episodes.map((episode) => (
-        <EpisodeRow
-          key={episode.path}
-          episode={episode}
-          watched={watched.get(episode.path)}
-          onPlay={() => onPlay(episode.path)}
-          onMore={
-            onEpisodeMore && season ? () => onEpisodeMore(item, episode, season.number) : undefined
-          }
-        />
-      ))}
-    </div>
-  )
-
-  const poster = (small: boolean): React.JSX.Element => (
-    <Poster title={item.title} year={item.year ?? undefined} id={item.id} hasArt={item.hasArt} plain={small} />
-  )
-
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.16 }}
-      // Solid on a phone, whichever way it is held: the library showing
-      // through behind the list read as clutter, and a phone on its side is
-      // as wide as a small window, which is how it slipped through before.
-      className={cn('fixed inset-0 z-50 bg-ink', !TOUCH && 'sm:bg-ink/95')}
-      // Its own seasons scroll sideways; a swipe here is not a change of section.
-      data-no-swipe
-      onMouseDown={onClose}
-    >
-      <motion.div
-        initial={{ y: 14 }}
-        animate={{ y: 0 }}
-        transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-        className={cn(
-          'mx-auto flex h-full flex-col',
-          sideways ? 'max-w-none px-6' : 'max-w-[760px] px-8',
-        )}
-        // Clear of the phone's status bar and gesture bar, and of the notch
-        // on whichever side it is; all zero on the desktop.
-        style={{
-          paddingTop: `calc(var(--inset-top, 0px) + ${sideways ? 14 : 28}px)`,
-          paddingBottom: `calc(var(--inset-bottom, 0px) + ${sideways ? 10 : 28}px)`,
-          paddingLeft: sideways ? 'calc(var(--inset-left, 0px) + 24px)' : undefined,
-          paddingRight: sideways ? 'calc(var(--inset-right, 0px) + 24px)' : undefined,
-        }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        {sideways ? (
-          // On its side, a phone is short and wide. The heading above the
-          // list left room for one episode at a time, so it stands beside
-          // the list instead, and the list has the whole height.
-          <div className="flex min-h-0 flex-1 gap-6">
-            <div className="flex w-[200px] shrink-0 flex-col overflow-y-auto">
-              {back}
-              <div className="mt-3 w-[104px] overflow-hidden rounded-md">{poster(false)}</div>
-              <h2 className="mt-3 text-[19px] font-semibold leading-tight tracking-tighter text-text">
-                {item.title}
-              </h2>
-              <div className="tnum mt-1 font-mono text-[10.5px] text-textFaint">{meta}</div>
-              {seasons && <div className="mt-3">{seasons}</div>}
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto fade-bottom">{episodes}</div>
-          </div>
-        ) : (
-          <>
-            <div className="mb-5">{back}</div>
-            {/* Scrolled into the episodes, the poster shrinks to a corner
-                and the heading to a line, and the list has the room. */}
-            <div className="flex items-start gap-5">
-              <motion.div
-                animate={{ width: compact ? 44 : 128 }}
-                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-                className="shrink-0 overflow-hidden rounded-md"
-              >
-                {poster(compact)}
-              </motion.div>
-              <div className="min-w-0 flex-1">
-                <motion.h2
-                  animate={{ fontSize: compact ? '17px' : '22px' }}
-                  transition={{ duration: 0.22 }}
-                  className="truncate font-semibold tracking-tighter text-text"
-                >
-                  {item.title}
-                </motion.h2>
-                <div className="tnum mt-1 font-mono text-[11px] text-textFaint">{meta}</div>
-                {seasons && <div className={cn(compact ? 'mt-2' : 'mt-4')}>{seasons}</div>}
-              </div>
-            </div>
-
-            <div
-              className="mt-6 min-h-0 flex-1 overflow-y-auto fade-bottom"
-              onScroll={(e) => {
-                const list = e.currentTarget
-                // Only a list long enough to stay scrolled once the heading
-                // gives it room: a shorter one would be clamped back to the
-                // top by the room it gained, and flick between the two.
-                const room = list.scrollHeight - list.clientHeight
-                if (!compact && list.scrollTop > 24 && room > 180) setCompact(true)
-                else if (compact && list.scrollTop < 4) setCompact(false)
-              }}
-            >
-              {episodes}
-            </div>
-          </>
-        )}
-      </motion.div>
-    </motion.div>
-  )
-}
-
-/**
- * Whether the screen is short and wide: a phone held on its side.
- *
- * By shape rather than by width, because a phone on its side is as wide as a
- * small window, and what it lacks is height.
- */
-function useSideways(): boolean {
-  const query = '(orientation: landscape) and (max-height: 560px)'
-  const [sideways, setSideways] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia(query).matches,
-  )
-  useEffect(() => {
-    const list = window.matchMedia(query)
-    const changed = (): void => setSideways(list.matches)
-    list.addEventListener('change', changed)
-    return () => list.removeEventListener('change', changed)
-  }, [])
-  return sideways
-}
-
-function EpisodeRow({
-  episode,
-  watched,
-  onPlay,
-  onMore,
-}: {
-  episode: LibraryEpisode
-  watched: Watched | undefined
-  onPlay: () => void
-  /** A long press, on a phone: see [`LibraryView`]'s `onEpisodeMore`. */
-  onMore?: () => void
-}): React.JSX.Element {
-  const done = watched ? isFinished(watched) : false
-  const part = watched && !done ? watched.fraction : 0
-  const press = useLongPress(() => onMore?.(), onPlay)
-
-  return (
-    <button
-      {...(onMore ? press : { onClick: onPlay })}
-      className="group relative flex select-none items-center gap-3 overflow-hidden rounded-md border border-line bg-panel px-3.5 py-2.5 text-left transition-colors hover:bg-panel2 active:bg-panel2"
-    >
-      <span className="tnum w-7 shrink-0 font-mono text-[12px] text-textFaint">
-        {episode.number === 0 ? '—' : String(episode.number).padStart(2, '0')}
-      </span>
-      <span
-        className={cn(
-          'min-w-0 flex-1 truncate text-[12.5px]',
-          // Watched episodes recede rather than vanish: the list is still the
-          // whole season, and which ones are done is the useful part.
-          done ? 'text-textFaint' : 'text-text',
-        )}
-      >
-        {episode.title ?? episodeName(episode.path, episode.number)}
-      </span>
-
-      <QualityTag quality={qualityOf(episode.resolution)} size="sm" />
-
-      {(episode.subtitles?.length ?? 0) > 0 && (
-        <span
-          title={subtitleTitle(episode.subtitles)}
-          className="shrink-0 rounded-[3px] border border-line px-1 py-[1px] font-mono text-[8.5px] uppercase tracking-[0.1em] text-textFaint"
-        >
-          sub
-        </span>
-      )}
-
-      {done && <Check size={12} className="shrink-0 text-textFaint" />}
-      {part > 0 && (
-        <span className="tnum shrink-0 font-mono text-[10px] text-textDim">
-          {Math.round(part * 100)}%
-        </span>
-      )}
-
-      <span className="tnum shrink-0 font-mono text-[10.5px] text-textFaint">
-        {formatBytes(episode.size)}
-      </span>
-      <span className="shrink-0 text-textFaint opacity-0 transition-opacity group-hover:opacity-100">
-        <Play size={12} fill="currentColor" />
-      </span>
-
-      {part > 0 && (
-        <span
-          className="absolute inset-x-0 bottom-0 h-[2px] bg-basalt/70"
-          style={{ width: `${Math.round(part * 100)}%` }}
-        />
-      )}
-    </button>
-  )
-}
 

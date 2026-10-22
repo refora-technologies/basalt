@@ -28,7 +28,12 @@ export interface ManagedDevice {
   keyKind: KeyKind | null
   /** Manages the host (shown as such; stored as `owner`). */
   owner: boolean
+  /** What kind of device it says it is. Absent from older devices and hosts. */
+  form?: DeviceForm | null
 }
+
+/** What kind of device a device says it is: for its picture only. */
+export type DeviceForm = 'phone' | 'tablet' | 'tv' | 'computer' | 'other'
 
 export interface PairingRequest {
   id: string
@@ -174,10 +179,11 @@ export interface HostUpdate {
     | { kind: 'checking' }
     | { kind: 'downloading'; percent: number }
     | { kind: 'installing' }
-    | { kind: 'failed'; why: string }
+    /** `refused`: for its signature, which Manage host offers to report. */
+    | { kind: 'failed'; why: string; refused?: boolean }
   checkedAt: number | null
   command: string | null
-  outcome: { version: string; ok: boolean; message: string; at: number } | null
+  outcome: { version: string; ok: boolean; message: string; at: number; refused?: boolean } | null
 }
 
 /** What can be asked of the host. Mirrors `ManageAction` in basalt-proto. */

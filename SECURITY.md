@@ -36,6 +36,34 @@ Please give us a reasonable time to fix it before you talk about it publicly,
 and don't access other people's data, disrupt anyone's host, or keep data you
 come across while testing.
 
+## Signed releases
+
+From 1.6.0, every release is signed with Basalt's release key. The
+release's `SHA256SUMS` lists the SHA-256 of each file, and below the list is a
+[minisign](https://jedisct1.github.io/minisign/) signature (Ed25519) of it.
+Basalt Host and the apps install an update only from a release whose list is
+signed with this key and names that release's version; anything else is
+refused before it is downloaded.
+
+```
+untrusted comment: minisign public key: 74C79A12F0039EFE
+RWT+ngPwEprHdGiYoMFZSz45phkiwPIHIbVXO0HpobLakZsWnfmRaokE
+```
+
+To check a release by hand, split the signature from the list, check it, then
+check your downloads against the list:
+
+```
+head -n -4 SHA256SUMS > list
+tail -n 4 SHA256SUMS > list.minisig
+minisign -Vm list -P RWT+ngPwEprHdGiYoMFZSz45phkiwPIHIbVXO0HpobLakZsWnfmRaokE
+sha256sum --ignore-missing -c list
+```
+
+The signed comment minisign prints names the release, as `basalt release
+1.6.0`. The `.sha256` beside each file is still published, for copies older
+than 1.6.0.
+
 ## Supported versions
 
 Fixes go into the newest release. Basalt Host updates itself, and the apps
@@ -44,12 +72,12 @@ support.
 
 | Version | Supported |
 |---|---|
-| 1.5.x | Yes |
+| 1.6.x | Yes |
 | Earlier | No: please update |
 
 ## In scope
 
-Basalt Host, Basalt for Windows and Android, the Linux packages, the Docker
-image, and the way they update. Problems in the components Basalt is built on
+Basalt Host, Basalt for Windows, Linux, Android and Android TV, the Linux
+packages, the Docker image, and the way they update. Problems in the components Basalt is built on
 (libmpv, FFmpeg, rustls and others) are welcome too; we will pass them on to
 their makers.

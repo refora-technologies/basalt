@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use basalt_proto::msg::DeviceForm;
+
 use crate::{ClientError, Result};
 
 /// One host this device has paired with.
@@ -379,15 +381,47 @@ pub fn new_device_id() -> Result<String> {
         .map_err(|e| ClientError::Protocol(format!("no randomness available: {e}")))
 }
 
+/// What kind of device this is, as told by the app's page: the shell knows a
+/// television or a tablet from Android, which nothing down here can ask.
+static FORM: std::sync::Mutex<Option<DeviceForm>> = std::sync::Mutex::new(None);
+
+/// Says what kind of device this is, for its picture in the host's lists.
+pub fn set_device_form(form: DeviceForm) {
+    *FORM.lock().unwrap_or_else(|e| e.into_inner()) = Some(form);
+}
+
+/// What kind of device this is: as told, else a phone on Android and a
+/// computer anywhere else.
+pub fn device_form() -> DeviceForm {
+    let told = *FORM.lock().unwrap_or_else(|e| e.into_inner());
+    told.unwrap_or(if cfg!(target_os = "android") {
+        DeviceForm::Phone
+    } else {
+        DeviceForm::Computer
+    })
+}
+
 /// This device's name, as it will appear on the host.
 pub fn device_name() -> String {
     #[cfg(target_os = "android")]
     if let Some(name) = android::device_name() {
         return name;
     }
+    // Windows says it in COMPUTERNAME. Linux keeps it in /etc/hostname:
+    // HOSTNAME is a shell's variable, and the app opened from a menu does not
+    // see it, so every Linux computer was listed as "Basalt Client". As the
+    // host finds its own (basalt_host::config::machine_name).
+    let named = |name: String| Some(name.trim().to_string()).filter(|n| !n.is_empty());
     std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "Basalt Client".to_string())
+        .ok()
+        .and_then(named)
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .and_then(named)
+        })
+        .or_else(|| std::env::var("HOSTNAME").ok().and_then(named))
+        .unwrap_or_else(|| "Basalt Client".to_string())
 }
 
 /// A phone has no computer name. What it does have is its maker and model,

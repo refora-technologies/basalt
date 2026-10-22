@@ -10,7 +10,7 @@ val playBuild = System.getenv("BASALT_CHANNEL") == "play"
 
 android {
     namespace = "app.basalt.android"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 26

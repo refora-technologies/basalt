@@ -250,6 +250,8 @@ pub struct DeviceView {
     pub key_kind: Option<basalt_proto::msg::KeyKind>,
     /// Whether the host's owner made it an owner.
     pub owner: bool,
+    /// What kind of device it says it is: see [`crate::registry::Device::form`].
+    pub form: Option<basalt_proto::msg::DeviceForm>,
 }
 
 /// A device asking to be let in.
@@ -332,6 +334,7 @@ pub fn devices_view(
                 keyed: device.keyed(),
                 key_kind: device.key_kind,
                 owner: device.owner,
+                form: device.form,
             }
         })
         .collect()
@@ -591,6 +594,7 @@ mod tests {
             keys(&views[0]),
             [
                 "connections",
+                "form",
                 "id",
                 "keyKind",
                 "keyed",

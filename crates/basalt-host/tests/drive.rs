@@ -226,3 +226,38 @@ async fn the_library_follows_a_drive_chosen_after_startup() {
     )
     .await;
 }
+
+/// Turning on "Recognise films and series" tells devices so, even when the
+/// drive has nothing to recognise yet.
+///
+/// Devices learn of a library's change only when the host announces one, and
+/// a scan that finds nothing new announces nothing: the app went on showing
+/// "This is turned off" after it had been turned on.
+#[tokio::test]
+async fn turning_the_library_on_is_announced_on_an_empty_drive() {
+    let scratch = Scratch::new();
+    let drive = scratch.path("drive");
+    std::fs::create_dir_all(&drive).unwrap();
+
+    let host = host_on(&scratch, &drive, false);
+    let mut watch = None;
+    eventually(
+        "the drive being watched",
+        Duration::from_secs(10),
+        async || {
+            watch = host.watch().await;
+            watch.is_some()
+        },
+    )
+    .await;
+    let mut changes = watch.unwrap().subscribe();
+
+    host.set_library_enabled(true).await.unwrap();
+
+    let change = tokio::time::timeout(Duration::from_secs(10), changes.recv())
+        .await
+        .expect("devices are told the library changed")
+        .unwrap();
+    assert_eq!(change, basalt_proto::msg::Change::LibraryChanged);
+    assert!(host.library_response(0).enabled);
+}

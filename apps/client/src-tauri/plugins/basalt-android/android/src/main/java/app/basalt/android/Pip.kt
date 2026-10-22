@@ -87,6 +87,16 @@ class Pip(
   }
 
   /**
+   * The app gone from the screen while a film plays, and not into the small
+   * window, which many televisions do not have: Home on the remote. The film
+   * pauses rather than playing on unseen; music is never `playing` here, so
+   * it plays on.
+   */
+  fun leftUnseen() {
+    if (playing && !inPip()) pause()
+  }
+
+  /**
    * Into the small window or out of it. `closed` is out of it by its close
    * button, rather than opened back up into the app.
    */

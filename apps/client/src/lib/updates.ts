@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { android } from '@/lib/android'
-import { api, inTauri, type Release } from '@/lib/api'
+import { ApiError, api, inTauri, type Release } from '@/lib/api'
 import { isAndroid } from '@/lib/platform'
 import { PLAY_STORE } from '@/lib/channel'
 
@@ -23,7 +23,8 @@ export type UpdateState =
   | { kind: 'idle' }
   | { kind: 'checking' }
   | { kind: 'current' }
-  | { kind: 'failed'; why: string }
+  /** `refused`: for its signature, which About offers to report. */
+  | { kind: 'failed'; why: string; refused?: { offered: string } }
   | { kind: 'available'; release: Release }
   | { kind: 'downloading'; release: Release; had: number; total: number }
   | { kind: 'ready'; release: Release; path: string }
@@ -110,7 +111,7 @@ async function checkPlay(): Promise<Release | null> {
     installerName: '',
     installerUrl: '',
     installerBytes: 0,
-    checksumUrl: null,
+    sumsUrl: null,
   }
 }
 
@@ -154,7 +155,7 @@ function listenForProgress(): Promise<void> {
   return listening
 }
 
-/** Downloads the offered release, verified against its published checksum. */
+/** Downloads the offered release, verified against its signed list of digests. */
 export async function downloadUpdate(): Promise<void> {
   if (state.kind !== 'available') return
   if (PLAY_STORE) return downloadFromPlay(state.release)
@@ -165,6 +166,14 @@ export async function downloadUpdate(): Promise<void> {
     const path = await api.downloadUpdate(release)
     set({ kind: 'ready', release, path })
   } catch (e) {
+    if (e instanceof ApiError && e.kind === 'unsigned') {
+      set({
+        kind: 'failed',
+        why: "This update isn't signed by Basalt's publisher, so it wasn't downloaded. Get the new version from the website instead.",
+        refused: { offered: release.version },
+      })
+      return
+    }
     set({ kind: 'failed', why: String(e) })
   }
 }

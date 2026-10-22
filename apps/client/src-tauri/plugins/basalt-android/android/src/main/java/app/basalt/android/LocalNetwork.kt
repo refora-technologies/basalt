@@ -8,8 +8,8 @@ import android.os.Build
  * Android 17's permission for the home network.
  *
  * An app that targets Android 17 reaches nothing on the local network without
- * it: no search, no connection, so no Basalt at all. Until Basalt targets 17
- * Android grants it without asking, and nothing here asks either.
+ * it: no search, no connection, so no Basalt at all. Basalt targets 17, so
+ * there it asks first (see LocalNetworkGate); older Androids never ask.
  *
  * Android 16 can turn the same rule on for one app, for developers to try
  * (`adb shell am compat enable RESTRICT_LOCAL_NETWORK <package>`), and there

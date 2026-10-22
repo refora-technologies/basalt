@@ -16,7 +16,7 @@ import { type MenuAction, useContextMenu } from './ui/ContextMenu'
 import { ActionSheet } from '@/mobile/Sheet'
 import { ApiError, api, type DiscoveredHost, type Status } from '@/lib/api'
 import { useLongPress } from '@/lib/useLongPress'
-import { isMobileShell } from '@/lib/platform'
+import { isMobileShell, isTv } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { wrongHostText } from '@/lib/wrongHost'
 import { useBack } from '@/mobile/useBack'
@@ -25,6 +25,7 @@ import { LOOPS } from '@/lib/motion'
 const PIN_LENGTH = 6
 
 const TOUCH = isMobileShell()
+const TV = isTv()
 
 /** A drive as the list names it: its drive, or the computer when none is shared. */
 function driveName(host: DiscoveredHost): string {
@@ -174,9 +175,28 @@ export function PairingView({
         }
         return
       }
+      // A TV leaves managing the host to a phone or computer, so it must not
+      // be the device that sets one up: it would become the host's only
+      // manager, with no way to choose the drive or let anyone else manage.
+      if (TV && host.needsSetup && !host.paired) {
+        setError(
+          `${host.hostName} isn’t set up yet. Set it up from Basalt on your phone or computer, then choose it here.`,
+        )
+        setBusy(false)
+        return
+      }
       try {
         const start = await api.beginPairing(host.address)
         if (!live.current) return
+        // The same, for a host reached by its address: only asking to pair
+        // tells whether it waits to be set up.
+        if (TV && start.setup) {
+          void api.cancelPairing().catch(() => {})
+          setError(
+            `${host.hostName} isn’t set up yet. Set it up from Basalt on your phone or computer, then choose it here.`,
+          )
+          return
+        }
         setChosen(host)
         setNeedsPin(start.requiresPin)
         setSetup(start.setup)
@@ -254,9 +274,11 @@ export function PairingView({
         setError(
           e instanceof ApiError && e.kind === 'offline'
             ? `Nothing answered at ${address}. The address is shown in Basalt Host’s window.`
-            : e instanceof Error
-              ? e.message
-              : String(e),
+            : e instanceof Error && /could not resolve/.test(e.message)
+              ? `No computer called ${address} was found on this network. Check the name, or type the address shown in Basalt Host’s window.`
+              : e instanceof Error
+                ? e.message
+                : String(e),
         )
         setBusy(false)
         return
@@ -554,7 +576,7 @@ function HostList({
           maskImage: `linear-gradient(to bottom, ${more.above ? 'transparent' : 'black'}, black 28px, black calc(100% - 28px), ${more.below ? 'transparent' : 'black'})`,
         }}
       >
-        {groups.map((group) => (
+        {groups.map((group, g) => (
           <div key={group.title}>
             {titled && (
               <div className="mb-1.5 mt-3 px-1 font-mono text-[9.5px] uppercase tracking-[0.12em] text-textFaint first:mt-0">
@@ -562,7 +584,7 @@ function HostList({
               </div>
             )}
             <AnimatePresence initial={false}>
-              {group.hosts.map((host) => {
+              {group.hosts.map((host, i) => {
                 const actions = actionsFor(host)
                 return (
                   <motion.div
@@ -577,6 +599,7 @@ function HostList({
                       host={host}
                       busy={busy}
                       current={current(host)}
+                      first={g === 0 && i === 0}
                       onChoose={() => onChoose(host)}
                       onMenu={
                         actions.length === 0
@@ -716,6 +739,7 @@ function HostRow({
   host,
   busy,
   current = false,
+  first = false,
   onChoose,
   onMenu,
 }: {
@@ -723,6 +747,8 @@ function HostRow({
   busy: boolean
   /** The drive this device is using now. */
   current?: boolean
+  /** At the top of the list: where a TV remote starts. */
+  first?: boolean
   onChoose: () => void
   /** What else it offers, opened at a point: absent when nothing. */
   onMenu?: (at: { clientX: number; clientY: number }) => void
@@ -759,6 +785,7 @@ function HostRow({
         if (onMenu && !TOUCH) onMenu(e)
       }}
       disabled={disabled}
+      data-remote-first={first ? '' : undefined}
       className={cn(
         'flex w-full items-center gap-3 rounded-lg border border-white/[0.07] bg-panel2 px-3.5 py-3 text-left transition-colors',
         disabled ? 'cursor-not-allowed opacity-45' : 'hover:border-white/[0.16]',
@@ -787,7 +814,13 @@ function HostRow({
         </div>
         <div className="mt-0.5 flex items-center gap-2 font-mono text-[10.5px] text-textFaint">
           <span className="truncate">
-            {setup ? 'set it up from here' : host.hasVault ? host.hostName : 'no drive shared yet'}
+            {setup
+              ? TV
+                ? 'set it up from your phone or computer'
+                : 'set it up from here'
+              : host.hasVault
+                ? host.hostName
+                : 'no drive shared yet'}
           </span>
           <span className="shrink-0">·</span>
           {/* In place of the id: the name needs the room more. */}

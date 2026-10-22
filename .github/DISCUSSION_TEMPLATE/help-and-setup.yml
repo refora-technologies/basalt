@@ -30,7 +30,7 @@ body:
     attributes:
       label: Versions and devices
       description: Basalt Host's version and what it runs on, and the devices you use Basalt on.
-      placeholder: Basalt Host 1.5.0 on Ubuntu 24.04; Basalt 1.5.0 on a Pixel 8
+      placeholder: Basalt Host 1.6.0 on Ubuntu 24.04; Basalt 1.6.0 on a Pixel 8 and a Google TV
 
   - type: textarea
     id: tried

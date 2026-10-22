@@ -5,11 +5,17 @@ import {
   ArrowUp,
   KeyRound,
   Laptop,
+  Monitor,
+  MonitorSmartphone,
   MoreHorizontal,
   Pencil,
   ShieldCheck,
   ShieldOff,
+  Smartphone,
+  Tablet,
   Trash2,
+  Tv,
+  type LucideIcon,
 } from 'lucide-react'
 import type { DeviceView, EndorsementView } from '@/lib/api'
 import { cn, formatAgo, formatBytes, formatRate } from '@/lib/utils'
@@ -164,7 +170,10 @@ function DeviceRow({
       )}
     >
       <span className={cn('shrink-0', device.online ? 'text-text' : 'text-textFaint')}>
-        <Laptop size={15} />
+        {(() => {
+          const Icon = deviceIcon(device)
+          return <Icon size={15} />
+        })()}
       </span>
 
       <div className="min-w-0 flex-1">
@@ -345,4 +354,28 @@ function MenuItem({
       {label}
     </button>
   )
+}
+
+/**
+ * Which kind of device, for its picture only: what the device says it is, or
+ * for one too old to say, a guess from its name. As in the app's Manage host.
+ */
+function deviceIcon(device: Pick<DeviceView, 'name' | 'form'>): LucideIcon {
+  const name = device.name
+  const laptop = /laptop|notebook|macbook|surface/i.test(name)
+  switch (device.form) {
+    case 'tv':
+      return Tv
+    case 'phone':
+      return Smartphone
+    case 'tablet':
+      return Tablet
+    case 'computer':
+      return laptop ? Laptop : Monitor
+  }
+  if (/\btv\b|television|shield|fire ?(tv|stick)|firestick|chromecast|bravia|\baft/i.test(name)) return Tv
+  if (/phone|pixel|galaxy|android/i.test(name)) return Smartphone
+  if (/tablet|ipad|\btab\b/i.test(name)) return Tablet
+  if (laptop) return Laptop
+  return MonitorSmartphone
 }

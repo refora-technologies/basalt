@@ -5,6 +5,7 @@
 !rust-toolchain.toml
 !crates
 !tools/catalog-build
+!tools/release-sign
 !bench
 !docker
 **/target

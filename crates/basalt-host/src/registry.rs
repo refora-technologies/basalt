@@ -95,6 +95,11 @@ pub struct Device {
     /// host's key. Only a device with a key can be one.
     #[serde(default)]
     pub owner: bool,
+    /// What kind of device it says it is, for its picture in the lists:
+    /// taken in on every connection, as its name is. Absent until a device
+    /// new enough to say has connected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<basalt_proto::msg::DeviceForm>,
 }
 
 impl Device {
@@ -671,6 +676,23 @@ impl Registry {
     /// which case their name stands.
     ///
     /// Returns whether anything changed, so the caller knows to save.
+    /// What kind of device it says it is, from its hello. Nothing is decided
+    /// by it; it is only how the device is drawn. Whether anything changed.
+    pub fn observe_form(
+        &mut self,
+        token_hash: &str,
+        form: Option<basalt_proto::msg::DeviceForm>,
+    ) -> bool {
+        let Some(form) = form else { return false };
+        match self.devices.iter_mut().find(|d| d.token_hash == token_hash) {
+            Some(device) if device.form != Some(form) => {
+                device.form = Some(form);
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn observe(&mut self, token_hash: &str, device_id: &str, device_name: &str) -> bool {
         if !self.devices.iter().any(|d| d.token_hash == token_hash) {
             return false;
@@ -826,6 +848,14 @@ impl Registry {
             .iter_mut()
             .find(|d| d.token_hash == token_hash)
             .ok_or_else(|| HostError::NotFound("that device".into()))?;
+        // A TV leaves managing to a phone or computer and has no way to
+        // manage. Made a manager, it could end up the only one, once the
+        // others are gone, and the host would have nobody able to change it.
+        if owner && device.form == Some(basalt_proto::msg::DeviceForm::Tv) {
+            return Err(HostError::BadRequest(
+                "a TV can't manage the host; let a phone or computer manage it instead".into(),
+            ));
+        }
         if owner && !device.keyed() {
             return Err(HostError::BadRequest(
                 "only a device signing in with a key can manage the host; it moves to one the next \
@@ -1588,6 +1618,44 @@ mod tests {
             .begin_pairing_for(now, "Laptop, renamed", DEVICE_A, &nonce)
             .unwrap();
         assert_eq!(registry.pending(now).len(), 2);
+    }
+
+    /// A device's kind is kept, and is a change only when it is one: a device
+    /// too old to say leaves it as it was.
+    #[test]
+    fn a_device_says_what_kind_it_is() {
+        use basalt_proto::msg::DeviceForm;
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let hash = hash_token(&pair_as(&mut registry, now, "Living room TV", DEVICE_A));
+        assert_eq!(registry.device(&hash).unwrap().form, None);
+
+        assert!(registry.observe_form(&hash, Some(DeviceForm::Tv)));
+        assert!(
+            !registry.observe_form(&hash, Some(DeviceForm::Tv)),
+            "nothing new"
+        );
+        assert!(
+            !registry.observe_form(&hash, None),
+            "an older app says nothing"
+        );
+        assert_eq!(registry.device(&hash).unwrap().form, Some(DeviceForm::Tv));
+        assert!(!registry.observe_form("not a device", Some(DeviceForm::Phone)));
+    }
+
+    /// A TV cannot be made a manager: it has no way to manage, and could be
+    /// left the only one. It can still stop being one.
+    #[test]
+    fn a_tv_is_not_made_a_manager() {
+        use basalt_proto::msg::DeviceForm;
+        let mut registry = with_pin();
+        let now = Instant::now();
+        let hash = hash_token(&pair_as(&mut registry, now, "Living room TV", DEVICE_A));
+        registry.observe_form(&hash, Some(DeviceForm::Tv));
+        let refused = registry.set_owner(&hash, true).unwrap_err().to_string();
+        assert!(refused.contains("TV"), "{refused}");
+        assert!(!registry.device(&hash).unwrap().owner);
+        assert!(registry.set_owner(&hash, false).is_ok());
     }
 
     /// Devices paired before ids existed say what they are when they next

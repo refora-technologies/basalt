@@ -69,7 +69,9 @@ body:
       options:
         - Basalt Host itself
         - Basalt on Windows
-        - Basalt on Android
+        - Basalt on Linux
+        - Basalt on an Android phone or tablet
+        - Basalt on Android TV or Google TV
         - Every device
     validations:
       required: true
@@ -78,7 +80,7 @@ body:
     id: device-details
     attributes:
       label: The device and Basalt's version on it
-      description: For example Windows 10 with Basalt 1.5.0, or a Pixel 8 on Android 15 with Basalt 1.5.0. In Basalt, the version is under Settings (More on Android).
+      description: For example Windows 11 with Basalt 1.6.0, a Pixel 8 on Android 15, or a Chromecast with Google TV. Say whether Basalt came from Google Play or the website. In Basalt, the version is under Settings (More on Android).
 
   - type: textarea
     id: log

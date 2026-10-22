@@ -2,7 +2,11 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The scale is held at 1: shrunk into the small picture-in-picture
+         window and back, Android's WebView kept a zoom it picked for the
+         small size, and the app came back enlarged with its tab bar off the
+         screen. Photos zoom by their own pinch, not the page's. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Basalt</title>
   </head>
   <body>

@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Check, KeyRound, Loader2, Lock, Plus, Trash2, UserPlus, Users, X } from 'lucide-react'
+import { Check, Copy, KeyRound, Loader2, Lock, Plus, Trash2, UserPlus, Users, X } from 'lucide-react'
 import type { ManagedProfile } from '@/lib/manage'
 import { PROFILE_COLORS } from '@/lib/useIdentity'
 import { cn } from '@/lib/utils'
+import { copyText } from '@/lib/copyText'
 import { Avatar, Card, Group, Pill, Row, Rows, Segmented, Tag, Toggle, ago, useLayout } from './parts'
 import { Surface } from './Surface'
 import type { Tools } from './tools'
@@ -228,6 +229,7 @@ function ProfileDetail({
             >
               {profile.claimCode}
             </span>
+            <CopyCode code={profile.claimCode} phone={phone} />
             <button
               onClick={() => void m.act({ do: 'newClaimCode', id: profile.id })}
               className={cn(
@@ -380,5 +382,34 @@ function AddProfile({ tools, onDone }: { tools: Tools; onDone: () => void }): Re
         Add profile
       </button>
     </form>
+  )
+}
+
+/** Copies a claim code, to send to the person it is for, and says so. */
+function CopyCode({ code, phone }: { code: string; phone: boolean }): React.JSX.Element {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={(e) => {
+        const shown = e.currentTarget.previousElementSibling
+        void copyText(code).then((ok) => {
+          if (!ok) {
+            // Refused: the code is selected instead, to copy by hand.
+            if (shown) window.getSelection()?.selectAllChildren(shown)
+            return
+          }
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1500)
+        })
+      }}
+      title="Copy the code"
+      className={cn(
+        'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-textDim transition-colors hover:bg-white/[0.06] hover:text-text',
+        phone ? 'text-[13px]' : 'text-[11.5px]',
+      )}
+    >
+      {copied ? <Check size={phone ? 14 : 12} /> : <Copy size={phone ? 14 : 12} />}
+      {copied ? 'Copied' : 'Copy'}
+    </button>
   )
 }

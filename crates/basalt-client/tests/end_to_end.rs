@@ -1334,6 +1334,20 @@ async fn a_device_is_listed_under_its_own_name() {
     assert_eq!(devices[0].device_id, client.device_id());
 }
 
+/// A device says what kind it is when it signs in, and the host's lists draw
+/// it so: here a computer, as the tests run on one.
+#[cfg(not(target_os = "android"))]
+#[tokio::test]
+async fn a_device_is_listed_as_the_kind_it_is() {
+    let fixture = start_host().await;
+    let client = fixture.paired_client().await;
+    client.list("").await.unwrap();
+    assert_eq!(
+        fixture.host.devices()[0].form,
+        Some(basalt_proto::msg::DeviceForm::Computer)
+    );
+}
+
 /// The same machine pairing again is the same device, not a new row.
 #[tokio::test]
 async fn pairing_again_does_not_list_the_device_twice() {

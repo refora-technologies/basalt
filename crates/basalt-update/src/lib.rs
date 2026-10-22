@@ -4,9 +4,14 @@
 //! and each app has to recognise its own — see [`Product`].
 //!
 //! **What is downloaded is verified before it is run.** A release publishes a
-//! `.sha256` beside each installer, and an installer whose digest does not
-//! match is deleted rather than offered. Anything less would make the update
-//! path the easiest way to get code onto somebody's machine.
+//! `SHA256SUMS` signed with Refora's release key (see [`signature`]): a release
+//! whose list is not signed is refused before anything is downloaded, and an
+//! installer whose digest does not match the signed list is deleted rather
+//! than offered. Anything less would make the update path the easiest way to
+//! get code onto somebody's machine.
+//!
+//! (The `.sha256` beside each installer is still published, for copies older
+//! than 1.6.0, which read only that.)
 //!
 //! Nothing here installs anything. It reports what is available, fetches it,
 //! and hands back a path; starting an installer is the shell's business,
@@ -17,6 +22,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+mod signature;
 mod version;
 pub use version::{Version, is_newer};
 
@@ -159,6 +165,12 @@ fn api_base() -> String {
         .unwrap_or_else(|| "https://api.github.com".to_string())
 }
 
+/// Whether updates are being tried against a release server on this machine:
+/// see [`api_base`].
+fn testing_locally() -> bool {
+    std::env::var("BASALT_RELEASES_API").is_ok_and(|url| on_this_machine(&url))
+}
+
 fn on_this_machine(url: &str) -> bool {
     ["http://127.0.0.1:", "http://localhost:", "http://[::1]:"]
         .iter()
@@ -189,6 +201,10 @@ pub enum UpdateError {
     NoInstaller,
     #[error("the download did not match its checksum and was discarded")]
     ChecksumMismatch,
+    #[error("this release is not signed with Basalt's release key, so it was not downloaded")]
+    Unsigned,
+    #[error("this release's signature is not Basalt's, so it was not downloaded")]
+    BadSignature,
     #[error("the download stopped part way and did not resume")]
     Stalled,
     #[error("{0}")]
@@ -210,9 +226,10 @@ pub struct Release {
     pub installer_name: String,
     pub installer_url: String,
     pub installer_bytes: u64,
-    /// The published digest. Absent means the download cannot be verified,
-    /// which [`fetch`] treats as a refusal rather than a warning.
-    pub checksum_url: Option<String>,
+    /// The release's signed `SHA256SUMS`. Absent means the download cannot
+    /// be verified, which [`fetch`] treats as a refusal rather than a warning.
+    #[serde(default)]
+    pub sums_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -355,10 +372,10 @@ fn newer_than_on(
     }
 
     let installer = pick_for(&release.assets, product, platform)?;
-    let checksum = release
+    let sums = release
         .assets
         .iter()
-        .find(|asset| asset.name == format!("{}.sha256", installer.name))
+        .find(|asset| asset.name == SUMS)
         .map(|asset| asset.browser_download_url.clone());
 
     Some(Release {
@@ -368,7 +385,7 @@ fn newer_than_on(
         installer_name: installer.name.clone(),
         installer_url: installer.browser_download_url.clone(),
         installer_bytes: installer.size,
-        checksum_url: checksum,
+        sums_url: sums,
     })
 }
 
@@ -418,9 +435,18 @@ fn pick_for(assets: &[GhAsset], product: Product, platform: Platform) -> Option<
     })
 }
 
-/// Downloads an installer and returns its path, having checked its digest.
+/// A release's list of digests, signed: see [`signature`].
+pub const SUMS: &str = "SHA256SUMS";
+
+/// The largest `SHA256SUMS` read: a line per file, so a few kilobytes.
+const SUMS_LIMIT: usize = 64 * 1024;
+
+/// Downloads an installer and returns its path, having checked it against the
+/// release's signed list of digests.
 ///
-/// `progress` is called with bytes received and the total expected.
+/// The list is fetched and its signature checked first, so a release that is
+/// not signed costs no download. `progress` is called with bytes received
+/// and the total expected.
 pub async fn fetch(
     release: &Release,
     into: &Path,
@@ -429,25 +455,34 @@ pub async fn fetch(
     use futures_util::StreamExt;
     use sha2::{Digest, Sha256};
 
-    let Some(checksum_url) = release.checksum_url.as_deref() else {
+    let Some(sums_url) = release.sums_url.as_deref() else {
         // Refused rather than warned about. An unverified installer is the
         // one thing an update path must never hand to somebody.
-        return Err(UpdateError::ChecksumMismatch);
+        return Err(UpdateError::Unsigned);
     };
+    let key = signature::trusted_key().map_err(UpdateError::Malformed)?;
 
     let http = client()?;
-    let expected = digest_from(
-        &http
-            .get(checksum_url)
-            .timeout(Duration::from_secs(20))
-            .send()
-            .await
-            .map_err(|e| UpdateError::Network(e.to_string()))?
-            .text()
-            .await
-            .map_err(|e| UpdateError::Network(e.to_string()))?,
-    )
-    .ok_or_else(|| UpdateError::Malformed("the checksum file made no sense".into()))?;
+    let response = http
+        .get(sums_url)
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| UpdateError::Network(e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(UpdateError::Status(response.status().as_u16()));
+    }
+    let sums = response
+        .bytes()
+        .await
+        .map_err(|e| UpdateError::Network(e.to_string()))?;
+    if sums.len() > SUMS_LIMIT {
+        return Err(UpdateError::Malformed(
+            "the list of digests is far too long".into(),
+        ));
+    }
+    let sums = std::str::from_utf8(&sums).map_err(|_| UpdateError::BadSignature)?;
+    let expected = signature::signed_digest(&key, sums, &release.version, &release.installer_name)?;
 
     std::fs::create_dir_all(into).map_err(|e| UpdateError::Io(e.to_string()))?;
     let target = into.join(&release.installer_name);
@@ -503,6 +538,16 @@ pub async fn fetch(
     let _ = std::fs::remove_file(&target);
     std::fs::rename(&part, &target).map_err(|e| UpdateError::Io(e.to_string()))?;
     Ok(target)
+}
+
+/// Whether a signed `SHA256SUMS` is one the apps accept for `name` in release
+/// `version`, checked with the public key given as text, and the digest it
+/// gives: for `tools/release-sign`'s tests, which make keys of their own.
+#[doc(hidden)]
+pub fn check_signed_list(key: &str, sums: &str, version: &str, name: &str) -> Result<String> {
+    let key = minisign_verify::PublicKey::decode(key)
+        .map_err(|e| UpdateError::Malformed(e.to_string()))?;
+    signature::signed_digest(&key, sums, version, name)
 }
 
 /// Reads the digest out of a `.sha256` file.
@@ -704,7 +749,7 @@ mod tests {
 
     /// Releases name their files without a version, so a download link to the
     /// latest release never changes. Every app still finds its own file, and
-    /// the checksum beside it.
+    /// the release's signed list.
     #[test]
     fn files_named_without_a_version_are_found() {
         let names = [
@@ -714,6 +759,7 @@ mod tests {
             "Basalt-Client-Setup.exe.sha256",
             "Basalt-Android.apk",
             "Basalt-Android.apk.sha256",
+            "SHA256SUMS",
         ];
         let assets: Vec<GhAsset> = names.iter().map(|name| asset(name)).collect();
         let found = |product, platform| pick_for(&assets, product, platform).unwrap().name.clone();
@@ -732,12 +778,7 @@ mod tests {
 
         let update =
             newer_than(release("v9.0.0", &names), Product::Host, "1.4.0").expect("an update");
-        assert!(
-            update
-                .checksum_url
-                .unwrap()
-                .ends_with("/Basalt-Host-Setup.exe.sha256")
-        );
+        assert!(update.sums_url.unwrap().ends_with("/SHA256SUMS"));
     }
 
     #[test]
@@ -764,44 +805,58 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_release_carries_its_notes_and_its_checksum() {
+    fn a_newer_release_carries_its_notes_and_its_signed_list() {
         let found = newer_than(
             release(
-                "v1.1.0",
+                "v1.6.0",
                 &[
-                    "Basalt-Client-1.1.0-setup.exe",
-                    "Basalt-Client-1.1.0-setup.exe.sha256",
+                    "Basalt-Host-Setup.exe",
+                    "Basalt-Host-Setup.exe.sha256",
+                    "Basalt-Client-Setup.exe",
+                    "Basalt-Client-Setup.exe.sha256",
+                    "SHA256SUMS",
                 ],
             ),
             Product::Client,
-            "1.0.0",
+            "1.5.1",
         )
         .expect("an update");
 
-        assert_eq!(found.version, "1.1.0");
+        assert_eq!(found.version, "1.6.0");
         assert_eq!(found.notes, "notes");
-        assert!(found.checksum_url.unwrap().ends_with(".sha256"));
+        assert!(found.sums_url.unwrap().ends_with("/SHA256SUMS"));
     }
 
-    /// The checksum belongs to *this* installer, not to whichever one is
-    /// listed first — a release holds two of each.
-    #[test]
-    fn the_checksum_matches_the_installer_it_belongs_to() {
-        let found = newer_than(
+    /// A release without the signed list still offers the update, so the app
+    /// can say so, but [`fetch`] refuses it before downloading anything.
+    #[tokio::test]
+    async fn a_release_without_its_signed_list_is_not_downloaded() {
+        let unsigned = newer_than(
             release(
-                "v1.1.0",
-                &[
-                    "Basalt-Host-1.1.0-setup.exe",
-                    "Basalt-Host-1.1.0-setup.exe.sha256",
-                    "Basalt-Client-1.1.0-setup.exe",
-                    "Basalt-Client-1.1.0-setup.exe.sha256",
-                ],
+                "v1.6.0",
+                &["Basalt-Client-Setup.exe", "Basalt-Client-Setup.exe.sha256"],
             ),
             Product::Client,
-            "1.0.0",
+            "1.5.1",
         )
         .expect("an update");
-        assert!(found.checksum_url.unwrap().contains("Client"));
+        assert!(unsigned.sums_url.is_none());
+
+        let into = std::env::temp_dir().join(format!("basalt-unsigned-{}", std::process::id()));
+        assert!(matches!(
+            fetch(&unsigned, &into, |_, _| {}).await,
+            Err(UpdateError::Unsigned)
+        ));
+        assert!(!into.join("Basalt-Client-Setup.exe").exists());
+    }
+
+    /// An offer as the app's own pages send it back, with no list named:
+    /// still reads, as unsigned.
+    #[test]
+    fn an_offer_without_a_list_reads() {
+        let offer = r#"{"version":"1.6.0","notes":"","pageUrl":"","installerName":"a.exe","installerUrl":"u","installerBytes":1}"#;
+        let release: Release = serde_json::from_str(offer).unwrap();
+        assert!(release.sums_url.is_none());
     }
 
     #[test]

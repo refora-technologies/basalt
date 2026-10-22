@@ -80,7 +80,15 @@ mod linux {
         let cache = cache_dir()?;
         let file = basalt_update::fetch(&release, &cache, |_, _| {})
             .await
-            .map_err(|e| format!("Couldn't download Basalt Host {}: {e}", release.version))?;
+            .map_err(|e| {
+                if matches!(
+                    e,
+                    basalt_update::UpdateError::Unsigned | basalt_update::UpdateError::BadSignature
+                ) {
+                    REFUSED.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                format!("Couldn't download Basalt Host {}: {e}", release.version)
+            })?;
         let installed = install(package, &file);
         let _ = std::fs::remove_file(&file);
         installed?;
@@ -237,6 +245,10 @@ mod linux {
     /// starts again. Written to a new file and renamed into place, so a link
     /// left where it goes is replaced rather than followed; given to the
     /// folder's owner, the host's user, who reads and removes it.
+    /// The update was refused for its signature, for the outcome: the host's
+    /// window and Manage host then offer to report it.
+    pub static REFUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
     pub fn write_outcome(ok: bool, message: &str) {
         use std::io::Write;
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -262,6 +274,7 @@ mod linux {
             "ok": ok,
             "message": message,
             "at": at,
+            "refused": REFUSED.load(std::sync::atomic::Ordering::Relaxed),
         });
         let temp = dir.join(format!(".update-result-{}", std::process::id()));
         let written = std::fs::OpenOptions::new()

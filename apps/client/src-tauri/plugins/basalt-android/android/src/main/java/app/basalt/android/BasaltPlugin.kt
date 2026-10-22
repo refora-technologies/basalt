@@ -251,6 +251,13 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     current = this
     pip.start()
     watchInsets(webView)
+    // On a television the remote's keys go to the page from the first press.
+    // Without the focus, Android spent that press moving into the page, and
+    // the page's first button took it, whatever the screen meant to start on.
+    if (isTelevision()) {
+      webView.isFocusableInTouchMode = true
+      webView.post { webView.requestFocus() }
+    }
     bindToWifi()
     acquireMulticast()
     activity.intent?.let {
@@ -327,11 +334,14 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
         val wanted = if (keyboardOpen) ime.bottom else 0
         if (parent.paddingBottom != wanted) parent.setPadding(0, 0, 0, wanted)
       }
-      val top = bars.top / density
+      // A television may crop the edges of its picture (overscan), so there
+      // the page keeps 5% clear, as Google asks of TV apps: 48 by 27 dp.
+      val tv = television
+      val top = maxOf(bars.top / density, if (tv) 27f else 0f)
       // Over the keyboard, nothing of the page is under the gesture bar.
-      val bottom = if (keyboardOpen) 0f else bars.bottom / density
-      val left = bars.left / density
-      val right = bars.right / density
+      val bottom = maxOf(if (keyboardOpen) 0f else bars.bottom / density, if (tv) 27f else 0f)
+      val left = maxOf(bars.left / density, if (tv) 48f else 0f)
+      val right = maxOf(bars.right / density, if (tv) 48f else 0f)
       val keyboard = ime.bottom / density
       lastInsets = JSObject()
         .put("top", top).put("bottom", bottom).put("left", left).put("right", right)
@@ -373,6 +383,12 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun setOrientation(invoke: Invoke) {
     val args = invoke.parseArgs(OrientationArgs::class.java)
+    // A television stands one way only; asked to turn, some draw the app on
+    // its side.
+    if (isTelevision()) {
+      invoke.resolve()
+      return
+    }
     activity.runOnUiThread {
       activity.requestedOrientation = when (args.mode) {
         "landscape" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -396,6 +412,15 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
 
   /** The activity being left: see [Pip.leaving]. */
   fun leaving() = pip.leaving()
+
+  /**
+   * The activity no longer on the screen. On a television a film left behind
+   * pauses (see [Pip.leftUnseen]); a phone keeps its own ways, the small
+   * window or the screen going off with the film still on.
+   */
+  fun stopped() {
+    if (isTelevision()) pip.leftUnseen()
+  }
 
   /** Into the small window or out of it: see [Pip.changed]. */
   fun pictureInPicture(active: Boolean, closed: Boolean) = pip.changed(active, closed)
@@ -838,33 +863,65 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun mpvInit(invoke: Invoke) {
     val args = invoke.parseArgs(MpvInitArgs::class.java)
-    try {
-      player.init(args.options, args.observed, webView)
-      invoke.resolve()
-    } catch (e: Throwable) {
-      invoke.reject("The player could not start: ${e.message}")
+    val page = webView
+    // In order with the other calls to mpv (its picture's surface is put in
+    // place on the main thread by the player itself).
+    mpvCalls.execute {
+      try {
+        player.init(args.options, args.observed, page)
+        invoke.resolve()
+      } catch (e: Throwable) {
+        invoke.reject("The player could not start: ${e.message}")
+      }
+    }
+  }
+
+  /**
+   * Where the page's calls to mpv run: one after another, off the app's main
+   * thread. mpv answers only once it is free, and while it opened a large
+   * film over a slow link a question asked on the main thread froze the app
+   * until Android closed it as not responding.
+   */
+  private val mpvCalls = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+    Thread(r, "mpv calls")
+  }
+
+  /** `work` on the thread for mpv's calls, resolving or rejecting `invoke`. */
+  private fun onMpvThread(invoke: Invoke, work: () -> Unit) {
+    mpvCalls.execute {
+      try {
+        work()
+      } catch (e: Throwable) {
+        invoke.reject("The player: ${e.message}")
+      }
     }
   }
 
   @Command
   fun mpvCommand(invoke: Invoke) {
     val args = invoke.parseArgs(MpvCommandArgs::class.java)
-    player.command(args.args)
-    invoke.resolve()
+    onMpvThread(invoke) {
+      player.command(args.args)
+      invoke.resolve()
+    }
   }
 
   @Command
   fun mpvSetProperty(invoke: Invoke) {
     val args = invoke.parseArgs(MpvPropertyArgs::class.java)
-    player.setProperty(args.name, args.value ?: "")
-    invoke.resolve()
+    onMpvThread(invoke) {
+      player.setProperty(args.name, args.value ?: "")
+      invoke.resolve()
+    }
   }
 
   @Command
   fun mpvGetProperty(invoke: Invoke) {
     val args = invoke.parseArgs(MpvPropertyArgs::class.java)
-    val value = player.getProperty(args.name, args.format ?: "string")
-    invoke.resolve(if (value == null) JSObject() else JSObject().put("value", value))
+    onMpvThread(invoke) {
+      val value = player.getProperty(args.name, args.format ?: "string")
+      invoke.resolve(if (value == null) JSObject() else JSObject().put("value", value))
+    }
   }
 
   /**
@@ -899,8 +956,11 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun mpvDestroy(invoke: Invoke) {
-    player.destroy()
-    invoke.resolve()
+    // After every call before it, so none is left talking to an mpv gone.
+    onMpvThread(invoke) {
+      player.destroy()
+      invoke.resolve()
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1199,7 +1259,21 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
         .put("code", code)
         .put("device", "${Build.MANUFACTURER} ${Build.MODEL}")
         .put("android", Build.VERSION.RELEASE)
+        .put("tv", isTelevision())
     )
+  }
+
+  /**
+   * A television rather than a phone or tablet: Android TV and Google TV say
+   * so in the mode the system runs in; some set-top boxes only in the
+   * features they declare.
+   */
+  private val television: Boolean by lazy { isTelevision() }
+
+  private fun isTelevision(): Boolean {
+    val modes = activity.getSystemService(Context.UI_MODE_SERVICE) as? android.app.UiModeManager
+    if (modes?.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION) return true
+    return activity.packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
   }
 
   /** Text handed to any app that takes it: a link sent to WhatsApp, an email, a PC. */

@@ -1,12 +1,12 @@
 <div align="center">
   <img src="apps/client/src-tauri/icons/128x128@2x.png" alt="Basalt" width="88" />
   <h1>Basalt</h1>
-  <p><b>Your home drive, on every screen in the house.<br/>No cloud, no subscription, no account.</b></p>
+  <p><b>Your home drive, on every screen in the house.<br/>Yours, encrypted, and private by default.</b></p>
   <p>
     <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-blue?style=flat-square" alt="Windows 10/11" />
-    <img src="https://img.shields.io/badge/Linux-host-f0b400?style=flat-square" alt="Linux host" />
+    <img src="https://img.shields.io/badge/Linux-host%20%7C%20app-f0b400?style=flat-square" alt="Linux: host and app" />
     <img src="https://img.shields.io/badge/Docker-amd64%20%7C%20arm64-2496ed?style=flat-square" alt="Docker: amd64 and arm64" />
-    <img src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square" alt="Android 8.0+" />
+    <img src="https://img.shields.io/badge/Android-8.0%2B%20%7C%20TV-3ddc84?style=flat-square" alt="Android 8.0+ and Android TV" />
     <img src="https://img.shields.io/github/license/refora-technologies/basalt?style=flat-square" alt="License" />
     <img src="https://img.shields.io/github/v/release/refora-technologies/basalt?style=flat-square" alt="Release" />
     <img src="https://img.shields.io/github/downloads/refora-technologies/basalt/total?style=flat-square" alt="Downloads" />
@@ -15,6 +15,7 @@
     <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Setup.exe"><b>Host for Windows</b></a> &nbsp;·&nbsp;
     <a href="#installation"><b>Host for Linux</b></a> &nbsp;·&nbsp;
     <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Setup.exe"><b>Basalt for Windows</b></a> &nbsp;·&nbsp;
+    <a href="#installation"><b>Basalt for Linux</b></a> &nbsp;·&nbsp;
     <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk"><b>Basalt for Android</b></a>
   </p>
   <p>
@@ -36,8 +37,8 @@
 **Basalt** by Refora Technologies turns one computer into a private drive for
 the whole household. **Basalt Host** runs on the computer with the drive:
 Windows or Linux, with a screen or without one, such as a home server, a NAS or
-a Raspberry Pi. **Basalt** runs everywhere else, on Windows computers and on
-Android phones and tablets. Every device browses the same files, watches the
+a Raspberry Pi. **Basalt** runs everywhere else, on Windows and Linux computers
+and on Android phones, tablets and TVs. Every device browses the same files, watches the
 same library, and picks up where the last one left off.
 
 There is nothing to configure. You choose a drive on the host; on another
@@ -47,9 +48,8 @@ host by themselves, and keep finding it when the router gives it a different
 address, because they recognise the host itself rather than where it happens to
 be today.
 
-Nothing leaves your home. There is no Basalt server and no cloud in the design:
-the host serves your files to your devices over your own network, encrypted,
-and that is all it does.
+Your files stay yours: the host serves them to your devices over your own
+network, encrypted, and that is all it does.
 
 ## Screenshots
 
@@ -97,7 +97,8 @@ and that is all it does.
   says so; plug it back in and it is shared again, with nothing to redo.
 - **Keeps itself up to date.** The host installs new versions by itself when
   nothing is playing, and the apps show what changed before they update. Every
-  download is checked against its published checksum first.
+  release is signed, and an update that isn't signed by Basalt's publisher is
+  refused before it is downloaded.
 
 ### Private by design
 
@@ -107,8 +108,8 @@ and that is all it does.
 - **A key for every device.** Each device signs in with its own key, created
   on the device and kept in its security chip when it has one. It never leaves
   the device, so a copy of its settings can't open your drive.
-- **Local only.** No account, no cloud, no tracking. Files travel between your
-  own devices and nowhere else. The only requests that leave your network are
+- **Private by default.** Files travel between your own devices and nowhere
+  else, and nothing tracks what you open. The only requests that leave your network are
   the update check, to GitHub, and poster lookups if you turn them on.
 - **Careful with what it keeps.** Profile PINs are stored only as slow, salted
   hashes, and repeated wrong guesses lock a profile for longer each time.
@@ -149,10 +150,10 @@ and that is all it does.
 
 ### A real player
 
-- **Plays what a browser cannot.** Built on **mpv**, on Windows and Android
+- **Plays what a browser cannot.** Built on **mpv**, on Windows, Linux and Android
   alike, so HEVC, HDR, E-AC3, DTS, MKV and the rest play straight from the
   drive, with nothing downloaded first.
-- **4K on any phone.** When a device cannot keep up with a film, the host
+- **Plays on any phone or TV.** When a device cannot keep up with a film, the host
   converts it to 1080p as it plays, on its graphics where it has them, with
   the sound and subtitles untouched. The player says so while it prepares,
   picks the film up again if the connection drops, and a quality button
@@ -193,6 +194,17 @@ and that is all it does.
   phone would normally switch to mobile data, Basalt keeps its connection to
   the host.
 
+### On your TV
+
+- **The same app, made for the remote.** On Android TV and Google TV the
+  arrows move one highlight around the library and the files, OK opens and
+  plays, and holding OK opens a film's menu. In the player OK pauses, left and
+  right skip, and the remote's play, pause, rewind and fast-forward keys work.
+- **Keeps to watching.** The TV opens on the library, and leaves uploads,
+  downloads, sharing and managing the host to your phone and computer.
+- **Pauses when you leave.** Press Home during a film and it waits for you,
+  or carries on in a small window on a TV that has one.
+
 ### Several devices at once
 
 There is no device limit and no connection limit. The host serves bytes and
@@ -207,24 +219,26 @@ nothing more, so more viewers cost it almost nothing.
 | Discovery | UDP beacon on the local network |
 | Desktop apps | Tauri v2, React 19, TypeScript, Tailwind, Framer Motion |
 | Android app | Tauri v2 mobile, the same React interface, a Kotlin plugin |
-| Playback and thumbnails | libmpv, on Windows and Android |
+| Playback and thumbnails | libmpv, on Windows, Linux and Android |
 | Film recognition | A bundled catalogue of film and series titles from Wikidata |
-| Integrity | BLAKE3 per transfer, SHA-256 on updates |
+| Integrity | BLAKE3 per transfer; updates by SHA-256, signed with Basalt's release key |
 
 ## Installation
 
-Download the latest version. These links always give the newest release, and
-each file has a `.sha256` beside it on the
+Download the latest version. These links always give the newest release. To
+check what you downloaded, the
 [releases page](https://github.com/refora-technologies/basalt/releases/latest)
-if you want to check what you downloaded.
+has a signed `SHA256SUMS`; [SECURITY.md](SECURITY.md#signed-releases) says how.
 
 **Basalt**, on every device that should reach the drive:
 
 | Download | Install on |
 |---|---|
 | **[`Basalt-Client-Setup.exe`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Setup.exe)** | Windows computers |
-| **[`Basalt-Android.apk`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk)** | Android phones and tablets (Android 8.0 or later, 64-bit) |
-| Basalt for Linux | Coming soon. Until then, open a Linux host's drive from Windows or Android |
+| **[`Basalt-Client-Linux-amd64.deb`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Linux-amd64.deb)** | Ubuntu 22.04 or later, Debian 12, Linux Mint 21 or later |
+| **[`Basalt-Client-Linux-x86_64.rpm`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Linux-x86_64.rpm)** | Fedora and similar |
+| **[`Basalt-Client-Linux-x86_64.AppImage`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Linux-x86_64.AppImage)** | Any other Linux desktop |
+| **[`Basalt-Android.apk`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk)** | Android phones, tablets, Android TV, Google TV and Fire TV (Android 8.0 or later). Coming to Google Play soon |
 
 **Basalt Host**, on the computer with the drive:
 
@@ -258,9 +272,16 @@ checks.
 The Windows installers install per user and need no administrator rights. They
 update an existing installation in place and keep its pairing and settings.
 
-The Android app is not on the Play Store yet. Open the `.apk` on the phone and
-allow your browser or file manager to install it when Android asks; that
-permission is only for installing, and can be turned off again afterwards.
+On Android, open the `.apk` and allow your browser or file manager to install
+it when Android asks; that permission is only for installing, and can be turned
+off again afterwards. On a TV, the Downloader app fetches the `.apk` from its
+link. Basalt is coming to Google Play; once it is there, the app offers to move
+to it, keeping your drives, profiles and settings.
+
+On Linux, install the `.deb` or `.rpm` with your package manager, for example
+`sudo apt install ./Basalt-Client-Linux-amd64.deb`; it updates through it too.
+The AppImage needs no installing: make it executable and open it, and it
+replaces itself when there is a new version.
 
 **Getting started:**
 
@@ -284,7 +305,7 @@ profiles, Manage host and troubleshooting are in the
 Basalt Host updates itself when nothing is playing; you can turn that off in
 its settings or in Manage host. The apps check for updates on their own and
 show what is in the new version before you install it. On Android the update is
-downloaded, checked against its published checksum, and handed to Android's own
+downloaded, checked against the release's signed checksums, and handed to Android's own
 installer; the first time, Android asks you to allow Basalt to install it.
 
 ## Configuration & Usage
@@ -369,8 +390,12 @@ It needs the Android SDK with NDK 28, JDK 17, and Rust's Android targets:
 rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
 set NDK_HOME=%LOCALAPPDATA%\Android\Sdk\ndk\28.2.13676358
 set JAVA_HOME=C:\Program Files\Java\jdk-17
-cd apps/client && npx tauri android build --apk --target aarch64
+cd apps/client && npx tauri android build --apk --target aarch64 --target armv7
 ```
+
+A release carries 64-bit and 32-bit ARM: phones are 64-bit, but many
+televisions and TV sticks run 32-bit Android. The build stops if a `--target`
+is missing, rather than make an app some devices cannot start.
 
 The phone's player is mpv too, from the `dev.jdtech.mpv:libmpv` package, which
 Gradle fetches by itself; the desktop's Windows libraries are left out.

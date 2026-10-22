@@ -7,6 +7,7 @@ import { isKind } from '@/lib/useLibrary'
 import { thumbUrl } from '@/lib/thumbs'
 import { cn, formatBytes } from '@/lib/utils'
 import { android } from '@/lib/android'
+import { isTv } from '@/lib/platform'
 import { useScrollMemory } from '@/lib/useScrollMemory'
 import { useLongPress } from '@/lib/useLongPress'
 
@@ -74,10 +75,16 @@ export function FilesScreen({
 
   const onLong = useCallback(
     (entry: Entry) => {
+      // Selecting is for moving and deleting, which a TV leaves to the
+      // other devices: OK held there opens what can be done with it.
+      if (isTv()) {
+        onActions(entry)
+        return
+      }
       void android.haptic('long')
       toggle(entry)
     },
-    [toggle],
+    [toggle, onActions],
   )
 
   const scroll = useScrollMemory(scrollKey)

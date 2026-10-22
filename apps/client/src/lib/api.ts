@@ -406,6 +406,8 @@ export type ErrorKind =
   /** A profile sign-in the host has ended. */
   | 'signedout'
   | 'unsupported'
+  /** An update refused because it isn't signed with Basalt's release key. */
+  | 'unsigned'
   | 'error'
 
 /** Whether something ended because the person cancelled it. */
@@ -480,7 +482,8 @@ export interface Release {
   installerName: string
   installerUrl: string
   installerBytes: number
-  checksumUrl: string | null
+  /** The release's signed SHA256SUMS. */
+  sumsUrl: string | null
 }
 
 export const api = {
@@ -501,6 +504,8 @@ export const api = {
   appVersion: (): Promise<string> => call<string>('app_version'),
   /** The release notes of one version as published on GitHub, or null when it has none. */
   releaseNotes: (version: string): Promise<string | null> => call<string | null>('release_notes', { version }),
+  /** What kind of device this is, for its picture in the host's device lists. */
+  setDeviceForm: (form: 'phone' | 'tablet' | 'tv') => call<void>('set_device_form', { form }),
   /** A newer release, or null when this is the newest. */
   checkUpdate: (): Promise<Release | null> => call<Release | null>('check_update'),
   /** Fetches and verifies an installer, returning where it landed. */
@@ -897,7 +902,7 @@ const MOCK_RELEASE: Release = {
   installerName: 'Basalt-Client-9.9.0-setup.exe',
   installerUrl: 'https://example.test/Basalt-Client-9.9.0-setup.exe',
   installerBytes: 35_600_000,
-  checksumUrl: 'https://example.test/Basalt-Client-9.9.0-setup.exe.sha256',
+  sumsUrl: 'https://example.test/SHA256SUMS',
 }
 
 /**
@@ -1018,6 +1023,11 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       // Slow on purpose, like `discover`: the panel has a "Checking…" state
       // and an instant answer would hide it.
       await new Promise((resolve) => setTimeout(resolve, 700))
+      // `?update&onplay`: Google Play has it too, for the APK's choice.
+      if (previewFlag('update') && previewFlag('onplay')) {
+        const marker = `<!-- google-play: ${MOCK_RELEASE.version} -->`
+        return { ...MOCK_RELEASE, notes: `${MOCK_RELEASE.notes}\n${marker}` } as T
+      }
       return (previewFlag('update') ? MOCK_RELEASE : null) as T
     case 'download_update': {
       // Progress arrives as an event in the app, so the preview emits the
@@ -1031,6 +1041,11 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
             detail: [Math.min(had, total), total],
           }),
         )
+      }
+      // `?update&unsigned`: the release is refused for its signature, to
+      // see what the app says and its offer to report it.
+      if (previewFlag('unsigned')) {
+        throw new ApiError('unsigned', "this release is not signed with Basalt's release key, so it was not downloaded")
       }
       return `C:\\Users\\preview\\Downloads\\${release.installerName}` as T
     }

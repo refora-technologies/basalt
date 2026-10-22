@@ -157,4 +157,19 @@ describe('what a release brings', () => {
     const blocks = parseNotes('Intro.\n### Basalt v2 on Linux\n* item')
     expect(blocks.map(text)).toContain('Basalt v2 on Linux')
   })
+
+  it('leaves out comments, which GitHub does not show either', () => {
+    const blocks = parseNotes(
+      [
+        '## Fixed',
+        '',
+        '* A fix.',
+        '<!-- google-play: 1.6.5 -->',
+        '<!-- a note',
+        'over two lines -->',
+        'The end.',
+      ].join('\n'),
+    )
+    expect(blocks.map(text)).toEqual(['Fixed', 'A fix.', 'The end.'])
+  })
 })

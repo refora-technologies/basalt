@@ -1395,10 +1395,17 @@ async fn release_notes(version: String) -> Answer<Option<String>> {
         })
 }
 
+/// What kind of device this is, as the page knows it from Android: a phone,
+/// a tablet or a TV. Shown on the host beside the device's name.
+#[tauri::command]
+fn set_device_form(form: basalt_proto::msg::DeviceForm) {
+    basalt_client::store::set_device_form(form);
+}
+
 /// Downloads an offered release, reporting progress, and returns its path.
 ///
-/// The file is verified against the checksum published beside it before this
-/// returns; an installer that fails is deleted rather than handed back.
+/// The file is verified against the release's signed list of digests before
+/// this returns; an installer that fails is deleted rather than handed back.
 #[tauri::command]
 async fn download_update(app: tauri::AppHandle, release: basalt_update::Release) -> Answer<String> {
     let into = scratch_dir(&app).join("Basalt Updates");
@@ -1408,7 +1415,13 @@ async fn download_update(app: tauri::AppHandle, release: basalt_update::Release)
     })
     .await
     .map_err(|e| UiError {
-        kind: "error".into(),
+        // Refused for its signature: the page offers to report it.
+        kind: match e {
+            basalt_update::UpdateError::Unsigned | basalt_update::UpdateError::BadSignature => {
+                "unsigned".into()
+            }
+            _ => "error".into(),
+        },
         message: e.to_string(),
     })?;
 
@@ -1666,6 +1679,7 @@ pub fn run() {
             app_version,
             check_update,
             release_notes,
+            set_device_form,
             download_update,
             install_update,
             status,

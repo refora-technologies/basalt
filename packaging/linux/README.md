@@ -102,8 +102,8 @@ host. On the computer itself:
 sudo basalt-host update
 ```
 
-Every update is the newest official release, downloaded and checked against its
-published checksum before it goes in. The host runs as its own user and can't
+Every update is the newest official release, and goes in only if it is signed
+by Basalt's publisher and matches the release's signed checksums. The host runs as its own user and can't
 install anything itself: it only asks, and a small system service
 (`basalt-host-update`) does the rest.
 

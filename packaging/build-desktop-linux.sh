@@ -13,11 +13,14 @@ set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 out=$(mkdir -p "${1:?usage: build-desktop-linux.sh OUT_DIR}" && cd "$1" && pwd)
 
+# node_modules is a volume of its own: npm ci in the shared checkout would
+# replace the Windows packages beside it with Linux ones.
 docker run --rm \
     -v "$repo":/src \
     -v basalt-desktop-cargo:/root/.cargo/registry \
     -v basalt-desktop-target:/target \
     -v basalt-desktop-node:/node \
+    -v basalt-host-node-modules:/src/apps/host/node_modules \
     -e CARGO_TARGET_DIR=/target \
     -e APPIMAGE_EXTRACT_AND_RUN=1 \
     -e DEBIAN_FRONTEND=noninteractive \

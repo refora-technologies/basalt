@@ -1,0 +1,25 @@
+[package]
+name = "release-sign"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Makes Basalt's release key and signs a release's SHA256SUMS with it (minisign)."
+publish = false
+
+[[bin]]
+name = "basalt-sign"
+path = "src/main.rs"
+
+[dependencies]
+minisign = "0.10"
+rpassword = "7"
+minisign-verify = "0.3"
+sha2 = "0.11.0"
+
+[dev-dependencies]
+# Only for the tests, which check that a list signed here is one the apps
+# accept. Never for the tool itself: the apps' code carries the public key,
+# and keygen has to run before there is one.
+basalt-update = { path = "../../crates/basalt-update" }

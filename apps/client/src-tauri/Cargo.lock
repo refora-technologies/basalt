@@ -310,7 +310,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "basalt-client"
-version = "1.5.1"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "basalt-net",
@@ -330,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "basalt-client-shell"
-version = "1.5.1"
+version = "1.6.0"
 dependencies = [
  "basalt-client",
  "basalt-proto",
@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "basalt-net"
-version = "1.5.1"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "basalt-proto",
@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "basalt-proto"
-version = "1.5.1"
+version = "1.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -384,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "basalt-trust"
-version = "1.5.1"
+version = "1.6.0"
 dependencies = [
  "basalt-proto",
  "ring",
@@ -395,10 +395,11 @@ dependencies = [
 
 [[package]]
 name = "basalt-update"
-version = "1.5.1"
+version = "1.6.0"
 dependencies = [
  "basalt-net",
  "futures-util",
+ "minisign-verify",
  "reqwest",
  "serde",
  "serde_json",
@@ -2575,6 +2576,12 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "minisign-verify"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "871285dc19d8d0ebe0eef3d0e99a205f2a71363b122632cbbfa4a6c370a960ce"
 
 [[package]]
 name = "miniz_oxide"

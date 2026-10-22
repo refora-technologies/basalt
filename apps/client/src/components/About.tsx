@@ -24,9 +24,12 @@ import {
   WEBSITE,
   openExternal,
 } from '@/lib/links'
-import { isAndroid, isLinuxDesktop } from '@/lib/platform'
+import { isAndroid, isLinuxDesktop, isTv } from '@/lib/platform'
 import { checkForUpdate, offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
 import { cn } from '@/lib/utils'
+import { sendRefusedReport } from '@/lib/refusedReport'
+import { canMoveToPlay, onPlay, stopKeepingApk } from '@/lib/playMove'
+import { PlayGlyph } from './PlayChoice'
 
 /** The computer this copy runs on, as the card names it. */
 const DESKTOP = isLinuxDesktop() ? 'Linux' : 'Windows'
@@ -113,28 +116,40 @@ export function About({ product }: { product: string }): React.JSX.Element {
         </button>
       </div>
 
-      <Status state={state} />
+      <Status state={state} installed={installed} />
+
+      {canMoveToPlay() && <MoveToPlay state={state} />}
 
       <HostBlock phone={phone} />
 
-      <div className="mt-3 overflow-hidden rounded-lg border border-line">
-        {PLAY_STORE && (
-          <Row icon={<Star size={15} />} onClick={() => void openExternal(PLAY_LISTING)}>
-            Rate Basalt on Google Play
+      {/* A television usually has no browser or mail app to open these
+          in: the addresses are given to use on another device instead. */}
+      {isTv() ? (
+        <p className="mt-3 text-[12px] leading-relaxed text-textDim">
+          Feedback and problems: {FEEDBACK_EMAIL}
+          <br />
+          Source code and licences: {WEBSITE.replace('https://', '')}
+        </p>
+      ) : (
+        <div className="mt-3 overflow-hidden rounded-lg border border-line">
+          {PLAY_STORE && (
+            <Row icon={<Star size={15} />} onClick={() => void openExternal(PLAY_LISTING)}>
+              Rate Basalt on Google Play
+            </Row>
+          )}
+          <Row icon={<Mail size={15} />} onClick={() => void feedback()}>
+            Send feedback
           </Row>
-        )}
-        <Row icon={<Mail size={15} />} onClick={() => void feedback()}>
-          Send feedback
-        </Row>
-        {!PLAY_STORE && (
-          <Row icon={<Bug size={15} />} onClick={() => void openExternal(ISSUES)}>
-            Report a problem on GitHub
+          {!PLAY_STORE && (
+            <Row icon={<Bug size={15} />} onClick={() => void openExternal(ISSUES)}>
+              Report a problem on GitHub
+            </Row>
+          )}
+          <Row icon={<Github size={15} />} onClick={() => void openExternal(REPO)}>
+            {PLAY_STORE ? 'Source code and licences' : 'Source code'}
           </Row>
-        )}
-        <Row icon={<Github size={15} />} onClick={() => void openExternal(REPO)}>
-          {PLAY_STORE ? 'Source code and licences' : 'Source code'}
-        </Row>
-      </div>
+        </div>
+      )}
       {noMailApp && (
         <p className="mt-2 text-[11.5px] text-textFaint">
           No mail app opened. Write to {FEEDBACK_EMAIL} from any mail app.
@@ -149,8 +164,55 @@ export function About({ product }: { product: string }): React.JSX.Element {
   )
 }
 
+/**
+ * For someone who kept the APK: the move to Google Play, from Settings. With
+ * an update on Play waiting, it opens the same popup the update brought;
+ * otherwise Basalt's page in Play.
+ */
+function MoveToPlay({ state }: { state: UpdateState }): React.JSX.Element {
+  // Play only installs over this app with a newer version than it has, so
+  // with none waiting the move happens at the next update, not now.
+  const [next, setNext] = useState(false)
+  const move = (): void => {
+    stopKeepingApk()
+    if (state.kind === 'available' && onPlay(state.release)) openWhatsNew()
+    else setNext(true)
+  }
+  if (next) {
+    return (
+      <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-line bg-ink2 px-3 py-2.5 text-[12px] leading-snug text-textDim">
+        <Check size={14} className="mt-0.5 shrink-0 text-text" />
+        <span>Done. Your next update will come from Google Play.</span>
+      </div>
+    )
+  }
+  return (
+    <button
+      onClick={move}
+      className="mt-3 flex w-full items-center gap-3 rounded-lg border border-line bg-ink2 px-3 py-2.5 text-left transition-colors hover:border-lineBright"
+    >
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/[0.06] text-text">
+        <PlayGlyph size={15} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[12.5px] font-medium text-text">Move to Google Play</span>
+        <span className="mt-0.5 block text-[11.5px] leading-snug text-textFaint">
+          Play installs over this app and keeps Basalt up to date.
+        </span>
+      </span>
+      <ChevronRight size={14} className="shrink-0 text-textFaint" />
+    </button>
+  )
+}
+
 /** One line on where updates stand; an offered one opens "What's new". */
-function Status({ state }: { state: UpdateState }): React.JSX.Element | null {
+function Status({
+  state,
+  installed,
+}: {
+  state: UpdateState
+  installed: Installed | null
+}): React.JSX.Element | null {
   if (offered(state)) {
     const { version } = state.release
     const label =
@@ -185,10 +247,29 @@ function Status({ state }: { state: UpdateState }): React.JSX.Element | null {
     )
   }
   if (state.kind === 'failed') {
+    const refused = state.refused
     return (
-      <Line icon={<AlertCircle size={12} className="text-danger" />} danger>
-        {state.why}
-      </Line>
+      <>
+        <Line icon={<AlertCircle size={12} className="text-danger" />} danger>
+          {state.why}
+        </Line>
+        {refused && (
+          <button
+            onClick={() =>
+              void sendRefusedReport({
+                app: `Basalt ${installed?.version ?? ''}`.trim(),
+                system: installed?.device ?? '',
+                offered: refused.offered,
+                why: state.why,
+              })
+            }
+            className="mt-2 flex items-center gap-1.5 rounded-md border border-white/[0.1] px-3 py-1.5 text-[12px] text-textDim transition-colors hover:text-text"
+          >
+            <Mail size={13} />
+            Report this to Basalt’s publisher
+          </button>
+        )}
+      </>
     )
   }
   return null
@@ -210,7 +291,11 @@ function HostBlock({ phone }: { phone: boolean }): React.JSX.Element {
         Basalt Host runs on the computer that has your files and shares them with your devices.
         It’s free, like this app.
       </p>
-      {phone ? (
+      {isTv() ? (
+        <p className="mt-3 text-[13px] text-text">
+          Open {WEBSITE.replace('https://', '')} on your computer to download it.
+        </p>
+      ) : phone ? (
         <div className="mt-3.5 flex flex-col gap-2">
           <Big
             primary

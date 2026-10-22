@@ -110,7 +110,21 @@ pub enum Stage {
     Installing,
     Failed {
         why: String,
+        /// Refused for its signature: the apps offer to report it. See
+        /// [`REFUSED`].
+        refused: bool,
     },
+}
+
+/// What a person is told when an update is refused because it isn't signed
+/// with Basalt's release key: someone may have put up a release that isn't
+/// ours. The apps offer to report it, from the person's own email.
+pub const REFUSED: &str = "This download isn't signed by Basalt's publisher, so it wasn't downloaded.      Get the new version from the website instead.";
+
+/// A failed stage, marked when the failure is a refused signature.
+fn failed(why: String) -> Stage {
+    let refused = why == REFUSED;
+    Stage::Failed { why, refused }
 }
 
 /// A newer release, as a person reads about it.
@@ -130,6 +144,10 @@ pub struct Outcome {
     pub ok: bool,
     pub message: String,
     pub at: i64,
+    /// Refused for its signature: see [`REFUSED`]. Absent from an older
+    /// helper's outcome.
+    #[serde(default)]
+    pub refused: bool,
 }
 
 /// The last check, as `basalt-host status` reads it.
@@ -378,7 +396,7 @@ impl Host {
                 Err(e) => {
                     let why = describe(&e);
                     state.stage = if asked {
-                        Stage::Failed { why: why.clone() }
+                        failed(why.clone())
                     } else {
                         Stage::Idle
                     };
@@ -422,7 +440,7 @@ impl Host {
         tokio::spawn(async move {
             if let Err(why) = host.put_update_in(method).await {
                 tracing::warn!("the update did not go in: {why}");
-                host.set_stage(Stage::Failed { why });
+                host.set_stage(failed(why));
             }
         });
         Ok(())
@@ -580,6 +598,7 @@ fn describe(e: &basalt_update::UpdateError) -> String {
              later."
                 .into()
         }
+        E::Unsigned | E::BadSignature => REFUSED.into(),
         E::Stalled => "The download stopped part way. Try again.".into(),
         E::NoInstaller => "The new version has no download for this computer yet.".into(),
         other => other.to_string(),
