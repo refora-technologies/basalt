@@ -1,5 +1,6 @@
-import { AlertTriangle, ArrowUpCircle, Check, Loader2 } from 'lucide-react'
+import { AlertTriangle, ArrowUpCircle, Check, Loader2, Mail } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { sendRefusedReport } from '@/lib/refusedReport'
 import { Group, Pill, Row, Rows, Toggle, ago, useLayout } from './parts'
 import type { Tools } from './tools'
 
@@ -98,6 +99,27 @@ export function UpdatesGroup({ m, view }: Tools): React.JSX.Element | null {
             <AlertTriangle size={13} className="mt-0.5 shrink-0" />
             {stage.kind === 'failed' ? stage.why : `The last update didn’t go in: ${update.outcome!.message}`}
           </p>
+        )}
+        {((stage.kind === 'failed' && stage.refused) || (update.outcome && !update.outcome.ok && update.outcome.refused)) && (
+          <div className="px-4 pb-3">
+            <button
+              onClick={() =>
+                void sendRefusedReport({
+                  app: `Basalt Host ${update.version}`,
+                  system: view.status.platform === 'linux' ? 'Linux' : 'Windows',
+                  offered: update.available?.version ?? update.outcome?.version,
+                  why: stage.kind === 'failed' ? stage.why : update.outcome!.message,
+                })
+              }
+              className={cn(
+                'flex items-center gap-1.5 rounded-md border border-white/[0.1] px-3 py-1.5 text-textDim transition-colors hover:text-text',
+                phone ? 'text-[13px]' : 'text-[11.5px]',
+              )}
+            >
+              <Mail size={phone ? 14 : 12} />
+              Report this to Basalt’s publisher
+            </button>
+          </div>
         )}
         {update.canInstall && (
           <Toggle

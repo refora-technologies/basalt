@@ -1415,7 +1415,13 @@ async fn download_update(app: tauri::AppHandle, release: basalt_update::Release)
     })
     .await
     .map_err(|e| UiError {
-        kind: "error".into(),
+        // Refused for its signature: the page offers to report it.
+        kind: match e {
+            basalt_update::UpdateError::Unsigned | basalt_update::UpdateError::BadSignature => {
+                "unsigned".into()
+            }
+            _ => "error".into(),
+        },
         message: e.to_string(),
     })?;
 

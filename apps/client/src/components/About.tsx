@@ -27,6 +27,7 @@ import {
 import { isAndroid, isLinuxDesktop, isTv } from '@/lib/platform'
 import { checkForUpdate, offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
 import { cn } from '@/lib/utils'
+import { sendRefusedReport } from '@/lib/refusedReport'
 
 /** The computer this copy runs on, as the card names it. */
 const DESKTOP = isLinuxDesktop() ? 'Linux' : 'Windows'
@@ -113,7 +114,7 @@ export function About({ product }: { product: string }): React.JSX.Element {
         </button>
       </div>
 
-      <Status state={state} />
+      <Status state={state} installed={installed} />
 
       <HostBlock phone={phone} />
 
@@ -160,7 +161,13 @@ export function About({ product }: { product: string }): React.JSX.Element {
 }
 
 /** One line on where updates stand; an offered one opens "What's new". */
-function Status({ state }: { state: UpdateState }): React.JSX.Element | null {
+function Status({
+  state,
+  installed,
+}: {
+  state: UpdateState
+  installed: Installed | null
+}): React.JSX.Element | null {
   if (offered(state)) {
     const { version } = state.release
     const label =
@@ -195,10 +202,29 @@ function Status({ state }: { state: UpdateState }): React.JSX.Element | null {
     )
   }
   if (state.kind === 'failed') {
+    const refused = state.refused
     return (
-      <Line icon={<AlertCircle size={12} className="text-danger" />} danger>
-        {state.why}
-      </Line>
+      <>
+        <Line icon={<AlertCircle size={12} className="text-danger" />} danger>
+          {state.why}
+        </Line>
+        {refused && (
+          <button
+            onClick={() =>
+              void sendRefusedReport({
+                app: `Basalt ${installed?.version ?? ''}`.trim(),
+                system: installed?.device ?? '',
+                offered: refused.offered,
+                why: state.why,
+              })
+            }
+            className="mt-2 flex items-center gap-1.5 rounded-md border border-white/[0.1] px-3 py-1.5 text-[12px] text-textDim transition-colors hover:text-text"
+          >
+            <Mail size={13} />
+            Report this to Basalt’s publisher
+          </button>
+        )}
+      </>
     )
   }
   return null

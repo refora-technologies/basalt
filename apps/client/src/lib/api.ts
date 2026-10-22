@@ -406,6 +406,8 @@ export type ErrorKind =
   /** A profile sign-in the host has ended. */
   | 'signedout'
   | 'unsupported'
+  /** An update refused because it isn't signed with Basalt's release key. */
+  | 'unsigned'
   | 'error'
 
 /** Whether something ended because the person cancelled it. */

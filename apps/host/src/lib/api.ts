@@ -296,11 +296,12 @@ export interface UpdateView {
     | { kind: 'checking' }
     | { kind: 'downloading'; percent: number }
     | { kind: 'installing' }
-    | { kind: 'failed'; why: string }
+    /** `refused`: for its signature, which the window offers to report. */
+    | { kind: 'failed'; why: string; refused?: boolean }
   checkedAt: number | null
   /** What to run, where the host cannot update itself. */
   command: string | null
-  outcome: { version: string; ok: boolean; message: string; at: number } | null
+  outcome: { version: string; ok: boolean; message: string; at: number; refused?: boolean } | null
 }
 
 export const api = {

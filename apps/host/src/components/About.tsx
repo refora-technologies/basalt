@@ -4,6 +4,7 @@ import { inTauri, type HostStatus, type UpdateView } from '@/lib/api'
 import { parseNotes } from '@/lib/notes'
 import { checkForUpdate, installUpdate, moving, progressLabel, setAutomaticUpdates, useUpdate } from '@/lib/updates'
 import { cn } from '@/lib/utils'
+import { refusedReport } from '@/lib/refusedReport'
 import { Switch } from './ui/Switch'
 
 export const WEBSITE = 'https://basalt.reforatech.com'
@@ -60,6 +61,14 @@ export function About({
               <Line icon={<AlertCircle size={12} className="text-danger" />} danger>
                 {view.stage.why}
               </Line>
+            )}
+            {view.stage.kind === 'failed' && view.stage.refused && (
+              <ReportRefused
+                app={`${product} ${view.version}`}
+                system={platform === 'linux' ? 'Linux' : platform === 'macos' ? 'macOS' : 'Windows'}
+                offered={view.available?.version}
+                why={view.stage.why}
+              />
             )}
             {view.available ? (
               <Offer view={view} />
@@ -267,6 +276,22 @@ function Row({
       <span className="shrink-0 text-textFaint">{icon}</span>
       <span className="min-w-0 flex-1">{children}</span>
       <ChevronRight size={14} className="shrink-0 text-textFaint" />
+    </button>
+  )
+}
+
+/**
+ * Offers to tell Refora about an update refused for its signature, from the
+ * person's own email: someone may have put up a release that isn't Refora's.
+ */
+function ReportRefused(props: { app: string; system: string; offered?: string; why: string }): React.JSX.Element {
+  return (
+    <button
+      onClick={() => void openExternal(refusedReport(props).mailto)}
+      className="mt-2 flex items-center gap-1.5 rounded-md border border-line bg-ink2 px-3 py-1.5 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text"
+    >
+      <Mail size={12} />
+      Report this to Basalt’s publisher
     </button>
   )
 }
