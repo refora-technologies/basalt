@@ -1835,6 +1835,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
             ) : isMedia ? (
               <LibraryView
                 kind={nav === 'movies' ? 'film' : 'series'}
+                mediaBase={mediaBase}
                 items={mediaItems}
                 enabled={media.enabled}
                 known={media.known}

@@ -1428,6 +1428,7 @@ function LibraryScreen({
       <div className="h-full">
         <LibraryView
           kind={section === 'movies' ? 'film' : 'series'}
+          mediaBase={mediaBase}
           items={mediaItems}
           enabled={media.enabled}
           known={media.known}
