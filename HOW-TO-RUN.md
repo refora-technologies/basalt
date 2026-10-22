@@ -2,8 +2,8 @@
 
 Two programs. **Basalt Host** runs on the computer with the drive: Windows, a
 Linux desktop, a Linux computer with no screen, or Docker on a NAS. **Basalt**
-runs on every phone, tablet and computer that opens it: Windows and Android
-today, Linux soon.
+runs on every phone, tablet, TV and computer that opens it: Windows, Linux,
+Android phones and tablets, and Android TV and Google TV.
 
 There is no address to type. Devices find the host on your network by
 themselves, and keep finding it when the router hands out a new address.
@@ -21,6 +21,8 @@ The step-by-step guides are in the docs, at
 | Run the host with no screen | [Basalt Host with no screen](https://basalt.reforatech.com/docs/host/linux-server/), and [`packaging/linux/README.md`](packaging/linux/README.md) |
 | Run the host in Docker | [Basalt Host in Docker](https://basalt.reforatech.com/docs/host/docker/), and [`docker/README.md`](docker/README.md) |
 | Pair a phone or computer | [Pairing a device](https://basalt.reforatech.com/docs/use/pairing/) |
+| Use Basalt on Linux | [Basalt on Linux](https://basalt.reforatech.com/docs/apps/linux/) |
+| Use Basalt on a TV | [Basalt on a TV](https://basalt.reforatech.com/docs/apps/tv/) |
 | Fix something | [Troubleshooting](https://basalt.reforatech.com/docs/help/troubleshooting/) |
 
 ## From source
@@ -30,6 +32,11 @@ Building the apps, the Linux packages and the Docker image is described in the
 installed one; on Linux, `cargo run -p basalt-host --bin basalt-host --release -- serve` runs the
 host with no screen from the repository, with its settings in
 `~/.config/basalt/`.
+
+The Android app's TV layout can be tried without a TV: `npm run dev` in
+`apps/client` and open `http://localhost:1420/?mobile&tv`, where the arrow keys
+are the remote, Enter is OK and Escape is Back. On Android TV itself, use an
+Android TV emulator from Android Studio.
 
 ## The old benchmark harness
 

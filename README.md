@@ -1,12 +1,12 @@
 <div align="center">
   <img src="apps/client/src-tauri/icons/128x128@2x.png" alt="Basalt" width="88" />
   <h1>Basalt</h1>
-  <p><b>Your home drive, on every screen in the house.<br/>No cloud, no subscription, no account.</b></p>
+  <p><b>Your home drive, on every screen in the house.<br/>Yours, encrypted, and private by default.</b></p>
   <p>
     <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-blue?style=flat-square" alt="Windows 10/11" />
-    <img src="https://img.shields.io/badge/Linux-host-f0b400?style=flat-square" alt="Linux host" />
+    <img src="https://img.shields.io/badge/Linux-host%20%7C%20app-f0b400?style=flat-square" alt="Linux: host and app" />
     <img src="https://img.shields.io/badge/Docker-amd64%20%7C%20arm64-2496ed?style=flat-square" alt="Docker: amd64 and arm64" />
-    <img src="https://img.shields.io/badge/Android-8.0%2B-3ddc84?style=flat-square" alt="Android 8.0+" />
+    <img src="https://img.shields.io/badge/Android-8.0%2B%20%7C%20TV-3ddc84?style=flat-square" alt="Android 8.0+ and Android TV" />
     <img src="https://img.shields.io/github/license/refora-technologies/basalt?style=flat-square" alt="License" />
     <img src="https://img.shields.io/github/v/release/refora-technologies/basalt?style=flat-square" alt="Release" />
     <img src="https://img.shields.io/github/downloads/refora-technologies/basalt/total?style=flat-square" alt="Downloads" />
@@ -15,7 +15,8 @@
     <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Setup.exe"><b>Host for Windows</b></a> &nbsp;·&nbsp;
     <a href="#installation"><b>Host for Linux</b></a> &nbsp;·&nbsp;
     <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Setup.exe"><b>Basalt for Windows</b></a> &nbsp;·&nbsp;
-    <a href="https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk"><b>Basalt for Android</b></a>
+    <a href="#installation"><b>Basalt for Linux</b></a> &nbsp;·&nbsp;
+    <a href="https://play.google.com/store/apps/details?id=com.reforatech.basalt"><b>Basalt on Google Play</b></a>
   </p>
   <p>
     <a href="https://basalt.reforatech.com">basalt.reforatech.com</a> &nbsp;·&nbsp;
@@ -36,8 +37,8 @@
 **Basalt** by Refora Technologies turns one computer into a private drive for
 the whole household. **Basalt Host** runs on the computer with the drive:
 Windows or Linux, with a screen or without one, such as a home server, a NAS or
-a Raspberry Pi. **Basalt** runs everywhere else, on Windows computers and on
-Android phones, tablets and TVs. Every device browses the same files, watches the
+a Raspberry Pi. **Basalt** runs everywhere else, on Windows and Linux computers
+and on Android phones, tablets and TVs. Every device browses the same files, watches the
 same library, and picks up where the last one left off.
 
 There is nothing to configure. You choose a drive on the host; on another
@@ -150,7 +151,7 @@ and that is all it does.
 
 ### A real player
 
-- **Plays what a browser cannot.** Built on **mpv**, on Windows and Android
+- **Plays what a browser cannot.** Built on **mpv**, on Windows, Linux and Android
   alike, so HEVC, HDR, E-AC3, DTS, MKV and the rest play straight from the
   drive, with nothing downloaded first.
 - **Plays on any phone or TV.** When a device cannot keep up with a film, the host
@@ -219,7 +220,7 @@ nothing more, so more viewers cost it almost nothing.
 | Discovery | UDP beacon on the local network |
 | Desktop apps | Tauri v2, React 19, TypeScript, Tailwind, Framer Motion |
 | Android app | Tauri v2 mobile, the same React interface, a Kotlin plugin |
-| Playback and thumbnails | libmpv, on Windows and Android |
+| Playback and thumbnails | libmpv, on Windows, Linux and Android |
 | Film recognition | A bundled catalogue of film and series titles from Wikidata |
 | Integrity | BLAKE3 per transfer; updates by SHA-256, signed with Basalt's release key |
 
@@ -235,8 +236,11 @@ has a signed `SHA256SUMS`; [SECURITY.md](SECURITY.md#signed-releases) says how.
 | Download | Install on |
 |---|---|
 | **[`Basalt-Client-Setup.exe`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Setup.exe)** | Windows computers |
-| **[`Basalt-Android.apk`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk)** | Android phones, tablets and TVs (Android 8.0 or later) |
-| Basalt for Linux | Coming soon. Until then, open a Linux host's drive from Windows or Android |
+| **[`Basalt-Client-Linux-amd64.deb`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Linux-amd64.deb)** | Ubuntu 22.04 or later, Debian 12, Linux Mint 21 or later |
+| **[`Basalt-Client-Linux-x86_64.rpm`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Linux-x86_64.rpm)** | Fedora and similar |
+| **[`Basalt-Client-Linux-x86_64.AppImage`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Client-Linux-x86_64.AppImage)** | Any other Linux desktop |
+| **[Basalt on Google Play](https://play.google.com/store/apps/details?id=com.reforatech.basalt)** | Android phones, tablets, Android TV and Google TV (Android 8.0 or later) |
+| **[`Basalt-Android.apk`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Android.apk)** | The same Android app, for devices without Google Play, such as Fire TV |
 
 **Basalt Host**, on the computer with the drive:
 
@@ -270,9 +274,16 @@ checks.
 The Windows installers install per user and need no administrator rights. They
 update an existing installation in place and keep its pairing and settings.
 
-The Android app is not on the Play Store yet. Open the `.apk` on the phone and
-allow your browser or file manager to install it when Android asks; that
-permission is only for installing, and can be turned off again afterwards.
+On Android, Google Play installs Basalt and keeps it up to date, on phones,
+tablets and TVs alike. The `.apk` is the same app for devices without Google
+Play: open it and allow your browser or file manager to install it when Android
+asks; that permission is only for installing, and can be turned off again
+afterwards. On a Fire TV, the Downloader app fetches the `.apk` from its link.
+
+On Linux, install the `.deb` or `.rpm` with your package manager, for example
+`sudo apt install ./Basalt-Client-Linux-amd64.deb`; it updates through it too.
+The AppImage needs no installing: make it executable and open it, and it
+replaces itself when there is a new version.
 
 **Getting started:**
 

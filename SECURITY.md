@@ -72,12 +72,12 @@ support.
 
 | Version | Supported |
 |---|---|
-| 1.5.x | Yes |
+| 1.6.x | Yes |
 | Earlier | No: please update |
 
 ## In scope
 
-Basalt Host, Basalt for Windows and Android, the Linux packages, the Docker
-image, and the way they update. Problems in the components Basalt is built on
+Basalt Host, Basalt for Windows, Linux, Android and Android TV, the Linux
+packages, the Docker image, and the way they update. Problems in the components Basalt is built on
 (libmpv, FFmpeg, rustls and others) are welcome too; we will pass them on to
 their makers.

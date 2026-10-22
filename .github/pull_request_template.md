@@ -4,7 +4,7 @@
 
 ## How it was tested
 
-<!-- What you ran or tried, and on what: Windows, Linux desktop, Linux with no screen, Docker, Android. -->
+<!-- What you ran or tried, and on what: Windows, Linux desktop, Linux with no screen, Docker, an Android phone, Android TV. -->
 
 ## Checklist
 
