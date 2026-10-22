@@ -1037,6 +1037,11 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
           }),
         )
       }
+      // `?update&unsigned`: the release is refused for its signature, to
+      // see what the app says and its offer to report it.
+      if (previewFlag('unsigned')) {
+        throw new ApiError('unsigned', "this release is not signed with Basalt's release key, so it was not downloaded")
+      }
       return `C:\\Users\\preview\\Downloads\\${release.installerName}` as T
     }
     case 'install_update':
