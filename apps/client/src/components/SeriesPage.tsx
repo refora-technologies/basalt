@@ -75,7 +75,8 @@ function SeriesBody(props: SeriesProps): React.JSX.Element {
 
   return (
     <div className="h-full overflow-y-auto overflow-x-hidden pb-16" onMouseDown={(e) => e.stopPropagation()}>
-      <div className={cn('relative', wide ? 'h-[210px]' : 'h-[150px]')}>
+      {/* Tall enough on a phone that Back sits clear above the poster. */}
+      <div className={cn('relative', wide ? 'h-[210px]' : 'h-[190px]')}>
         <Picture src={backdrop} className="absolute inset-0 h-full w-full object-cover" />
         <div className="absolute inset-0 bg-gradient-to-t from-ink to-ink/20" />
         <Page p={p} className="relative">
@@ -397,9 +398,14 @@ function Still({
         // Seen to the end: darker, with watching it again in the middle.
         <>
           <span className="absolute inset-0 flex items-center justify-center bg-black/45 transition-colors group-hover:bg-black/30">
-            <RotateCcw size={small ? 22 : 30} strokeWidth={2.25} className="text-white drop-shadow" />
+            <RotateCcw size={small ? 18 : 30} strokeWidth={2.25} className="text-white drop-shadow" />
           </span>
-          <span className="absolute bottom-1.5 right-1.5 rounded-[3px] bg-black/80 px-1.5 py-0.5 text-[10.5px] font-semibold text-white">
+          <span
+            className={cn(
+              'absolute rounded-[3px] bg-black/80 font-semibold text-white',
+              small ? 'bottom-1 right-1 px-1 py-px text-[9px]' : 'bottom-1.5 right-1.5 px-1.5 py-0.5 text-[10.5px]',
+            )}
+          >
             Watched
           </span>
         </>
