@@ -19,7 +19,7 @@ manifest once the next release is out.
 import pathlib
 import sys
 
-SCHEMA = "1.9.0"
+SCHEMA = "1.12.0"
 REPO = "https://github.com/refora-technologies/basalt"
 SITE = "https://basalt.reforatech.com"
 
