@@ -2,8 +2,10 @@
 
     python packaging/winget/make-manifests.py VERSION RELEASE_DIR OUT_DIR
 
-RELEASE_DIR holds the release's files as published (Basalt-Client-Setup.exe,
-Basalt-Host-Setup.exe and the .sha256 beside each). OUT_DIR gets the layout
+RELEASE_DIR holds the release's signed SHA256SUMS, as published; the digests
+come from it, so the installers themselves need not be there. Check its
+signature first (`cargo run -q -p release-sign -- verify RELEASE_DIR/SHA256SUMS`).
+OUT_DIR gets the layout
 microsoft/winget-pkgs expects:
 
     manifests/r/ReforaTechnologies/Basalt/VERSION/*.yaml
@@ -57,11 +59,14 @@ PACKAGES = [
 
 
 def digest(release_dir: pathlib.Path, name: str) -> str:
-    text = (release_dir / f"{name}.sha256").read_text(encoding="utf-8")
-    token = text.split()[0].lstrip("*")
-    if len(token) != 64:
-        sys.exit(f"{name}.sha256 holds no digest")
-    return token.upper()
+    """The installer's digest from the release's signed SHA256SUMS."""
+    for line in (release_dir / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+        if line.startswith("untrusted comment:"):
+            break  # the signature follows the list
+        parts = line.split()
+        if len(parts) == 2 and parts[1].lstrip("*") == name and len(parts[0]) == 64:
+            return parts[0].upper()
+    sys.exit(f"SHA256SUMS lists no {name}")
 
 
 def quoted(text: str) -> str:
