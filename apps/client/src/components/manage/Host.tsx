@@ -141,6 +141,18 @@ export function HostHero(tools: Tools): React.JSX.Element {
                 <div className="tnum mt-2 font-mono text-[11.5px] text-textFaint">
                   {formatBytes(vault.free)} free of {formatBytes(vault.total)}
                 </div>
+                {view.cannotAddFiles && (
+                  <p
+                    className={cn(
+                      'mt-3 flex items-start gap-2 leading-snug text-danger',
+                      phone ? 'text-[12.5px]' : 'text-[11.5px]',
+                    )}
+                  >
+                    <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                    Basalt Host can’t add files here, so uploads and changes are refused. On the
+                    host’s computer, give the user it runs as permission to change this folder.
+                  </p>
+                )}
               </>
             )
           ) : (

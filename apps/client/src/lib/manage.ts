@@ -165,6 +165,11 @@ export interface ManageView {
   profileLinks?: ProfileLinkRequest[]
   /** Its version and updates. Absent from hosts before 1.5. */
   update?: HostUpdate
+  /**
+   * The host can read its folder but not add files to it, so uploads and
+   * changes are refused. Absent from hosts before 1.6.3.
+   */
+  cannotAddFiles?: boolean
 }
 
 /** Mirrors `basalt_host::updates::UpdateView`. */
