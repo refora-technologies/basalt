@@ -882,6 +882,63 @@ pub struct MusicTrack {
     pub cover: bool,
 }
 
+/// A profile's own music: its playlists and where it was listening. Kept on
+/// the host so they are the same on every device; a device used without a
+/// profile keeps its own, as it does its stars.
+///
+/// Each part present in a request replaces the host's copy; absent, it is
+/// only read.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicMineRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlists: Option<Vec<Playlist>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listening: Option<Listening>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MusicMine {
+    pub playlists: Vec<Playlist>,
+    /// Absent until something has been played.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listening: Option<Listening>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Playlist {
+    /// Made by the device that made the playlist; never reused.
+    pub id: String,
+    pub name: String,
+    /// The songs, vault-relative, in the order they play.
+    pub songs: Vec<String>,
+    /// Unix seconds.
+    pub created: i64,
+    pub updated: i64,
+}
+
+/// What was playing, so it carries on from any device.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Listening {
+    /// The songs queued, vault-relative, in playing order.
+    pub queue: Vec<String>,
+    /// Which of them was playing.
+    pub index: u32,
+    /// Seconds into it.
+    pub position: f64,
+    pub shuffle: bool,
+    /// `off`, `all` or `one`.
+    pub repeat: String,
+    /// What it was playing from, as the device that started it named it: an
+    /// album, an artist, a playlist, Liked Songs.
+    pub from: String,
+    /// Unix seconds.
+    pub updated: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Profiles
 // ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use basalt_proto::msg::{MediaFile, MusicTrack};
+use basalt_proto::msg::{Listening, MediaFile, MusicMine, MusicMineRequest, MusicTrack, Playlist};
 use lofty::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -191,6 +191,84 @@ pub fn folder_cover(song: &Path) -> Option<PathBuf> {
     pictures.into_iter().next().map(|(_, path)| path)
 }
 
+/// Playlists one profile may keep on a drive.
+pub const MAX_PLAYLISTS: usize = 500;
+/// Songs in one playlist, and in what was playing.
+pub const MAX_SONGS: usize = 10_000;
+/// The longest name a playlist keeps.
+const MAX_NAME: usize = 100;
+/// The longest path kept: anything longer is not a path on this drive.
+const MAX_PATH: usize = 1024;
+
+/// Every profile's own music on one drive, by profile id.
+pub type Mine = HashMap<String, MusicMine>;
+
+/// Where a drive's playlists and listening are kept.
+pub fn mine_path(config_dir: &Path, vault_root: &Path) -> PathBuf {
+    let key = blake3::hash(vault_root.to_string_lossy().as_bytes()).to_hex();
+    config_dir.join(format!("music-mine-{}.json", &key[..16]))
+}
+
+pub fn load_mine(path: &Path) -> Mine {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_mine(path: &Path, mine: &Mine) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(
+        &tmp,
+        serde_json::to_vec(mine).map_err(std::io::Error::other)?,
+    )?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Applies a request to one profile's music and returns what it has now.
+/// Anything past the limits is cut off rather than refused, so a device
+/// with a long playlist still saves the rest of it.
+pub fn apply(mine: &mut Mine, profile: &str, request: MusicMineRequest) -> MusicMine {
+    let entry = mine.entry(profile.to_string()).or_default();
+    if let Some(playlists) = request.playlists {
+        entry.playlists = playlists
+            .into_iter()
+            .filter(|p| !p.id.trim().is_empty())
+            .take(MAX_PLAYLISTS)
+            .map(|p| Playlist {
+                name: p.name.trim().chars().take(MAX_NAME).collect(),
+                songs: kept_paths(p.songs),
+                ..p
+            })
+            .collect();
+    }
+    if let Some(listening) = request.listening {
+        let queue = kept_paths(listening.queue);
+        let index = listening.index.min(queue.len().saturating_sub(1) as u32);
+        let repeat = match listening.repeat.as_str() {
+            "all" | "one" => listening.repeat,
+            _ => "off".to_string(),
+        };
+        entry.listening = (!queue.is_empty()).then(|| Listening {
+            queue,
+            index,
+            position: listening.position.max(0.0),
+            repeat,
+            from: listening.from.chars().take(MAX_NAME).collect(),
+            ..listening
+        });
+    }
+    entry.clone()
+}
+
+fn kept_paths(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|p| !p.is_empty() && p.len() <= MAX_PATH)
+        .take(MAX_SONGS)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +300,61 @@ mod tests {
             width: None,
             height: None,
         }
+    }
+
+    #[test]
+    fn a_profiles_playlists_and_listening_are_kept_and_tidied() {
+        let mut mine = Mine::new();
+        let asked = MusicMineRequest {
+            playlists: Some(vec![
+                Playlist {
+                    id: "p1".into(),
+                    name: "  Road trip  ".into(),
+                    songs: vec!["a.mp3".into(), String::new(), "b.mp3".into()],
+                    created: 1,
+                    updated: 2,
+                },
+                Playlist {
+                    id: " ".into(),
+                    ..Playlist::default()
+                },
+            ]),
+            listening: Some(Listening {
+                queue: vec!["a.mp3".into(), "b.mp3".into()],
+                index: 9,
+                position: -3.0,
+                repeat: "sideways".into(),
+                ..Listening::default()
+            }),
+        };
+        let now = apply(&mut mine, "maya", asked);
+        assert_eq!(now.playlists.len(), 1);
+        assert_eq!(now.playlists[0].name, "Road trip");
+        assert_eq!(now.playlists[0].songs, ["a.mp3", "b.mp3"]);
+        let listening = now.listening.unwrap();
+        assert_eq!((listening.index, listening.position), (1, 0.0));
+        assert_eq!(listening.repeat, "off");
+
+        // Asking without changes reads; another profile has its own.
+        let read = apply(&mut mine, "maya", MusicMineRequest::default());
+        assert_eq!(read.playlists.len(), 1);
+        assert!(
+            apply(&mut mine, "sam", MusicMineRequest::default())
+                .playlists
+                .is_empty()
+        );
+
+        // An empty queue clears what was playing.
+        let cleared = apply(
+            &mut mine,
+            "maya",
+            MusicMineRequest {
+                listening: Some(Listening::default()),
+                ..MusicMineRequest::default()
+            },
+        );
+        assert!(cleared.listening.is_none());
+        assert_eq!(cleared.playlists.len(), 1);
     }
 
     #[test]

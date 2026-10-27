@@ -640,6 +640,15 @@ async fn music(
     Ok(state.client.music(known_revision).await?)
 }
 
+/// The profile's playlists and where it was listening, kept on the host.
+#[tauri::command]
+async fn music_mine(
+    state: State<'_, AppState>,
+    request: basalt_proto::msg::MusicMineRequest,
+) -> Answer<basalt_proto::msg::MusicMine> {
+    Ok(state.client.music_mine(request).await?)
+}
+
 /// The start of every media URL; a percent-encoded vault path goes on the end,
 /// and `?thumb=320` makes it a thumbnail.
 #[tauri::command]
@@ -1718,6 +1727,7 @@ pub fn run() {
             media_base,
             collections,
             music,
+            music_mine,
             identity,
             profiles,
             manage,

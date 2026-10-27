@@ -378,6 +378,35 @@ export interface MusicResponse {
   tracks?: MusicTrack[] | null
 }
 
+/** A playlist, kept on the host for a profile. Mirrors `basalt_proto::msg::Playlist`. */
+export interface Playlist {
+  id: string
+  name: string
+  /** Vault paths, in playing order. */
+  songs: string[]
+  /** Unix seconds. */
+  created: number
+  updated: number
+}
+
+/** What was playing, to carry on from any device. Mirrors `basalt_proto::msg::Listening`. */
+export interface Listening {
+  queue: string[]
+  index: number
+  /** Seconds into the song. */
+  position: number
+  shuffle: boolean
+  repeat: 'off' | 'all' | 'one'
+  /** What it played from, as named when it started: an album, a playlist. */
+  from: string
+  updated: number
+}
+
+export interface MusicMine {
+  playlists: Playlist[]
+  listening?: Listening | null
+}
+
 /** Below this, a match is a guess worth showing the user. Mirrors the Rust. */
 export const CONFIDENT = 70
 
@@ -604,6 +633,12 @@ export const api = {
     call<CollectionsResponse>('collections', { knownRevision }),
   /** Songs with tags. Throws on a host before 1.6.3, which does not know it. */
   music: (knownRevision: number) => call<MusicResponse>('music', { knownRevision }),
+  /**
+   * The profile's playlists and listening; each part given replaces the
+   * host's. Throws without a profile, and on a host before 1.6.3.
+   */
+  musicMine: (request: { playlists?: Playlist[]; listening?: Listening }) =>
+    call<MusicMine>('music_mine', { request }),
   /** The start of every media URL. A percent-encoded path goes on the end. */
   mediaBase: () => call<string>('media_base'),
   /** Poster bytes for one item, as a data URL the interface can hand to an
@@ -1289,6 +1324,12 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
         reading: false,
         tracks: args?.knownRevision === 1 ? null : showcase.music(),
       } as T
+    case 'music_mine': {
+      const request = (args?.request ?? {}) as { playlists?: Playlist[]; listening?: Listening }
+      if (request.playlists) mockMusicMine.playlists = request.playlists
+      if (request.listening) mockMusicMine.listening = request.listening
+      return mockMusicMine as T
+    }
     case 'make_dir':
     case 'rename_entry':
     case 'remove_entry':
@@ -1319,6 +1360,15 @@ const mockProfiles: ProfileView[] = [
     : []),
 ]
 const mockPins = showcase.pins()
+/** The browser preview's playlists and listening, as a host would keep them. */
+const mockMusicMine: MusicMine = {
+  playlists: [
+    { id: 'p-road', name: 'Road trip', songs: [], created: 0, updated: 0 },
+    { id: 'p-sunday', name: 'Sunday morning', songs: [], created: 0, updated: 0 },
+  ],
+  listening: null,
+}
+
 let mockProfileStars: Star[] = []
 /**
  * The preview's rules: `?private` for a private drive, or `?requireProfile`

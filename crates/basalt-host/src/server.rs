@@ -80,6 +80,8 @@ pub struct Host {
     /// A refresh of the music is under way; another was asked for meanwhile.
     music_reading: std::sync::atomic::AtomicBool,
     music_again: std::sync::atomic::AtomicBool,
+    /// Each profile's playlists and listening on this drive.
+    music_mine: std::sync::Mutex<crate::media::music::Mine>,
     /// Thumbnails being made at once. Two: a grid scrolled quickly asks for
     /// dozens, and making them all together would starve everything else the
     /// host is doing — a film being streamed, most of all.
@@ -178,6 +180,13 @@ impl Host {
             )),
             None => crate::media::music::Stored::default(),
         };
+        let music_mine = match &config.vault_path {
+            Some(root) => crate::media::music::load_mine(&crate::media::music::mine_path(
+                config_path.parent().unwrap_or(std::path::Path::new(".")),
+                root,
+            )),
+            None => crate::media::music::Mine::default(),
+        };
 
         let config_dir = config_path
             .parent()
@@ -274,6 +283,7 @@ impl Host {
             music: std::sync::Mutex::new(music),
             music_reading: std::sync::atomic::AtomicBool::new(false),
             music_again: std::sync::atomic::AtomicBool::new(false),
+            music_mine: std::sync::Mutex::new(music_mine),
             thumb_gate: tokio::sync::Semaphore::new(2),
             thumbs_written: std::sync::atomic::AtomicUsize::new(0),
             measured: std::sync::Mutex::new(measured),
@@ -549,6 +559,27 @@ impl Host {
         }
         self.announce(basalt_proto::msg::Change::LibraryChanged)
             .await;
+    }
+
+    /// One profile's playlists and listening, changed as asked and saved.
+    pub fn music_mine(
+        &self,
+        profile: &str,
+        request: basalt_proto::msg::MusicMineRequest,
+    ) -> basalt_proto::msg::MusicMine {
+        let changes = request.playlists.is_some() || request.listening.is_some();
+        let (now, snapshot) = {
+            let mut mine = self.music_mine.lock().expect("music mine lock");
+            let now = crate::media::music::apply(&mut mine, profile, request);
+            (now, changes.then(|| mine.clone()))
+        };
+        if let (Some(snapshot), Some(root)) = (snapshot, self.vault_path()) {
+            let path = crate::media::music::mine_path(self.config_dir(), &root);
+            if let Err(e) = crate::media::music::save_mine(&path, &snapshot) {
+                tracing::warn!("could not save the playlists: {e}");
+            }
+        }
+        now
     }
 
     fn collections_path(&self) -> Option<std::path::PathBuf> {
@@ -2100,6 +2131,9 @@ impl Host {
         );
         *self.music.lock().expect("music lock") = crate::media::music::Stored::load(
             &crate::media::music::stored_path(self.config_dir(), &root),
+        );
+        *self.music_mine.lock().expect("music mine lock") = crate::media::music::load_mine(
+            &crate::media::music::mine_path(self.config_dir(), &root),
         );
         *self.measured.lock().expect("measured lock") = crate::media::quality::Measured::load(
             &crate::media::quality::Measured::path_for(self.config_dir(), &root),
@@ -4121,6 +4155,16 @@ where
         Op::Collections => {
             let req: basalt_proto::msg::CollectionsRequest = decode(payload).unwrap_or_default();
             reply(stream, &host.collections_response(req.known_revision)).await?;
+        }
+
+        Op::MusicMine => {
+            let req: basalt_proto::msg::MusicMineRequest = decode(payload).unwrap_or_default();
+            // A device on its own keeps its playlists itself, as it does stars.
+            host.check_profile(session)?;
+            let profile = session.profile.clone().map(|(id, _)| id).ok_or_else(|| {
+                HostError::Denied("playlists are kept on the host for profiles only".into())
+            })?;
+            reply(stream, &host.music_mine(&profile, req)).await?;
         }
 
         Op::Music => {

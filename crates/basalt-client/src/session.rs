@@ -836,6 +836,17 @@ impl Session {
         .map_err(Into::into)
     }
 
+    /// The profile's playlists and listening; each part given replaces the
+    /// host's copy.
+    pub async fn music_mine(
+        &mut self,
+        request: &basalt_proto::msg::MusicMineRequest,
+    ) -> Result<basalt_proto::msg::MusicMine> {
+        call_json(&mut self.stream, Op::MusicMine, request)
+            .await
+            .map_err(Into::into)
+    }
+
     /// A preview image of a video or photo, as JPEG bytes.
     pub async fn thumbnail(&mut self, path: &str, size: u32) -> Result<Vec<u8>> {
         write_request(

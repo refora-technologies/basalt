@@ -1663,6 +1663,18 @@ impl Basalt {
         lease.check(result)
     }
 
+    /// The profile's playlists and where it was listening, kept on the
+    /// host. Refused without a profile, and by a host before 1.6.3.
+    pub async fn music_mine(
+        &self,
+        request: basalt_proto::msg::MusicMineRequest,
+    ) -> Result<basalt_proto::msg::MusicMine> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.music_mine(&request).await;
+        lease.check(result)
+    }
+
     /// A preview image of a video or photo, made by the host. JPEG.
     pub async fn thumbnail(&self, path: &str, size: u32) -> Result<Vec<u8>> {
         let pool = self.pool().await?;
