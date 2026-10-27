@@ -350,6 +350,34 @@ export interface CollectionsResponse {
   collections?: Collections | null
 }
 
+/** One song, as its tags describe it. Mirrors `basalt_proto::msg::MusicTrack`. */
+export interface MusicTrack {
+  path: string
+  size: number
+  /** Unix seconds. */
+  mtime: number
+  title?: string | null
+  artist?: string | null
+  /** Who the album is by: groups a compilation into one album. */
+  albumArtist?: string | null
+  album?: string | null
+  track?: number | null
+  disc?: number | null
+  year?: number | null
+  genre?: string | null
+  durationMs?: number | null
+  /** The host has a cover for it: ask for its thumbnail. */
+  cover: boolean
+}
+
+export interface MusicResponse {
+  revision: number
+  /** The host is still reading the tags of songs it found. */
+  reading: boolean
+  /** Absent when the revision asked for is still current. */
+  tracks?: MusicTrack[] | null
+}
+
 /** Below this, a match is a guess worth showing the user. Mirrors the Rust. */
 export const CONFIDENT = 70
 
@@ -574,6 +602,8 @@ export const api = {
   /** Every video, song and photo on the drive, sorted by the host. */
   collections: (knownRevision: number) =>
     call<CollectionsResponse>('collections', { knownRevision }),
+  /** Songs with tags. Throws on a host before 1.6.3, which does not know it. */
+  music: (knownRevision: number) => call<MusicResponse>('music', { knownRevision }),
   /** The start of every media URL. A percent-encoded path goes on the end. */
   mediaBase: () => call<string>('media_base'),
   /** Poster bytes for one item, as a data URL the interface can hand to an
@@ -1252,6 +1282,12 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
         revision: 1,
         scanning: false,
         collections: args?.knownRevision === 1 ? null : showcase.collections(),
+      } as T
+    case 'music':
+      return {
+        revision: 1,
+        reading: false,
+        tracks: args?.knownRevision === 1 ? null : showcase.music(),
       } as T
     case 'make_dir':
     case 'rename_entry':

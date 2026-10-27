@@ -631,6 +631,15 @@ async fn collections(
     Ok(state.client.collections(known_revision).await?)
 }
 
+/// Every song on the drive with its tags, read by the host.
+#[tauri::command]
+async fn music(
+    state: State<'_, AppState>,
+    known_revision: u64,
+) -> Answer<basalt_proto::msg::MusicResponse> {
+    Ok(state.client.music(known_revision).await?)
+}
+
 /// The start of every media URL; a percent-encoded vault path goes on the end,
 /// and `?thumb=320` makes it a thumbnail.
 #[tauri::command]
@@ -1708,6 +1717,7 @@ pub fn run() {
             media_url,
             media_base,
             collections,
+            music,
             identity,
             profiles,
             manage,

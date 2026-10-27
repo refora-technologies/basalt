@@ -1654,6 +1654,15 @@ impl Basalt {
         lease.check(result)
     }
 
+    /// Every song on the drive with its tags, read by the host. A host
+    /// before 1.6.3 does not know the request and answers with an error.
+    pub async fn music(&self, known_revision: u64) -> Result<basalt_proto::msg::MusicResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.music(known_revision).await;
+        lease.check(result)
+    }
+
     /// A preview image of a video or photo, made by the host. JPEG.
     pub async fn thumbnail(&self, path: &str, size: u32) -> Result<Vec<u8>> {
         let pool = self.pool().await?;

@@ -824,6 +824,18 @@ impl Session {
         .map_err(Into::into)
     }
 
+    /// Every song on the drive with its tags, unless the host's copy still
+    /// matches `known_revision`.
+    pub async fn music(&mut self, known_revision: u64) -> Result<basalt_proto::msg::MusicResponse> {
+        call_json(
+            &mut self.stream,
+            Op::Music,
+            &basalt_proto::msg::MusicRequest { known_revision },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
     /// A preview image of a video or photo, as JPEG bytes.
     pub async fn thumbnail(&mut self, path: &str, size: u32) -> Result<Vec<u8>> {
         write_request(
