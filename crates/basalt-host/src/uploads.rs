@@ -30,7 +30,7 @@ use basalt_proto::hex;
 use basalt_proto::msg::UPLOAD_ID_BYTES;
 use tokio::io::AsyncWriteExt;
 
-use crate::error::{HostError, Result, from_io};
+use crate::error::{HostError, Result, from_io_write};
 use crate::vault::Vault;
 
 /// One upload the host is holding open.
@@ -127,7 +127,7 @@ impl Uploads {
             Err(_) => {
                 tokio::fs::File::create(&temp)
                     .await
-                    .map_err(|e| from_io(rel, e))?;
+                    .map_err(|e| from_io_write(rel, e))?;
                 0
             }
         };
@@ -148,7 +148,7 @@ impl Uploads {
             tokio::task::spawn_blocking(move || hasher_of(&partial))
                 .await
                 .map_err(|e| HostError::BadRequest(format!("hashing failed: {e}")))?
-                .map_err(|e| from_io(rel, e))?
+                .map_err(|e| from_io_write(rel, e))?
         } else {
             blake3::Hasher::new()
         };
@@ -156,7 +156,7 @@ impl Uploads {
             .append(true)
             .open(&temp)
             .await
-            .map_err(|e| from_io(rel, e))?;
+            .map_err(|e| from_io_write(rel, e))?;
 
         let slot = Arc::new(tokio::sync::Mutex::new(Open {
             upload: Upload {
@@ -226,10 +226,12 @@ impl Uploads {
         };
         file.write_all(data)
             .await
-            .map_err(|e| from_io(&upload.rel, e))?;
+            .map_err(|e| from_io_write(&upload.rel, e))?;
         // Flushed per chunk so a failed write is reported against the chunk
         // that failed, rather than surfacing on whichever comes next.
-        file.flush().await.map_err(|e| from_io(&upload.rel, e))?;
+        file.flush()
+            .await
+            .map_err(|e| from_io_write(&upload.rel, e))?;
         hasher.update(data);
 
         upload.received += data.len() as u64;
@@ -262,7 +264,7 @@ impl Uploads {
             drop(file);
             if let Err(e) = flushed {
                 tokio::fs::remove_file(&upload.temp).await.ok();
-                return Err(from_io(&upload.rel, e));
+                return Err(from_io_write(&upload.rel, e));
             }
         }
 
@@ -307,7 +309,7 @@ impl Uploads {
         // rather than leaving a `.part` on the drive that the listing hides.
         if let Err(e) = tokio::fs::rename(&upload.temp, &upload.target).await {
             tokio::fs::remove_file(&upload.temp).await.ok();
-            return Err(from_io(&upload.rel, e));
+            return Err(from_io_write(&upload.rel, e));
         }
 
         if let Some(seconds) = mtime {

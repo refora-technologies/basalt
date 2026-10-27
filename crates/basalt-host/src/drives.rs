@@ -275,6 +275,55 @@ pub fn is_available(path: &Path) -> bool {
     std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false)
 }
 
+/// Beside the config: whether the host could add files to the folder it
+/// shares, last it looked. Written by the running host, read by
+/// `basalt-host status`, which runs as another user and so cannot look for
+/// itself.
+pub const WRITE_CHECK_FILE: &str = "drive-check.json";
+
+/// What the host found when it last tried to add a file to its folder.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteCheck {
+    /// The folder looked at.
+    pub path: std::path::PathBuf,
+    pub writable: bool,
+}
+
+/// Whether this process can add a file to `folder`: one is made and removed.
+///
+/// Asked of the folder itself, not worked out from its permission bits,
+/// which say nothing of ACLs, read-only mounts, Docker's user or Windows.
+/// A host that can read its folder and not write to it lists and plays
+/// everything, and only an upload or a new folder says otherwise.
+pub fn can_write(folder: &Path) -> bool {
+    let probe = folder.join(format!(".basalt-write-check-{}", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(file) => {
+            drop(file);
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        // Left over from a check that was cut short: it was written then.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// The last check written beside `config_path`, if there is one.
+pub fn read_write_check(config_path: &Path) -> Option<WriteCheck> {
+    let dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let text = std::fs::read_to_string(dir.join(WRITE_CHECK_FILE)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 /// What a device sees when it browses the host's folders to share one.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -468,6 +517,54 @@ fn wide(text: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder of its own for one test, removed after it.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("basalt-drives-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_folder_that_takes_files_is_writable_and_is_left_as_it_was() {
+        let dir = Scratch::new("writable");
+        assert!(can_write(dir.path()));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_folder_that_is_not_there_is_not_writable() {
+        let dir = Scratch::new("missing");
+        assert!(!can_write(&dir.path().join("gone")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_the_host_may_only_read_is_not_writable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = Scratch::new("read-only");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        // root writes anyway: the check is only meaningful as anyone else.
+        let root = unsafe { libc::geteuid() } == 0;
+        assert_eq!(can_write(dir.path()), root);
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
 
     const MOUNTS: &str = "\
 sysfs /sys sysfs rw,nosuid 0 0

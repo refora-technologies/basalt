@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use basalt_proto::frame::sanitize_relative_path;
 use basalt_proto::msg::{DirEntry, EntryKind};
 
-use crate::error::{HostError, Result, from_io};
+use crate::error::{HostError, Result, from_io, from_io_write};
 
 /// One shared drive.
 #[derive(Debug, Clone)]
@@ -316,7 +316,7 @@ impl Vault {
         if path.exists() {
             return Err(HostError::Exists(rel.to_string()));
         }
-        std::fs::create_dir(&path).map_err(|e| from_io(rel, e))
+        std::fs::create_dir(&path).map_err(|e| from_io_write(rel, e))
     }
 
     pub fn rename(&self, from: &str, to: &str) -> Result<()> {
@@ -333,7 +333,7 @@ impl Vault {
         if target.exists() && !same_file {
             return Err(HostError::Exists(to.to_string()));
         }
-        std::fs::rename(&source, &target).map_err(|e| from_io(from, e))
+        std::fs::rename(&source, &target).map_err(|e| from_io_write(from, e))
     }
 
     /// Duplicates a file or folder inside the vault.
@@ -361,11 +361,11 @@ impl Vault {
 
         let meta = std::fs::metadata(&source).map_err(|e| from_io(from, e))?;
         if meta.is_dir() {
-            copy_tree(&source, &target).map_err(|e| from_io(from, e))
+            copy_tree(&source, &target).map_err(|e| from_io_write(from, e))
         } else {
             std::fs::copy(&source, &target)
                 .map(|_| ())
-                .map_err(|e| from_io(from, e))
+                .map_err(|e| from_io_write(from, e))
         }
     }
 
@@ -383,11 +383,11 @@ impl Vault {
 
         let meta = std::fs::metadata(&path).map_err(|e| from_io(rel, e))?;
         if !meta.is_dir() {
-            return std::fs::remove_file(&path).map_err(|e| from_io(rel, e));
+            return std::fs::remove_file(&path).map_err(|e| from_io_write(rel, e));
         }
 
         if recursive {
-            return std::fs::remove_dir_all(&path).map_err(|e| from_io(rel, e));
+            return std::fs::remove_dir_all(&path).map_err(|e| from_io_write(rel, e));
         }
         match std::fs::remove_dir(&path) {
             Ok(()) => Ok(()),
