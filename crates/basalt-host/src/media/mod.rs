@@ -11,6 +11,7 @@
 pub mod art;
 pub mod collect;
 pub mod index;
+pub mod music;
 pub mod parse;
 pub mod progress;
 pub mod quality;

@@ -75,6 +75,11 @@ pub struct Host {
     library: std::sync::Mutex<crate::media::Library>,
     /// Every video, song and photo on the drive, and the newest files.
     collections: std::sync::Mutex<crate::media::collect::Stored>,
+    /// The songs on the drive with their tags: see `media::music`.
+    music: std::sync::Mutex<crate::media::music::Stored>,
+    /// A refresh of the music is under way; another was asked for meanwhile.
+    music_reading: std::sync::atomic::AtomicBool,
+    music_again: std::sync::atomic::AtomicBool,
     /// Thumbnails being made at once. Two: a grid scrolled quickly asks for
     /// dozens, and making them all together would starve everything else the
     /// host is doing — a film being streamed, most of all.
@@ -165,6 +170,13 @@ impl Host {
                 root,
             )),
             None => crate::media::collect::Stored::default(),
+        };
+        let music = match &config.vault_path {
+            Some(root) => crate::media::music::Stored::load(&crate::media::music::stored_path(
+                config_path.parent().unwrap_or(std::path::Path::new(".")),
+                root,
+            )),
+            None => crate::media::music::Stored::default(),
         };
 
         let config_dir = config_path
@@ -259,6 +271,9 @@ impl Host {
             state_root: std::sync::Mutex::new(state_root),
             library: std::sync::Mutex::new(library),
             collections: std::sync::Mutex::new(collections),
+            music: std::sync::Mutex::new(music),
+            music_reading: std::sync::atomic::AtomicBool::new(false),
+            music_again: std::sync::atomic::AtomicBool::new(false),
             thumb_gate: tokio::sync::Semaphore::new(2),
             thumbs_written: std::sync::atomic::AtomicUsize::new(0),
             measured: std::sync::Mutex::new(measured),
@@ -460,6 +475,82 @@ impl Host {
         }
     }
 
+    /// The songs on the drive with their tags, unless `known_revision` is
+    /// already the host's.
+    pub fn music_response(&self, known_revision: u64) -> basalt_proto::msg::MusicResponse {
+        use std::sync::atomic::Ordering;
+        let stored = self.music.lock().expect("music lock");
+        basalt_proto::msg::MusicResponse {
+            revision: stored.revision,
+            reading: self.music_reading.load(Ordering::SeqCst) || self.is_scanning(),
+            tracks: (known_revision != stored.revision || stored.revision == 0)
+                .then(|| stored.tracks.clone()),
+        }
+    }
+
+    /// Brings the music up to date with the collections, in the background:
+    /// tags read for songs that are new or changed, gone ones dropped. One
+    /// at a time; asked for again meanwhile, it runs once more after.
+    pub fn refresh_music(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.music_reading.swap(true, Ordering::SeqCst) {
+            self.music_again.store(true, Ordering::SeqCst);
+            return;
+        }
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                host.music_again.store(false, Ordering::SeqCst);
+                host.read_music().await;
+                if !host.music_again.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
+            host.music_reading.store(false, Ordering::SeqCst);
+            // Asked for between the last look and letting go.
+            if host.music_again.swap(false, Ordering::SeqCst) {
+                host.refresh_music();
+            }
+        });
+    }
+
+    async fn read_music(&self) {
+        let Some(serving) = self.serving().await else {
+            return;
+        };
+        let files = self
+            .collections
+            .lock()
+            .expect("collections lock")
+            .collections
+            .music
+            .clone();
+        let existing = self.music.lock().expect("music lock").clone();
+        let vault = Arc::clone(&serving.vault);
+        let next = tokio::task::spawn_blocking(move || {
+            crate::media::music::refresh(&existing, &files, |rel| vault.resolve(rel).ok())
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(next) = next else {
+            return;
+        };
+        {
+            let mut stored = self.music.lock().expect("music lock");
+            if !self.still_serving(&serving) {
+                return;
+            }
+            *stored = next.clone();
+        }
+        let path = crate::media::music::stored_path(self.config_dir(), &serving.root);
+        if let Err(e) = next.save(&path) {
+            tracing::warn!("could not save the music: {e}");
+        }
+        self.announce(basalt_proto::msg::Change::LibraryChanged)
+            .await;
+    }
+
     fn collections_path(&self) -> Option<std::path::PathBuf> {
         Some(crate::media::collect::stored_path(
             self.config_dir(),
@@ -559,7 +650,7 @@ impl Host {
     ///
     /// No walk needed: a path that is gone is gone, and everything under a
     /// folder that is gone went with it.
-    async fn file_removals(&self, paths: Vec<String>) {
+    async fn file_removals(self: &Arc<Self>, paths: Vec<String>) {
         let changed = {
             let mut stored = self.collections.lock().expect("collections lock");
             let next = crate::media::collect::remove(&stored.collections, &paths);
@@ -569,6 +660,7 @@ impl Host {
             self.save_collections();
             self.announce(basalt_proto::msg::Change::LibraryChanged)
                 .await;
+            self.refresh_music();
         }
     }
 
@@ -1393,6 +1485,7 @@ impl Host {
         if self.collect_arrivals(&serving, &paths).await {
             self.announce(basalt_proto::msg::Change::LibraryChanged)
                 .await;
+            self.refresh_music();
         }
         if !self.library_enabled() {
             return;
@@ -1627,6 +1720,8 @@ impl Host {
             host.scanning.store(false, Ordering::SeqCst);
             let moved = host.drive_generation.load(Ordering::SeqCst) != began_on;
             host.measure_library();
+            // The songs the walk found, and their tags, after it.
+            host.refresh_music();
             match outcome {
                 Ok(true) => {
                     host.announce(basalt_proto::msg::Change::LibraryChanged)
@@ -2002,6 +2097,9 @@ impl Host {
         );
         *self.collections.lock().expect("collections lock") = crate::media::collect::Stored::load(
             &crate::media::collect::stored_path(self.config_dir(), &root),
+        );
+        *self.music.lock().expect("music lock") = crate::media::music::Stored::load(
+            &crate::media::music::stored_path(self.config_dir(), &root),
         );
         *self.measured.lock().expect("measured lock") = crate::media::quality::Measured::load(
             &crate::media::quality::Measured::path_for(self.config_dir(), &root),
@@ -4023,6 +4121,11 @@ where
         Op::Collections => {
             let req: basalt_proto::msg::CollectionsRequest = decode(payload).unwrap_or_default();
             reply(stream, &host.collections_response(req.known_revision)).await?;
+        }
+
+        Op::Music => {
+            let req: basalt_proto::msg::MusicRequest = decode(payload).unwrap_or_default();
+            reply(stream, &host.music_response(req.known_revision)).await?;
         }
 
         Op::Thumbnail => {

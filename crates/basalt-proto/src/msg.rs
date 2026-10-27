@@ -824,6 +824,65 @@ pub struct MediaFile {
 }
 
 // ---------------------------------------------------------------------------
+// Music
+// ---------------------------------------------------------------------------
+
+/// Asks for the songs on the drive with their tags.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicRequest {
+    /// Return no songs when the host's copy still matches this.
+    #[serde(default)]
+    pub known_revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicResponse {
+    /// Bumped whenever a song or its tags change.
+    pub revision: u64,
+    /// True while the host is still reading the tags of songs it found.
+    pub reading: bool,
+    /// Absent when `known_revision` already matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracks: Option<Vec<MusicTrack>>,
+}
+
+/// One song, as its tags describe it. Every tag may be missing: a file with
+/// none is still a song, shown by its file name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MusicTrack {
+    /// Vault-relative.
+    pub path: String,
+    pub size: u64,
+    /// Unix seconds.
+    pub mtime: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    /// Who the album is by, which groups a compilation into one album.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_artist: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disc: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// A cover to ask for with a thumbnail of this file: in the file, or a
+    /// picture beside it in its folder.
+    pub cover: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Profiles
 // ---------------------------------------------------------------------------
 

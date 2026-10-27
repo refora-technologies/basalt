@@ -73,6 +73,11 @@ pub fn make(path: &Path, bucket: u32) -> Result<Vec<u8>, ThumbError> {
             None => frame(path, bucket, &["0"]),
         },
         Some(MediaKind::Video) => frame(path, bucket, &POSITIONS),
+        // A song's cover: in the file, or beside it in its folder.
+        Some(MediaKind::Audio) => match super::music::cover(path) {
+            Some(cover) => encode(&shrink(cover, bucket)),
+            None => Err(ThumbError::Failed(format!("{name} has no cover"))),
+        },
         _ => Err(ThumbError::NotMedia(name)),
     }
 }
