@@ -1559,20 +1559,22 @@ impl Host {
 
     /// The albums, by who they are by and their name, none of whose songs
     /// has a cover.
-    fn albums_without_covers(&self) -> Vec<(String, String)> {
+    fn albums_without_covers(&self) -> Vec<crate::media::music_names::CoverKey> {
         let stored = self.music.lock().expect("music lock");
         let mut covered = std::collections::HashSet::new();
         let mut all = std::collections::BTreeSet::new();
         for track in &stored.tracks {
-            let Some(key) = album_key(track) else {
+            let Some(key) = crate::media::music_names::cover_key(track) else {
                 continue;
             };
             if track.cover {
-                covered.insert(key.clone());
+                covered.insert((key.artist.clone(), key.album.clone()));
             }
             all.insert(key);
         }
-        all.into_iter().filter(|k| !covered.contains(k)).collect()
+        all.into_iter()
+            .filter(|k| !covered.contains(&(k.artist.clone(), k.album.clone())))
+            .collect()
     }
 
     /// Songs whose album has a fetched cover now say they have a cover; when
@@ -5035,13 +5037,9 @@ fn proto_meta(meta: crate::media::previews::Meta) -> basalt_proto::msg::PreviewM
     }
 }
 
-/// Who an album is by and its name, as its songs' tags say, for the covers
-/// fetched online. None for a song with no album or no artist.
+/// Who an album (or a single) is by and its name, for the covers fetched
+/// online: from the tags, else the file's name or folders, as the app reads
+/// them. None for anything the app does not show as music.
 fn album_key(track: &basalt_proto::msg::MusicTrack) -> Option<(String, String)> {
-    let artist = track
-        .album_artist
-        .clone()
-        .or_else(|| track.artist.clone())?;
-    let album = track.album.clone()?;
-    crate::media::music_art::worth_asking(&artist, &album).then_some((artist, album))
+    crate::media::music_names::cover_key(track).map(|key| (key.artist, key.album))
 }

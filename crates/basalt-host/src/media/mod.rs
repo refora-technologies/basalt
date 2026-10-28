@@ -13,6 +13,7 @@ pub mod collect;
 pub mod index;
 pub mod music;
 pub mod music_art;
+pub mod music_names;
 pub mod parse;
 pub mod previews;
 pub mod progress;
