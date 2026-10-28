@@ -1746,7 +1746,7 @@ export function PlayerOverlay({
               segments={segments}
               position={mpv.position}
               duration={mpv.duration}
-              raised={showControls}
+              raised={controlsUp}
               nextUp={nextUp && onPlayNext ? nextUp : null}
               onSkipTo={(seconds) => void mpv.seekTo(seconds)}
               onNext={() => nextUp && onPlayNext?.(nextUp.path)}
