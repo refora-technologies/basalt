@@ -171,6 +171,8 @@ const sample: ManageView = {
   ],
   pairings: [{ id: 'r-1', deviceName: 'Sam’s phone', pin: '482915', secondsLeft: 104 }],
   drives: null,
+  // `?cantwrite`: a host that can read its folder but not add files to it.
+  cannotAddFiles: typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('cantwrite'),
   // `?link`: a profile from another drive asking to be let in.
   profileLinks:
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('link')

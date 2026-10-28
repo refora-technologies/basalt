@@ -2432,9 +2432,41 @@ impl Host {
         *self.subtitles.lock().expect("subtitles lock") = Arc::default();
 
         self.start_scan();
+        self.check_writable(&vault);
         self.start_segment_finder();
         self.announce(basalt_proto::msg::Change::Resynchronise)
             .await;
+    }
+
+    /// Tries adding a file to the folder just taken on, says in the log when
+    /// it cannot, and leaves what it found for `basalt-host status`.
+    ///
+    /// Everything but writing works without it, so a folder the host may only
+    /// read went unnoticed until an upload failed: on Linux, a folder made
+    /// with `sudo`; in Docker, one owned by root while the host runs as
+    /// `PUID`. Not asked of a drive shared read-only on purpose.
+    fn check_writable(&self, vault: &Vault) {
+        if !vault.writable() {
+            return;
+        }
+        let root = vault.root().to_path_buf();
+        let note = self.config_dir().join(crate::drives::WRITE_CHECK_FILE);
+        tokio::task::spawn_blocking(move || {
+            let writable = crate::drives::can_write(&root);
+            if !writable {
+                tracing::warn!(
+                    "Basalt Host can't add or change files in {}: browsing and playing work,                      but uploads, new folders, renames and deletes will be refused. On this                      computer, give the user Basalt Host runs as permission to change that                      folder (in Docker, the PUID and PGID user).",
+                    root.display()
+                );
+            }
+            let check = crate::drives::WriteCheck {
+                path: root,
+                writable,
+            };
+            if let Ok(text) = serde_json::to_string(&check) {
+                let _ = std::fs::write(note, text);
+            }
+        });
     }
 
     /// Notices the chosen drive going away and coming back.

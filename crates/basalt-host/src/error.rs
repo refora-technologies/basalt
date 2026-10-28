@@ -110,11 +110,42 @@ pub fn from_io(path: &str, e: std::io::Error) -> HostError {
     }
 }
 
+/// [`from_io`] for a write: an upload, a new folder, a rename, a copy or a
+/// delete.
+///
+/// Refused here, it is the folder's permissions on the host's computer, and
+/// almost always a folder that belongs to someone other than the user Basalt
+/// Host runs as: on Linux a folder made with `sudo`, and in Docker one owned
+/// by root while the container runs as `PUID`. Browsing works, so "isn't
+/// allowed to open" sent people looking at the file rather than the folder.
+pub fn from_io_write(path: &str, e: std::io::Error) -> HostError {
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        return HostError::Denied(format!(
+            "The host can't save {path}: on the host's computer, this folder doesn't let              Basalt Host add or change files. Give the user Basalt Host runs as permission              to change it."
+        ));
+    }
+    from_io(path, e)
+}
+
 pub type Result<T> = std::result::Result<T, HostError>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_write_names_the_folder_permissions_not_the_file() {
+        let refused = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let error = from_io_write("films/a.mkv", refused);
+        assert_eq!(error.code(), ErrorCode::Denied);
+        let said = error.to_string();
+        assert!(said.contains("films/a.mkv"), "{said}");
+        assert!(said.contains("add or change files"), "{said}");
+        assert!(!said.contains("allowed to open"), "{said}");
+        // Anything else is said as before.
+        let missing = from_io_write("a.mkv", std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(missing.code(), ErrorCode::NotFound);
+    }
 
     #[cfg(windows)]
     #[test]

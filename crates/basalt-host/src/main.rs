@@ -381,6 +381,12 @@ fn status(config_path: &Path, wait: bool) -> Result<()> {
         Some(path) => format!("{} ({})", config.vault_name, path.display()),
         None => "nothing yet".into(),
     };
+    // What the running host found when it tried adding a file there; this
+    // command runs as another user (often root), so it cannot look itself.
+    let read_only = config.vault_path.as_ref().is_some_and(|path| {
+        basalt_host::drives::read_write_check(config_path)
+            .is_some_and(|check| &check.path == path && !check.writable)
+    });
     let row = |label: &str, value: &str| {
         println!("    {}  {value}", style.dim(&format!("{label:<10}")));
     };
@@ -406,6 +412,14 @@ fn status(config_path: &Path, wait: bool) -> Result<()> {
     };
     row("Version", &version);
     row("Sharing", &sharing);
+    if read_only {
+        row(
+            "",
+            &style.dim(
+                "the host can't add files there, so uploads and changes are refused:                  give the user it runs as permission to change that folder",
+            ),
+        );
+    }
     if config.devices.is_empty() {
         row("Devices", "none yet");
     }

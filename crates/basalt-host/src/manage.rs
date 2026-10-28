@@ -184,8 +184,14 @@ impl Host {
         } else {
             None
         };
+        // The running host's own check of its folder (see `check_writable`).
+        let cannot_add_files = self.vault_path().is_some_and(|path| {
+            crate::drives::read_write_check(&self.config_path)
+                .is_some_and(|check| check.path == path && !check.writable)
+        });
         serde_json::json!({
             "status": status,
+            "cannotAddFiles": cannot_add_files,
             "devices": devices,
             "pairings": pairings,
             "drives": drives,

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  SKIP_RUN_MS,
+  skipTarget,
   hasEnded,
   judgeOpening,
   needsLighterPlayback,
@@ -210,5 +212,39 @@ describe('subtitles lifted by their position', () => {
 
   it('never goes off the top', () => {
     expect(liftedPosition(3, 5000)).toBe(0)
+  })
+})
+
+describe('skipTarget', () => {
+  it('starts a skip from the clock', () => {
+    expect(skipTarget(null, 0, 300, 0, 10, 3600)).toBe(310)
+    expect(skipTarget(null, 0, 300, 0, -10, 3600)).toBe(290)
+  })
+
+  it('adds quick skips to the last one, not to a clock that has not caught up', () => {
+    // The clock still says 300 after a skip to 310: the second goes to 320.
+    const first = skipTarget(null, 0, 300, 0, 10, 3600)
+    const second = skipTarget({ target: first, at: 0 }, 400, 300, 0, 10, 3600)
+    const third = skipTarget({ target: second, at: 400 }, 800, 305, 0, 10, 3600)
+    expect([first, second, third]).toEqual([310, 320, 330])
+    // And back again within the same run.
+    expect(skipTarget({ target: third, at: 800 }, 900, 300, 0, -10, 3600)).toBe(320)
+  })
+
+  it('takes the clock again once a run is over', () => {
+    expect(skipTarget({ target: 120, at: 0 }, SKIP_RUN_MS + 1, 500, 0, 10, 3600)).toBe(510)
+  })
+
+  it('uses where the film was asked to play from while there is no clock', () => {
+    // A new conversion still starting: no clock, and never the film's start.
+    expect(skipTarget(null, 0, null, 1800, 10, 3600)).toBe(1810)
+    expect(skipTarget(null, 0, undefined, 1800, -10, 3600)).toBe(1790)
+  })
+
+  it('stays within the film', () => {
+    expect(skipTarget(null, 0, 4, 0, -10, 3600)).toBe(0)
+    expect(skipTarget(null, 0, 3595, 0, 10, 3600)).toBe(3600)
+    // A length not known yet is no limit.
+    expect(skipTarget(null, 0, 50, 0, 10, 0)).toBe(60)
   })
 })

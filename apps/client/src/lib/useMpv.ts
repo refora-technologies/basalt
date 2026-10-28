@@ -276,6 +276,47 @@ export function seekWithinConversion(
   return target >= from && target <= cachedTo && target >= position - 20
 }
 
+/** Skips this close together are one run: each aims from the last one's target. */
+export const SKIP_RUN_MS = 1000
+
+/**
+ * How long a run of skips in a conversion waits for the next tap before the
+ * host is asked for a new conversion from where they added up to.
+ */
+export const SKIP_SETTLE_MS = 600
+
+/** A run of skips: where the last one aimed, and when (performance.now()). */
+export interface SkipRun {
+  target: number
+  at: number
+}
+
+/**
+ * Where a skip of `seconds` lands.
+ *
+ * Within a run it adds to the last skip's target, not to the player's clock:
+ * the clock lags a seek that is still landing (on Android it reached the page
+ * a quarter second late, or not at all), and during a new conversion there is
+ * no clock yet. Read then, two quick skips both went 10 seconds from the same
+ * place, or the second went from the start of the film. A first skip starts
+ * from the clock, or from `fallback` (where the film was asked to play from)
+ * while there is none. Kept within the film.
+ */
+export function skipTarget(
+  run: SkipRun | null,
+  now: number,
+  clock: unknown,
+  fallback: number,
+  seconds: number,
+  duration: number,
+): number {
+  const fresh = clock === null || clock === undefined ? NaN : Number(clock)
+  const from =
+    run && now - run.at < SKIP_RUN_MS ? run.target : Number.isFinite(fresh) ? fresh : fallback
+  const end = duration > 0 ? duration : Infinity
+  return Math.min(Math.max(0, from + seconds), end)
+}
+
 /**
  * Larger than this, a video decoded in software on a phone needs the lighter
  * mode: about 1920x1200. A phone decodes 1080p in software comfortably; 4K it
@@ -766,6 +807,10 @@ function useAppMpv(): Mpv {
                 // be reopened was tried again from the beginning of the film,
                 // and loading and stopping set the position themselves.
                 if (data === null || data === undefined) return s
+                // Skips waiting to ask for a new conversion: the one still
+                // playing is left behind, and its clock would pull the time
+                // back between taps. The skips' own target stands.
+                if (skipSettle.current) return s
                 const position = Number(data) || 0
                 return {
                   ...s,
@@ -825,6 +870,12 @@ function useAppMpv(): Mpv {
   const beforeLighter = useRef<Record<string, string> | null>(null)
   /** The conversion playing, and where it started from. Null otherwise. */
   const converted = useRef<(ConvertedSource & { from: number }) | null>(null)
+  /** The skips being made in a row, and the new conversion they wait to ask for. */
+  const skipRun = useRef<SkipRun | null>(null)
+  const skipSettle = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** The state as last drawn, for the skips' fallback position and the film's length. */
+  const drawn = useRef(state)
+  drawn.current = state
 
   /** Puts back whatever the lighter mode changed. */
   const undoLighter = useCallback(async () => {
@@ -997,6 +1048,10 @@ function useAppMpv(): Mpv {
         if (!again) addedSubs.current = []
       }
       converted.current = source ? { ...source, from: startAt } : null
+      // A run of skips belongs to the film it was made in.
+      if (skipSettle.current) clearTimeout(skipSettle.current)
+      skipSettle.current = null
+      if (!source) skipRun.current = null
       setState((s) => ({
         ...s,
         ended: false,
@@ -1129,17 +1184,50 @@ function useAppMpv(): Mpv {
     return true
   }, [])
 
+  /**
+   * Skips, from the buttons, the arrow keys and the taps either side.
+   *
+   * To a place worked out here (see `skipTarget`) rather than mpv's
+   * `relative`, which counts from where mpv thinks it is and, with a seek
+   * still landing, could count from the one before. Shown at once as the new
+   * position, so the time and the scrubber follow every tap.
+   *
+   * In a conversion, a place that has already arrived is seeked to at once.
+   * Further on needs a new conversion, which the host takes a moment to
+   * start: that waits until the taps stop, then asks once from where they
+   * added up to. Asked on every tap, each new conversion replaced the last
+   * while it was still starting, and a run of taps moved ten seconds.
+   */
   const seekBy = useCallback(
     async (seconds: number) => {
       if (!inTauri()) return
-      if (converted.current) {
-        const position = Number(await readProperty('time-pos', 'double')) || 0
-        await seekTo(Math.max(0, position + seconds))
-        return
+      const now = performance.now()
+      const source = converted.current
+      const clock = await readProperty('time-pos', 'double')
+      const fallback = source?.from ?? drawn.current.position
+      const target = skipTarget(skipRun.current, now, clock, fallback, seconds, drawn.current.duration)
+      skipRun.current = { target, at: now }
+      setState((s) => ({ ...s, position: target }))
+
+      if (skipSettle.current) clearTimeout(skipSettle.current)
+      skipSettle.current = null
+      if (source) {
+        const cachedTo = await readProperty('demuxer-cache-time', 'double')
+        const at = Number(clock) || source.from
+        const end = Number(cachedTo) || at
+        if (!seekWithinConversion(target, source.from, at, end)) {
+          skipSettle.current = setTimeout(() => {
+            skipSettle.current = null
+            if (converted.current !== source) return
+            const settled = skipRun.current?.target ?? target
+            void load(source.base, settled, { base: source.base, duration: source.duration })
+          }, SKIP_SETTLE_MS)
+          return
+        }
       }
-      await mpv.command('seek', [String(seconds), 'relative'])
+      await mpv.command('seek', [target.toFixed(3), 'absolute'])
     },
-    [seekTo],
+    [load],
   )
 
   const stepFrame = useCallback(async (direction: 1 | -1) => {
