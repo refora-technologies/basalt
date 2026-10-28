@@ -1675,6 +1675,52 @@ impl Basalt {
         lease.check(result)
     }
 
+    /// Measures the connection to the host: a few round trips for the delay,
+    /// then about four seconds each way. Only for the person to read; nothing
+    /// is decided from it.
+    pub async fn speed_test(&self) -> Result<basalt_proto::msg::SpeedResult> {
+        use std::time::{Duration, Instant};
+        const CHUNK: u32 = 4 * 1024 * 1024;
+        const EACH_WAY: Duration = Duration::from_secs(4);
+
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result: Result<basalt_proto::msg::SpeedResult> = async {
+            let mut delays = Vec::new();
+            for _ in 0..5 {
+                let started = Instant::now();
+                lease.speed_down(0).await?;
+                delays.push(started.elapsed().as_secs_f64() * 1000.0);
+            }
+            delays.sort_by(f64::total_cmp);
+
+            let started = Instant::now();
+            let mut received = 0u64;
+            while started.elapsed() < EACH_WAY {
+                received += lease.speed_down(CHUNK).await? as u64;
+            }
+            let down_secs = started.elapsed().as_secs_f64();
+
+            let data = vec![0u8; CHUNK as usize];
+            let started = Instant::now();
+            let mut sent = 0u64;
+            while started.elapsed() < EACH_WAY {
+                lease.speed_up(&data).await?;
+                sent += data.len() as u64;
+            }
+            let up_secs = started.elapsed().as_secs_f64();
+
+            let mbps = |bytes: u64, secs: f64| bytes as f64 * 8.0 / secs.max(0.001) / 1_000_000.0;
+            Ok(basalt_proto::msg::SpeedResult {
+                down_mbps: mbps(received, down_secs),
+                up_mbps: mbps(sent, up_secs),
+                delay_ms: delays[delays.len() / 2],
+            })
+        }
+        .await;
+        lease.check(result)
+    }
+
     /// Where a film's or an episode's intro and credits are, as far as the
     /// host has found. A host before 1.6.3 answers with an error.
     pub async fn segments(&self, path: &str) -> Result<basalt_proto::msg::SegmentsResponse> {

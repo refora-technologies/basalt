@@ -81,6 +81,7 @@ import { SectionPager, SectionTabs, useSectionLink, type Section } from './Secti
 import { MusicSection, type MusicLayout } from '@/components/music/MusicSection'
 import { MusicBar, NowPlaying } from '@/components/music/NowPlaying'
 import { useMusicProps } from '@/components/music/useMusicActions'
+import { SpeedTest } from '@/components/SpeedTest'
 
 /** On a television: see `lib/remote.ts`. */
 const TV = isTv()
@@ -1685,6 +1686,11 @@ function MoreScreen({
             <ArrowLeftRight size={15} />
             Change drive
           </button>
+          {model.connected && (
+            <div className="-mx-1 mt-3 border-t border-white/[0.06] pt-1">
+              <SpeedTest />
+            </div>
+          )}
         </Card>
 
         {onManage && (

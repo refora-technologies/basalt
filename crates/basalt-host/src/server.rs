@@ -4285,6 +4285,22 @@ where
             reply(stream, &host.collections_response(req.known_revision)).await?;
         }
 
+        Op::SpeedTest => {
+            use basalt_proto::msg::speed_test;
+            match payload.first() {
+                Some(&speed_test::DOWN) if payload.len() >= 5 => {
+                    let asked =
+                        u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]);
+                    // Zeros: the connection is encrypted, so they cross it as
+                    // anything else would, and cost nothing to make.
+                    let bytes = vec![0u8; asked.min(speed_test::MAX_DOWN) as usize];
+                    write_ok(stream, &bytes).await?;
+                }
+                Some(&speed_test::UP) => write_ok(stream, &[]).await?,
+                _ => return Err(HostError::BadRequest("not a speed test request".into())),
+            }
+        }
+
         Op::Segments => {
             let req: basalt_proto::msg::SegmentsRequest = decode(payload)?;
             reply(stream, &host.segments_of(&req.path)).await?;

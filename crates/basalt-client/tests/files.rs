@@ -604,3 +604,16 @@ async fn the_host_sends_the_songs_once_they_are_read() {
         .await;
     assert!(refused.is_err(), "no profile, no playlists on the host");
 }
+
+// The speed test measures both ways over the real connection.
+#[tokio::test]
+async fn the_speed_test_measures_both_ways() {
+    let (_fixture, client) = start().await;
+    let result = client.speed_test().await.expect("the test runs");
+    assert!(result.down_mbps > 1.0, "{result:?}");
+    assert!(result.up_mbps > 1.0, "{result:?}");
+    assert!(
+        result.delay_ms >= 0.0 && result.delay_ms < 1000.0,
+        "{result:?}"
+    );
+}

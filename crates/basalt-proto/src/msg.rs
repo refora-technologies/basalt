@@ -960,6 +960,48 @@ pub struct SegmentsResponse {
     pub credits: Option<f64>,
 }
 
+/// A speed test's requests, which are not JSON: a byte saying which way, and
+/// then either how much the host is to send (four bytes, little-endian), or
+/// the bytes the device sends, which the host throws away.
+///
+/// Nothing touches the drive: it measures the network between the two, over
+/// the same encrypted connection films and uploads use.
+pub mod speed_test {
+    /// The host sends `bytes` back.
+    pub const DOWN: u8 = 0;
+    /// The rest of the request is data to throw away.
+    pub const UP: u8 = 1;
+    /// The most the host sends for one request.
+    pub const MAX_DOWN: u32 = 16 * 1024 * 1024;
+
+    /// A request for the host to send `bytes`.
+    pub fn down(bytes: u32) -> Vec<u8> {
+        let mut out = vec![DOWN];
+        out.extend_from_slice(&bytes.min(MAX_DOWN).to_le_bytes());
+        out
+    }
+
+    /// A request carrying `data` up.
+    pub fn up(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(data.len() + 1);
+        out.push(UP);
+        out.extend_from_slice(data);
+        out
+    }
+}
+
+/// What a speed test measured.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeedResult {
+    /// From the host to this device, in megabits a second.
+    pub down_mbps: f64,
+    /// From this device to the host.
+    pub up_mbps: f64,
+    /// The time a request takes to come back, in milliseconds.
+    pub delay_ms: f64,
+}
+
 // ---------------------------------------------------------------------------
 // Profiles
 // ---------------------------------------------------------------------------

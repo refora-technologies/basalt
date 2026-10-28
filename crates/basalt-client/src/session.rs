@@ -847,6 +847,30 @@ impl Session {
             .map_err(Into::into)
     }
 
+    /// One round of a speed test from the host: asks for `bytes` and reads
+    /// them. How many came.
+    pub async fn speed_down(&mut self, bytes: u32) -> Result<usize> {
+        write_request(
+            &mut self.stream,
+            Op::SpeedTest,
+            &basalt_proto::msg::speed_test::down(bytes),
+        )
+        .await?;
+        Ok(read_response(&mut self.stream).await?.len())
+    }
+
+    /// One round of a speed test to the host: sends `data`, waits for the nod.
+    pub async fn speed_up(&mut self, data: &[u8]) -> Result<()> {
+        write_request(
+            &mut self.stream,
+            Op::SpeedTest,
+            &basalt_proto::msg::speed_test::up(data),
+        )
+        .await?;
+        read_response(&mut self.stream).await?;
+        Ok(())
+    }
+
     /// Where a film's or an episode's intro and credits are.
     pub async fn segments(&mut self, path: &str) -> Result<basalt_proto::msg::SegmentsResponse> {
         call_json(

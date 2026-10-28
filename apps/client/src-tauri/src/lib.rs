@@ -649,6 +649,12 @@ async fn music_mine(
     Ok(state.client.music_mine(request).await?)
 }
 
+/// Measures the connection to the host, for Settings.
+#[tauri::command]
+async fn speed_test(state: State<'_, AppState>) -> Answer<basalt_proto::msg::SpeedResult> {
+    Ok(state.client.speed_test().await?)
+}
+
 /// Where a film's or an episode's intro and credits are.
 #[tauri::command]
 async fn segments(
@@ -1738,6 +1744,7 @@ pub fn run() {
             music,
             music_mine,
             segments,
+            speed_test,
             identity,
             profiles,
             manage,

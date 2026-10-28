@@ -407,6 +407,13 @@ export interface MusicMine {
   listening?: Listening | null
 }
 
+/** What a speed test measured. Mirrors `basalt_proto::msg::SpeedResult`. */
+export interface SpeedResult {
+  downMbps: number
+  upMbps: number
+  delayMs: number
+}
+
 /** Where a film's or an episode's intro and credits are. Mirrors `SegmentsResponse`. */
 export interface Segments {
   /** Start and end of the intro, in seconds. */
@@ -639,6 +646,8 @@ export const api = {
   /** Every video, song and photo on the drive, sorted by the host. */
   collections: (knownRevision: number) =>
     call<CollectionsResponse>('collections', { knownRevision }),
+  /** About ten seconds of measuring. Throws on a host before 1.6.3. */
+  speedTest: () => call<SpeedResult>('speed_test'),
   /** Intro and credits, as far as the host has found. Throws on a host before 1.6.3. */
   segments: (path: string) => call<Segments>('segments', { path }),
   /** Songs with tags. Throws on a host before 1.6.3, which does not know it. */
@@ -1334,6 +1343,9 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
         reading: false,
         tracks: args?.knownRevision === 1 ? null : showcase.music(),
       } as T
+    case 'speed_test':
+      await new Promise((resolve) => setTimeout(resolve, 3000))
+      return { downMbps: 412.6, upMbps: 188.2, delayMs: 3.4 } as T
     // The browser preview: an intro early on, to see the button.
     case 'segments':
       return { intro: [4, 30] } as T
