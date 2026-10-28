@@ -22,6 +22,12 @@ export interface VaultView {
   total: number
   /** False once the drive has been unplugged. */
   available: boolean
+  /**
+   * Whether the host can add files to it: false when it can read the folder
+   * but not write there, so uploads and changes are refused. Absent from
+   * hosts before 1.6.3.
+   */
+  canAddFiles?: boolean
 }
 
 /** How the media index is getting on. */
@@ -619,6 +625,11 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
             ...sample.status,
             vault: { ...sample.status.vault, free: 0, total: 0, available: false },
           }
+        }
+        // `?cantwrite`: the host can read its folder but not add to it (a
+        // Linux folder owned by another user).
+        if (previewFlag('cantwrite') && sample.status.vault) {
+          return { ...sample.status, vault: { ...sample.status.vault, canAddFiles: false } }
         }
         return sample.status
       case 'list_drives':

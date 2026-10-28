@@ -83,29 +83,56 @@ export function VaultCard({
             Choose another drive
           </button>
         </div>
-      ) : vault.total > 0 ? (
-        <>
-          <div className="mt-5 h-[6px] w-full overflow-hidden rounded-full bg-ink2">
-            <motion.div
-              className="h-full rounded-full bg-basaltDeep"
-              initial={{ width: 0 }}
-              animate={{ width: `${Math.round(used * 100)}%` }}
-              transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-            />
-          </div>
-          <div className="tnum mt-2.5 flex items-baseline justify-between font-mono text-[11px]">
-            <span className="text-textDim">{formatBytes(vault.free)} free</span>
-            <span className="text-textFaint">{formatBytes(vault.total)} total</span>
-          </div>
-        </>
       ) : (
-        <p className="mt-5 font-mono text-[11px] text-textFaint">
-          {/* Some USB enclosures decline to report a size. Not worth an error —
-              the share works regardless — but the gauge would be a lie. */}
-          This drive doesn’t report its size
-        </p>
+        <>
+          {vault.canAddFiles === false && (
+            // Readable but not writable: devices still browse and play, and
+            // every upload, rename or delete is refused. The fix is on this
+            // computer, in the folder's permissions.
+            <div className="mt-4 flex items-start gap-2 rounded-sm bg-dangerBg px-3.5 py-3">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0 text-danger" />
+              <p className="text-[12px] leading-relaxed text-danger">
+                Basalt Host can’t add files here, so uploads and changes are refused. Give the
+                user Basalt Host runs as permission to change this folder.
+              </p>
+            </div>
+          )}
+          <Space vault={vault} used={used} />
+        </>
       )}
     </div>
+  )
+}
+
+/** How full the drive is, or why that isn't known. */
+function Space({
+  vault,
+  used,
+}: {
+  vault: NonNullable<HostStatus['vault']>
+  used: number
+}): React.JSX.Element {
+  return vault.total > 0 ? (
+    <>
+      <div className="mt-5 h-[6px] w-full overflow-hidden rounded-full bg-ink2">
+        <motion.div
+          className="h-full rounded-full bg-basaltDeep"
+          initial={{ width: 0 }}
+          animate={{ width: `${Math.round(used * 100)}%` }}
+          transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+        />
+      </div>
+      <div className="tnum mt-2.5 flex items-baseline justify-between font-mono text-[11px]">
+        <span className="text-textDim">{formatBytes(vault.free)} free</span>
+        <span className="text-textFaint">{formatBytes(vault.total)} total</span>
+      </div>
+    </>
+  ) : (
+    <p className="mt-5 font-mono text-[11px] text-textFaint">
+      {/* Some USB enclosures decline to report a size. Not worth an error —
+          the share works regardless — but the gauge would be a lie. */}
+      This drive doesn’t report its size
+    </p>
   )
 }
 

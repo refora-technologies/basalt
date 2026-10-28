@@ -2711,6 +2711,11 @@ impl Host {
         // hammering — can leave them sitting for seconds. The interface asks
         // for this every two seconds, so blocking a runtime thread here means
         // blocking it more or less permanently.
+        // The running host's own check of its folder (see `check_writable`).
+        let cannot_add_files = self.vault_path().is_some_and(|path| {
+            crate::drives::read_write_check(&self.config_path)
+                .is_some_and(|check| check.path == path && !check.writable)
+        });
         let vault = match self.vault().await {
             Some(vault) => tokio::task::spawn_blocking(move || {
                 let (free, total) = vault.space();
@@ -2720,6 +2725,7 @@ impl Host {
                     free,
                     total,
                     available: crate::drives::is_available(vault.root()),
+                    can_add_files: !cannot_add_files,
                 }
             })
             .await
@@ -2735,6 +2741,7 @@ impl Host {
                     free: 0,
                     total: 0,
                     available: false,
+                    can_add_files: true,
                 })
             }
         };

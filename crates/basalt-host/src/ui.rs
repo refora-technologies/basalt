@@ -37,6 +37,10 @@ pub struct VaultView {
     /// than leaving a stale gauge on screen and failing every request with a
     /// path error.
     pub available: bool,
+    /// Whether the host can add files to it. False when it can read the
+    /// folder but not write there (a Linux folder owned by another user):
+    /// uploads and changes are refused until that is fixed.
+    pub can_add_files: bool,
 }
 
 /// Everything the dashboard needs to draw itself once.
@@ -545,8 +549,12 @@ mod tests {
             free: 1,
             total: 2,
             available: true,
+            can_add_files: true,
         };
-        assert_eq!(keys(&vault), ["available", "free", "name", "path", "total"]);
+        assert_eq!(
+            keys(&vault),
+            ["available", "canAddFiles", "free", "name", "path", "total"]
+        );
     }
 
     #[test]
