@@ -12,6 +12,7 @@ pub mod art;
 pub mod collect;
 pub mod index;
 pub mod music;
+pub mod music_art;
 pub mod parse;
 pub mod previews;
 pub mod progress;
