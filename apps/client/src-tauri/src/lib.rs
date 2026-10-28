@@ -21,11 +21,11 @@ use basalt_client::proxy::MediaProxy;
 use basalt_client::{Basalt, DiscoveredHost, Status, TransferEvent, UiError};
 use tauri::{Emitter, Manager, State};
 
-mod media_controls;
 #[cfg(target_os = "linux")]
 mod linux_player;
 #[cfg(target_os = "linux")]
 mod linux_update;
+mod media_controls;
 #[cfg(target_os = "linux")]
 use linux_player::{
     linux_mpv_command, linux_mpv_destroy, linux_mpv_get_property, linux_mpv_init,
@@ -1558,11 +1558,14 @@ pub fn run() {
     );
 
     // A development copy run beside the Basalt installed on the same computer:
-    // its own settings, its own web storage, a key in memory instead of the
-    // TPM, and the page open to Chrome's developer tools on a port. Debug
-    // builds only; `BASALT_DEV_ISOLATED` names the folder it keeps to.
+    // its own settings, its own web storage, its own key (not in the TPM), its
+    // own device id and name, and the page open to Chrome's developer tools on
+    // a port. Debug builds only; `BASALT_DEV_ISOLATED` names its folder.
     #[cfg(all(windows, debug_assertions))]
     if let Some(folder) = dev_isolated() {
+        // Named as what it is, on the host's list of devices.
+        let name = std::env::var("COMPUTERNAME").unwrap_or_default();
+        std::env::set_var("COMPUTERNAME", format!("{name} (development copy)"));
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", folder.join("webview"));
         std::env::set_var(
             "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
@@ -1598,8 +1601,12 @@ pub fn run() {
                 use tauri_plugin_basalt_android::BasaltAndroidExt;
                 app.basalt_android().device_hint().ok()
             };
+            // A development copy is a device of its own: with this computer's
+            // id it stood in for the installed app on the host, and its key
+            // replaced the app's there.
             #[cfg(desktop)]
-            let hint: Option<String> = None;
+            let hint: Option<String> =
+                dev_isolated().map(|folder| format!("development copy {}", folder.display()));
             // The device's key goes in the phone's hardware key store there;
             // on Windows the client finds the TPM by itself.
             #[cfg(mobile)]

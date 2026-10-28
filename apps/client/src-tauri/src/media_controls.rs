@@ -42,7 +42,12 @@ pub struct Pressed {
 #[cfg(desktop)]
 fn pressed(event: souvlaki::MediaControlEvent) -> Option<Pressed> {
     use souvlaki::MediaControlEvent as E;
-    let simple = |action| Some(Pressed { action, position: -1.0 });
+    let simple = |action| {
+        Some(Pressed {
+            action,
+            position: -1.0,
+        })
+    };
     match event {
         E::Play => simple("play"),
         E::Pause => simple("pause"),
@@ -68,19 +73,21 @@ mod imp {
 
     use super::NowPlaying;
 
+    /// The song last told to the system: title, artist, album, cover, length.
+    type Shown = (String, String, String, Option<String>, u64);
+
     // On the main thread, where the window and its message loop are: Windows'
     // controls belong to the window, and are not to be moved between threads.
     thread_local! {
         static CONTROLS: RefCell<Option<MediaControls>> = const { RefCell::new(None) };
-        static SHOWN_SONG: RefCell<Option<(String, String, String, Option<String>, u64)>> =
-            const { RefCell::new(None) };
+        static SHOWN_SONG: RefCell<Option<Shown>> = const { RefCell::new(None) };
     }
 
     fn create(app: &AppHandle) -> Option<MediaControls> {
         #[cfg(windows)]
         let hwnd = {
             let window = app.webview_windows().into_values().next()?;
-            Some(window.hwnd().ok()?.0 as *mut std::ffi::c_void)
+            Some(window.hwnd().ok()?.0)
         };
         #[cfg(not(windows))]
         let hwnd = None;
@@ -109,7 +116,9 @@ mod imp {
                 if slot.is_none() {
                     *slot = create(&handle);
                 }
-                let Some(controls) = slot.as_mut() else { return };
+                let Some(controls) = slot.as_mut() else {
+                    return;
+                };
                 // The song's details only when they change: Windows fetches the
                 // cover again each time it is told.
                 let song = (
@@ -135,7 +144,9 @@ mod imp {
                             .then(|| Duration::from_secs_f64(now.duration)),
                     });
                 }
-                let progress = Some(MediaPosition(Duration::from_secs_f64(now.position.max(0.0))));
+                let progress = Some(MediaPosition(Duration::from_secs_f64(
+                    now.position.max(0.0),
+                )));
                 let _ = controls.set_playback(if now.playing {
                     MediaPlayback::Playing { progress }
                 } else {
@@ -189,8 +200,10 @@ mod tests {
     fn the_system_buttons_become_the_players_own() {
         assert_eq!(pressed(MediaControlEvent::Toggle).unwrap().action, "toggle");
         assert_eq!(pressed(MediaControlEvent::Next).unwrap().action, "next");
-        let seek = pressed(MediaControlEvent::SetPosition(MediaPosition(Duration::from_millis(61_500))))
-            .unwrap();
+        let seek = pressed(MediaControlEvent::SetPosition(MediaPosition(
+            Duration::from_millis(61_500),
+        )))
+        .unwrap();
         assert_eq!((seek.action, seek.position), ("seek", 61.5));
         // Volume and the rest are the system's own business.
         assert!(pressed(MediaControlEvent::SetVolume(0.5)).is_none());
