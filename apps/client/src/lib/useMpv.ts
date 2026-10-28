@@ -544,7 +544,11 @@ export interface Mpv extends MpvState {
    * Opens a file or URL. With `converted`, opens the host's conversion of it
    * from `startAt`, and seeking past what has arrived starts a new one.
    */
-  load: (url: string, startAt: number, converted?: ConvertedSource) => Promise<void>
+  /**
+   * Opens a file. `audioOnly`: music, whose cover the app draws itself; mpv
+   * is told not to show it as a picture (see the load).
+   */
+  load: (url: string, startAt: number, converted?: ConvertedSource, audioOnly?: boolean) => Promise<void>
   /** Plays what is open in the lighter mode: see [`LIGHTER_OPTIONS`]. */
   lighten: () => Promise<void>
   /** Stops playback and lets the window go opaque again. */
@@ -1030,7 +1034,7 @@ function useAppMpv(): Mpv {
   }, [readTracks, restoreAdded, checkStrain])
 
   const load = useCallback(
-    async (url: string, startAt: number, source?: ConvertedSource) => {
+    async (url: string, startAt: number, source?: ConvertedSource, audioOnly = false) => {
       if (!inTauri()) return
       const mine = ++generation.current
       eof.current = false
@@ -1084,7 +1088,16 @@ function useAppMpv(): Mpv {
         const options = (
           source
             ? ['pause=no', 'rebase-start-time=no', ...keep]
-            : ['pause=no', startAt > 1 ? `start=${startAt.toFixed(3)}` : '', ...keep]
+            : [
+                'pause=no',
+                startAt > 1 ? `start=${startAt.toFixed(3)}` : '',
+                // A song's cover is a picture track to mpv, and shown, it
+                // opened mpv's picture behind the window: on Windows that
+                // painted over the music bar's title, play button and
+                // progress. The app shows the cover itself.
+                audioOnly ? 'vid=no' : '',
+                ...keep,
+              ]
         )
           .filter(Boolean)
           .join(',')

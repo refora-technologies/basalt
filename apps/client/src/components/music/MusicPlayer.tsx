@@ -258,7 +258,7 @@ function Engine({
     const from = startAt.current
     startAt.current = 0
     void api.mediaUrl(path).then((url) => {
-      if (!cancelled) void load(url, from)
+      if (!cancelled) void load(url, from, undefined, true)
     })
     return () => {
       cancelled = true
