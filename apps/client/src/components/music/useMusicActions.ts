@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import type { AppModel } from '@/App'
+import { android } from '@/lib/android'
 import type { Listening } from '@/lib/api'
 import { type Song, isSong, songFromFile } from '@/lib/music'
-import { useMusicPlayer } from '@/lib/musicPlayer'
+import { useMusicClock, useMusicPlayer } from '@/lib/musicPlayer'
+import { next as nextOf } from '@/lib/queue'
+import {
+  type NowPlayingInfo,
+  claimPress,
+  clearNowPlaying,
+  needsTelling,
+  onSystemMedia,
+  showNowPlaying,
+} from '@/lib/systemMedia'
+import { VIEW_THUMB, thumbUrl } from '@/lib/thumbs'
 import { fileToEntry } from '@/lib/useCollections'
 import { newPlaylistId } from '@/lib/useMusicMine'
 
@@ -160,6 +171,125 @@ export function MusicBridge({ model }: { model: AppModel }): null {
       music.stop()
     }
   }, [playing, setPlaying, files])
+
+  return null
+}
+
+/** After this long paused, Android may stop keeping the app running for it. */
+const PAUSED_HOLD_MS = 10 * 60 * 1000
+
+/**
+ * The song playing, told to the system: the lock screen, the notification's
+ * player and the Now Bar on Android; the media controls on Windows and on a
+ * Linux desktop. Their buttons move the player as its own do. On Android it
+ * also keeps the app running with the screen off while music plays, so the
+ * next song still starts.
+ */
+export function SystemMedia({ model }: { model: AppModel }): null {
+  const player = useMusicPlayer()
+  const clock = useMusicClock()
+  const { music, mediaBase } = model
+  const queue = player?.queue ?? null
+  const current = player?.current ?? null
+  const paused = player?.paused ?? true
+
+  const song = useMemo((): Song | null => {
+    if (!current) return null
+    return music.songs.find((s) => s.path === current) ?? songFromFile({ path: current, size: 0, mtime: 0 })
+  }, [current, music.songs])
+
+  const info = useMemo((): NowPlayingInfo | null => {
+    if (!song || !queue) return null
+    const cover = song.cover && mediaBase ? thumbUrl(mediaBase, song.path, song.mtime, VIEW_THUMB) : ''
+    return {
+      title: song.title,
+      artist: song.artist,
+      album: song.album,
+      cover: cover || null,
+      duration: clock.duration || (song.durationMs ?? 0) / 1000,
+      position: clock.position,
+      playing: !paused,
+      canPrevious: true,
+      canNext: nextOf(queue) !== null,
+    }
+  }, [song, queue, mediaBase, clock.duration, clock.position, paused])
+
+  // Told when something changes, not on every tick.
+  const shown = useRef<{ info: NowPlayingInfo; at: number } | null>(null)
+  useEffect(() => {
+    if (!info) {
+      if (shown.current) {
+        shown.current = null
+        void clearNowPlaying().catch(() => {})
+      }
+      return
+    }
+    const now = Date.now()
+    if (!needsTelling(shown.current, info, now)) return
+    shown.current = { info, at: now }
+    void showNowPlaying(info).catch(() => {})
+  }, [info])
+  useEffect(() => () => void clearNowPlaying().catch(() => {}), [])
+
+  // Android: kept running while it plays, and for a while paused.
+  const title = song?.title ?? ''
+  const artist = song?.artist ?? ''
+  const hasQueue = queue !== null
+  const playing = hasQueue && !paused
+  useEffect(() => {
+    if (!hasQueue) {
+      void android.letGo('music')
+      return undefined
+    }
+    void android.keepAlive('music', title, artist)
+    if (playing) return undefined
+    const timer = setTimeout(() => void android.letGo('music'), PAUSED_HOLD_MS)
+    return () => clearTimeout(timer)
+  }, [hasQueue, playing, title, artist])
+  useEffect(() => () => void android.letGo('music'), [])
+
+  // The system's buttons.
+  const latest = useRef(player)
+  latest.current = player
+  useEffect(() => {
+    if (!hasQueue) return undefined
+    let stop: (() => void) | null = null
+    let gone = false
+    void onSystemMedia((press) => {
+      const music = latest.current
+      if (!music?.queue || !claimPress(press.action)) return
+      switch (press.action) {
+        case 'toggle':
+          music.togglePause()
+          break
+        case 'play':
+          if (music.paused) music.togglePause()
+          break
+        case 'pause':
+          if (!music.paused) music.togglePause()
+          break
+        case 'next':
+          music.next()
+          break
+        case 'previous':
+          music.previous()
+          break
+        case 'stop':
+          music.stop()
+          break
+        case 'seek':
+          if (press.position >= 0) music.seek(press.position)
+          break
+      }
+    }).then((unlisten) => {
+      if (gone) unlisten()
+      else stop = unlisten
+    })
+    return () => {
+      gone = true
+      stop?.()
+    }
+  }, [hasQueue])
 
   return null
 }

@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -43,8 +44,8 @@ class KeepAliveService : Service() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     running = this
-    val playback = reasons.containsKey("playback")
-    val shown = reasons["playback"] ?: reasons["transfer"] ?: lastShown
+    val playback = reasons.containsKey("playback") || reasons.containsKey("music")
+    val shown = shown() ?: lastShown
     val type = if (Build.VERSION.SDK_INT >= 29) {
       if (playback) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
       else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
@@ -95,6 +96,12 @@ class KeepAliveService : Service() {
       if (reasons.isEmpty() && foreground) running?.finish()
     }
 
+    /**
+     * What the notification says: music, else a film handed to another
+     * player, else a transfer.
+     */
+    private fun shown(): Shown? = reasons["music"] ?: reasons["playback"] ?: reasons["transfer"]
+
     fun hold(context: Context, reason: String, title: String, text: String, progress: Int) {
       main.removeCallbacks(stopLater)
       val fresh = !reasons.containsKey(reason)
@@ -107,10 +114,21 @@ class KeepAliveService : Service() {
         }
       } else {
         // Only the notification changes: progress, mostly.
-        val shown = reasons["playback"] ?: reasons["transfer"] ?: return
+        val shown = shown() ?: return
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         runCatching { manager.notify(NOTIFICATION_ID, notification(context, shown)) }
       }
+    }
+
+    /**
+     * Draws the notification again, as it is now: the song changed, paused,
+     * or its cover arrived. Nothing when nothing is shown.
+     */
+    fun refresh(context: Context) {
+      if (!foreground) return
+      val shown = shown() ?: return
+      val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      runCatching { manager.notify(NOTIFICATION_ID, notification(context, shown)) }
     }
 
     fun release(context: Context, reason: String) {
@@ -149,6 +167,33 @@ class KeepAliveService : Service() {
       }
       // The mark as a one-colour silhouette; the app icon came out as a disc.
       val icon = R.drawable.ic_stat_basalt
+      // Music: the player, with its buttons, from the media session.
+      val now = MediaNow.current()
+      val token = MediaNow.token()
+      if (reasons.containsKey("music") && now != null && token != null) {
+        fun button(drawable: Int, label: String, action: String) =
+          Notification.Action.Builder(
+            Icon.createWithResource(context, drawable), label, MediaNow.button(context, action)
+          ).build()
+        return Notification.Builder(context, CHANNEL)
+          .setSmallIcon(icon)
+          .setContentTitle(now.title)
+          .setContentText(listOf(now.artist, now.album).filter { it.isNotEmpty() }.joinToString(" · "))
+          .apply { MediaNow.artwork()?.let { setLargeIcon(it) } }
+          .setContentIntent(tap)
+          .setOngoing(now.playing)
+          .setOnlyAlertOnce(true)
+          .setVisibility(Notification.VISIBILITY_PUBLIC)
+          .setCategory(Notification.CATEGORY_TRANSPORT)
+          .addAction(button(android.R.drawable.ic_media_previous, "Previous", "previous"))
+          .addAction(
+            if (now.playing) button(android.R.drawable.ic_media_pause, "Pause", "pause")
+            else button(android.R.drawable.ic_media_play, "Play", "play")
+          )
+          .addAction(button(android.R.drawable.ic_media_next, "Next", "next"))
+          .setStyle(Notification.MediaStyle().setMediaSession(token).setShowActionsInCompactView(0, 1, 2))
+          .build()
+      }
       return NotificationCompat.Builder(context, CHANNEL)
         .setSmallIcon(icon)
         .setContentTitle(shown.title)
@@ -159,7 +204,9 @@ class KeepAliveService : Service() {
         .setContentIntent(tap)
         .apply {
           if (shown.progress in 0..100) setProgress(100, shown.progress, false)
-          else if (shown.progress < 0 && !reasons.containsKey("playback")) setProgress(0, 0, true)
+          else if (shown.progress < 0 && reasons.keys.none { it == "playback" || it == "music" }) {
+            setProgress(0, 0, true)
+          }
         }
         .build()
     }

@@ -70,9 +70,14 @@ export const android = {
   openDownload: (uri: string) => plugin<void>('open_download', { uri }),
   shareDownload: (uri: string) => plugin<void>('share_download', { uri }),
 
-  keepAlive: (reason: 'transfer' | 'playback', title: string, text: string, progress = -1) =>
+  /**
+   * Keeps the app running with the screen off, with a notification: a
+   * transfer, a film handed to another player (`playback`), or music, whose
+   * notification is the media player (see `systemMedia`).
+   */
+  keepAlive: (reason: 'transfer' | 'playback' | 'music', title: string, text: string, progress = -1) =>
     plugin<void>('keep_alive', { reason, title, text, progress }),
-  letGo: (reason: 'transfer' | 'playback') => plugin<void>('let_go', { reason }),
+  letGo: (reason: 'transfer' | 'playback' | 'music') => plugin<void>('let_go', { reason }),
   requestNotifications: () => plugin<{ granted: boolean }>('request_notifications'),
 
   setImmersive: (on: boolean) => plugin<void>('set_immersive', { on }),

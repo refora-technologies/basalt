@@ -22,6 +22,7 @@ import {
   setShuffle as shuffleOf,
   toListening,
 } from '@/lib/queue'
+import { claimPress, pressForKey } from '@/lib/systemMedia'
 import { useMpv } from '@/lib/useMpv'
 
 /**
@@ -115,43 +116,40 @@ export function MusicPlayer({
     [queue, paused, expanded, begin],
   )
 
+  // A new song starts at nothing: mpv's clock still says where the last one
+  // was until the next file opens, and the bar, the lock screen and the rest
+  // would show the new song that far in.
+  const playingNow = queue ? currentOf(queue) : null
+  const turn = queue?.at
+  useEffect(() => {
+    setClock((c) => ({ ...c, position: 0, duration: 0 }))
+  }, [playingNow, turn])
+
   const clockValue: MusicClock = useMemo(
     () => ({ ...clock, setVolume: (volume) => controls.current?.setVolume(volume) }),
     [clock],
   )
 
   // The keyboard's media keys, and a remote's, while music plays and the
-  // app is in front. (From the lock screen and the system's own controls is
-  // a separate piece: a media session.) A film open takes them for itself.
+  // app is in front. The lock screen and the system's own controls are
+  // `SystemMedia`'s. A film open takes the keys for itself.
   const keys = useRef(api_)
   keys.current = api_
   useEffect(() => {
     if (!queue) return undefined
     const onKey = (e: KeyboardEvent): void => {
-      const music = keys.current
-      switch (e.key) {
-        case 'MediaPlayPause':
-          music.togglePause()
-          break
-        case 'MediaPlay':
-          if (music.paused) music.togglePause()
-          break
-        case 'MediaPause':
-          if (!music.paused) music.togglePause()
-          break
-        case 'MediaTrackNext':
-          music.next()
-          break
-        case 'MediaTrackPrevious':
-          music.previous()
-          break
-        case 'MediaStop':
-          music.stop()
-          break
-        default:
-          return
-      }
+      const press = pressForKey(e.key)
+      if (!press) return
       e.preventDefault()
+      // The same key may reach the system's media controls too: one press.
+      if (!claimPress(press)) return
+      const music = keys.current
+      if (press === 'toggle') music.togglePause()
+      else if (press === 'play' && music.paused) music.togglePause()
+      else if (press === 'pause' && !music.paused) music.togglePause()
+      else if (press === 'next') music.next()
+      else if (press === 'previous') music.previous()
+      else if (press === 'stop') music.stop()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)

@@ -13,6 +13,8 @@ const COMMANDS: &[&str] = &[
     "take_shared",
     "keep_alive",
     "let_go",
+    "media_session",
+    "media_session_end",
     "set_immersive",
     "set_pip",
     "local_network",

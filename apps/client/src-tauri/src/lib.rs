@@ -21,6 +21,7 @@ use basalt_client::proxy::MediaProxy;
 use basalt_client::{Basalt, DiscoveredHost, Status, TransferEvent, UiError};
 use tauri::{Emitter, Manager, State};
 
+mod media_controls;
 #[cfg(target_os = "linux")]
 mod linux_player;
 #[cfg(target_os = "linux")]
@@ -1718,6 +1719,8 @@ pub fn run() {
             linux_mpv_destroy,
             release_pointer,
             page_log,
+            media_controls::media_controls_show,
+            media_controls::media_controls_clear,
             app_version,
             check_update,
             release_notes,

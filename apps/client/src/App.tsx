@@ -90,7 +90,7 @@ import { useMusic } from '@/lib/useMusic'
 import { MusicPlayer } from '@/components/music/MusicPlayer'
 import { MusicSection } from '@/components/music/MusicSection'
 import { MusicBar, NowPlaying } from '@/components/music/NowPlaying'
-import { MusicBridge, useMusicProps } from '@/components/music/useMusicActions'
+import { MusicBridge, SystemMedia, useMusicProps } from '@/components/music/useMusicActions'
 import { useMusicMine } from '@/lib/useMusicMine'
 import { entriesToMedia, isMediaFile, nextEpisodes } from '@/lib/media'
 import type { MediaItem } from '@/lib/mockMedia'
@@ -1449,6 +1449,7 @@ export function App(): React.JSX.Element {
   return (
     <MusicPlayer onStarts={() => model.setPlaying(null)} onListening={model.musicMine.setListening}>
       <MusicBridge model={model} />
+      <SystemMedia model={model} />
       {mobile ? <MobileApp model={model} /> : <DesktopApp model={model} />}
     </MusicPlayer>
   )
