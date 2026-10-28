@@ -20,6 +20,19 @@ const INSTALLERS: &[&str] = &[
     "Basalt-Android.apk",
 ];
 
+/// Whether `dir` is empty, or soon is. On Windows a file deleted while
+/// something else has it open (an antivirus reading a new installer) is still
+/// listed until that lets go, though the deletion has been done.
+async fn gone_soon(dir: &std::path::Path) -> bool {
+    for _ in 0..50 {
+        if std::fs::read_dir(dir).unwrap().next().is_none() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    false
+}
+
 /// What the pretend GitHub serves, and what was asked of it.
 #[derive(Default)]
 struct Served {
@@ -198,10 +211,7 @@ async fn only_a_signed_release_is_installed() {
         Err(UpdateError::ChecksumMismatch)
     ));
     assert!(!into.join(&offer.installer_name).exists());
-    assert!(
-        std::fs::read_dir(&into).unwrap().next().is_none(),
-        "nothing left behind"
-    );
+    assert!(gone_soon(&into).await, "nothing left behind");
 
     // Signed, but not with the release key: nothing downloaded at all.
     set(

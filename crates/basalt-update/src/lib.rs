@@ -507,12 +507,12 @@ pub async fn fetch(
         let next = tokio::time::timeout(STALL_TIMEOUT, stream.next()).await;
         let chunk = match next {
             Err(_) => {
-                let _ = std::fs::remove_file(&part);
+                discard(&part).await;
                 return Err(UpdateError::Stalled);
             }
             Ok(None) => break,
             Ok(Some(Err(e))) => {
-                let _ = std::fs::remove_file(&part);
+                discard(&part).await;
                 return Err(UpdateError::Network(e.to_string()));
             }
             Ok(Some(Ok(chunk))) => chunk,
@@ -531,7 +531,7 @@ pub async fn fetch(
     if !got.eq_ignore_ascii_case(&expected) {
         // Removed, not left lying about. A file that failed its check is not
         // something to leave on disk where somebody might run it by hand.
-        let _ = std::fs::remove_file(&part);
+        discard(&part).await;
         return Err(UpdateError::ChecksumMismatch);
     }
 
@@ -539,6 +539,24 @@ pub async fn fetch(
     std::fs::rename(&part, &target).map_err(|e| UpdateError::Io(e.to_string()))?;
     Ok(target)
 }
+
+/// Removes a download that is not to be kept. On Windows a file just written
+/// can be held for a moment by whatever looks at new files, an antivirus
+/// reading a new installer, and the removal is refused: tried again for a
+/// while rather than left on disk, where somebody might run it by hand.
+async fn discard(path: &Path) {
+    for _ in 0..DISCARD_TRIES {
+        match std::fs::remove_file(path) {
+            Ok(()) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    tracing::warn!("could not remove {}", path.display());
+}
+
+/// About two seconds of asking.
+const DISCARD_TRIES: u32 = 20;
 
 /// Whether a signed `SHA256SUMS` is one the apps accept for `name` in release
 /// `version`, checked with the public key given as text, and the digest it
