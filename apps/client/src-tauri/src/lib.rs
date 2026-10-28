@@ -1523,6 +1523,16 @@ async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
     }
 }
 
+/// The folder a development copy keeps to, set by `BASALT_DEV_ISOLATED`:
+/// see `run`. Always none in a release build.
+fn dev_isolated() -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        std::env::var_os("BASALT_DEV_ISOLATED").map(PathBuf::from)
+    } else {
+        None
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Asked by the uninstaller when the app's data is deleted with it: the
@@ -1547,6 +1557,19 @@ pub fn run() {
         "--autoplay-policy=no-user-gesture-required",
     );
 
+    // A development copy run beside the Basalt installed on the same computer:
+    // its own settings, its own web storage, a key in memory instead of the
+    // TPM, and the page open to Chrome's developer tools on a port. Debug
+    // builds only; `BASALT_DEV_ISOLATED` names the folder it keeps to.
+    #[cfg(all(windows, debug_assertions))]
+    if let Some(folder) = dev_isolated() {
+        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", folder.join("webview"));
+        std::env::set_var(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--autoplay-policy=no-user-gesture-required --remote-debugging-port=9223",
+        );
+    }
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
@@ -1563,7 +1586,10 @@ pub fn run() {
             #[cfg(mobile)]
             let store_path = app.path().app_data_dir()?.join("client.json");
             #[cfg(desktop)]
-            let store_path = basalt_client::store::default_path();
+            let store_path = match dev_isolated() {
+                Some(folder) => folder.join("client.json"),
+                None => basalt_client::store::default_path(),
+            };
             // With the device's lasting id, so a reinstall is the same device
             // on the host rather than another of the same name. On Android the
             // id comes from the Java side; on Windows the client asks itself.
@@ -1581,10 +1607,14 @@ pub fn run() {
                 Some(Arc::new(PhoneKeyStore(app.handle().clone())));
             #[cfg(desktop)]
             let phone: Option<Arc<dyn basalt_client::keys::PhoneKeys>> = None;
-            let client = Arc::new(Basalt::open_as_this_device_with_keys(
+            let keys = match dev_isolated() {
+                Some(_) => basalt_client::keys::Policy::Software,
+                None => basalt_client::keys::Policy::Platform(phone),
+            };
+            let client = Arc::new(Basalt::open_as_this_device_with_policy(
                 store_path,
                 hint.as_deref(),
-                phone,
+                keys,
             )?);
 
             // Registered **before** anything else in this closure.
