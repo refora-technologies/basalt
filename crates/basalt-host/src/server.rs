@@ -604,6 +604,57 @@ impl Host {
         }
     }
 
+    /// Where an episode's intro and credits are, for the player that opens
+    /// it. Found by the host while idle; an episode not looked at yet has its
+    /// own chapters read now, which takes a moment, so a new episode whose
+    /// chapters name them has its buttons the first time it plays. Kept only
+    /// when they do: the sound shared with the other episodes is still
+    /// compared while idle for the rest.
+    pub async fn segments_for(&self, rel: &str) -> basalt_proto::msg::SegmentsResponse {
+        if self
+            .segments
+            .lock()
+            .expect("segments lock")
+            .contains_key(rel)
+        {
+            return self.segments_of(rel);
+        }
+        let none = basalt_proto::msg::SegmentsResponse::default();
+        let (Some(ffmpeg), Some(serving)) = (self.converter.ffmpeg(), self.serving().await) else {
+            return none;
+        };
+        let vault = Arc::clone(&serving.vault);
+        let (Ok(entry), Ok(path)) = (vault.stat(rel), vault.resolve(rel)) else {
+            return none;
+        };
+        let (intro, credits) = tokio::task::spawn_blocking(move || {
+            crate::media::segments::from_file_chapters(&ffmpeg, &path)
+        })
+        .await
+        .unwrap_or((None, None));
+        if intro.is_none() && credits.is_none() {
+            return none;
+        }
+        let snapshot = {
+            let mut store = self.segments.lock().expect("segments lock");
+            store.insert(
+                rel.to_string(),
+                crate::media::segments::Found {
+                    size: entry.size,
+                    mtime: entry.mtime,
+                    intro,
+                    credits,
+                },
+            );
+            store.clone()
+        };
+        let path = crate::media::segments::store_path(self.config_dir(), &serving.root);
+        if let Err(e) = crate::media::segments::save(&path, &snapshot) {
+            tracing::warn!("could not save the intros and credits found: {e}");
+        }
+        basalt_proto::msg::SegmentsResponse { intro, credits }
+    }
+
     /// Looks for intros and credits while the host has nothing else to do,
     /// for as long as it runs: one season (or one film) at a time, each when
     /// nothing has been streamed or converted for a minute. Started once.
@@ -4776,7 +4827,7 @@ where
 
         Op::Segments => {
             let req: basalt_proto::msg::SegmentsRequest = decode(payload)?;
-            reply(stream, &host.segments_of(&req.path)).await?;
+            reply(stream, &host.segments_for(&req.path).await).await?;
         }
 
         Op::MusicMine => {

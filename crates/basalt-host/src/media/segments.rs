@@ -242,6 +242,14 @@ pub fn from_chapters(chapters: &[Chapter], duration: f64) -> (Option<[f64; 2]>, 
     (intro, credits)
 }
 
+/// What a file's own chapters say of its intro and credits: quick, since
+/// only the file's header is read. Blocking.
+pub fn from_file_chapters(ffmpeg: &Path, path: &Path) -> (Option<[f64; 2]>, Option<f64>) {
+    probe(ffmpeg, path)
+        .map(|(duration, chapters)| from_chapters(&chapters, duration))
+        .unwrap_or((None, None))
+}
+
 /// A file's length in seconds, read by ffmpeg.
 pub fn duration(ffmpeg: &Path, path: &Path) -> Option<f64> {
     probe(ffmpeg, path).map(|(d, _)| d).filter(|d| *d > 0.0)
