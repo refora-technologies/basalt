@@ -544,6 +544,14 @@ async fn a_host_is_reached_by_its_computers_name() {
         // the address the test host listens on.
         host["machine"] = "localhost".into();
     });
+    // How long this machine takes, right now, to say nothing answers at the
+    // remembered address: on Windows about two seconds, and more on a busy
+    // machine. Tried first by the client too, and not what is measured.
+    let refused = {
+        let at = std::time::Instant::now();
+        let _ = tokio::net::TcpStream::connect(("127.0.0.2", port)).await;
+        at.elapsed()
+    };
     let client = fixture.client();
     let started = std::time::Instant::now();
     let info = client
@@ -552,10 +560,11 @@ async fn a_host_is_reached_by_its_computers_name() {
         .expect("found by the computer's name");
     assert_eq!(info.address, fixture.addr);
     // Not held up by the names that do not resolve: "localhost.local" takes
-    // Windows five seconds to give up on.
+    // Windows five seconds to give up on. A fixed limit failed now and then
+    // while every other test ran beside this one: the refusal above grew.
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(4),
-        "took {:?}",
+        started.elapsed() < refused + std::time::Duration::from_secs(3),
+        "took {:?}, of which {refused:?} saying nothing answers at the old address",
         started.elapsed()
     );
 }
