@@ -48,6 +48,14 @@ describe('trackInfo', () => {
     })
     expect(trackInfo('song.mp3')).toMatchObject({ title: 'song', artist: '', album: '' })
   })
+
+  it('does not take the folders the music folder is kept in for an artist or album', () => {
+    expect(trackInfo('Code/video/music/rise.mp3')).toMatchObject({ artist: '', album: '' })
+    expect(trackInfo('Basalt Test/Music/The Quiet Coast/Harbour Lights/01 Opening.mp3')).toMatchObject({
+      artist: 'The Quiet Coast',
+      album: 'Harbour Lights',
+    })
+  })
 })
 
 describe('names', () => {

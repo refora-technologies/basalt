@@ -8,6 +8,7 @@ import {
   formatDuration,
   isMusic,
   leadArtist,
+  nameParts,
   recentAlbums,
   searchMusic,
   songFromFile,
@@ -181,7 +182,64 @@ describe('isMusic', () => {
   it('keeps songs, and anything tagged as music wherever it is', () => {
     expect(isMusic(song('Music/Juniper Vale/Lowlight/01 Slow Tide.flac'), false)).toBe(true)
     expect(isMusic(song('Music/Records/Blue Hour.mp3'), false)).toBe(true)
-    expect(isMusic(song('1999.mp3'), false)).toBe(true)
+    expect(isMusic(song('Basalt Test/Music/The Quiet Coast/Harbour Lights/01 Opening.flac'), false)).toBe(true)
     expect(isMusic(song('WhatsApp/Media/Audio/Lanterns.mp3'), true)).toBe(true)
+  })
+
+  it('needs something saying it is music: sounds of programs, games and projects stay in Files', () => {
+    // From a real drive shared whole: 9 of its 537 sound files were songs.
+    const long = (path: string) => ({ ...song(path), durationMs: 200_000 })
+    for (const path of [
+      '1999.mp3',
+      'Program Files/Steam/steamui/sounds/deck_ui_launch_game.wav',
+      'Program Files/Recorder/data/start.wav',
+      'Code/analysis/.venv/Lib/site-packages/scipy/io/tests/data/test-44100Hz-le-1ch-4bytes.wav',
+      'Coursework/Projects/voice-test/assist/espeak-ng-1.52.0/phsource/ustop/p',
+      'Coursework/Projects/game/My project 1/Library/PackageCache/com.unity.timeline@1.6.5/Samples~/GameplaySequenceDemo/Audio/Music.wav',
+      'Code/podcast/build/voice/episode-09/full-take1.mp3',
+      'Code/video/remotion/public/voice/line-03.mp3',
+      'Code/app/target/test/ep1.mka',
+      'New folder (3)/Coursework/Assignments/Web/Game/frontback.mp3',
+      'Games/Some Game/Music/theme.ogg'.replace('Games/', 'Steam/'),
+    ]) {
+      expect(isMusic(long(path), false), path).toBe(false)
+    }
+  })
+
+  it('takes "Artist - Title" names for songs when they are song-length', () => {
+    const named = (path: string, durationMs: number | null) => ({ ...song(path), durationMs })
+    expect(isMusic(named('Downloads/Ana Marlow - Slow Tide (Lyrics).mp3', 201_000), false)).toBe(true)
+    expect(isMusic(named('Downloads/Ana - Hi.mp3', 40_000), false)).toBe(false)
+    expect(isMusic(named('Downloads/Ana - Hi.mp3', null), false)).toBe(false)
+  })
+})
+
+describe('nameParts', () => {
+  it('reads who and what from names of downloaded songs', () => {
+    const cases: [string, string, string][] = [
+      ['Northline - Paper Lanterns (feat. Ada Moss with The Night Office)', 'Northline', 'Paper Lanterns (feat. Ada Moss with The Night Office)'],
+      ['Glass Arcade - Come Back Home feat. Ines Hale (NORTHBOUND Remix)', 'Glass Arcade', 'Come Back Home feat. Ines Hale (NORTHBOUND Remix)'],
+      ['Kavee - Sanda Eliya ft Mihi Sanda Eliya Album Official Audio', 'Kavee', 'Sanda Eliya ft Mihi Sanda Eliya'],
+      ['Dilan Perera - Nil Akasa (Official Music Video)', 'Dilan Perera', 'Nil Akasa'],
+      ['Far Coast - Where We Began (feat. Rue) Melodic Dubstep NCS - Copyright Free Music', 'Far Coast', 'Where We Began (feat. Rue)'],
+      ['Ana Marlow - Slow Tide (Lyrics)', 'Ana Marlow', 'Slow Tide'],
+      ['AC-DC - Back in Black [Official Video]', 'AC-DC', 'Back in Black'],
+      ['07. Juniper Vale - Lanterns', 'Juniper Vale', 'Lanterns'],
+      ['Juniper_Vale_-_Lanterns', 'Juniper Vale', 'Lanterns'],
+    ]
+    for (const [stem, artist, title] of cases) expect(nameParts(stem), stem).toEqual({ artist, title })
+  })
+
+  it('leaves other names alone', () => {
+    for (const stem of ['01 Opening', 'full-take1', 'ep1', 'Track 05', '2024 - 01']) {
+      expect(nameParts(stem), stem).toBeNull()
+    }
+  })
+
+  it('makes an untagged downloaded song a single of its own', () => {
+    const song = songFromFile({ path: 'Downloads/Music/Ana Marlow - Slow Tide (Lyrics).mp3', size: 1, mtime: 1 })
+    expect([song.title, song.artist, song.album]).toEqual(['Slow Tide', 'Ana Marlow', 'Slow Tide'])
+    const tagged = songOf(track('x/Ana - Hi.mp3', { title: 'Hello', artist: 'Ana' }))
+    expect([tagged.title, tagged.artist]).toEqual(['Hello', 'Ana'])
   })
 })

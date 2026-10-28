@@ -15,7 +15,7 @@
  */
 
 import type { MediaFile, MusicTrack } from './api'
-import { trackInfo } from './mediaInfo'
+import { stemOf, trackInfo } from './mediaInfo'
 
 export interface Song {
   path: string
@@ -68,14 +68,22 @@ const clean = (value: string | null | undefined): string | null => {
   return trimmed ? trimmed : null
 }
 
-/** A song from the host's tags, with the file's own place for what is missing. */
+/**
+ * A song from the host's tags, with the file's own name and place for what is
+ * missing. A song downloaded with no tags is usually named "Artist - Title",
+ * and then that is who and what it is, a single of its own; otherwise the
+ * folders say, as `Music/Artist/Album/01 Title.flac`.
+ */
 export function songOf(track: MusicTrack): Song {
   const guessed = trackInfo(track.path)
+  const named = clean(track.title) || clean(track.artist) ? null : nameParts(stemOf(track.path))
+  const title = clean(track.title) ?? named?.title ?? guessed.title
   return {
     path: track.path,
-    title: clean(track.title) ?? guessed.title,
-    artist: clean(track.artist) ?? clean(track.albumArtist) ?? (guessed.artist || UNKNOWN_ARTIST),
-    album: clean(track.album) ?? (guessed.album || UNKNOWN_ALBUM),
+    title,
+    artist:
+      clean(track.artist) ?? clean(track.albumArtist) ?? named?.artist ?? (guessed.artist || UNKNOWN_ARTIST),
+    album: clean(track.album) ?? (named ? title : guessed.album || UNKNOWN_ALBUM),
     albumArtist: clean(track.albumArtist),
     track: track.track ?? guessed.number,
     disc: track.disc ?? null,
@@ -107,6 +115,73 @@ const NOT_MUSIC_FOLDERS: RegExp[] = [
   /^(podcasts?|audiobooks?)$/,
 ]
 
+/**
+ * Folders that hold music, by their names: wherever one is on a song's path,
+ * what is under it is taken for music unless it says otherwise.
+ */
+const MUSIC_FOLDERS = new Set([
+  'music',
+  'my music',
+  'songs',
+  'song',
+  'albums',
+  'singles',
+  'playlists',
+  'mp3',
+  'mp3s',
+  'flac',
+  'itunes',
+  'itunes media',
+  'musik',
+  'musique',
+  'musica',
+  'música',
+  'muziek',
+  'sindu',
+])
+
+/**
+ * Folders of programs, games and projects: their sounds are not anybody's
+ * music, even in a folder of theirs named Music. Matched whole, ignoring
+ * case; a hidden folder (".venv", ".cache") counts too.
+ */
+const PROGRAM_FOLDERS = new Set([
+  'node_modules',
+  'venv',
+  'site-packages',
+  'packagecache',
+  'program files',
+  'program files (x86)',
+  'programdata',
+  'appdata',
+  'windows',
+  'steam',
+  'steamapps',
+  'installed softwares',
+  'assets',
+  'resources',
+  'resource',
+  'public',
+  'src',
+  'build',
+  'dist',
+  'out',
+  'bin',
+  'obj',
+  'debug',
+  'tests',
+  'test',
+  'data',
+  'sounds',
+  'sfx',
+  'cache',
+  'temp',
+  'tmp',
+])
+
+/** An untagged song named "Artist - Title" is at least this long. */
+const SHORTEST_NAMED_SONG_MS = 60_000
+
 /** Untagged audio shorter than this is a sound, not a song. */
 const SHORTEST_SONG_MS = 30_000
 
@@ -121,10 +196,14 @@ const NOT_MUSIC_NAMES: RegExp[] = [
 ]
 
 /**
- * Whether a song belongs in Music, not just in Files: a phone's recordings
- * and voice notes are audio files too, and once read they filled Music with
- * phone numbers. Anything tagged with an artist and an album is music,
- * wherever it is kept.
+ * Whether a song belongs in Music, not just in Files.
+ *
+ * A drive shared whole holds far more sound than music: programs' and games'
+ * sounds, a project's voice takes, a phone's recordings. On one real drive
+ * nine of 537 sound files were songs. So music needs something saying it is:
+ * tags naming who it is by; a folder for music on its path (not inside a
+ * program's); or a name like "Artist - Title" on something song-length. All
+ * the rest stays in Files, and plays there as before.
  */
 export function isMusic(song: Song, tagged: boolean): boolean {
   if (tagged) return true
@@ -135,7 +214,99 @@ export function isMusic(song: Song, tagged: boolean): boolean {
   if (folders.some((f) => NOT_MUSIC_FOLDERS.some((re) => re.test(f)))) return false
   const name = parts[parts.length - 1]!
   const stem = name.includes('.') ? name.slice(0, name.lastIndexOf('.')) : name
-  return !NOT_MUSIC_NAMES.some((re) => re.test(stem.trim()))
+  if (NOT_MUSIC_NAMES.some((re) => re.test(stem.trim()))) return false
+  if (folders.some((f) => PROGRAM_FOLDERS.has(f) || f.startsWith('.'))) return false
+  if (folders.some((f) => MUSIC_FOLDERS.has(f))) return true
+  return nameParts(stem) !== null && song.durationMs !== null && song.durationMs >= SHORTEST_NAMED_SONG_MS
+}
+
+/** Words that say how a song was posted, not what it is called. */
+const POSTED =
+  /\b(official|music video|video|audio|lyrics?|lyric video|visuali[sz]er|hd|hq|4k|8k|mv|m\/v|full song|ncs( release)?|no copyright|copyright free( music)?|free download|out now|explicit|audio only|remaster(ed)?( \d{4})?)\b/i
+
+/** Such words left trailing after a title. */
+const POSTED_WORDS = new Set([
+  'official',
+  'audio',
+  'video',
+  'music',
+  'lyrics',
+  'lyric',
+  'visualizer',
+  'visualiser',
+  'hd',
+  'hq',
+  '4k',
+  'mv',
+  'album',
+  'song',
+  'full',
+  'ncs',
+  'release',
+  'copyright',
+  'free',
+])
+
+/** Kinds of music a channel names before "NCS" in its titles. */
+const STYLE_WORDS = new Set([
+  'melodic',
+  'dubstep',
+  'house',
+  'trap',
+  'edm',
+  'electronic',
+  'dnb',
+  'drum',
+  'bass',
+  'future',
+  'chill',
+  'lofi',
+  'hip',
+  'hop',
+  'pop',
+  'progressive',
+  'deep',
+])
+
+/**
+ * Who and what a song is, from a name like "Artist - Title (Official Video)",
+ * the way songs downloaded from video sites are named. Null when the name is
+ * not of that shape: "01 Opening", "full-take1".
+ */
+export function nameParts(stem: string): { artist: string; title: string } | null {
+  let name = stem.includes(' ') ? stem : stem.replace(/_/g, ' ')
+  // A track number before it all: "01 - Ana - Lanterns", "07. Ana - Lanterns".
+  name = name.replace(/^\s*\d{1,3}\s*[-.)]\s+/, '')
+  const split = /^(.+?)\s+[-\u2013\u2014]\s+(.+)$/.exec(name)
+  if (!split) return null
+  const artist = tidy(split[1]!)
+  // More " - " parts after the title: kept unless they only say how it was posted.
+  const rest = split[2]!
+    .split(/\s+[-\u2013\u2014]\s+/)
+    .filter((part, i) => i === 0 || !POSTED.test(part))
+    .join(' - ')
+  // Trailing words that say how it was posted, and the kinds of music a
+  // channel names with them: "Where We Started Melodic Dubstep NCS".
+  const words = tidy(rest).split(' ')
+  let dropped = false
+  while (words.length > 1) {
+    const last = words[words.length - 1]!.toLowerCase()
+    if (POSTED_WORDS.has(last) || (dropped && STYLE_WORDS.has(last))) {
+      dropped ||= last === 'ncs'
+      words.pop()
+    } else break
+  }
+  const title = words.join(' ').replace(/[\s\-|:,]+$/, '').trim()
+  if (!/\p{L}/u.test(artist) || !/\p{L}/u.test(title) || artist.length > 60) return null
+  return { artist, title }
+}
+
+/** Brackets saying how it was posted taken out, and the spaces closed up. */
+function tidy(text: string): string {
+  return text
+    .replace(/\s*[([{]([^)\]}]*)[)\]}]/g, (whole, inside: string) => (POSTED.test(inside) ? '' : whole))
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 /** Who sings it first: "Ana feat. Bo" is Ana's. */

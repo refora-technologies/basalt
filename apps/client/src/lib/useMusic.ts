@@ -97,7 +97,7 @@ export function useMusic(host: string | null, files: MediaFile[]): MusicState {
       untagged || tracks === null
         ? files.map(songFromFile).filter((song) => isMusic(song, false))
         : tracks
-            .map((track) => ({ song: songOf(track), tagged: !!track.artist && !!track.album }))
+            .map((track) => ({ song: songOf(track), tagged: !!track.artist?.trim() && !!(track.album?.trim() || track.title?.trim()) }))
             .filter(({ song, tagged }) => isMusic(song, tagged))
             .map(({ song }) => song),
     [untagged, tracks, files],
