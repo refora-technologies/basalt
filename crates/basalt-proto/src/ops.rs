@@ -150,6 +150,9 @@ pub enum Op {
     /// The profile's playlists and where it was listening, read or replaced:
     /// see [`crate::msg::MusicMineRequest`].
     MusicMine = 40,
+    /// Where a film's or an episode's intro and credits are, when the host
+    /// has found them: see [`crate::msg::SegmentsRequest`].
+    Segments = 41,
 }
 
 impl Op {
@@ -158,7 +161,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::MusicMine as u8;
+    pub const LAST: u8 = Op::Segments as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -202,6 +205,7 @@ impl Op {
             38 => Op::PairPake,
             39 => Op::Music,
             40 => Op::MusicMine,
+            41 => Op::Segments,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -384,6 +388,7 @@ mod tests {
             Op::Endorse,
             Op::Music,
             Op::MusicMine,
+            Op::Segments,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

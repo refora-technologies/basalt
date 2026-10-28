@@ -847,6 +847,19 @@ impl Session {
             .map_err(Into::into)
     }
 
+    /// Where a film's or an episode's intro and credits are.
+    pub async fn segments(&mut self, path: &str) -> Result<basalt_proto::msg::SegmentsResponse> {
+        call_json(
+            &mut self.stream,
+            Op::Segments,
+            &basalt_proto::msg::SegmentsRequest {
+                path: path.to_string(),
+            },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
     /// A preview image of a video or photo, as JPEG bytes.
     pub async fn thumbnail(&mut self, path: &str, size: u32) -> Result<Vec<u8>> {
         write_request(

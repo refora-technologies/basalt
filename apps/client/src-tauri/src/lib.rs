@@ -649,6 +649,15 @@ async fn music_mine(
     Ok(state.client.music_mine(request).await?)
 }
 
+/// Where a film's or an episode's intro and credits are.
+#[tauri::command]
+async fn segments(
+    state: State<'_, AppState>,
+    path: String,
+) -> Answer<basalt_proto::msg::SegmentsResponse> {
+    Ok(state.client.segments(&path).await?)
+}
+
 /// The start of every media URL; a percent-encoded vault path goes on the end,
 /// and `?thumb=320` makes it a thumbnail.
 #[tauri::command]
@@ -1728,6 +1737,7 @@ pub fn run() {
             collections,
             music,
             music_mine,
+            segments,
             identity,
             profiles,
             manage,

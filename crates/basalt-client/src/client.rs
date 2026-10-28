@@ -1675,6 +1675,15 @@ impl Basalt {
         lease.check(result)
     }
 
+    /// Where a film's or an episode's intro and credits are, as far as the
+    /// host has found. A host before 1.6.3 answers with an error.
+    pub async fn segments(&self, path: &str) -> Result<basalt_proto::msg::SegmentsResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.segments(path).await;
+        lease.check(result)
+    }
+
     /// A preview image of a video or photo, made by the host. JPEG.
     pub async fn thumbnail(&self, path: &str, size: u32) -> Result<Vec<u8>> {
         let pool = self.pool().await?;

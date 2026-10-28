@@ -345,7 +345,7 @@ impl Host {
 
     /// Whether a minute passes with nothing streamed or copied, and nothing
     /// being converted. Takes the minute to find out.
-    async fn quiet_for_a_minute(&self) -> bool {
+    pub(crate) async fn quiet_for_a_minute(&self) -> bool {
         let moved = |host: &Host| -> u64 { host.traffic().values().map(|t| t.total()).sum() };
         let before = moved(self);
         tokio::time::sleep(Duration::from_secs(60)).await;

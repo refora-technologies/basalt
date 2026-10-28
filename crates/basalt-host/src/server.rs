@@ -82,6 +82,9 @@ pub struct Host {
     music_again: std::sync::atomic::AtomicBool,
     /// Each profile's playlists and listening on this drive.
     music_mine: std::sync::Mutex<crate::media::music::Mine>,
+    /// Intros and credits found on this drive: see `media::segments`.
+    segments: std::sync::Mutex<crate::media::segments::Store>,
+    segment_finder: std::sync::atomic::AtomicBool,
     /// Thumbnails being made at once. Two: a grid scrolled quickly asks for
     /// dozens, and making them all together would starve everything else the
     /// host is doing — a film being streamed, most of all.
@@ -187,6 +190,13 @@ impl Host {
             )),
             None => crate::media::music::Mine::default(),
         };
+        let segments = match &config.vault_path {
+            Some(root) => crate::media::segments::load(&crate::media::segments::store_path(
+                config_path.parent().unwrap_or(std::path::Path::new(".")),
+                root,
+            )),
+            None => crate::media::segments::Store::default(),
+        };
 
         let config_dir = config_path
             .parent()
@@ -284,6 +294,8 @@ impl Host {
             music_reading: std::sync::atomic::AtomicBool::new(false),
             music_again: std::sync::atomic::AtomicBool::new(false),
             music_mine: std::sync::Mutex::new(music_mine),
+            segments: std::sync::Mutex::new(segments),
+            segment_finder: std::sync::atomic::AtomicBool::new(false),
             thumb_gate: tokio::sync::Semaphore::new(2),
             thumbs_written: std::sync::atomic::AtomicUsize::new(0),
             measured: std::sync::Mutex::new(measured),
@@ -559,6 +571,118 @@ impl Host {
         }
         self.announce(basalt_proto::msg::Change::LibraryChanged)
             .await;
+    }
+
+    /// Where a file's intro and credits are, as far as the host has found.
+    pub fn segments_of(&self, rel: &str) -> basalt_proto::msg::SegmentsResponse {
+        let store = self.segments.lock().expect("segments lock");
+        match store.get(rel) {
+            Some(found) => basalt_proto::msg::SegmentsResponse {
+                intro: found.intro,
+                credits: found.credits,
+            },
+            None => basalt_proto::msg::SegmentsResponse::default(),
+        }
+    }
+
+    /// Looks for intros and credits while the host has nothing else to do,
+    /// for as long as it runs: one season (or one film) at a time, each when
+    /// nothing has been streamed or converted for a minute. Started once.
+    pub fn start_segment_finder(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.segment_finder.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+            loop {
+                let worked = if host.quiet_for_a_minute().await {
+                    host.find_segments_once().await
+                } else {
+                    false
+                };
+                if !worked {
+                    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                }
+            }
+        });
+    }
+
+    /// The next season or film not looked at yet, looked at. Whether there
+    /// was one.
+    async fn find_segments_once(&self) -> bool {
+        let Some(ffmpeg) = self.converter.ffmpeg() else {
+            return false;
+        };
+        let Some(serving) = self.serving().await else {
+            return false;
+        };
+        let groups: Vec<Vec<String>> = {
+            let library = self.library.lock().expect("library lock");
+            library
+                .items
+                .iter()
+                .flat_map(|item| match item.kind {
+                    basalt_proto::msg::LibraryKind::Film => item
+                        .path
+                        .clone()
+                        .map(|p| vec![p])
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                    _ => item
+                        .seasons
+                        .iter()
+                        .map(|s| s.episodes.iter().map(|e| e.path.clone()).collect())
+                        .collect(),
+                })
+                .collect()
+        };
+        // Each file as it is now, to see which have changed since.
+        let vault = Arc::clone(&serving.vault);
+        let next = {
+            let store = self.segments.lock().expect("segments lock");
+            groups.into_iter().find_map(|group| {
+                let episodes: Vec<crate::media::segments::Episode> = group
+                    .iter()
+                    .filter_map(|rel| {
+                        let entry = vault.stat(rel).ok()?;
+                        Some(crate::media::segments::Episode {
+                            rel: rel.clone(),
+                            path: vault.resolve(rel).ok()?,
+                            size: entry.size,
+                            mtime: entry.mtime,
+                        })
+                    })
+                    .collect();
+                let stale = episodes.iter().any(|e| {
+                    store
+                        .get(&e.rel)
+                        .is_none_or(|f| f.size != e.size || f.mtime != e.mtime)
+                });
+                stale.then_some(episodes)
+            })
+        };
+        let Some(episodes) = next else {
+            return false;
+        };
+        let found =
+            tokio::task::spawn_blocking(move || crate::media::segments::find(&ffmpeg, &episodes))
+                .await
+                .unwrap_or_default();
+        let snapshot = {
+            let mut store = self.segments.lock().expect("segments lock");
+            if !self.still_serving(&serving) {
+                return true;
+            }
+            store.extend(found);
+            store.clone()
+        };
+        let path = crate::media::segments::store_path(self.config_dir(), &serving.root);
+        if let Err(e) = crate::media::segments::save(&path, &snapshot) {
+            tracing::warn!("could not save the intros and credits found: {e}");
+        }
+        true
     }
 
     /// One profile's playlists and listening, changed as asked and saved.
@@ -2135,6 +2259,9 @@ impl Host {
         *self.music_mine.lock().expect("music mine lock") = crate::media::music::load_mine(
             &crate::media::music::mine_path(self.config_dir(), &root),
         );
+        *self.segments.lock().expect("segments lock") = crate::media::segments::load(
+            &crate::media::segments::store_path(self.config_dir(), &root),
+        );
         *self.measured.lock().expect("measured lock") = crate::media::quality::Measured::load(
             &crate::media::quality::Measured::path_for(self.config_dir(), &root),
         );
@@ -2143,6 +2270,7 @@ impl Host {
         *self.subtitles.lock().expect("subtitles lock") = Arc::default();
 
         self.start_scan();
+        self.start_segment_finder();
         self.announce(basalt_proto::msg::Change::Resynchronise)
             .await;
     }
@@ -4155,6 +4283,11 @@ where
         Op::Collections => {
             let req: basalt_proto::msg::CollectionsRequest = decode(payload).unwrap_or_default();
             reply(stream, &host.collections_response(req.known_revision)).await?;
+        }
+
+        Op::Segments => {
+            let req: basalt_proto::msg::SegmentsRequest = decode(payload)?;
+            reply(stream, &host.segments_of(&req.path)).await?;
         }
 
         Op::MusicMine => {

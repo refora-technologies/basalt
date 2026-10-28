@@ -15,6 +15,7 @@ pub mod music;
 pub mod parse;
 pub mod progress;
 pub mod quality;
+pub mod segments;
 pub mod subs;
 pub mod thumbs;
 

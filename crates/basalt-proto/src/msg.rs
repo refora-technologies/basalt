@@ -939,6 +939,27 @@ pub struct Listening {
     pub updated: i64,
 }
 
+/// Asks where a film's or an episode's intro and credits are.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentsRequest {
+    /// Vault-relative.
+    pub path: String,
+}
+
+/// Where they are, as far as the host has found: nothing yet, for a file it
+/// has not looked at or found nothing in.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SegmentsResponse {
+    /// Start and end of the intro, in seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<[f64; 2]>,
+    /// Where the credits start, in seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits: Option<f64>,
+}
+
 // ---------------------------------------------------------------------------
 // Profiles
 // ---------------------------------------------------------------------------

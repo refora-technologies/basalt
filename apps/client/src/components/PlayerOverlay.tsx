@@ -30,7 +30,7 @@ import {
 import { SubtitleStylePanel } from './SubtitleStylePanel'
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
-import { ApiError, api, inTauri, type SubtitleTrack } from '@/lib/api'
+import { ApiError, api, inTauri, type Segments, type SubtitleTrack } from '@/lib/api'
 import { chosenFor, mergeDriveSubtitles, otherSubtitles, rememberChosen } from '@/lib/driveSubtitles'
 import { onExternalFileDrop, pickSubtitleFile } from '@/lib/dialogs'
 import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
@@ -293,6 +293,30 @@ export function PlayerOverlay({
     }
   }
 
+  /**
+   * Where this film's or episode's intro and credits are, if the host has
+   * found them: for Skip intro and Next episode, and so that reaching the
+   * credits counts as watched.
+   */
+  const [segments, setSegments] = useState<Segments | null>(null)
+  const segmentsRef = useRef(segments)
+  segmentsRef.current = segments
+  useEffect(() => {
+    setSegments(null)
+    if (!item) return undefined
+    let cancelled = false
+    // A host before 1.6.3 does not know the request: no buttons, as before.
+    api
+      .segments(item.id)
+      .then((found) => {
+        if (!cancelled) setSegments(found)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [item])
+
   // Reported on a timer rather than on every tick, which would be several
   // network calls a second.
   useEffect(() => {
@@ -300,7 +324,12 @@ export function PlayerOverlay({
     const mine = item.id
     const tell = (): void => {
       const { path, position, duration } = latest.current
-      if (path === mine && duration > 0) report.current?.(path, position, duration)
+      if (path !== mine || duration <= 0) return
+      // Into the credits is watched: reported as the end, so it counts as
+      // finished and the next episode is the one to carry on with.
+      const credits = segmentsRef.current?.credits
+      const done = credits !== null && credits !== undefined && position >= credits
+      report.current?.(path, done ? duration : position, duration)
     }
     const timer = setInterval(tell, 10_000)
 
@@ -1712,6 +1741,18 @@ export function PlayerOverlay({
               )}
             </AnimatePresence>
 
+            {/* Skip intro, and Next episode at the credits. */}
+            <SegmentButton
+              segments={segments}
+              position={mpv.position}
+              duration={mpv.duration}
+              raised={showControls}
+              nextUp={nextUp && onPlayNext ? nextUp : null}
+              onSkipTo={(seconds) => void mpv.seekTo(seconds)}
+              onNext={() => nextUp && onPlayNext?.(nextUp.path)}
+              onEnd={onClose}
+            />
+
             {/* What is paused, and what is next. */}
             <AnimatePresence>
               {mpv.paused && mpv.picture && !mpv.buffering && !menu && (
@@ -2845,4 +2886,74 @@ const SUBTITLE_EXTENSIONS = new Set(['srt', 'ass', 'ssa', 'vtt', 'sub', 'sup', '
 function isSubtitleFile(path: string): boolean {
   const dot = path.lastIndexOf('.')
   return dot > 0 && SUBTITLE_EXTENSIONS.has(path.slice(dot + 1).toLowerCase())
+}
+
+/**
+ * Skip intro, while the intro plays; Next episode (or, for a film, Skip
+ * credits) once the credits start. Offered, never done by itself: a button
+ * bottom right, above the controls when they are up. On a TV it takes the
+ * focus when it appears, so OK presses it.
+ */
+function SegmentButton({
+  segments,
+  position,
+  duration,
+  raised,
+  nextUp,
+  onSkipTo,
+  onNext,
+  onEnd,
+}: {
+  segments: Segments | null
+  position: number
+  duration: number
+  raised: boolean
+  nextUp: { path: string; label: string } | null
+  onSkipTo: (seconds: number) => void
+  onNext: () => void
+  onEnd: () => void
+}): React.JSX.Element | null {
+  const intro = segments?.intro
+  const credits = segments?.credits
+  const inIntro = !!intro && position >= intro[0] && position < intro[1] - 1
+  const inCredits =
+    credits !== null && credits !== undefined && position >= credits && (duration <= 0 || position < duration - 1)
+  const kind: 'intro' | 'next' | 'credits' | null = inIntro
+    ? 'intro'
+    : inCredits
+      ? nextUp
+        ? 'next'
+        : 'credits'
+      : null
+
+  const button = useRef<HTMLButtonElement | null>(null)
+  useEffect(() => {
+    if (kind && TV) button.current?.focus()
+  }, [kind])
+
+  if (!kind) return null
+  const label = kind === 'intro' ? 'Skip intro' : kind === 'next' ? 'Next episode' : 'Skip credits'
+  return (
+    <motion.button
+      ref={button}
+      key={kind}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      onClick={(e) => {
+        e.stopPropagation()
+        if (kind === 'intro') onSkipTo(intro![1])
+        else if (kind === 'next') onNext()
+        else onEnd()
+      }}
+      title={kind === 'next' && nextUp ? `Next: ${nextUp.label}` : undefined}
+      className={cn(
+        'absolute right-5 z-[3] flex h-11 items-center gap-2 rounded-lg border border-white/25 bg-black/55 px-5 text-[14px] font-semibold text-white backdrop-blur-md transition-[bottom] duration-200 hover:bg-white hover:text-black focus-visible:bg-white focus-visible:text-black',
+        raised ? 'bottom-28' : 'bottom-8',
+      )}
+    >
+      {label}
+      {kind !== 'credits' && <SkipForward size={16} className="fill-current" />}
+    </motion.button>
+  )
 }

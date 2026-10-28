@@ -407,6 +407,14 @@ export interface MusicMine {
   listening?: Listening | null
 }
 
+/** Where a film's or an episode's intro and credits are. Mirrors `SegmentsResponse`. */
+export interface Segments {
+  /** Start and end of the intro, in seconds. */
+  intro?: [number, number] | null
+  /** Where the credits start, in seconds. */
+  credits?: number | null
+}
+
 /** Below this, a match is a guess worth showing the user. Mirrors the Rust. */
 export const CONFIDENT = 70
 
@@ -631,6 +639,8 @@ export const api = {
   /** Every video, song and photo on the drive, sorted by the host. */
   collections: (knownRevision: number) =>
     call<CollectionsResponse>('collections', { knownRevision }),
+  /** Intro and credits, as far as the host has found. Throws on a host before 1.6.3. */
+  segments: (path: string) => call<Segments>('segments', { path }),
   /** Songs with tags. Throws on a host before 1.6.3, which does not know it. */
   music: (knownRevision: number) => call<MusicResponse>('music', { knownRevision }),
   /**
@@ -1324,6 +1334,9 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
         reading: false,
         tracks: args?.knownRevision === 1 ? null : showcase.music(),
       } as T
+    // The browser preview: an intro early on, to see the button.
+    case 'segments':
+      return { intro: [4, 30] } as T
     case 'music_mine': {
       const request = (args?.request ?? {}) as { playlists?: Playlist[]; listening?: Listening }
       if (request.playlists) mockMusicMine.playlists = request.playlists
