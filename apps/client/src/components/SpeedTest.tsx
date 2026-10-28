@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils'
  * it. Measured over the connection films and uploads use, so it is what
  * they get — the network, not the internet, and not the drive.
  */
-export function SpeedTest({ compact }: { compact?: boolean }): React.JSX.Element {
+export function SpeedTest({ padded }: { padded?: boolean }): React.JSX.Element {
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<SpeedResult | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
@@ -34,11 +34,11 @@ export function SpeedTest({ compact }: { compact?: boolean }): React.JSX.Element
   }
 
   return (
-    <div className={cn('flex flex-col gap-2.5', compact ? 'px-4 py-3' : 'py-2')}>
+    <div className={cn('flex flex-col gap-3', padded ? 'px-4 pb-4 pt-3' : 'py-2')}>
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[13px] text-text">Connection speed</div>
-          <div className="text-[11.5px] text-textFaint">Between this device and the host</div>
+          <div className={cn('text-[13px]', padded ? 'text-textDim' : 'text-text')}>Connection speed</div>
+          <div className="mt-0.5 text-[11px] text-textFaint">Between this device and the host</div>
         </div>
         <button
           onClick={() => void run()}
@@ -49,7 +49,7 @@ export function SpeedTest({ compact }: { compact?: boolean }): React.JSX.Element
           {testing ? 'Testing…' : result ? 'Test again' : 'Test'}
         </button>
       </div>
-      {testing && <div className="text-[12px] text-textFaint">About ten seconds. A film playing elsewhere slows a little meanwhile.</div>}
+      {testing && <div className="text-[11.5px] leading-relaxed text-textFaint">About ten seconds. A film playing elsewhere slows a little meanwhile.</div>}
       {failed && !testing && <div className="text-[12px] text-danger">{failed}</div>}
       {result && !testing && (
         <>
@@ -58,7 +58,7 @@ export function SpeedTest({ compact }: { compact?: boolean }): React.JSX.Element
             <Figure icon={ArrowUp} label="Upload" value={mbps(result.upMbps)} />
             <Figure icon={Timer} label="Delay" value={`${result.delayMs < 10 ? result.delayMs.toFixed(1) : Math.round(result.delayMs)} ms`} />
           </div>
-          <div className="text-[12px] leading-snug text-textDim">{meaning(result.downMbps)}</div>
+          <div className="text-[12px] leading-relaxed text-textDim">{meaning(result.downMbps)}</div>
         </>
       )}
     </div>
@@ -75,12 +75,12 @@ function Figure({
   value: string
 }): React.JSX.Element {
   return (
-    <div className="rounded-lg bg-white/[0.04] px-2.5 py-2">
+    <div className="rounded-lg bg-white/[0.04] px-3 py-2.5">
       <div className="flex items-center gap-1 text-[10.5px] uppercase tracking-[0.12em] text-textFaint">
         <Icon size={11} />
         {label}
       </div>
-      <div className="tnum mt-0.5 font-mono text-[14px] text-text">{value}</div>
+      <div className="tnum mt-1 font-mono text-[14px] text-text">{value}</div>
     </div>
   )
 }
