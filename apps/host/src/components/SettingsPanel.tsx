@@ -26,6 +26,7 @@ export function SettingsPanel({
   onLibrary,
   onRescan,
   onPosters,
+  onPreviews,
   onTmdbKey,
   onSections,
   onRename,
@@ -41,6 +42,7 @@ export function SettingsPanel({
   onLibrary: (enabled: boolean) => void
   onRescan: () => void
   onPosters: (enabled: boolean) => void
+  onPreviews: (enabled: boolean) => void
   onTmdbKey: (key: string) => void
   onSections: (sections: Sections) => void
   onRename: (name: string) => void
@@ -108,6 +110,7 @@ export function SettingsPanel({
                 {status.library.scanning ? 'Scanning…' : 'Scan again'}
               </button>
               <Artwork status={status} onPosters={onPosters} onSave={onTmdbKey} />
+              <TimelinePictures status={status} onChange={onPreviews} />
             </>
           ) : null
         }
@@ -538,6 +541,40 @@ function SectionPicker({
             ? 'Devices show Files, Recent and Starred only.'
             : `${shown} of ${SECTION_CARDS.length} sections shown. Changes reach connected devices at once.`}
       </p>
+    </div>
+  )
+}
+
+/**
+ * Timeline pictures: small pictures along each film's timeline, made here
+ * and kept in the host's own folder. Nothing leaves the computer, so it is
+ * on unless turned off; the switch is for the disk space and the work.
+ */
+function TimelinePictures({
+  status,
+  onChange,
+}: {
+  status: HostStatus
+  onChange: (enabled: boolean) => void
+}): React.JSX.Element | null {
+  const on = status.library.previews
+  // A host before these existed reports nothing to switch.
+  if (on === undefined) return null
+  return (
+    <div className="mt-2.5 border-t border-line pt-2.5">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1 cursor-pointer select-none" onClick={() => onChange(!on)}>
+          <div className="text-[12px] text-textDim">Timeline pictures</div>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-textFaint">
+            {on
+              ? 'Small pictures along each film’s timeline, made on this computer while it is idle, and as soon as a film starts. Up to 2 GB, kept with the host’s own files.'
+              : 'Off. Moving along a film’s timeline shows the time only.'}
+          </p>
+        </div>
+        <div className="mt-0.5 shrink-0">
+          <Switch checked={on} onChange={onChange} label="Timeline pictures" />
+        </div>
+      </div>
     </div>
   )
 }

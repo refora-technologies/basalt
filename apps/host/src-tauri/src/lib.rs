@@ -341,6 +341,13 @@ async fn set_posters(state: State<'_, AppState>, enabled: bool) -> Answer<HostSt
     status(state).await
 }
 
+/// Timeline pictures on or off.
+#[tauri::command]
+async fn set_previews(state: State<'_, AppState>, enabled: bool) -> Answer<HostStatus> {
+    state.host.set_previews(enabled)?;
+    status(state).await
+}
+
 /// Whether each device sees its own watch history.
 #[tauri::command]
 async fn set_sections(
@@ -1064,6 +1071,7 @@ pub fn run() {
             set_library_enabled,
             rescan_library,
             set_posters,
+            set_previews,
             set_conversion,
             set_conversion_at_once,
             measure_conversion,

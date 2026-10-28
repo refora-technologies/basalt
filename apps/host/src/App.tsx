@@ -389,6 +389,9 @@ export function App(): React.JSX.Element {
                     onPosters={(enabled) => {
                       void api.setPosters(enabled).then(apply)
                     }}
+                    onPreviews={(enabled) => {
+                      void api.setPreviews(enabled).then(apply)
+                    }}
                     onTmdbKey={(key) => {
                       void api.setTmdbKey(key).then(apply)
                     }}
