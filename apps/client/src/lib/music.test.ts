@@ -6,6 +6,7 @@ import {
   albumsOf,
   artistsOf,
   formatDuration,
+  isMusic,
   leadArtist,
   recentAlbums,
   searchMusic,
@@ -150,5 +151,37 @@ describe('little helpers', () => {
     expect(formatDuration(185_000)).toBe('3:05')
     expect(formatDuration(3_729_000)).toBe('1:02:09')
     expect(formatDuration(null)).toBe('')
+  })
+})
+
+describe('isMusic', () => {
+  const song = (path: string) => songFromFile({ path, size: 1, mtime: 1 })
+  it('leaves out call recordings, voice notes and phone sounds', () => {
+    for (const path of [
+      'PhoneRecord/94711812918.mp3',
+      'Music/94711812918_20240101.m4a',
+      'Recordings/Call recordings/Ana.m4a',
+      'WhatsApp/Media/WhatsApp Voice Notes/202401/PTT-20240101-WA0001.opus',
+      'Downloads/AUD-20231231-WA0042.mp3',
+      'Recorder/Voice 001.m4a',
+      'Sounds/Recording_12.wav',
+      'Ringtones/Bell.ogg',
+      'Podcasts/Episode 4.mp3',
+    ]) {
+      expect(isMusic(song(path), false), path).toBe(false)
+    }
+  })
+
+  it('leaves out untagged sounds too short to be songs', () => {
+    const short = { ...song('Music/Ding.mp3'), durationMs: 4_000 }
+    expect(isMusic(short, false)).toBe(false)
+    expect(isMusic({ ...short, durationMs: 200_000 }, false)).toBe(true)
+  })
+
+  it('keeps songs, and anything tagged as music wherever it is', () => {
+    expect(isMusic(song('Music/Juniper Vale/Lowlight/01 Slow Tide.flac'), false)).toBe(true)
+    expect(isMusic(song('Music/Records/Blue Hour.mp3'), false)).toBe(true)
+    expect(isMusic(song('1999.mp3'), false)).toBe(true)
+    expect(isMusic(song('WhatsApp/Media/Audio/Lanterns.mp3'), true)).toBe(true)
   })
 })

@@ -93,6 +93,51 @@ export function songFromFile(file: MediaFile): Song {
   return songOf({ path: file.path, size: file.size, mtime: file.mtime, cover: false })
 }
 
+/**
+ * Folders whose audio is not music: a phone's call and voice recordings,
+ * messengers' voice notes, a phone's ringtones and system sounds, podcasts.
+ * Matched against each folder in a song's path, whole, ignoring case.
+ */
+const NOT_MUSIC_FOLDERS: RegExp[] = [
+  /^call[ _-]?(recordings?|records?|recorder)?$/,
+  /^phone ?(record|records|recordings?|calls?)$/,
+  /^(recordings?|recorder|voice ?recorder|sound ?recorder|voice ?notes?|voice ?memos?|audio ?recordings?)$/,
+  /^(whatsapp|telegram|signal|viber|messenger)( .*)?$/,
+  /^(ringtones?|notifications?|alarms?|ui ?sounds?|system ?sounds?)$/,
+  /^(podcasts?|audiobooks?)$/,
+]
+
+/** Untagged audio shorter than this is a sound, not a song. */
+const SHORTEST_SONG_MS = 30_000
+
+/** Names a recorder or a messenger gives a file, never a song's. */
+const NOT_MUSIC_NAMES: RegExp[] = [
+  // A phone number, perhaps with a time after it: a call recording.
+  /^\+?\d{7,15}([ _-].*)?$/,
+  // WhatsApp's voice notes and audio: PTT-20240101-WA0001, AUD-20240101-WA0001.
+  /^(ptt|aud)-\d{8}-wa\d+$/i,
+  // A recorder's own names: Voice 001, Recording_12, Call recording 2024-01-01.
+  /^(voice|recording|rec|call|memo|audio)[ _-]*(recording)?[ _-]*\d/i,
+]
+
+/**
+ * Whether a song belongs in Music, not just in Files: a phone's recordings
+ * and voice notes are audio files too, and once read they filled Music with
+ * phone numbers. Anything tagged with an artist and an album is music,
+ * wherever it is kept.
+ */
+export function isMusic(song: Song, tagged: boolean): boolean {
+  if (tagged) return true
+  // Shorter than any song: a ringtone, a notification, a voice note.
+  if (song.durationMs !== null && song.durationMs < SHORTEST_SONG_MS) return false
+  const parts = song.path.split('/')
+  const folders = parts.slice(0, -1).map((p) => p.trim().toLowerCase())
+  if (folders.some((f) => NOT_MUSIC_FOLDERS.some((re) => re.test(f)))) return false
+  const name = parts[parts.length - 1]!
+  const stem = name.includes('.') ? name.slice(0, name.lastIndexOf('.')) : name
+  return !NOT_MUSIC_NAMES.some((re) => re.test(stem.trim()))
+}
+
 /** Who sings it first: "Ana feat. Bo" is Ana's. */
 export function leadArtist(name: string): string {
   return name.split(/\s+(?:feat\.?|ft\.?|featuring|with)\s+/i)[0]!.trim() || name

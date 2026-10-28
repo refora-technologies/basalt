@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { api, type MediaFile, type MusicTrack } from './api'
-import { type Album, type Artist, type Song, albumsOf, artistsOf, songFromFile, songOf } from './music'
+import { type Album, type Artist, type Song, albumsOf, artistsOf, isMusic, songFromFile, songOf } from './music'
 
 /**
  * The music on the drive, as albums, artists and songs.
@@ -91,8 +91,15 @@ export function useMusic(host: string | null, files: MediaFile[]): MusicState {
     return () => clearInterval(timer)
   }, [reading, load])
 
+  // Recordings and voice notes are audio, not music: they stay in Files.
   const songs = useMemo(
-    () => (untagged || tracks === null ? files.map(songFromFile) : tracks.map(songOf)),
+    () =>
+      untagged || tracks === null
+        ? files.map(songFromFile).filter((song) => isMusic(song, false))
+        : tracks
+            .map((track) => ({ song: songOf(track), tagged: !!track.artist && !!track.album }))
+            .filter(({ song, tagged }) => isMusic(song, tagged))
+            .map(({ song }) => song),
     [untagged, tracks, files],
   )
   const albums = useMemo(() => albumsOf(songs), [songs])
