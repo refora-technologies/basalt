@@ -16,6 +16,7 @@ pub mod music_art;
 pub mod music_names;
 pub mod parse;
 pub mod previews;
+pub mod programs;
 pub mod progress;
 pub mod quality;
 pub mod segments;

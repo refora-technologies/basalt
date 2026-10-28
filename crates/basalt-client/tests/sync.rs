@@ -735,6 +735,21 @@ async fn collections_where(
     last
 }
 
+/// A picture the size of a photo: pictures under 16 KB are icons, not
+/// photos. Noise, so it does not compress smaller than that.
+fn photo(path: &std::path::Path, width: u32, height: u32) {
+    let mut seed = 0x2545_f491_u32;
+    image::RgbImage::from_fn(width, height, |_, _| {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let [r, g, b, _] = seed.to_le_bytes();
+        image::Rgb([r, g, b])
+    })
+    .save(path)
+    .unwrap();
+}
+
 fn names(files: &[basalt_proto::msg::MediaFile]) -> Vec<&str> {
     files.iter().map(|f| f.path.as_str()).collect()
 }
@@ -747,9 +762,11 @@ async fn every_photo_song_and_video_is_found_at_any_depth() {
     let fixture = start_host().await;
     std::fs::create_dir_all(fixture.vault_path("Photos/2024/Trip/Day 2")).unwrap();
     std::fs::create_dir_all(fixture.vault_path("Music/Artist/Album")).unwrap();
-    image::RgbImage::new(40, 30)
-        .save(fixture.vault_path("Photos/2024/Trip/Day 2/beach.png"))
-        .unwrap();
+    photo(
+        &fixture.vault_path("Photos/2024/Trip/Day 2/beach.png"),
+        300,
+        200,
+    );
     std::fs::write(
         fixture.vault_path("Music/Artist/Album/01 Opening.flac"),
         b"flac",
@@ -764,7 +781,7 @@ async fn every_photo_song_and_video_is_found_at_any_depth() {
     assert_eq!(names(&c.photos), ["Photos/2024/Trip/Day 2/beach.png"]);
     assert_eq!(
         (c.photos[0].width, c.photos[0].height),
-        (Some(40), Some(30))
+        (Some(300), Some(200))
     );
     assert_eq!(names(&c.music), ["Music/Artist/Album/01 Opening.flac"]);
     assert_eq!(names(&c.videos), ["films/clip.m2ts"]);
@@ -781,9 +798,7 @@ async fn a_photo_added_or_deleted_shows_without_a_scan() {
     collections_where(&client, |_| true).await;
     settle().await;
 
-    image::RgbImage::new(8, 8)
-        .save(fixture.vault_path("26_05_12_19_37_04.png"))
-        .unwrap();
+    photo(&fixture.vault_path("26_05_12_19_37_04.png"), 300, 200);
     let c = collections_where(&client, |c| !c.photos.is_empty()).await;
     assert_eq!(names(&c.photos), ["26_05_12_19_37_04.png"]);
 

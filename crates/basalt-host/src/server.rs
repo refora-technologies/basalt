@@ -777,18 +777,20 @@ impl Host {
                         && !crate::media::parse::is_system(path)
                         && basalt_proto::media::kind_of(path).is_some()
                 })
-                // As the walk does: nothing inside a hidden folder.
+                // As the walk does: nothing inside a hidden folder, nor a
+                // program's or a project's, and no icons.
                 .filter(|path| !vault.is_hidden_path(path))
+                .filter(|path| !crate::media::programs::within(&vault, path))
                 .filter_map(|path| {
                     let entry = vault.stat(path).ok()?;
-                    (entry.kind == basalt_proto::msg::EntryKind::File).then(|| {
-                        basalt_proto::msg::MediaFile {
-                            path: path.clone(),
-                            size: entry.size,
-                            mtime: entry.mtime,
-                            width: None,
-                            height: None,
-                        }
+                    (entry.kind == basalt_proto::msg::EntryKind::File
+                        && !crate::media::index::is_icon(path, entry.size))
+                    .then(|| basalt_proto::msg::MediaFile {
+                        path: path.clone(),
+                        size: entry.size,
+                        mtime: entry.mtime,
+                        width: None,
+                        height: None,
                     })
                 })
                 .collect();

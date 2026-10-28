@@ -520,7 +520,8 @@ async fn hidden_items_are_marked_and_kept_out_of_the_collections() {
     let (fixture, client) = start().await;
     fixture.put("desktop.ini", b"[.ShellClassInfo]");
     fixture.put("AppData/cache/thumb 1.jpg", b"not a photo anyone took");
-    fixture.put("Photos/beach.jpg", b"a real photo");
+    // Photo-sized: pictures under 16 KB are icons, not photos.
+    fixture.put("Photos/beach.jpg", &b"a real photo".repeat(2000));
     for target in ["desktop.ini", "AppData"] {
         let made = std::process::Command::new("attrib")
             .args(["+h", "+s"])
