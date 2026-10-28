@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { api, type MediaFile, type MusicTrack } from './api'
+import { ASK_AGAIN_AFTER, worthAskingAgain } from './retry'
 import { type Album, type Artist, type Song, albumsOf, artistsOf, isMusic, songFromFile, songOf } from './music'
 
 /**
@@ -34,6 +35,9 @@ export function useMusic(host: string | null, files: MediaFile[]): MusicState {
   const [untagged, setUntagged] = useState(false)
   const revision = useRef(0)
   const inFlight = useRef<string | null>(null)
+  /** Tries again after a failure that passes: see `worthAskingAgain`. */
+  const tries = useRef(0)
+  const again = useRef<ReturnType<typeof setTimeout> | null>(null)
   const live = useRef(true)
   const current = useRef(host)
   current.current = host
@@ -56,10 +60,21 @@ export function useMusic(host: string | null, files: MediaFile[]): MusicState {
       setReading(response.reading)
       // Nothing back means "you already have them", not "there are none".
       if (response.tracks) setTracks(response.tracks)
+      tries.current = 0
       setUntagged(false)
       setLoaded(true)
-    } catch {
+    } catch (e) {
       if (!live.current || current.current !== asked) return
+      // A host restarting: asked again in a moment. Taken as "too old to
+      // send tags", the songs lost their names and covers until a restart.
+      const tried = tries.current
+      if (worthAskingAgain(e) && tried < ASK_AGAIN_AFTER.length) {
+        tries.current = tried + 1
+        again.current = setTimeout(() => {
+          if (current.current === asked) void load()
+        }, ASK_AGAIN_AFTER[tried])
+        return
+      }
       setUntagged(true)
       setLoaded(true)
     } finally {
@@ -71,6 +86,8 @@ export function useMusic(host: string | null, files: MediaFile[]): MusicState {
     // Another host, or none: the last drive's songs go.
     revision.current = 0
     inFlight.current = null
+    tries.current = 0
+    if (again.current) clearTimeout(again.current)
     setTracks(null)
     setLoaded(false)
     setReading(false)
