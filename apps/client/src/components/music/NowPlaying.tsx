@@ -76,8 +76,13 @@ export function MusicBar({ base, layout, songOf, liked, onLike }: NowPlayingProp
 
   return (
     <div
+      // `relative`, with a place in the stacking: the window's backdrop is a
+      // fixed layer, and an ordinary block after it is painted underneath it.
+      // Without this the title, the play button, the progress and the volume
+      // were laid out but never seen; only the bar's own positioned buttons
+      // showed through.
       className={cn(
-        'grid shrink-0 grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)] items-center border-t border-line bg-[#0d0d0f] px-4',
+        'relative z-[1] grid shrink-0 grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)] items-center border-t border-line bg-[#0d0d0f] px-4',
         layout === 'tv' ? 'h-24' : 'h-[72px]',
       )}
       data-remote-scope=""
@@ -107,7 +112,18 @@ export function MusicBar({ base, layout, songOf, liked, onLike }: NowPlayingProp
 }
 
 /** The full player: the cover, the song, its place in it, and the queue. */
-export function NowPlaying({ base, layout, songOf, liked, onLike }: NowPlayingProps): React.JSX.Element | null {
+export function NowPlaying({
+  base,
+  layout,
+  songOf,
+  liked,
+  onLike,
+  belowTitleBar,
+}: NowPlayingProps & {
+  /** In the computer's window: the title bar stays, with its buttons, and the
+   *  window can still be moved, made smaller or closed. */
+  belowTitleBar?: boolean
+}): React.JSX.Element | null {
   const player = useMusicPlayer()
   const [queueOpen, setQueueOpen] = useState(false)
   const open = !!player?.expanded && !!player.current
@@ -125,7 +141,7 @@ export function NowPlaying({ base, layout, songOf, liked, onLike }: NowPlayingPr
 
   return (
     <div
-      className="fixed inset-0 z-40 flex flex-col"
+      className={cn('fixed inset-x-0 bottom-0 z-40 flex flex-col', belowTitleBar ? 'top-9' : 'top-0')}
       style={{ background: `linear-gradient(180deg, hsl(${hue} 18% 19%), #0B0B0C 64%)` }}
       data-remote-scope=""
     >

@@ -438,6 +438,10 @@ export function hasEnded(
 /** How close to the duration still counts as the end. */
 const END_SLACK = 2
 
+/** How many times a file's length is asked for before it is left to mpv. */
+const LENGTH_TRIES = 6
+const LENGTH_RETRY_MS = 500
+
 /** One look at mpv while a file is opening. */
 export interface OpeningProbe {
   /** What mpv has open, or null while it has nothing. */
@@ -972,6 +976,21 @@ function useAppMpv(): Mpv {
   }, [])
 
   /** Looks at mpv until the file is on screen, has failed, or is replaced. */
+  const readLength = useCallback(async (mine: number) => {
+    for (let tries = 0; tries < LENGTH_TRIES; tries++) {
+      if (generation.current !== mine || converted.current?.duration) return
+      const duration = Number(await readProperty('duration', 'double')) || 0
+      if (generation.current !== mine) return
+      if (duration > 0) {
+        setState((s) =>
+          s.duration > 0 ? s : { ...s, duration, ended: hasEnded(eof.current, s.position, duration, s.paused) },
+        )
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, LENGTH_RETRY_MS))
+    }
+  }, [])
+
   const watchOpening = useCallback(async (url: string, mine: number) => {
     let watch = OPENING
     let rescued = false
@@ -1026,12 +1045,17 @@ function useAppMpv(): Mpv {
         // Read here as well as on a change of count: the next episode usually
         // has the same number of tracks as the last, and then no change comes.
         void readTracks()
+        // The length too. mpv tells of it as it changes, and a page that has
+        // just started (a fresh app, a reload) can miss the telling: the song
+        // then had no length, never counted as ended, and the next one never
+        // started. Asked for once the file plays, a few times if not known yet.
+        void readLength(mine)
         void restoreAdded(mine)
         if (next.verdict === 'video' && !strainChecked) void checkStrain(mine)
       }
       return
     }
-  }, [readTracks, restoreAdded, checkStrain])
+  }, [readTracks, readLength, restoreAdded, checkStrain])
 
   const load = useCallback(
     async (url: string, startAt: number, source?: ConvertedSource, audioOnly = false) => {

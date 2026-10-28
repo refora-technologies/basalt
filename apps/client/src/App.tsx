@@ -1466,7 +1466,7 @@ function DesktopMusicBar({ model }: { model: AppModel }): React.JSX.Element {
   return (
     <>
       <MusicBar {...props} />
-      <NowPlaying {...props} />
+      <NowPlaying {...props} belowTitleBar />
     </>
   )
 }
