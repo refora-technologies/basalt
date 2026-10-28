@@ -120,6 +120,43 @@ export function MusicPlayer({
     [clock],
   )
 
+  // The keyboard's media keys, and a remote's, while music plays and the
+  // app is in front. (From the lock screen and the system's own controls is
+  // a separate piece: a media session.) A film open takes them for itself.
+  const keys = useRef(api_)
+  keys.current = api_
+  useEffect(() => {
+    if (!queue) return undefined
+    const onKey = (e: KeyboardEvent): void => {
+      const music = keys.current
+      switch (e.key) {
+        case 'MediaPlayPause':
+          music.togglePause()
+          break
+        case 'MediaPlay':
+          if (music.paused) music.togglePause()
+          break
+        case 'MediaPause':
+          if (!music.paused) music.togglePause()
+          break
+        case 'MediaTrackNext':
+          music.next()
+          break
+        case 'MediaTrackPrevious':
+          music.previous()
+          break
+        case 'MediaStop':
+          music.stop()
+          break
+        default:
+          return
+      }
+      e.preventDefault()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [queue])
+
   // Kept for Continue listening: when the song changes, when it pauses, and
   // every so often while it plays.
   const saving = useRef(onListening)
