@@ -30,6 +30,16 @@ export interface VaultView {
   canAddFiles?: boolean
 }
 
+/** When the host makes timeline pictures: as films arrive, while idle, or only when first played. */
+export type PreviewsWhen = 'arrive' | 'idle' | 'play'
+
+/** Timeline pictures being made now: `done` of `total` through "make the missing ones"; both 0 for one film. */
+export interface PreviewsNow {
+  name: string
+  done: number
+  total: number
+}
+
 /** How the media index is getting on. */
 export interface LibraryStatus {
   enabled: boolean
@@ -45,6 +55,10 @@ export interface LibraryStatus {
   posters: boolean
   /** Whether timeline pictures are made. */
   previews?: boolean
+  /** When they are made. Absent from hosts before 1.6.3. */
+  previewsWhen?: PreviewsWhen
+  /** What they are being made for now, if anything. */
+  previewsNow?: PreviewsNow | null
   /** Whether album covers are looked up online. */
   musicCovers?: boolean
   /** Whether a TMDb key is set. The key itself never leaves the host. */
@@ -361,6 +375,9 @@ export const api = {
     call('set_posters', { enabled }),
   setPreviews: (enabled: boolean): Promise<HostStatus> =>
     call('set_previews', { enabled }),
+  setPreviewsWhen: (when: PreviewsWhen): Promise<HostStatus> =>
+    call('set_previews_when', { when }),
+  makeMissingPreviews: (): Promise<HostStatus> => call('make_missing_previews'),
   setMusicCovers: (enabled: boolean): Promise<HostStatus> =>
     call('set_music_covers', { enabled }),
   setConversion: (enabled: boolean): Promise<HostStatus> => call('set_conversion', { enabled }),
@@ -461,6 +478,9 @@ const sample: {
       withArt: 14,
       posters: true,
       previews: true,
+      previewsWhen: 'idle',
+      // `?making`: in the middle of making timeline pictures.
+      previewsNow: previewFlag('making') ? { name: 'Severance S02E04', done: 0, total: 0 } : null,
       musicCovers: false,
       hasKey: false,
       scannedAt: Math.floor(Date.now() / 1000) - 3600,
@@ -769,6 +789,12 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
       case 'set_music_covers':
         sample.status.library.musicCovers = Boolean(args?.enabled)
         return sample.status as T
+      case 'set_previews_when':
+        sample.status.library.previewsWhen = args?.when as PreviewsWhen
+        return sample.status
+      case 'make_missing_previews':
+        sample.status.library.previewsNow = { name: 'Dune: Part Two (2024)', done: 2, total: 37 }
+        return sample.status
       case 'set_previews':
         sample.status.library.previews = Boolean(args?.enabled)
         return sample.status as T

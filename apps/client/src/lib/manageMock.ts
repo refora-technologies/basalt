@@ -52,6 +52,14 @@ const sample: ManageView = {
       uncertain: 3,
       withArt: 240,
       posters: true,
+      previews: true,
+      previewsWhen: 'idle',
+      // `?making`: the host in the middle of making timeline pictures.
+      previewsNow:
+        typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('making')
+          ? { name: 'Severance S02E04', done: 0, total: 0 }
+          : null,
+      musicCovers: false,
       hasKey: false,
       videos: 86,
       music: 1240,
@@ -271,6 +279,12 @@ function apply(action: ManageAction): boolean {
       break
     case 'setPreviews':
       status.library.previews = action.enabled
+      break
+    case 'setPreviewsWhen':
+      status.library.previewsWhen = action.when
+      break
+    case 'makeMissingPreviews':
+      status.library.previewsNow = { name: 'Dune: Part Two (2024)', done: 2, total: 37 }
       break
     case 'setMusicCovers':
       status.library.musicCovers = action.enabled

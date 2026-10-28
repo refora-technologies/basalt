@@ -349,6 +349,13 @@ pub enum ManageAction {
     SetPreviews {
         enabled: bool,
     },
+    /// When timeline pictures are made. From 1.6.3.
+    SetPreviewsWhen {
+        when: PreviewsWhen,
+    },
+    /// Timeline pictures for every film and episode that has none, made now,
+    /// one after another. From 1.6.3.
+    MakeMissingPreviews,
     /// Album covers from the internet on or off.
     SetMusicCovers {
         enabled: bool,
@@ -998,6 +1005,20 @@ pub mod speed_test {
     }
 }
 
+/// When a host makes a film's timeline pictures. However it is set, a film
+/// played for the first time gets them then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PreviewsWhen {
+    /// As soon as a film or episode arrives on the drive.
+    Arrive,
+    /// While nothing is being watched or converted.
+    #[default]
+    Idle,
+    /// Only when somebody first plays it.
+    Play,
+}
+
 /// Asks for a film's timeline pictures.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1493,6 +1514,25 @@ pub struct ProgressResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn when_to_make_timeline_pictures_travels_as_a_word() {
+        let set: ManageAction =
+            serde_json::from_str(r#"{"do":"setPreviewsWhen","when":"arrive"}"#).unwrap();
+        assert!(matches!(
+            set,
+            ManageAction::SetPreviewsWhen {
+                when: PreviewsWhen::Arrive
+            }
+        ));
+        let all: ManageAction = serde_json::from_str(r#"{"do":"makeMissingPreviews"}"#).unwrap();
+        assert!(matches!(all, ManageAction::MakeMissingPreviews));
+        assert_eq!(
+            serde_json::to_string(&PreviewsWhen::Play).unwrap(),
+            r#""play""#
+        );
+        assert_eq!(PreviewsWhen::default(), PreviewsWhen::Idle);
+    }
 
     #[test]
     fn chunks_round_trip() {

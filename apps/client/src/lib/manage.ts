@@ -90,6 +90,17 @@ export interface LibrarySections {
   photos: boolean
 }
 
+/** When a host makes timeline pictures: as films arrive, while idle, or only when first played. */
+export type PreviewsWhen = 'arrive' | 'idle' | 'play'
+
+/** Timeline pictures being made now. `done` of `total` through "make the missing ones"; both 0 for one film. */
+export interface PreviewsNow {
+  name: string
+  done: number
+  total: number
+}
+
+
 export interface ManagedHostStatus {
   hostId: string
   hostName: string
@@ -115,6 +126,10 @@ export interface ManagedHostStatus {
     posters: boolean
     /** Timeline pictures made. Absent from hosts before 1.6.3. */
     previews?: boolean
+    /** When they are made. Absent from hosts before 1.6.3. */
+    previewsWhen?: PreviewsWhen
+    /** What they are being made for right now, if anything. */
+    previewsNow?: PreviewsNow | null
     /** Album covers looked up online. Absent from hosts before 1.6.3. */
     musicCovers?: boolean
     hasKey: boolean
@@ -209,6 +224,8 @@ export type ManageAction =
   | { do: 'rescan' }
   | { do: 'setPosters'; enabled: boolean }
   | { do: 'setPreviews'; enabled: boolean }
+  | { do: 'setPreviewsWhen'; when: PreviewsWhen }
+  | { do: 'makeMissingPreviews' }
   | { do: 'setMusicCovers'; enabled: boolean }
   | { do: 'setTmdbKey'; key: string }
   | { do: 'setConversion'; enabled: boolean }

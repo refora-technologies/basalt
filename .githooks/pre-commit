@@ -45,6 +45,10 @@ run() {
         echo >&2
         tail -40 "$log" >&2
         echo >&2
+        # The whole of it, kept: the line naming a failed test is often far
+        # above the last forty.
+        kept="$(git rev-parse --git-dir)/pre-commit-failed.log"
+        cp "$log" "$kept" 2>/dev/null && echo "pre-commit: the whole log is in $kept" >&2
         echo "pre-commit: '$label' failed. Fix it, or commit with --no-verify." >&2
         exit 1
     fi

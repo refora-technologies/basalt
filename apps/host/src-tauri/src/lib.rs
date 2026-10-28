@@ -355,6 +355,23 @@ async fn set_previews(state: State<'_, AppState>, enabled: bool) -> Answer<HostS
     status(state).await
 }
 
+/// When timeline pictures are made.
+#[tauri::command]
+async fn set_previews_when(
+    state: State<'_, AppState>,
+    when: basalt_proto::msg::PreviewsWhen,
+) -> Answer<HostStatus> {
+    state.host.set_previews_when(when)?;
+    status(state).await
+}
+
+/// Timeline pictures for every film and episode without them, starting now.
+#[tauri::command]
+async fn make_missing_previews(state: State<'_, AppState>) -> Answer<HostStatus> {
+    state.host.make_missing_previews();
+    status(state).await
+}
+
 /// Whether each device sees its own watch history.
 #[tauri::command]
 async fn set_sections(
@@ -1079,6 +1096,8 @@ pub fn run() {
             rescan_library,
             set_posters,
             set_previews,
+            set_previews_when,
+            make_missing_previews,
             set_music_covers,
             set_conversion,
             set_conversion_at_once,

@@ -15,7 +15,7 @@ import {
   Video,
   type LucideIcon,
 } from 'lucide-react'
-import type { LibrarySections, ManagedHostStatus } from '@/lib/manage'
+import type { LibrarySections, ManagedHostStatus, PreviewsWhen } from '@/lib/manage'
 import { cn } from '@/lib/utils'
 import { Group, Pill, Row, Rows, Segmented, Toggle, ago, useLayout } from './parts'
 import type { Tools } from './tools'
@@ -83,12 +83,15 @@ export function LibraryGroup({ m, view, prompt, confirm }: Tools): React.JSX.Ele
             title="Timeline pictures"
             description={
               library.previews
-                ? 'Small pictures along each film’s timeline, made on the host while it is idle, and as soon as a film starts. Up to 2 GB, kept on the host.'
+                ? 'Small pictures along each film’s timeline, made on the host and kept there, up to 2 GB. A film played for the first time gets them then.'
                 : 'Off. Moving along a film’s timeline shows the time only.'
             }
             checked={library.previews}
             onChange={(enabled) => m.act({ do: 'setPreviews', enabled })}
           />
+        )}
+        {library.previews && library.previewsWhen !== undefined && (
+          <PreviewsControls m={m} view={view} />
         )}
         {library.enabled && library.posters && (
           <Row
@@ -129,6 +132,67 @@ export function LibraryGroup({ m, view, prompt, confirm }: Tools): React.JSX.Ele
         )}
       </Rows>
     </Group>
+  )
+}
+
+const PREVIEWS_WHEN: Array<{ value: PreviewsWhen; label: string; explained: string }> = [
+  {
+    value: 'arrive',
+    label: 'As they arrive',
+    explained: 'Made as soon as a film or episode is on the drive, even while something plays.',
+  },
+  {
+    value: 'idle',
+    label: 'While idle',
+    explained: 'Made when nothing has been watched or converted for a minute, one film at a time.',
+  },
+  {
+    value: 'play',
+    label: 'When played',
+    explained: 'Made only for a film when somebody first plays it. Nothing in the background.',
+  },
+]
+
+/** When timeline pictures are made, what is being made now, and a way to make the rest at once. */
+function PreviewsControls({ m, view }: Pick<Tools, 'm' | 'view'>): React.JSX.Element {
+  const phone = useLayout() === 'phone'
+  const { library } = view.status
+  const when = library.previewsWhen ?? 'idle'
+  const now = library.previewsNow ?? null
+  const running = now !== null && now.total > 0
+  return (
+    <>
+      <div className="px-4 py-3.5">
+        <div className={cn('mb-2 text-text', phone ? 'text-[15px]' : 'text-[13px]')}>When to make them</div>
+        <Segmented<PreviewsWhen>
+          label="When to make timeline pictures"
+          value={when}
+          options={PREVIEWS_WHEN.map(({ value, label }) => ({ value, label }))}
+          onChange={(value) => void m.act({ do: 'setPreviewsWhen', when: value })}
+        />
+        <p className={cn('mt-2 leading-snug text-textFaint', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
+          {PREVIEWS_WHEN.find((w) => w.value === when)?.explained}
+        </p>
+      </div>
+      {now && (
+        <Row
+          icon={<Loader2 size={phone ? 17 : 14} className="animate-spin text-basalt" />}
+          title="Making timeline pictures"
+          sub={running ? `${now.name} · ${now.done + 1} of ${now.total}` : now.name}
+        />
+      )}
+      <Row
+        icon={<Images size={phone ? 17 : 14} />}
+        title="Make the missing ones now"
+        sub={
+          running
+            ? 'Going through every film and episode without them.'
+            : 'Every film and episode without timeline pictures gets them, one after another, starting now.'
+        }
+        disabled={running || m.busy === 'makeMissingPreviews'}
+        onClick={() => void m.act({ do: 'makeMissingPreviews' })}
+      />
+    </>
   )
 }
 

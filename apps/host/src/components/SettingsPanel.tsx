@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Film, Image as ImageIcon, Music, Pencil, RefreshCw, Tv, Video } from 'lucide-react'
-import type { HostStatus, Sections } from '@/lib/api'
+import { Check, Film, Image as ImageIcon, Loader2, Music, Pencil, RefreshCw, Tv, Video } from 'lucide-react'
+import type { HostStatus, PreviewsWhen, Sections } from '@/lib/api'
 import { About } from './About'
 import { ConversionPanel, conversionDetail } from './ConversionPanel'
+import { Segmented } from './ProfileAccess'
 import { Switch } from './ui/Switch'
 import { cn, formatAgo } from '@/lib/utils'
 
@@ -27,6 +28,8 @@ export function SettingsPanel({
   onRescan,
   onPosters,
   onPreviews,
+  onPreviewsWhen,
+  onMakeMissingPreviews,
   onMusicCovers,
   onTmdbKey,
   onSections,
@@ -44,6 +47,8 @@ export function SettingsPanel({
   onRescan: () => void
   onPosters: (enabled: boolean) => void
   onPreviews: (enabled: boolean) => void
+  onPreviewsWhen: (when: PreviewsWhen) => void
+  onMakeMissingPreviews: () => void
   onMusicCovers: (enabled: boolean) => void
   onTmdbKey: (key: string) => void
   onSections: (sections: Sections) => void
@@ -112,7 +117,12 @@ export function SettingsPanel({
                 {status.library.scanning ? 'Scanning…' : 'Scan again'}
               </button>
               <Artwork status={status} onPosters={onPosters} onSave={onTmdbKey} />
-              <TimelinePictures status={status} onChange={onPreviews} />
+              <TimelinePictures
+                status={status}
+                onChange={onPreviews}
+                onWhen={onPreviewsWhen}
+                onMakeMissing={onMakeMissingPreviews}
+              />
               <AlbumCovers status={status} onChange={onMusicCovers} />
             </>
           ) : null
@@ -553,16 +563,40 @@ function SectionPicker({
  * and kept in the host's own folder. Nothing leaves the computer, so it is
  * on unless turned off; the switch is for the disk space and the work.
  */
+const PREVIEWS_WHEN: Array<{ value: PreviewsWhen; label: string; explained: string }> = [
+  {
+    value: 'arrive',
+    label: 'As they arrive',
+    explained: 'Made as soon as a film or episode is on the drive, even while something plays.',
+  },
+  {
+    value: 'idle',
+    label: 'While idle',
+    explained: 'Made when nothing has been watched or converted for a minute, one film at a time.',
+  },
+  {
+    value: 'play',
+    label: 'When played',
+    explained: 'Made only for a film when somebody first plays it. Nothing in the background.',
+  },
+]
+
 function TimelinePictures({
   status,
   onChange,
+  onWhen,
+  onMakeMissing,
 }: {
   status: HostStatus
   onChange: (enabled: boolean) => void
+  onWhen: (when: PreviewsWhen) => void
+  onMakeMissing: () => void
 }): React.JSX.Element | null {
-  const on = status.library.previews
+  const { previews: on, previewsWhen, previewsNow } = status.library
   // A host before these existed reports nothing to switch.
   if (on === undefined) return null
+  const when = previewsWhen ?? 'idle'
+  const running = previewsNow != null && previewsNow.total > 0
   return (
     <div className="mt-2.5 border-t border-line pt-2.5">
       <div className="flex items-start gap-3">
@@ -570,7 +604,7 @@ function TimelinePictures({
           <div className="text-[12px] text-textDim">Timeline pictures</div>
           <p className="mt-0.5 text-[11px] leading-relaxed text-textFaint">
             {on
-              ? 'Small pictures along each film’s timeline, made on this computer while it is idle, and as soon as a film starts. Up to 2 GB, kept with the host’s own files.'
+              ? 'Small pictures along each film’s timeline, made on this computer and kept with the host’s own files, up to 2 GB. A film played for the first time gets them then.'
               : 'Off. Moving along a film’s timeline shows the time only.'}
           </p>
         </div>
@@ -578,6 +612,37 @@ function TimelinePictures({
           <Switch checked={on} onChange={onChange} label="Timeline pictures" />
         </div>
       </div>
+      {on && previewsWhen !== undefined && (
+        <div className="mt-2.5 space-y-2.5">
+          <div className="flex flex-col items-start">
+            <Segmented<PreviewsWhen>
+              id="previews-when-choice"
+              value={when}
+              options={PREVIEWS_WHEN.map(({ value, label }) => ({ value, label }))}
+              onChange={onWhen}
+            />
+            <p className="mt-1.5 text-[11px] leading-relaxed text-textFaint">
+              {PREVIEWS_WHEN.find((w) => w.value === when)?.explained}
+            </p>
+          </div>
+          {previewsNow && (
+            <div className="flex items-center gap-2 text-[11px] text-textDim">
+              <Loader2 size={11} className="shrink-0 animate-spin text-basalt" />
+              <span className="min-w-0 truncate">
+                Making timeline pictures: {previewsNow.name}
+                {running && ` · ${previewsNow.done + 1} of ${previewsNow.total}`}
+              </span>
+            </div>
+          )}
+          <button
+            onClick={onMakeMissing}
+            disabled={running}
+            className="rounded-md border border-line px-2.5 py-1 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text disabled:opacity-50"
+          >
+            {running ? 'Making the missing ones…' : 'Make the missing ones now'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

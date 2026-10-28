@@ -89,6 +89,9 @@ pub struct Host {
     segment_finder: std::sync::atomic::AtomicBool,
     /// Films whose timeline pictures are being made, by path.
     previews_making: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// A run of "make the missing ones": how many done of how many, while it
+    /// goes. Also what "as films arrive" uses after each scan.
+    previews_run: std::sync::Mutex<Option<(usize, usize)>>,
     /// Thumbnails being made at once. Two: a grid scrolled quickly asks for
     /// dozens, and making them all together would starve everything else the
     /// host is doing — a film being streamed, most of all.
@@ -302,6 +305,7 @@ impl Host {
             segments: std::sync::Mutex::new(segments),
             segment_finder: std::sync::atomic::AtomicBool::new(false),
             previews_making: std::sync::Mutex::default(),
+            previews_run: std::sync::Mutex::new(None),
             thumb_gate: tokio::sync::Semaphore::new(2),
             thumbs_written: std::sync::atomic::AtomicUsize::new(0),
             measured: std::sync::Mutex::new(measured),
@@ -613,7 +617,9 @@ impl Host {
             tokio::time::sleep(std::time::Duration::from_secs(90)).await;
             loop {
                 let worked = if host.quiet_for_a_minute().await {
-                    host.find_segments_once().await || host.make_previews_once().await
+                    host.find_segments_once().await
+                        || (host.previews_when() != basalt_proto::msg::PreviewsWhen::Play
+                            && host.make_previews_once().await)
                 } else {
                     false
                 };
@@ -1622,6 +1628,180 @@ impl Host {
         self.persist()
     }
 
+    /// When timeline pictures are made. "As films arrive" starts on the ones
+    /// missing straight away, as a scan finding new ones would.
+    pub fn set_previews_when(
+        self: &Arc<Self>,
+        when: basalt_proto::msg::PreviewsWhen,
+    ) -> Result<()> {
+        self.config.lock().expect("config lock").previews_when = when;
+        self.persist()?;
+        if when == basalt_proto::msg::PreviewsWhen::Arrive {
+            self.make_missing_previews();
+        }
+        Ok(())
+    }
+
+    fn previews_when(&self) -> basalt_proto::msg::PreviewsWhen {
+        self.config.lock().expect("config lock").previews_when
+    }
+
+    /// Every film and episode without timeline pictures, newest first: its
+    /// path on the drive, the file, and where its pictures go.
+    async fn missing_previews(&self) -> Vec<(String, std::path::PathBuf, std::path::PathBuf)> {
+        let Some(vault) = self.vault().await else {
+            return Vec::new();
+        };
+        let mut videos: Vec<(i64, String)> = {
+            let library = self.library.lock().expect("library lock");
+            library
+                .items
+                .iter()
+                .flat_map(|item| {
+                    let mut out: Vec<(i64, String)> = item
+                        .path
+                        .clone()
+                        .map(|p| (item.added, p))
+                        .into_iter()
+                        .collect();
+                    for season in &item.seasons {
+                        out.extend(season.episodes.iter().map(|e| (e.added, e.path.clone())));
+                    }
+                    out
+                })
+                .collect()
+        };
+        // And every other video on the drive: home videos, and all of them
+        // when films are not being recognised.
+        {
+            let known: std::collections::HashSet<String> =
+                videos.iter().map(|(_, rel)| rel.clone()).collect();
+            let stored = self.collections.lock().expect("collections lock");
+            videos.extend(
+                stored
+                    .collections
+                    .videos
+                    .iter()
+                    .filter(|v| !known.contains(&v.path))
+                    .map(|v| (v.mtime, v.path.clone())),
+            );
+        }
+        videos.sort_by_key(|v| std::cmp::Reverse(v.0));
+        let root = crate::media::previews::root(self.config_dir());
+        tokio::task::spawn_blocking(move || {
+            videos
+                .into_iter()
+                .filter_map(|(_, rel)| {
+                    let entry = vault.stat(&rel).ok()?;
+                    let dir = crate::media::previews::dir_for(&root, &rel, entry.size, entry.mtime);
+                    if crate::media::previews::read_meta(&dir).is_some() {
+                        return None;
+                    }
+                    let path = vault.resolve(&rel).ok()?;
+                    Some((rel, path, dir))
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// Whether the pictures already made fill most of their space.
+    async fn previews_full(&self) -> bool {
+        let root = crate::media::previews::root(self.config_dir());
+        tokio::task::spawn_blocking(move || crate::media::previews::used(&root))
+            .await
+            .unwrap_or(0)
+            > crate::media::previews::BUDGET / 10 * 9
+    }
+
+    /// Makes the pictures every film and episode is missing, one after
+    /// another, now rather than when the host is idle. One run at a time; it
+    /// stops if they are switched off or their space fills.
+    pub fn make_missing_previews(self: &Arc<Self>) {
+        {
+            let mut run = self.previews_run.lock().expect("previews lock");
+            if run.is_some() {
+                return;
+            }
+            *run = Some((0, 0));
+        }
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            let missing = host.missing_previews().await;
+            let total = missing.len();
+            for (done, (rel, path, dir)) in missing.into_iter().enumerate() {
+                if !host.config.lock().expect("config lock").previews || host.previews_full().await
+                {
+                    break;
+                }
+                *host.previews_run.lock().expect("previews lock") = Some((done, total));
+                host.make_previews(&rel, path, dir);
+                host.wait_for_previews(&rel).await;
+            }
+            *host.previews_run.lock().expect("previews lock") = None;
+        });
+    }
+
+    async fn wait_for_previews(&self, rel: &str) {
+        while self
+            .previews_making
+            .lock()
+            .expect("previews lock")
+            .contains(rel)
+        {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    }
+
+    /// What timeline pictures are being made now, as the windows show it.
+    fn previews_now(&self) -> Option<crate::ui::PreviewsNow> {
+        let rel = self
+            .previews_making
+            .lock()
+            .expect("previews lock")
+            .iter()
+            .next()
+            .cloned()?;
+        let (done, total) = self
+            .previews_run
+            .lock()
+            .expect("previews lock")
+            .unwrap_or((0, 0));
+        Some(crate::ui::PreviewsNow {
+            name: self.library_name_of(&rel),
+            done,
+            total,
+        })
+    }
+
+    /// A film or an episode as the library names it, or its file's name.
+    fn library_name_of(&self, rel: &str) -> String {
+        let library = self.library.lock().expect("library lock");
+        for item in &library.items {
+            if item.path.as_deref() == Some(rel) {
+                return match item.year {
+                    Some(year) => format!("{} ({year})", item.title),
+                    None => item.title.clone(),
+                };
+            }
+            for season in &item.seasons {
+                for episode in &season.episodes {
+                    if episode.path == rel {
+                        return format!(
+                            "{} S{:02}E{:02}",
+                            item.title, season.number, episode.number
+                        );
+                    }
+                }
+            }
+        }
+        let file = rel.rsplit('/').next().unwrap_or(rel);
+        file.rsplit_once('.')
+            .map_or(file, |(name, _)| name)
+            .to_string()
+    }
+
     /// A film's timeline pictures: made already, or being made now (asking
     /// starts it, so somebody starting a film gets them within a minute or
     /// two), or not at all when switched off.
@@ -1712,66 +1892,20 @@ impl Host {
     /// While idle: the next film or episode without timeline pictures, made,
     /// newest first, until they fill most of their space. Whether one was.
     async fn make_previews_once(self: &Arc<Self>) -> bool {
-        if !self.config.lock().expect("config lock").previews {
+        if !self.config.lock().expect("config lock").previews || self.previews_full().await {
             return false;
         }
-        let root = crate::media::previews::root(self.config_dir());
-        let full = {
-            let root = root.clone();
-            tokio::task::spawn_blocking(move || crate::media::previews::used(&root))
-                .await
-                .unwrap_or(0)
-        };
-        if full > crate::media::previews::BUDGET / 10 * 9 {
+        // A run of "make the missing ones" is already going through them.
+        if self.previews_run.lock().expect("previews lock").is_some() {
             return false;
         }
-        let Some(vault) = self.vault().await else {
+        let Some((rel, path, dir)) = self.missing_previews().await.into_iter().next() else {
             return false;
         };
-        let mut videos: Vec<(i64, String)> = {
-            let library = self.library.lock().expect("library lock");
-            library
-                .items
-                .iter()
-                .flat_map(|item| {
-                    let mut out: Vec<(i64, String)> = item
-                        .path
-                        .clone()
-                        .map(|p| (item.added, p))
-                        .into_iter()
-                        .collect();
-                    for season in &item.seasons {
-                        out.extend(season.episodes.iter().map(|e| (e.added, e.path.clone())));
-                    }
-                    out
-                })
-                .collect()
-        };
-        videos.sort_by_key(|v| std::cmp::Reverse(v.0));
-        for (_, rel) in videos {
-            let Ok(entry) = vault.stat(&rel) else {
-                continue;
-            };
-            let dir = crate::media::previews::dir_for(&root, &rel, entry.size, entry.mtime);
-            if crate::media::previews::read_meta(&dir).is_some() {
-                continue;
-            }
-            let Ok(path) = vault.resolve(&rel) else {
-                continue;
-            };
-            self.make_previews(&rel, path, dir);
-            // One at a time: wait for it before saying the work is done.
-            while self
-                .previews_making
-                .lock()
-                .expect("previews lock")
-                .contains(&rel)
-            {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            }
-            return true;
-        }
-        false
+        self.make_previews(&rel, path, dir);
+        // One at a time: wait for it before saying the work is done.
+        self.wait_for_previews(&rel).await;
+        true
     }
 
     pub async fn set_posters(self: &Arc<Self>, enabled: bool) -> Result<()> {
@@ -2150,6 +2284,10 @@ impl Host {
             host.measure_library();
             // The songs the walk found, and their tags, after it.
             host.refresh_music();
+            // New films and episodes get their timeline pictures at once.
+            if host.previews_when() == basalt_proto::msg::PreviewsWhen::Arrive {
+                host.make_missing_previews();
+            }
             match outcome {
                 Ok(true) => {
                     host.announce(basalt_proto::msg::Change::LibraryChanged)
@@ -2890,16 +3028,18 @@ impl Host {
     /// holding `library` — which also stopped every scan from saving its index,
     /// and `registry`, which stopped paired devices from connecting at all.
     fn library_status(&self) -> crate::ui::LibraryStatus {
-        let (enabled, posters, has_key, previews, music_covers) = {
+        let (enabled, posters, has_key, previews, previews_when, music_covers) = {
             let config = self.config.lock().expect("config lock");
             (
                 config.library_enabled,
                 config.posters,
                 !config.tmdb_key.trim().is_empty(),
                 config.previews,
+                config.previews_when,
                 config.music_covers,
             )
         };
+        let previews_now = self.previews_now();
         let scanning = self.is_scanning();
         // Counted as the devices list them: Videos without what was filed.
         let (_, filed) = self.filed_videos();
@@ -2917,6 +3057,8 @@ impl Host {
             photos,
             enabled,
             previews,
+            previews_when,
+            previews_now,
             music_covers,
             scanning,
             films: library

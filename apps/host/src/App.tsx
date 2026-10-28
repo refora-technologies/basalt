@@ -392,6 +392,12 @@ export function App(): React.JSX.Element {
                     onPreviews={(enabled) => {
                       void api.setPreviews(enabled).then(apply)
                     }}
+                    onPreviewsWhen={(when) => {
+                      void api.setPreviewsWhen(when).then(apply)
+                    }}
+                    onMakeMissingPreviews={() => {
+                      void api.makeMissingPreviews().then(apply)
+                    }}
                     onMusicCovers={(enabled) => {
                       void api.setMusicCovers(enabled).then(apply)
                     }}

@@ -186,14 +186,17 @@ function Detail({ text, warn = false }: { text: string; warn?: boolean }): React
  * Two choices side by side, the chosen one lit. The light slides between
  * them rather than jumping, so the change reads as a change.
  */
-function Segmented<T extends string>({
+export function Segmented<T extends string>({
   value,
   options,
   onChange,
+  id = 'profile-access-choice',
 }: {
   value: T
   options: Array<{ value: T; label: string }>
   onChange: (value: T) => void
+  /** Names the sliding light, so two of these on one screen slide apart. */
+  id?: string
 }): React.JSX.Element {
   return (
     <div role="radiogroup" className="flex shrink-0 rounded-md border border-line bg-ink2 p-0.5">
@@ -212,7 +215,7 @@ function Segmented<T extends string>({
           >
             {on && (
               <motion.span
-                layoutId="profile-access-choice"
+                layoutId={id}
                 transition={{ type: 'spring', stiffness: 520, damping: 38 }}
                 className="absolute inset-0 rounded-[5px] bg-basalt"
               />
