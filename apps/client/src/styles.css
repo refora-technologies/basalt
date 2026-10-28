@@ -309,3 +309,44 @@ html.mobile .shadow-lift,
 html[data-shape] .shadow-lift {
   box-shadow: 0 8px 20px -8px rgba(0, 0, 0, 0.6);
 }
+
+/* The music player's sliders: a thin track, filled to `--fill`, with a dot
+   that grows under a finger or the pointer. */
+.music-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+.music-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 99px;
+  background: linear-gradient(to right, #f4f4f5 var(--fill, 0%), rgba(255, 255, 255, 0.16) var(--fill, 0%));
+}
+.music-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 99px;
+  background: #f4f4f5;
+  transition: transform 0.15s;
+}
+.music-range:active::-webkit-slider-thumb,
+.music-range:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.35);
+}
+.music-range::-moz-range-track {
+  height: 4px;
+  border-radius: 99px;
+  background: linear-gradient(to right, #f4f4f5 var(--fill, 0%), rgba(255, 255, 255, 0.16) var(--fill, 0%));
+}
+.music-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 99px;
+  background: #f4f4f5;
+}

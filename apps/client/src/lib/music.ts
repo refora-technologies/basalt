@@ -202,6 +202,15 @@ export function searchMusic(query: string, albums: Album[], artists: Artist[]): 
   }
 }
 
+/** Kinds of file the music player plays. */
+const SONG_EXTENSIONS = new Set(['mp3', 'flac', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'wma', 'alac', 'aiff', 'aif', 'ape', 'wv', 'mka'])
+
+/** Whether a file is a song, by its name, as the host sorts Music. */
+export function isSong(path: string): boolean {
+  const dot = path.lastIndexOf('.')
+  return dot > 0 && SONG_EXTENSIONS.has(path.slice(dot + 1).toLowerCase())
+}
+
 /** 3:05, or 1:02:09 for something over an hour. */
 export function formatDuration(ms: number | null): string {
   if (ms === null || !Number.isFinite(ms) || ms <= 0) return ''

@@ -41,7 +41,7 @@ import {
   type SortDirection,
   type SortField,
 } from '@/components/SortMenu'
-import { MusicList, PhotoGrid, VideoGrid, sortTracks } from '@/components/MediaViews'
+import { PhotoGrid, VideoGrid, sortTracks } from '@/components/MediaViews'
 import { SettingsView } from '@/components/SettingsView'
 import { ManageHost } from '@/components/manage/ManageHost'
 import { NoDrive } from '@/components/NoDrive'
@@ -86,6 +86,12 @@ import { transferId, useTransfers } from '@/lib/useTransfers'
 import { nameOf, useFileActions } from '@/lib/useFileActions'
 import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
 import { useStars } from '@/lib/useStars'
+import { useMusic } from '@/lib/useMusic'
+import { MusicPlayer } from '@/components/music/MusicPlayer'
+import { MusicSection } from '@/components/music/MusicSection'
+import { MusicBar, NowPlaying } from '@/components/music/NowPlaying'
+import { MusicBridge, useMusicProps } from '@/components/music/useMusicActions'
+import { useMusicMine } from '@/lib/useMusicMine'
 import { entriesToMedia, isMediaFile, nextEpisodes } from '@/lib/media'
 import type { MediaItem } from '@/lib/mockMedia'
 import {
@@ -185,6 +191,10 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
 
   const collections = useCollections(settled)
   const mediaBase = useMediaBase(host)
+  // Songs with their tags, as albums and artists; and the profile's own
+  // playlists and Continue listening.
+  const music = useMusic(settled, collections.collections.music)
+  const musicMine = useMusicMine(vault.status?.hostId, profileId, settled !== null)
   // Only for a host too old to sort the drive itself.
   const needsScan =
     collections.unsupported && (nav === 'recent' || LIBRARY_KEYS.includes(nav))
@@ -1375,6 +1385,8 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     setSigningIn,
     stars,
     collections,
+    music,
+    musicMine,
     mediaBase,
     needsScan,
     scan,
@@ -1432,7 +1444,30 @@ export type AppModel = ReturnType<typeof useAppModel>
 export function App(): React.JSX.Element {
   const mobile = isMobileShell()
   const model = useAppModel({ mobile })
-  return mobile ? <MobileApp model={model} /> : <DesktopApp model={model} />
+  // Music plays in a player of its own, around the whole app, so it goes on
+  // while somebody browses. Starting it closes any film.
+  return (
+    <MusicPlayer onStarts={() => model.setPlaying(null)} onListening={model.musicMine.setListening}>
+      <MusicBridge model={model} />
+      {mobile ? <MobileApp model={model} /> : <DesktopApp model={model} />}
+    </MusicPlayer>
+  )
+}
+
+/** The Music section on a computer. */
+function DesktopMusic({ model }: { model: AppModel }): React.JSX.Element {
+  return <MusicSection {...useMusicProps(model, 'wide', model.query)} />
+}
+
+/** The bar along the bottom while music plays, and the full player. */
+function DesktopMusicBar({ model }: { model: AppModel }): React.JSX.Element {
+  const props = useMusicProps(model, 'wide', '')
+  return (
+    <>
+      <MusicBar {...props} />
+      <NowPlaying {...props} />
+    </>
+  )
 }
 
 function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
@@ -1866,11 +1901,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                   onOpen={(index) => setViewer({ photos: libraryFiles, index })}
                 />
               ) : nav === 'music' ? (
-                <MusicList
-                  files={libraryFiles}
-                  playing={playing?.id ?? null}
-                  onPlay={(file) => setPlaying(musicItem(file))}
-                />
+                <DesktopMusic model={model} />
               ) : (
                 <VideoGrid
                   files={libraryFiles}
@@ -1937,6 +1968,8 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
           )}
         </main>
       </div>
+
+      <DesktopMusicBar model={model} />
 
       <TransfersPanel
         transfers={transfers.transfers}
