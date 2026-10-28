@@ -1,61 +1,166 @@
 import { useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Film, Image as ImageIcon, Loader2, Music, Pencil, RefreshCw, Tv, Video } from 'lucide-react'
+import { motion } from 'framer-motion'
+import {
+  Check,
+  Cpu,
+  Film,
+  Image as ImageIcon,
+  LayoutGrid,
+  Library as LibraryIcon,
+  Loader2,
+  Monitor,
+  Music,
+  Pencil,
+  RefreshCw,
+  Tv,
+  Video,
+} from 'lucide-react'
 import type { HostStatus, PreviewsWhen, Sections } from '@/lib/api'
 import { About } from './About'
 import { ConversionPanel, conversionDetail } from './ConversionPanel'
 import { Segmented } from './ProfileAccess'
 import { Switch } from './ui/Switch'
+import { ActionRow, Group, SettingRow } from './ui/Group'
 import { cn, formatAgo } from '@/lib/utils'
 
 /**
- * The settings this app has.
+ * The settings this app has, in four panels: what the host does with the
+ * library, converting video, what devices show, and this computer.
  *
  * Everything else a network share usually asks for — addresses, share names,
  * user accounts, firewall rules, permissions — is either decided by the
  * protocol or not a decision at all.
  *
- * Two of the four are off by default and say what turning them on means,
- * because both do something on the user's behalf that they did not ask for at
- * install time: one lets strangers on the network read the drive, the other
- * reads every folder on it.
+ * What does something on the person's behalf that they did not ask for at
+ * install time says so: a switch that lets strangers on the network join, and
+ * those that send names to an online service.
  */
-export function SettingsPanel({
+export function LibrarySettings({
   status,
-  onRequirePin,
-  onStartWithWindows,
   onLibrary,
   onRescan,
   onPosters,
+  onTmdbKey,
   onPreviews,
   onPreviewsWhen,
   onMakeMissingPreviews,
   onMusicCovers,
-  onTmdbKey,
-  onSections,
-  onRename,
+}: {
+  status: HostStatus
+  onLibrary: (enabled: boolean) => void
+  onRescan: () => void
+  onPosters: (enabled: boolean) => void
+  onTmdbKey: (key: string) => void
+  onPreviews: (enabled: boolean) => void
+  onPreviewsWhen: (when: PreviewsWhen) => void
+  onMakeMissingPreviews: () => void
+  onMusicCovers: (enabled: boolean) => void
+}): React.JSX.Element {
+  const { library } = status
+  return (
+    <Group icon={LibraryIcon} title="Library">
+      <SettingRow
+        onToggle={() => onLibrary(!library.enabled)}
+        title="Recognise films and series"
+        detail={
+          library.enabled
+            ? libraryDetail(status)
+            : 'Off. Your devices see folders and files exactly as they are on the drive.'
+        }
+        control={<Switch checked={library.enabled} onChange={onLibrary} label="Recognise films and series" />}
+      />
+      {library.enabled && (
+        <ActionRow
+          icon={<RefreshCw size={14} className={library.scanning ? 'animate-spin' : ''} />}
+          title={library.scanning ? 'Scanning the drive…' : 'Scan again'}
+          detail="For files just copied to the drive that haven’t appeared yet."
+          onClick={onRescan}
+          disabled={library.scanning}
+        />
+      )}
+      {library.enabled && <Artwork status={status} onPosters={onPosters} onSave={onTmdbKey} />}
+      <AlbumCovers status={status} onChange={onMusicCovers} />
+      <TimelinePictures
+        status={status}
+        onChange={onPreviews}
+        onWhen={onPreviewsWhen}
+        onMakeMissing={onMakeMissingPreviews}
+      />
+    </Group>
+  )
+}
+
+export function ConversionSettings({
+  status,
   onConversion,
   onConversionAtOnce,
   onMeasureConversion,
+}: {
+  status: HostStatus
+  onConversion: (enabled: boolean) => void
+  onConversionAtOnce: (atOnce: number | null) => void
+  onMeasureConversion: () => void
+}): React.JSX.Element {
+  const { conversion } = status
+  return (
+    <Group
+      icon={Cpu}
+      title="Video conversion"
+      aside={conversion.active.length > 0 ? `${conversion.active.length} converting now` : undefined}
+    >
+      <SettingRow
+        onToggle={conversion.available ? () => onConversion(!conversion.enabled) : undefined}
+        title="Convert video for devices that can’t play it"
+        detail={conversionDetail(conversion)}
+        control={
+          conversion.available ? (
+            <Switch
+              checked={conversion.enabled}
+              onChange={onConversion}
+              label="Convert video for devices that can’t play it"
+            />
+          ) : undefined
+        }
+        extra={
+          <ConversionPanel conversion={conversion} onAtOnce={onConversionAtOnce} onMeasure={onMeasureConversion} />
+        }
+      />
+    </Group>
+  )
+}
+
+export function SectionSettings({
+  status,
+  onSections,
+}: {
+  status: HostStatus
+  onSections: (sections: Sections) => void
+}): React.JSX.Element {
+  return (
+    <Group icon={LayoutGrid} title="Sections on your devices">
+      <div className="px-4 py-3">
+        <p className="text-[11.5px] leading-snug text-textFaint">
+          What each device shows under Library. Hiding a section only tidies the list. Every file is
+          still in Files.
+        </p>
+        <SectionPicker sections={status.sections} library={status.library} onChange={onSections} />
+      </div>
+    </Group>
+  )
+}
+
+export function ComputerSettings({
+  status,
+  onRequirePin,
+  onStartWithWindows,
+  onRename,
   build,
   onOpenLog,
 }: {
   status: HostStatus
   onRequirePin: (require: boolean) => void
   onStartWithWindows: (enabled: boolean) => void
-  onLibrary: (enabled: boolean) => void
-  onRescan: () => void
-  onPosters: (enabled: boolean) => void
-  onPreviews: (enabled: boolean) => void
-  onPreviewsWhen: (when: PreviewsWhen) => void
-  onMakeMissingPreviews: () => void
-  onMusicCovers: (enabled: boolean) => void
-  onTmdbKey: (key: string) => void
-  onSections: (sections: Sections) => void
   onRename: (name: string) => void
-  onConversion: (enabled: boolean) => void
-  onConversionAtOnce: (atOnce: number | null) => void
-  onMeasureConversion: () => void
   /** Which build this is, for telling one install from another. */
   build: string
   onOpenLog: () => void
@@ -69,10 +174,11 @@ export function SettingsPanel({
     if (name && name !== status.hostName) onRename(name)
     else setDraft(status.hostName)
   }
+  const startLabel = status.platform === 'windows' ? 'Start when Windows starts' : 'Start when you log in'
 
   return (
-    <div className="rounded-lg glass divide-y divide-line">
-      <Row
+    <Group icon={Monitor} title="This computer">
+      <SettingRow
         onToggle={() => onRequirePin(!status.requirePin)}
         title="Ask for a PIN when pairing"
         detail={
@@ -81,108 +187,21 @@ export function SettingsPanel({
             : 'Any device on this network can join and open the drive without a PIN.'
         }
         warn={!status.requirePin}
-        control={
-          <Switch
-            checked={status.requirePin}
-            onChange={onRequirePin}
-            label="Ask for a PIN when pairing"
-          />
-        }
+        control={<Switch checked={status.requirePin} onChange={onRequirePin} label="Ask for a PIN when pairing" />}
       />
 
-      <Row
-        onToggle={() => onLibrary(!status.library.enabled)}
-        title="Recognise films and series"
-        detail={
-          status.library.enabled
-            ? libraryDetail(status)
-            : 'Off. Your devices see folders and files exactly as they are on the drive.'
-        }
-        control={
-          <Switch
-            checked={status.library.enabled}
-            onChange={onLibrary}
-            label="Recognise films and series"
-          />
-        }
-        extra={
-          status.library.enabled ? (
-            <>
-              <button
-                onClick={onRescan}
-                disabled={status.library.scanning}
-                className="mt-2.5 flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] text-textFaint transition-colors hover:bg-panel2 hover:text-textDim disabled:opacity-50"
-              >
-                <RefreshCw size={11} className={status.library.scanning ? 'animate-spin' : ''} />
-                {status.library.scanning ? 'Scanning…' : 'Scan again'}
-              </button>
-              <Artwork status={status} onPosters={onPosters} onSave={onTmdbKey} />
-              <TimelinePictures
-                status={status}
-                onChange={onPreviews}
-                onWhen={onPreviewsWhen}
-                onMakeMissing={onMakeMissingPreviews}
-              />
-              <AlbumCovers status={status} onChange={onMusicCovers} />
-            </>
-          ) : null
-        }
-      />
-
-      <Row
-        onToggle={
-          status.conversion.available ? () => onConversion(!status.conversion.enabled) : undefined
-        }
-        title="Convert video for devices that can’t play it"
-        detail={conversionDetail(status.conversion)}
-        control={
-          status.conversion.available ? (
-            <Switch
-              checked={status.conversion.enabled}
-              onChange={onConversion}
-              label="Convert video for devices that can’t play it"
-            />
-          ) : undefined
-        }
-        extra={
-          <ConversionPanel
-            conversion={status.conversion}
-            onAtOnce={onConversionAtOnce}
-            onMeasure={onMeasureConversion}
-          />
-        }
-      />
-
-      <Row
-        title="Sections on your devices"
-        detail="What each device shows under Library. Hiding a section only tidies the list. Every file is still in Files."
-        extra={
-          <SectionPicker
-            sections={status.sections}
-            library={status.library}
-            onChange={onSections}
-          />
-        }
-      />
-
-      <Row
+      <SettingRow
         onToggle={() => onStartWithWindows(!status.startWithWindows)}
-        title={status.platform === 'windows' ? 'Start when Windows starts' : 'Start when you log in'}
+        title={startLabel}
         detail={
           status.platform === 'windows'
             ? 'Opens in the notification area at login, so the drive is there before you go looking for it.'
             : 'Opens in the background at login, so the drive is there before you go looking for it.'
         }
-        control={
-          <Switch
-            checked={status.startWithWindows}
-            onChange={onStartWithWindows}
-            label={status.platform === 'windows' ? 'Start when Windows starts' : 'Start when you log in'}
-          />
-        }
+        control={<Switch checked={status.startWithWindows} onChange={onStartWithWindows} label={startLabel} />}
       />
 
-      <Row
+      <SettingRow
         title="This host’s name"
         detail="What your devices see in their list, before they pair."
         control={
@@ -201,13 +220,13 @@ export function SettingsPanel({
                   }
                 }}
                 onBlur={commitName}
-                className="w-[160px] rounded-sm border border-lineBright bg-ink2 px-2 py-1 font-mono text-[12px] text-text outline-none"
+                className="w-[160px] rounded-md border border-lineBright bg-ink2 px-2 py-1 font-mono text-[12px] text-text outline-none"
               />
               <button
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={commitName}
                 aria-label="Save the name"
-                className="rounded-sm p-1.5 text-textDim transition-colors hover:bg-panel2 hover:text-text"
+                className="rounded-md p-1.5 text-textDim transition-colors hover:bg-white/[0.06] hover:text-text"
               >
                 <Check size={13} />
               </button>
@@ -218,52 +237,48 @@ export function SettingsPanel({
                 setDraft(status.hostName)
                 setEditingName(true)
               }}
-              className="flex items-center gap-2 rounded-sm px-2 py-1 font-mono text-[12px] text-textDim transition-colors hover:bg-panel2 hover:text-text"
+              className="flex max-w-[200px] items-center gap-2 rounded-md px-2 py-1 font-mono text-[12px] text-textDim transition-colors hover:bg-white/[0.06] hover:text-text"
             >
-              {status.hostName}
-              <Pencil size={11} />
+              <span className="truncate">{status.hostName}</span>
+              <Pencil size={11} className="shrink-0" />
             </button>
           )
         }
       />
 
-      <div className="px-5 py-3.5">
-        <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
-          Address
-        </div>
-        <div className="tnum mt-1.5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11.5px] text-textDim">
-          {status.addresses.length > 0 ? (
-            <>
-              {/* The network the computer actually uses comes first. The
-                  rest are usually adapters other software adds — VirtualBox,
-                  WSL — and are shown quietly after it. */}
-              <span>
+      <div className="px-4 py-3">
+        <div className="flex items-baseline justify-between gap-4">
+          <span className="text-[13px] text-text">Address</span>
+          <span className="tnum min-w-0 truncate font-mono text-[12px] text-textDim">
+            {status.addresses.length > 0 ? (
+              <>
                 {status.addresses[0]}
                 <span className="text-textFaint">:{status.port}</span>
-              </span>
-              {status.addresses.length > 1 && (
-                <span className="text-textFaint">also {status.addresses.slice(1).join(', ')}</span>
-              )}
-            </>
-          ) : (
-            <span className="text-textFaint">No network connection</span>
-          )}
+              </>
+            ) : (
+              <span className="text-textFaint">No network connection</span>
+            )}
+          </span>
         </div>
-        <p className="mt-2 text-[11px] leading-relaxed text-textFaint">
-          {/* Shown because it is occasionally useful to know, and never
-              because anyone has to type it. */}
-          Only for reference. Your devices find this host by themselves, even when its
-          address changes.
+        {/* The network the computer actually uses comes first. The rest are
+            usually adapters other software adds (VirtualBox, WSL), shown
+            quietly after it. */}
+        {status.addresses.length > 1 && (
+          <div className="tnum mt-1 truncate text-right font-mono text-[10.5px] text-textFaint">
+            also {status.addresses.slice(1).join(', ')}
+          </div>
+        )}
+        <p className="mt-1.5 text-[11.5px] leading-snug text-textFaint">
+          Only for reference. Your devices find this host by themselves, even when its address changes.
         </p>
-
-        {/* Which build this is, and where it writes its log. Both exist
-            because "am I running the new one?" and "where do I look when it
-            misbehaves?" each cost a round trip to answer once. */}
-        <div className="tnum mt-3 border-t border-line pt-3 font-mono text-[10px] text-textFaint">
-          <div>{build || 'build unknown'}</div>
+        {/* Which build this is, and where it writes its log: "am I running
+            the new one?" and "where do I look when it misbehaves?" each cost
+            a round trip to answer once. */}
+        <div className="tnum mt-2.5 flex items-center justify-between gap-3 font-mono text-[10px] text-textFaint">
+          <span className="truncate">{build || 'build unknown'}</span>
           <button
             onClick={onOpenLog}
-            className="mt-1 underline decoration-dotted underline-offset-2 transition-colors hover:text-textDim"
+            className="shrink-0 underline decoration-dotted underline-offset-2 transition-colors hover:text-textDim"
           >
             open the log folder
           </button>
@@ -273,7 +288,7 @@ export function SettingsPanel({
       <div id="host-about" className="scroll-mt-6">
         <About product="Basalt Host" platform={status.platform} />
       </div>
-    </div>
+    </Group>
   )
 }
 
@@ -325,14 +340,14 @@ function Artwork({
   const total = films + series
 
   return (
-    <div className="mt-2.5 border-t border-line pt-2.5">
+    <div className="px-4 py-3">
       <div className="flex items-start gap-3">
         <div
           className="min-w-0 flex-1 cursor-pointer select-none"
           onClick={() => onPosters(!posters)}
         >
-          <div className="text-[12px] text-textDim">Download posters</div>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-textFaint">
+          <div className="text-[13px] text-text">Download posters</div>
+          <p className="mt-0.5 text-[11.5px] leading-snug text-textFaint">
             {/* Said plainly, because this is the actual cost of the switch and
                 no key is required any more to make somebody think about it. */}
             {posters
@@ -418,56 +433,6 @@ function Artwork({
           </div>
         </motion.div>
       )}
-    </div>
-  )
-}
-
-function Row({
-  title,
-  detail,
-  control,
-  warn,
-  extra,
-  onToggle,
-}: {
-  title: string
-  detail: string
-  /** For a row whose control is a switch: clicking the words flips it too,
-   *  as clicking a label does anywhere else. */
-  onToggle?: () => void
-  control?: React.ReactNode
-  warn?: boolean
-  /** Rendered under the detail, for a control the row itself cannot hold. */
-  extra?: React.ReactNode
-}): React.JSX.Element {
-  return (
-    <div className="flex items-start gap-4 px-5 py-4">
-      <div className="min-w-0 flex-1">
-        <div
-          onClick={onToggle}
-          className={onToggle ? 'group cursor-pointer select-none' : undefined}
-        >
-        <div className="text-[13px] font-medium text-text">{title}</div>
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.p
-            key={detail}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            className={
-              warn
-                ? 'mt-1 text-[11.5px] leading-relaxed text-danger'
-                : 'mt-1 text-[11.5px] leading-relaxed text-textFaint'
-            }
-          >
-            {detail}
-          </motion.p>
-        </AnimatePresence>
-        </div>
-        {extra}
-      </div>
-      <div className="mt-0.5 shrink-0">{control}</div>
     </div>
   )
 }
@@ -598,11 +563,11 @@ function TimelinePictures({
   const when = previewsWhen ?? 'idle'
   const running = previewsNow != null && previewsNow.total > 0
   return (
-    <div className="mt-2.5 border-t border-line pt-2.5">
+    <div className="px-4 py-3">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1 cursor-pointer select-none" onClick={() => onChange(!on)}>
-          <div className="text-[12px] text-textDim">Timeline pictures</div>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-textFaint">
+          <div className="text-[13px] text-text">Timeline pictures</div>
+          <p className="mt-0.5 text-[11.5px] leading-snug text-textFaint">
             {on
               ? 'Small pictures along each film’s timeline, made on this computer and kept with the host’s own files, up to 2 GB. A film played for the first time gets them then.'
               : 'Off. Moving along a film’s timeline shows the time only.'}
@@ -637,7 +602,7 @@ function TimelinePictures({
           <button
             onClick={onMakeMissing}
             disabled={running}
-            className="rounded-md border border-line px-2.5 py-1 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text disabled:opacity-50"
+            className="rounded-full border border-white/[0.12] px-3.5 py-1.5 text-[12px] text-text transition-colors hover:bg-white/[0.05] disabled:opacity-50"
           >
             {running ? 'Making the missing ones…' : 'Make the missing ones now'}
           </button>
@@ -658,11 +623,11 @@ function AlbumCovers({
   const on = status.library.musicCovers
   if (on === undefined) return null
   return (
-    <div className="mt-2.5 border-t border-line pt-2.5">
+    <div className="px-4 py-3">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1 cursor-pointer select-none" onClick={() => onChange(!on)}>
-          <div className="text-[12px] text-textDim">Download album covers</div>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-textFaint">
+          <div className="text-[13px] text-text">Download album covers</div>
+          <p className="mt-0.5 text-[11.5px] leading-snug text-textFaint">
             {on
               ? 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive.'
               : 'Off. Albums without a cover get one drawn. When on, the names of albums and who they are by are sent to MusicBrainz to find their covers.'}

@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
-import { AlertTriangle, Plus } from 'lucide-react'
+import { AlertTriangle, MonitorSmartphone, Users } from 'lucide-react'
 import { api, type DeviceView, type HostStatus } from '@/lib/api'
 import { usePoll } from '@/lib/usePoll'
 import { DeviceList, OwnerLine } from './components/DeviceList'
 import { PairingRequests } from './components/PairingRequests'
-import { SettingsPanel } from './components/SettingsPanel'
+import {
+  ComputerSettings,
+  ConversionSettings,
+  LibrarySettings,
+  SectionSettings,
+} from './components/SettingsPanel'
 import { UpdateBanner } from './components/UpdateBanner'
 import { ProfileLinks } from './components/ProfileLinks'
 import { FirewallNotice } from './components/FirewallNotice'
@@ -14,7 +19,8 @@ import { ProfileAccess } from './components/ProfileAccess'
 import { AddProfileDialog } from './components/AddProfileDialog'
 import { Setup } from './components/Setup'
 import { TitleBar } from './components/TitleBar'
-import { VaultCard } from './components/VaultCard'
+import { Machine } from './components/Machine'
+import { Group } from './components/ui/Group'
 import { HexMark } from './components/HexMark'
 import { PromptDialog, type PromptRequest } from './components/ui/PromptDialog'
 import { MessageDialog, type MessageRequest } from './components/ui/MessageDialog'
@@ -153,23 +159,22 @@ export function App(): React.JSX.Element {
               transition={{ duration: 0.18 }}
               className="h-full overflow-y-auto"
             >
-              <div className="mx-auto flex max-w-[740px] flex-col gap-6 px-8 py-7">
+              <div className="mx-auto flex max-w-[1180px] flex-col gap-4 px-6 py-6">
                 <UpdateBanner />
                 <FirewallNotice />
 
                 {!current.serving && current.problem && (
-                  <div className="flex items-start gap-3 rounded-md bg-dangerBg px-4 py-3">
+                  <div className="flex items-start gap-3 rounded-lg bg-dangerBg px-4 py-3">
                     <span className="mt-0.5 shrink-0 text-danger">
                       <AlertTriangle size={14} />
                     </span>
-                    <p className="text-[12.5px] leading-relaxed text-danger">
-                      {current.problem}
-                    </p>
+                    <p className="text-[12.5px] leading-relaxed text-danger">{current.problem}</p>
                   </div>
                 )}
 
-                <VaultCard
+                <Machine
                   status={current}
+                  devices={list}
                   onChange={() => setReconfiguring(true)}
                   onOpen={() => void api.openVaultFolder().catch(() => {})}
                   onRename={() =>
@@ -185,235 +190,224 @@ export function App(): React.JSX.Element {
                   }
                 />
 
-                <section>
-                  <PairingRequests
-                    requests={pairings.data ?? []}
-                    onDeny={(id) => {
-                      void api.denyPairing(id).then(() => pairings.refresh())
-                    }}
-                  />
+                <PairingRequests
+                  requests={pairings.data ?? []}
+                  onDeny={(id) => {
+                    void api.denyPairing(id).then(() => pairings.refresh())
+                  }}
+                />
 
-                  <div className="mb-2.5 mt-1 flex items-baseline justify-between">
-                    <h3 className="font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
-                      Devices
-                    </h3>
-                    <span className="tnum font-mono text-[10px] text-textFaint">
-                      {list.filter((d) => d.online).length} of {list.length} connected
-                    </span>
-                  </div>
-
-                  <OwnerLine endorsement={current.endorsement} devices={list} />
-
-                  <DeviceList
-                    devices={list}
-                    onRevoke={(device) =>
-                      setPrompt({
-                        title: `Remove ${device.name}?`,
-                        value: device.name,
-                        confirmLabel: 'Remove',
-                        select: 'all',
-                        // Confirmed by retyping nothing in particular: the
-                        // dialog is the confirmation, and the field carries the
-                        // name so it is obvious which device is going.
-                        onConfirm: () => {
-                          void api.revokeDevice(device.id).then(() => {
-                            devices.refresh()
-                            status.refresh()
-                          })
-                        },
-                      })
-                    }
-                    onRename={(device) =>
-                      setPrompt({
-                        title: 'Rename this device',
-                        value: device.name,
-                        confirmLabel: 'Rename',
-                        select: 'all',
-                        onConfirm: (name) => {
-                          void api
-                            .renameDevice(device.id, name)
-                            .then(() => devices.refresh())
-                        },
-                      })
-                    }
-                    onToggleWritable={(device) => {
-                      void api
-                        .setDeviceWritable(device.id, !device.writable)
-                        .then(() => devices.refresh())
-                    }}
-                    onToggleOwner={(device) => {
-                      void api
-                        .setDeviceOwner(device.id, !device.owner)
-                        .then(() => {
-                          devices.refresh()
-                          status.refresh()
-                        })
-                        .catch(() => devices.refresh())
-                    }}
-                  />
-                </section>
-
-                <section>
-                  <div className="mb-2.5 flex items-center justify-between">
-                    <div className="flex items-baseline gap-3">
-                      <h3 className="font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
-                        Profiles
-                      </h3>
-                      {current.profiles.length > 0 && (
-                        <span className="tnum font-mono text-[10px] text-textFaint">
-                          {current.profiles.length}{' '}
-                          {current.profiles.length === 1 ? 'profile' : 'profiles'}
-                        </span>
-                      )}
-                    </div>
-                    <motion.button
-                      whileTap={{ scale: 0.97 }}
-                      onClick={() => setAdding(true)}
-                      className="flex items-center gap-1.5 rounded-md border border-line bg-panel2 px-2.5 py-1 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text"
+                <div className="grid items-start gap-4 min-[900px]:grid-cols-2">
+                  <div className="flex min-w-0 flex-col gap-4">
+                    <Group
+                      icon={MonitorSmartphone}
+                      title="Devices"
+                      aside={
+                        list.length > 0
+                          ? `${list.filter((d) => d.online).length} of ${list.length} connected`
+                          : undefined
+                      }
                     >
-                      <Plus size={12} />
-                      Add profile
-                    </motion.button>
-                  </div>
-                  <ProfileLinks
-                    links={links.data ?? []}
-                    onApprove={(link) => {
-                      void api
-                        .approveProfileLink(link.id)
-                        .then(() => {
-                          links.refresh()
-                          status.refresh()
-                        })
-                        .catch((e: unknown) => setRulesError(reason(e)))
-                    }}
-                    onDeny={(link) => {
-                      void api.denyProfileLink(link.id).then(() => links.refresh())
-                    }}
-                  />
-                  <ProfileAccess
-                    rules={current.profileRules}
-                    profileCount={current.profiles.length}
-                    error={rulesError}
-                    onRequireProfile={(require) => {
-                      setRulesError(null)
-                      void api
-                        .setRequireProfile(require)
-                        .then(apply)
-                        .catch((e: unknown) => setRulesError(reason(e)))
-                    }}
-                    onOwnerAddsProfiles={(ownerOnly) => {
-                      setRulesError(null)
-                      void api
-                        .setOwnerAddsProfiles(ownerOnly)
-                        .then(apply)
-                        .catch((e: unknown) => setRulesError(reason(e)))
-                    }}
-                    onClaimCode={(required) => {
-                      setRulesError(null)
-                      void api
-                        .setClaimCode(required)
-                        .then(apply)
-                        .catch((e: unknown) => setRulesError(reason(e)))
-                    }}
-                  />
-                  <ProfileList
-                    profiles={current.profiles}
-                    ownerAdds={current.profileRules.ownerAddsProfiles}
-                    onAdd={() => setAdding(true)}
-                    onNewCode={(profile) => {
-                      void api.newClaimCode(profile.id).then(apply)
-                    }}
-                    onResetPin={(profile) =>
-                      setPrompt({
-                        title: `Reset ${profile.name}'s PIN?`,
-                        value: profile.name,
-                        confirmLabel: 'Reset PIN',
-                        select: 'all',
-                        // The dialog is the confirmation: every device signed
-                        // in to this profile is signed out, and the next
-                        // sign-in chooses a new PIN.
-                        onConfirm: () => {
-                          void api.resetProfilePin(profile.id).then(apply)
-                        },
-                      })
-                    }
-                    onRemove={(profile) =>
-                      setPrompt({
-                        title: `Remove ${profile.name}?`,
-                        value: profile.name,
-                        confirmLabel: 'Remove',
-                        select: 'all',
-                        // With its watch history and stars. The files on the
-                        // drive are not touched.
-                        onConfirm: () => {
-                          void api.removeProfile(profile.id).then(apply)
-                        },
-                      })
-                    }
-                  />
-                </section>
+                      <DeviceList
+                        devices={list}
+                        onRevoke={(device) =>
+                          setPrompt({
+                            title: `Remove ${device.name}?`,
+                            value: device.name,
+                            confirmLabel: 'Remove',
+                            select: 'all',
+                            // Confirmed by retyping nothing in particular: the
+                            // dialog is the confirmation, and the field carries
+                            // the name so it is obvious which device is going.
+                            onConfirm: () => {
+                              void api.revokeDevice(device.id).then(() => {
+                                devices.refresh()
+                                status.refresh()
+                              })
+                            },
+                          })
+                        }
+                        onRename={(device) =>
+                          setPrompt({
+                            title: 'Rename this device',
+                            value: device.name,
+                            confirmLabel: 'Rename',
+                            select: 'all',
+                            onConfirm: (name) => {
+                              void api.renameDevice(device.id, name).then(() => devices.refresh())
+                            },
+                          })
+                        }
+                        onToggleWritable={(device) => {
+                          void api
+                            .setDeviceWritable(device.id, !device.writable)
+                            .then(() => devices.refresh())
+                        }}
+                        onToggleOwner={(device) => {
+                          void api
+                            .setDeviceOwner(device.id, !device.owner)
+                            .then(() => {
+                              devices.refresh()
+                              status.refresh()
+                            })
+                            .catch(() => devices.refresh())
+                        }}
+                      />
+                      <OwnerLine endorsement={current.endorsement} devices={list} />
+                    </Group>
 
-                <section>
-                  <h3 className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
-                    Settings
-                  </h3>
-                  <SettingsPanel
-                    status={current}
-                    onRequirePin={(require) => {
-                      if (require) setRequirePin(true)
-                      else setAskNoPin(true)
-                    }}
-                    onStartWithWindows={(enabled) => {
-                      void api.setStartWithWindows(enabled).then(apply)
-                    }}
-                    onLibrary={(enabled) => {
-                      void api.setLibraryEnabled(enabled).then(apply)
-                    }}
-                    onConversion={(enabled) => {
-                      void api.setConversion(enabled).then(apply)
-                    }}
-                    onConversionAtOnce={(atOnce) => {
-                      void api.setConversionAtOnce(atOnce).then(apply)
-                    }}
-                    onMeasureConversion={() => {
-                      void api
-                        .measureConversion()
-                        .then(apply)
-                        .catch((e: unknown) =>
-                          setMessage({ title: 'Can’t measure right now', message: reason(e) }),
-                        )
-                    }}
-                    onRescan={() => {
-                      void api.rescanLibrary().then(apply)
-                    }}
-                    onPosters={(enabled) => {
-                      void api.setPosters(enabled).then(apply)
-                    }}
-                    onPreviews={(enabled) => {
-                      void api.setPreviews(enabled).then(apply)
-                    }}
-                    onPreviewsWhen={(when) => {
-                      void api.setPreviewsWhen(when).then(apply)
-                    }}
-                    onMakeMissingPreviews={() => {
-                      void api.makeMissingPreviews().then(apply)
-                    }}
-                    onMusicCovers={(enabled) => {
-                      void api.setMusicCovers(enabled).then(apply)
-                    }}
-                    onTmdbKey={(key) => {
-                      void api.setTmdbKey(key).then(apply)
-                    }}
-                    onSections={(sections) => {
-                      void api.setSections(sections).then(apply)
-                    }}
-                    build={build}
-                    onOpenLog={() => void api.openLogFolder().catch(() => {})}
-                    onRename={(name) => {
-                      void api.setHostName(name).then(apply)
-                    }}
-                  />
-                </section>
+                    <Group
+                      icon={Users}
+                      title="Profiles"
+                      aside={current.profiles.length > 0 ? current.profiles.length : undefined}
+                    >
+                      <ProfileLinks
+                        links={links.data ?? []}
+                        onApprove={(link) => {
+                          void api
+                            .approveProfileLink(link.id)
+                            .then(() => {
+                              links.refresh()
+                              status.refresh()
+                            })
+                            .catch((e: unknown) => setRulesError(reason(e)))
+                        }}
+                        onDeny={(link) => {
+                          void api.denyProfileLink(link.id).then(() => links.refresh())
+                        }}
+                      />
+                      <ProfileList
+                        profiles={current.profiles}
+                        ownerAdds={current.profileRules.ownerAddsProfiles}
+                        onAdd={() => setAdding(true)}
+                        onNewCode={(profile) => {
+                          void api.newClaimCode(profile.id).then(apply)
+                        }}
+                        onResetPin={(profile) =>
+                          setPrompt({
+                            title: `Reset ${profile.name}'s PIN?`,
+                            value: profile.name,
+                            confirmLabel: 'Reset PIN',
+                            select: 'all',
+                            // The dialog is the confirmation: every device signed
+                            // in to this profile is signed out, and the next
+                            // sign-in chooses a new PIN.
+                            onConfirm: () => {
+                              void api.resetProfilePin(profile.id).then(apply)
+                            },
+                          })
+                        }
+                        onRemove={(profile) =>
+                          setPrompt({
+                            title: `Remove ${profile.name}?`,
+                            value: profile.name,
+                            confirmLabel: 'Remove',
+                            select: 'all',
+                            // With its watch history and stars. The files on the
+                            // drive are not touched.
+                            onConfirm: () => {
+                              void api.removeProfile(profile.id).then(apply)
+                            },
+                          })
+                        }
+                      />
+                      <ProfileAccess
+                        rules={current.profileRules}
+                        profileCount={current.profiles.length}
+                        error={rulesError}
+                        onRequireProfile={(require) => {
+                          setRulesError(null)
+                          void api
+                            .setRequireProfile(require)
+                            .then(apply)
+                            .catch((e: unknown) => setRulesError(reason(e)))
+                        }}
+                        onOwnerAddsProfiles={(ownerOnly) => {
+                          setRulesError(null)
+                          void api
+                            .setOwnerAddsProfiles(ownerOnly)
+                            .then(apply)
+                            .catch((e: unknown) => setRulesError(reason(e)))
+                        }}
+                        onClaimCode={(required) => {
+                          setRulesError(null)
+                          void api
+                            .setClaimCode(required)
+                            .then(apply)
+                            .catch((e: unknown) => setRulesError(reason(e)))
+                        }}
+                      />
+                    </Group>
+                    <ComputerSettings
+                      status={current}
+                      onRequirePin={(require) => {
+                        if (require) setRequirePin(true)
+                        else setAskNoPin(true)
+                      }}
+                      onStartWithWindows={(enabled) => {
+                        void api.setStartWithWindows(enabled).then(apply)
+                      }}
+                      onRename={(name) => {
+                        void api.setHostName(name).then(apply)
+                      }}
+                      build={build}
+                      onOpenLog={() => void api.openLogFolder().catch(() => {})}
+                    />
+                  </div>
+
+                  <div className="flex min-w-0 flex-col gap-4">
+                    <LibrarySettings
+                      status={current}
+                      onLibrary={(enabled) => {
+                        void api.setLibraryEnabled(enabled).then(apply)
+                      }}
+                      onRescan={() => {
+                        void api.rescanLibrary().then(apply)
+                      }}
+                      onPosters={(enabled) => {
+                        void api.setPosters(enabled).then(apply)
+                      }}
+                      onTmdbKey={(key) => {
+                        void api.setTmdbKey(key).then(apply)
+                      }}
+                      onPreviews={(enabled) => {
+                        void api.setPreviews(enabled).then(apply)
+                      }}
+                      onPreviewsWhen={(when) => {
+                        void api.setPreviewsWhen(when).then(apply)
+                      }}
+                      onMakeMissingPreviews={() => {
+                        void api.makeMissingPreviews().then(apply)
+                      }}
+                      onMusicCovers={(enabled) => {
+                        void api.setMusicCovers(enabled).then(apply)
+                      }}
+                    />
+                    <ConversionSettings
+                      status={current}
+                      onConversion={(enabled) => {
+                        void api.setConversion(enabled).then(apply)
+                      }}
+                      onConversionAtOnce={(atOnce) => {
+                        void api.setConversionAtOnce(atOnce).then(apply)
+                      }}
+                      onMeasureConversion={() => {
+                        void api
+                          .measureConversion()
+                          .then(apply)
+                          .catch((e: unknown) =>
+                            setMessage({ title: 'Can’t measure right now', message: reason(e) }),
+                          )
+                      }}
+                    />
+                    <SectionSettings
+                      status={current}
+                      onSections={(sections) => {
+                        void api.setSections(sections).then(apply)
+                      }}
+                    />
+                  </div>
+                </div>
               </div>
             </motion.div>
           )}

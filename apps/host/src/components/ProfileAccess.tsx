@@ -37,9 +37,9 @@ export function ProfileAccess({
   const private_ = rules.requireProfile && rules.ownerAddsProfiles
 
   return (
-    <div className="mb-3">
-      <div className="rounded-lg glass divide-y divide-line">
-        <div className="flex items-start gap-3.5 px-5 py-4">
+    <div className="border-t border-white/[0.05]">
+      <div className="divide-y divide-white/[0.05]">
+        <div className="flex items-start gap-3 px-4 py-3">
           <RuleIcon on={rules.requireProfile}>
             <Lock size={14} />
           </RuleIcon>
@@ -47,7 +47,7 @@ export function ProfileAccess({
             className={cn('min-w-0 flex-1', !cannotRequire && 'cursor-pointer select-none')}
             onClick={cannotRequire ? undefined : () => onRequireProfile(!rules.requireProfile)}
           >
-            <div className="text-[13px] font-medium text-text">Require a profile</div>
+            <div className="text-[13px] text-text">Require a profile</div>
             <Detail
               text={
                 cannotRequire
@@ -68,13 +68,13 @@ export function ProfileAccess({
           </div>
         </div>
 
-        <div className="flex items-start gap-3.5 px-5 py-4">
+        <div className="flex items-start gap-3 px-4 py-3">
           <RuleIcon on={rules.ownerAddsProfiles}>
             <UserPlus size={14} />
           </RuleIcon>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="text-[13px] font-medium text-text">Who can add profiles</div>
+              <div className="text-[13px] text-text">Who can add profiles</div>
               <Segmented
                 value={rules.ownerAddsProfiles ? 'host' : 'anyone'}
                 options={[
@@ -95,7 +95,7 @@ export function ProfileAccess({
         </div>
 
         {rules.claimCode !== undefined && (
-          <div className="flex items-start gap-3.5 px-5 py-4">
+          <div className="flex items-start gap-3 px-4 py-3">
             <RuleIcon on={rules.claimCode}>
               <KeyRound size={14} />
             </RuleIcon>
@@ -103,7 +103,7 @@ export function ProfileAccess({
               className="min-w-0 flex-1 cursor-pointer select-none"
               onClick={() => onClaimCode(!rules.claimCode)}
             >
-              <div className="text-[13px] font-medium text-text">Code to claim a profile</div>
+              <div className="text-[13px] text-text">Code to claim a profile</div>
               <Detail
                 warn={!rules.claimCode}
                 text={
@@ -134,9 +134,9 @@ export function ProfileAccess({
             className="overflow-hidden"
           >
             {error ? (
-              <p className="px-1 pt-2 text-[11.5px] text-danger">{error}</p>
+              <p className="px-4 pb-3 text-[11.5px] text-danger">{error}</p>
             ) : (
-              <p className="flex items-center gap-1.5 px-1 pt-2 text-[11.5px] text-textDim">
+              <p className="flex items-center gap-1.5 px-4 pb-3 text-[11.5px] text-textDim">
                 <ShieldCheck size={13} className="shrink-0 text-basalt" />
                 A private drive: only the people you add here can use it, each with their own PIN.
               </p>
@@ -152,8 +152,8 @@ function RuleIcon({ on, children }: { on: boolean; children: React.ReactNode }):
   return (
     <span
       className={cn(
-        'mt-px flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition-colors duration-200',
-        on ? 'border-white/20 bg-white/[0.08] text-text' : 'border-line bg-panel2 text-textFaint',
+        'mt-px flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors duration-200',
+        on ? 'border-white/20 bg-white/[0.08] text-text' : 'border-transparent bg-white/[0.05] text-textFaint',
       )}
     >
       {children}
