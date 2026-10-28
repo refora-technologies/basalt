@@ -156,7 +156,10 @@ async fn fetch_one(client: &reqwest::Client, artist: &str, album: &str) -> Looku
     match find_cover(client, artist, album).await {
         Ok(Some(bytes)) => Lookup::Found(bytes),
         Ok(None) => Lookup::NotFound,
-        Err(()) => Lookup::Failed,
+        Err(why) => {
+            tracing::debug!("no cover for {album} by {artist} this time: {why}");
+            Lookup::Failed
+        }
     }
 }
 
@@ -165,23 +168,23 @@ async fn find_cover(
     client: &reqwest::Client,
     artist: &str,
     album: &str,
-) -> Result<Option<Vec<u8>>, ()> {
+) -> Result<Option<Vec<u8>>, String> {
     let query = lucene_query(artist, album);
     let url = reqwest::Url::parse_with_params(
         "https://musicbrainz.org/ws/2/release-group/",
         &[("query", query.as_str()), ("fmt", "json"), ("limit", "3")],
     )
-    .map_err(|_| ())?;
+    .map_err(|e| e.to_string())?;
     let found: Search = client
         .get(url)
         .send()
         .await
-        .map_err(|_| ())?
+        .map_err(|e| e.to_string())?
         .error_for_status()
-        .map_err(|_| ())?
+        .map_err(|e| e.to_string())?
         .json()
         .await
-        .map_err(|_| ())?;
+        .map_err(|e| e.to_string())?;
     let Some(group) = found
         .release_groups
         .into_iter()
@@ -197,20 +200,20 @@ async fn find_cover(
         ))
         .send()
         .await
-        .map_err(|_| ())?;
+        .map_err(|e| e.to_string())?;
     // The album is known and has no cover there.
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
     let bytes = response
         .error_for_status()
-        .map_err(|_| ())?
+        .map_err(|e| e.to_string())?
         .bytes()
         .await
-        .map_err(|_| ())?;
+        .map_err(|e| e.to_string())?;
     // Only a picture is kept: anything else is not a cover.
     if image::guess_format(&bytes).is_err() {
-        return Err(());
+        return Err("the cover is not a picture".into());
     }
     Ok(Some(bytes.to_vec()))
 }
