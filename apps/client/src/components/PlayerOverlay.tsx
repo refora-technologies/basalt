@@ -1377,6 +1377,14 @@ export function PlayerOverlay({
       case 'P':
         goPrevious()
         break
+      // Enter as well as f: the key people reach for. Not on a focused
+      // button or field, where Enter is that control's own.
+      case 'Enter': {
+        const on = e.target instanceof HTMLElement ? e.target.closest('button, input, select, textarea, [role="menuitem"]') : null
+        if (on) handled = false
+        else void fullscreen()
+        break
+      }
       case 'f':
         void fullscreen()
         break
@@ -2084,7 +2092,7 @@ export function PlayerOverlay({
               {!TV && (!TOUCH || mpv.picture) && (
                 <ControlButton
                   icon={TOUCH && turned === 'landscape' ? Minimize2 : Maximize2}
-                  label={TOUCH ? 'Turn the picture' : 'Fullscreen (f)'}
+                  label={TOUCH ? 'Turn the picture' : 'Full screen (Enter)'}
                   onClick={fullscreen}
                 />
               )}

@@ -1473,6 +1473,27 @@ function DesktopMusicBar({ model }: { model: AppModel }): React.JSX.Element {
 function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
   // Choosing another drive while connected: the drive list, with a way back.
   const [changingDrive, setChangingDrive] = useState(false)
+  /**
+   * Where closing the player goes back to: an episode to its series' list of
+   * episodes, a film to the movies. Wherever it was started from — Continue
+   * watching, a search, Recent — back is where it belongs in the library.
+   */
+  const [seriesAfterPlayer, setSeriesAfterPlayer] = useState<string | null>(null)
+  const clearSeriesAfterPlayer = useCallback(() => setSeriesAfterPlayer(null), [])
+  const backFromPlayer = (item: { id: string } | null): void => {
+    if (!item) return
+    for (const entry of model.mediaItems) {
+      if (entry.kind === 'film' && entry.path === item.id) {
+        model.setNav('movies')
+        return
+      }
+      if (entry.kind === 'series' && entry.seasons.some((s) => s.episodes.some((e) => e.path === item.id))) {
+        model.setNav('series')
+        setSeriesAfterPlayer(entry.id)
+        return
+      }
+    }
+  }
   const [introducing, setIntroducing] = useState(() => !onboarded())
   const {
     vault,
@@ -1882,6 +1903,8 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                 playing={playing !== null}
                 onPlay={(path) => void playPath(path)}
                 onForget={watched.forget}
+                openSeries={seriesAfterPlayer}
+                onOpenedSeries={clearSeriesAfterPlayer}
               />
             ) : isLibrary ? (
               libraryFiles.length === 0 ? (
@@ -2006,6 +2029,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
       <PlayerOverlay
         item={playing}
         onClose={() => {
+          backFromPlayer(playing)
           setPlaying(null)
           // The player reports one last position as it unmounts; picking the
           // list up straight after means Continue watching is right by the
