@@ -181,6 +181,8 @@ pub struct LibraryStatus {
     pub posters: bool,
     /// Whether timeline pictures are made.
     pub previews: bool,
+    /// Whether album covers are looked up online.
+    pub music_covers: bool,
     /// Whether a TMDb key has been supplied at all.
     ///
     /// The key itself never leaves the host — the interface only needs to know
@@ -420,6 +422,7 @@ mod tests {
                 with_art: 0,
                 posters: false,
                 previews: true,
+                music_covers: false,
                 has_key: false,
                 scanned_at: 0,
                 videos: 0,
@@ -506,6 +509,7 @@ mod tests {
             with_art: 1,
             posters: true,
             previews: true,
+            music_covers: false,
             has_key: true,
             scanned_at: 4,
             videos: 5,
@@ -519,6 +523,7 @@ mod tests {
                 "films",
                 "hasKey",
                 "music",
+                "musicCovers",
                 "photos",
                 "posters",
                 "previews",

@@ -80,6 +80,8 @@ pub struct Host {
     /// A refresh of the music is under way; another was asked for meanwhile.
     music_reading: std::sync::atomic::AtomicBool,
     music_again: std::sync::atomic::AtomicBool,
+    /// Album covers being fetched now.
+    music_art_running: std::sync::atomic::AtomicBool,
     /// Each profile's playlists and listening on this drive.
     music_mine: std::sync::Mutex<crate::media::music::Mine>,
     /// Intros and credits found on this drive: see `media::segments`.
@@ -295,6 +297,7 @@ impl Host {
             music: std::sync::Mutex::new(music),
             music_reading: std::sync::atomic::AtomicBool::new(false),
             music_again: std::sync::atomic::AtomicBool::new(false),
+            music_art_running: std::sync::atomic::AtomicBool::new(false),
             music_mine: std::sync::Mutex::new(music_mine),
             segments: std::sync::Mutex::new(segments),
             segment_finder: std::sync::atomic::AtomicBool::new(false),
@@ -435,10 +438,17 @@ impl Host {
         if let Ok(bytes) = tokio::fs::read(&cached).await {
             return Ok(bytes);
         }
-        let bytes = tokio::task::spawn_blocking(move || crate::media::thumbs::make(&path, bucket))
-            .await
-            .map_err(|e| HostError::BadRequest(format!("the thumbnail panicked: {e}")))?
-            .map_err(|e| HostError::NotFound(e.to_string()))?;
+        // A song without a cover of its own: its album's, fetched online.
+        let fetched = self.fetched_cover(rel);
+        let bytes = tokio::task::spawn_blocking(move || {
+            crate::media::thumbs::make(&path, bucket).or_else(|e| match fetched {
+                Some(cover) => crate::media::thumbs::from_file(&cover, bucket),
+                None => Err(e),
+            })
+        })
+        .await
+        .map_err(|e| HostError::BadRequest(format!("the thumbnail panicked: {e}")))?
+        .map_err(|e| HostError::NotFound(e.to_string()))?;
 
         if let Some(parent) = cached.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
@@ -535,6 +545,8 @@ impl Host {
             // Asked for between the last look and letting go.
             if host.music_again.swap(false, Ordering::SeqCst) {
                 host.refresh_music();
+            } else {
+                host.fetch_music_art();
             }
         });
     }
@@ -1504,6 +1516,105 @@ impl Host {
     /// they are on this machine already, and deleting them would be a second
     /// decision nobody asked for. Turning it on scans, which is what actually
     /// fetches them.
+    /// Album covers from the internet on or off. On, the albums without a
+    /// cover of their own are looked up now.
+    pub fn set_music_covers(self: &Arc<Self>, enabled: bool) -> Result<()> {
+        self.config.lock().expect("config lock").music_covers = enabled;
+        self.persist()?;
+        if enabled {
+            self.fetch_music_art();
+        }
+        Ok(())
+    }
+
+    /// Fetches covers for albums whose songs carry none, when switched on,
+    /// in the background and one at a time; then marks those songs as having
+    /// a cover, so devices ask for it. Covers fetched earlier are marked even
+    /// when the switch is off: they are on this computer already.
+    pub fn fetch_music_art(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.music_art_running.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            host.mark_music_art().await;
+            let wanted = host.config.lock().expect("config lock").music_covers;
+            if wanted {
+                let albums = host.albums_without_covers();
+                let dir = host.config_dir().to_path_buf();
+                if crate::media::music_art::fetch_missing(albums, &dir).await > 0 {
+                    host.mark_music_art().await;
+                }
+            }
+            host.music_art_running.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// The albums, by who they are by and their name, none of whose songs
+    /// has a cover.
+    fn albums_without_covers(&self) -> Vec<(String, String)> {
+        let stored = self.music.lock().expect("music lock");
+        let mut covered = std::collections::HashSet::new();
+        let mut all = std::collections::BTreeSet::new();
+        for track in &stored.tracks {
+            let Some(key) = album_key(track) else {
+                continue;
+            };
+            if track.cover {
+                covered.insert(key.clone());
+            }
+            all.insert(key);
+        }
+        all.into_iter().filter(|k| !covered.contains(k)).collect()
+    }
+
+    /// Songs whose album has a fetched cover now say they have a cover; when
+    /// any changed, the music's revision moves on and devices are told.
+    async fn mark_music_art(&self) {
+        let dir = self.config_dir().to_path_buf();
+        let changed = {
+            let mut stored = self.music.lock().expect("music lock");
+            let mut changed = false;
+            let mut known: std::collections::HashMap<(String, String), bool> =
+                std::collections::HashMap::new();
+            for track in stored.tracks.iter_mut().filter(|t| !t.cover) {
+                let Some(key) = album_key(track) else {
+                    continue;
+                };
+                let has = *known
+                    .entry(key.clone())
+                    .or_insert_with(|| crate::media::music_art::has_art(&dir, &key.0, &key.1));
+                if has {
+                    track.cover = true;
+                    changed = true;
+                }
+            }
+            if changed {
+                stored.revision = crate::media::next_revision(stored.revision);
+            }
+            changed.then(|| stored.clone())
+        };
+        let Some(snapshot) = changed else { return };
+        if let Some(root) = self.vault_path() {
+            let path = crate::media::music::stored_path(self.config_dir(), &root);
+            if let Err(e) = snapshot.save(&path) {
+                tracing::warn!("could not save the music: {e}");
+            }
+        }
+        self.announce(basalt_proto::msg::Change::LibraryChanged)
+            .await;
+    }
+
+    /// The fetched album cover for a song, if there is one.
+    fn fetched_cover(&self, rel: &str) -> Option<std::path::PathBuf> {
+        let stored = self.music.lock().expect("music lock");
+        let track = stored.tracks.iter().find(|t| t.path == rel)?;
+        let (artist, album) = album_key(track)?;
+        let path = crate::media::music_art::art_path(self.config_dir(), &artist, &album);
+        path.is_file().then_some(path)
+    }
+
     /// Timeline pictures on or off. Off, the ones made stay until the space
     /// is wanted; nothing new is made.
     pub fn set_previews(&self, enabled: bool) -> Result<()> {
@@ -2772,13 +2883,14 @@ impl Host {
     /// holding `library` — which also stopped every scan from saving its index,
     /// and `registry`, which stopped paired devices from connecting at all.
     fn library_status(&self) -> crate::ui::LibraryStatus {
-        let (enabled, posters, has_key, previews) = {
+        let (enabled, posters, has_key, previews, music_covers) = {
             let config = self.config.lock().expect("config lock");
             (
                 config.library_enabled,
                 config.posters,
                 !config.tmdb_key.trim().is_empty(),
                 config.previews,
+                config.music_covers,
             )
         };
         let scanning = self.is_scanning();
@@ -2798,6 +2910,7 @@ impl Host {
             photos,
             enabled,
             previews,
+            music_covers,
             scanning,
             films: library
                 .items
@@ -4771,4 +4884,15 @@ fn proto_meta(meta: crate::media::previews::Meta) -> basalt_proto::msg::PreviewM
         count: meta.count,
         sheets: meta.sheets,
     }
+}
+
+/// Who an album is by and its name, as its songs' tags say, for the covers
+/// fetched online. None for a song with no album or no artist.
+fn album_key(track: &basalt_proto::msg::MusicTrack) -> Option<(String, String)> {
+    let artist = track
+        .album_artist
+        .clone()
+        .or_else(|| track.artist.clone())?;
+    let album = track.album.clone()?;
+    crate::media::music_art::worth_asking(&artist, &album).then_some((artist, album))
 }

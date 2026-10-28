@@ -82,6 +82,13 @@ pub fn make(path: &Path, bucket: u32) -> Result<Vec<u8>, ThumbError> {
     }
 }
 
+/// A picture already on disk (an album cover fetched online), made into a
+/// thumbnail like any other. Blocking.
+pub fn from_file(path: &Path, bucket: u32) -> Result<Vec<u8>, ThumbError> {
+    let picture = image::open(path).map_err(|e| ThumbError::Failed(e.to_string()))?;
+    encode(&shrink(picture, bucket))
+}
+
 /// A photo, turned the way its camera said it should be.
 fn decode_photo(path: &Path) -> Option<image::DynamicImage> {
     use image::ImageDecoder;

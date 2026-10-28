@@ -349,6 +349,10 @@ pub enum ManageAction {
     SetPreviews {
         enabled: bool,
     },
+    /// Album covers from the internet on or off.
+    SetMusicCovers {
+        enabled: bool,
+    },
     SetTmdbKey {
         key: String,
     },

@@ -54,6 +54,7 @@ impl Host {
             ManageAction::Rescan => self.start_scan(),
             ManageAction::SetPosters { enabled } => self.set_posters(enabled).await?,
             ManageAction::SetPreviews { enabled } => self.set_previews(enabled)?,
+            ManageAction::SetMusicCovers { enabled } => self.set_music_covers(enabled)?,
             ManageAction::SetTmdbKey { key } => self.set_tmdb_key(&key).await?,
             ManageAction::SetConversion { enabled } => self.set_conversion_enabled(enabled)?,
             ManageAction::SetConversionAtOnce { at_once } => {

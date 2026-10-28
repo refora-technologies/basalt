@@ -272,6 +272,9 @@ function apply(action: ManageAction): boolean {
     case 'setPreviews':
       status.library.previews = action.enabled
       break
+    case 'setMusicCovers':
+      status.library.musicCovers = action.enabled
+      break
     case 'setTmdbKey':
       status.library.hasKey = action.key.trim() !== ''
       break

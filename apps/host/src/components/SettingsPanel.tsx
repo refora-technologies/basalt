@@ -27,6 +27,7 @@ export function SettingsPanel({
   onRescan,
   onPosters,
   onPreviews,
+  onMusicCovers,
   onTmdbKey,
   onSections,
   onRename,
@@ -43,6 +44,7 @@ export function SettingsPanel({
   onRescan: () => void
   onPosters: (enabled: boolean) => void
   onPreviews: (enabled: boolean) => void
+  onMusicCovers: (enabled: boolean) => void
   onTmdbKey: (key: string) => void
   onSections: (sections: Sections) => void
   onRename: (name: string) => void
@@ -111,6 +113,7 @@ export function SettingsPanel({
               </button>
               <Artwork status={status} onPosters={onPosters} onSave={onTmdbKey} />
               <TimelinePictures status={status} onChange={onPreviews} />
+              <AlbumCovers status={status} onChange={onMusicCovers} />
             </>
           ) : null
         }
@@ -573,6 +576,35 @@ function TimelinePictures({
         </div>
         <div className="mt-0.5 shrink-0">
           <Switch checked={on} onChange={onChange} label="Timeline pictures" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Album covers from the internet, for albums whose songs carry none. */
+function AlbumCovers({
+  status,
+  onChange,
+}: {
+  status: HostStatus
+  onChange: (enabled: boolean) => void
+}): React.JSX.Element | null {
+  const on = status.library.musicCovers
+  if (on === undefined) return null
+  return (
+    <div className="mt-2.5 border-t border-line pt-2.5">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1 cursor-pointer select-none" onClick={() => onChange(!on)}>
+          <div className="text-[12px] text-textDim">Download album covers</div>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-textFaint">
+            {on
+              ? 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive.'
+              : 'Off. Albums without a cover get one drawn. When on, the names of albums and who they are by are sent to MusicBrainz to find their covers.'}
+          </p>
+        </div>
+        <div className="mt-0.5 shrink-0">
+          <Switch checked={on} onChange={onChange} label="Download album covers" />
         </div>
       </div>
     </div>

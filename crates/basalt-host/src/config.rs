@@ -71,6 +71,12 @@ pub struct HostConfig {
     #[serde(default = "default_true")]
     pub previews: bool,
 
+    /// Album covers looked up online for albums whose songs carry none.
+    /// Off by default, like posters: the switch is the consent to telling
+    /// MusicBrainz which albums are on the drive.
+    #[serde(default)]
+    pub music_covers: bool,
+
     /// TMDb key, for titles the keyless source does not have. Optional.
     ///
     /// Only consulted when [`Self::posters`] is on and the free source found
@@ -167,6 +173,7 @@ impl HostConfig {
             library_enabled: false,
             posters: false,
             previews: true,
+            music_covers: false,
             tmdb_key: String::new(),
             automatic_updates: true,
             progress_per_device: false,

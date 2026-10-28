@@ -341,6 +341,13 @@ async fn set_posters(state: State<'_, AppState>, enabled: bool) -> Answer<HostSt
     status(state).await
 }
 
+/// Album covers from the internet on or off.
+#[tauri::command]
+async fn set_music_covers(state: State<'_, AppState>, enabled: bool) -> Answer<HostStatus> {
+    state.host.set_music_covers(enabled)?;
+    status(state).await
+}
+
 /// Timeline pictures on or off.
 #[tauri::command]
 async fn set_previews(state: State<'_, AppState>, enabled: bool) -> Answer<HostStatus> {
@@ -1072,6 +1079,7 @@ pub fn run() {
             rescan_library,
             set_posters,
             set_previews,
+            set_music_covers,
             set_conversion,
             set_conversion_at_once,
             measure_conversion,

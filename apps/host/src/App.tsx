@@ -392,6 +392,9 @@ export function App(): React.JSX.Element {
                     onPreviews={(enabled) => {
                       void api.setPreviews(enabled).then(apply)
                     }}
+                    onMusicCovers={(enabled) => {
+                      void api.setMusicCovers(enabled).then(apply)
+                    }}
                     onTmdbKey={(key) => {
                       void api.setTmdbKey(key).then(apply)
                     }}

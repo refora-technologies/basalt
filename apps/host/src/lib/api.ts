@@ -39,6 +39,8 @@ export interface LibraryStatus {
   posters: boolean
   /** Whether timeline pictures are made. */
   previews?: boolean
+  /** Whether album covers are looked up online. */
+  musicCovers?: boolean
   /** Whether a TMDb key is set. The key itself never leaves the host. */
   hasKey: boolean
   /** Files in Videos, Music and Photos. */
@@ -353,6 +355,8 @@ export const api = {
     call('set_posters', { enabled }),
   setPreviews: (enabled: boolean): Promise<HostStatus> =>
     call('set_previews', { enabled }),
+  setMusicCovers: (enabled: boolean): Promise<HostStatus> =>
+    call('set_music_covers', { enabled }),
   setConversion: (enabled: boolean): Promise<HostStatus> => call('set_conversion', { enabled }),
   setConversionAtOnce: (atOnce: number | null): Promise<HostStatus> =>
     call('set_conversion_at_once', { atOnce }),
@@ -451,6 +455,7 @@ const sample: {
       withArt: 14,
       posters: true,
       previews: true,
+      musicCovers: false,
       hasKey: false,
       scannedAt: Math.floor(Date.now() / 1000) - 3600,
       videos: 8,
@@ -750,6 +755,9 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
           if (sample.status.conversion.byHand === null) sample.status.conversion.limit = 2
         }, 3000)
         return sample.status
+      case 'set_music_covers':
+        sample.status.library.musicCovers = Boolean(args?.enabled)
+        return sample.status as T
       case 'set_previews':
         sample.status.library.previews = Boolean(args?.enabled)
         return sample.status as T

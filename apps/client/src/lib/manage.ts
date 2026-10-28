@@ -115,6 +115,8 @@ export interface ManagedHostStatus {
     posters: boolean
     /** Timeline pictures made. Absent from hosts before 1.6.3. */
     previews?: boolean
+    /** Album covers looked up online. Absent from hosts before 1.6.3. */
+    musicCovers?: boolean
     hasKey: boolean
     videos: number
     music: number
@@ -207,6 +209,7 @@ export type ManageAction =
   | { do: 'rescan' }
   | { do: 'setPosters'; enabled: boolean }
   | { do: 'setPreviews'; enabled: boolean }
+  | { do: 'setMusicCovers'; enabled: boolean }
   | { do: 'setTmdbKey'; key: string }
   | { do: 'setConversion'; enabled: boolean }
   | { do: 'setConversionAtOnce'; atOnce: number | null }

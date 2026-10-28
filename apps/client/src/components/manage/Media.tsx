@@ -66,6 +66,18 @@ export function LibraryGroup({ m, view, prompt, confirm }: Tools): React.JSX.Ele
             onChange={(enabled) => m.act({ do: 'setPosters', enabled })}
           />
         )}
+        {library.musicCovers !== undefined && (
+          <Toggle
+            title="Download album covers"
+            description={
+              library.musicCovers
+                ? 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive.'
+                : 'Off. Albums without a cover get one drawn. When on, the names of albums and who they are by are sent to MusicBrainz to find their covers.'
+            }
+            checked={library.musicCovers}
+            onChange={(enabled) => m.act({ do: 'setMusicCovers', enabled })}
+          />
+        )}
         {library.previews !== undefined && (
           <Toggle
             title="Timeline pictures"
