@@ -30,7 +30,7 @@ import {
 import { SubtitleStylePanel } from './SubtitleStylePanel'
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
-import { ApiError, api, inTauri, type Segments, type SubtitleTrack } from '@/lib/api'
+import { ApiError, api, inTauri, type PreviewMeta, type Segments, type SubtitleTrack } from '@/lib/api'
 import { chosenFor, mergeDriveSubtitles, otherSubtitles, rememberChosen } from '@/lib/driveSubtitles'
 import { onExternalFileDrop, pickSubtitleFile } from '@/lib/dialogs'
 import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
@@ -316,6 +316,54 @@ export function PlayerOverlay({
       cancelled = true
     }
   }, [item])
+
+  /**
+   * The film's timeline pictures, for the seek bar: their layout and the
+   * film's address, which the sheets are fetched from. Asking starts the
+   * host making them; while it is, asked again now and then.
+   */
+  const [previews, setPreviews] = useState<{ meta: PreviewMeta; url: string } | null>(null)
+  useEffect(() => {
+    setPreviews(null)
+    if (!item) return undefined
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let tries = 0
+    const ask = (): void => {
+      void Promise.all([api.previews(item.id), api.mediaUrl(item.id)])
+        .then(([answer, url]) => {
+          if (cancelled) return
+          if (answer.meta) setPreviews({ meta: answer.meta, url })
+          else if (answer.making && tries++ < 30) timer = setTimeout(ask, 20_000)
+        })
+        // A host before 1.6.3: the time alone, as before.
+        .catch(() => {})
+    }
+    ask()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [item])
+
+  const previewAt = useCallback(
+    (seconds: number): PreviewTile | null => {
+      if (!previews) return null
+      const { meta, url } = previews
+      const n = Math.min(meta.count - 1, Math.max(0, Math.round(seconds / meta.interval)))
+      const perSheet = meta.columns * meta.rows
+      const sheet = Math.floor(n / perSheet)
+      if (sheet >= meta.sheets) return null
+      const at = n % perSheet
+      return {
+        src: `${url}?sheet=${sheet}`,
+        column: at % meta.columns,
+        row: Math.floor(at / meta.columns),
+        meta,
+      }
+    },
+    [previews],
+  )
 
   // Reported on a timer rather than on every tick, which would be several
   // network calls a second.
@@ -1994,6 +2042,7 @@ export function PlayerOverlay({
             <Scrubber
               percent={percent}
               duration={mpv.duration}
+              preview={previewAt}
               onScrub={scrub}
               onSeek={(fraction) => {
                 scrubbing.current.next = null
@@ -2600,9 +2649,18 @@ function Nudge({
  * by guessing at it repeatedly, and every real player lets you scrub — the
  * pointer is captured so the drag keeps working past the ends of the bar.
  */
+/** One timeline picture: which square of which sheet. */
+export interface PreviewTile {
+  src: string
+  column: number
+  row: number
+  meta: PreviewMeta
+}
+
 export function Scrubber({
   percent,
   duration,
+  preview,
   onScrub,
   onSeek,
   disabled,
@@ -2610,6 +2668,8 @@ export function Scrubber({
   percent: number
   /** Seconds, for the time shown while the bar is held. */
   duration: number
+  /** The picture for a moment, if the film has timeline pictures. */
+  preview?: (seconds: number) => PreviewTile | null
   /** Where it is held now, as it moves: a quick look, not the seek. */
   onScrub: (fraction: number) => void
   /** Where it was let go: the seek. */
@@ -2620,6 +2680,8 @@ export function Scrubber({
   // until the film has caught up, so the bar does not jump back to the old
   // position for the moment the seek takes.
   const [held, setHeld] = useState<number | null>(null)
+  /** Where the pointer is over the bar, on a computer, without holding it. */
+  const [hover, setHover] = useState<number | null>(null)
   const [landing, setLanding] = useState<number | null>(null)
   const holding = useRef(false)
   const last = useRef(0)
@@ -2680,9 +2742,11 @@ export function Scrubber({
         }
       }}
       onPointerMove={(e) => {
-        if (disabled || !holding.current) return
-        follow(e.currentTarget, e.clientX)
+        if (disabled) return
+        if (holding.current) follow(e.currentTarget, e.clientX)
+        else if (!TOUCH) setHover(fractionAt(e.currentTarget, e.clientX))
       }}
+      onPointerLeave={() => setHover(null)}
       onPointerUp={(e) => {
         if (!holding.current) return
         letGo(fractionAt(e.currentTarget, e.clientX))
@@ -2715,14 +2779,10 @@ export function Scrubber({
         )}
         style={{ left: `calc(${at}% - ${held !== null ? 8 : 6}px)` }}
       />
-      {/* Where it will land, above the finger that is covering the bar. */}
-      {held !== null && duration > 0 && (
-        <div
-          className="pointer-events-none absolute bottom-full mb-4 -translate-x-1/2 rounded-md bg-black/80 px-2 py-1 font-mono text-[12px] text-text tnum"
-          style={{ left: `clamp(28px, ${held * 100}%, calc(100% - 28px))` }}
-        >
-          {formatDuration(held * duration)}
-        </div>
+      {/* Where it will land, above the finger that is covering the bar: the
+          picture of that moment, when the film has them, and the time. */}
+      {(held ?? hover) !== null && duration > 0 && (
+        <MomentBubble fraction={(held ?? hover)!} duration={duration} tile={preview?.((held ?? hover)! * duration) ?? null} />
       )}
     </div>
   )
@@ -2955,5 +3015,42 @@ function SegmentButton({
       {label}
       {kind !== 'credits' && <SkipForward size={16} className="fill-current" />}
     </motion.button>
+  )
+}
+
+/** The picture and the time above the seek bar, kept inside the bar's ends. */
+function MomentBubble({
+  fraction,
+  duration,
+  tile,
+}: {
+  fraction: number
+  duration: number
+  tile: PreviewTile | null
+}): React.JSX.Element {
+  const width = tile ? (TOUCH ? 168 : 200) : 56
+  const scale = tile ? width / tile.meta.tileWidth : 1
+  const height = tile ? Math.round(tile.meta.tileHeight * scale) : 0
+  return (
+    <div
+      className="pointer-events-none absolute bottom-full mb-4 flex -translate-x-1/2 flex-col items-center gap-1.5"
+      style={{ left: `clamp(${width / 2}px, ${fraction * 100}%, calc(100% - ${width / 2}px))` }}
+    >
+      {tile && (
+        <div
+          className="overflow-hidden rounded-md border border-white/20 bg-black shadow-[0_8px_24px_rgba(0,0,0,0.6)]"
+          style={{
+            width,
+            height,
+            backgroundImage: `url("${tile.src}")`,
+            backgroundSize: `${tile.meta.columns * tile.meta.tileWidth * scale}px ${tile.meta.rows * tile.meta.tileHeight * scale}px`,
+            backgroundPosition: `-${tile.column * tile.meta.tileWidth * scale}px -${tile.row * tile.meta.tileHeight * scale}px`,
+          }}
+        />
+      )}
+      <div className="rounded-md bg-black/80 px-2 py-1 font-mono text-[12px] text-text tnum">
+        {formatDuration(fraction * duration)}
+      </div>
+    </div>
   )
 }

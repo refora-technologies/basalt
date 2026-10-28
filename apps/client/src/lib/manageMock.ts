@@ -267,6 +267,9 @@ function apply(action: ManageAction): boolean {
     case 'setPosters':
       status.library.posters = action.enabled
       break
+    case 'setPreviews':
+      status.library.previews = action.enabled
+      break
     case 'setTmdbKey':
       status.library.hasKey = action.key.trim() !== ''
       break

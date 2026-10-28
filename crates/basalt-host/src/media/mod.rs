@@ -13,6 +13,7 @@ pub mod collect;
 pub mod index;
 pub mod music;
 pub mod parse;
+pub mod previews;
 pub mod progress;
 pub mod quality;
 pub mod segments;

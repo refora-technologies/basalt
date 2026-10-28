@@ -847,6 +847,30 @@ impl Session {
             .map_err(Into::into)
     }
 
+    /// Whether a film's timeline pictures are made, and how they are laid out.
+    pub async fn previews(&mut self, path: &str) -> Result<basalt_proto::msg::PreviewsResponse> {
+        call_json(
+            &mut self.stream,
+            Op::Previews,
+            &basalt_proto::msg::PreviewsRequest {
+                path: path.to_string(),
+            },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    /// One sheet of a film's timeline pictures, as JPEG bytes.
+    pub async fn preview_sheet(&mut self, path: &str, index: u32) -> Result<Vec<u8>> {
+        let request = serde_json::to_vec(&basalt_proto::msg::PreviewSheetRequest {
+            path: path.to_string(),
+            index,
+        })
+        .map_err(|e| ClientError::Protocol(e.to_string()))?;
+        write_request(&mut self.stream, Op::PreviewSheet, &request).await?;
+        Ok(read_response(&mut self.stream).await?)
+    }
+
     /// One round of a speed test from the host: asks for `bytes` and reads
     /// them. How many came.
     pub async fn speed_down(&mut self, bytes: u32) -> Result<usize> {

@@ -1675,6 +1675,22 @@ impl Basalt {
         lease.check(result)
     }
 
+    /// Whether a film's timeline pictures are made; asking starts them.
+    pub async fn previews(&self, path: &str) -> Result<basalt_proto::msg::PreviewsResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.previews(path).await;
+        lease.check(result)
+    }
+
+    /// One sheet of a film's timeline pictures, as JPEG.
+    pub async fn preview_sheet(&self, path: &str, index: u32) -> Result<Vec<u8>> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.preview_sheet(path, index).await;
+        lease.check(result)
+    }
+
     /// Measures the connection to the host: a few round trips for the delay,
     /// then about four seconds each way. Only for the person to read; nothing
     /// is decided from it.

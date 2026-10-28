@@ -66,6 +66,18 @@ export function LibraryGroup({ m, view, prompt, confirm }: Tools): React.JSX.Ele
             onChange={(enabled) => m.act({ do: 'setPosters', enabled })}
           />
         )}
+        {library.previews !== undefined && (
+          <Toggle
+            title="Timeline pictures"
+            description={
+              library.previews
+                ? 'Small pictures along each film’s timeline, made on the host while it is idle, and as soon as a film starts. Up to 2 GB, kept on the host.'
+                : 'Off. Moving along a film’s timeline shows the time only.'
+            }
+            checked={library.previews}
+            onChange={(enabled) => m.act({ do: 'setPreviews', enabled })}
+          />
+        )}
         {library.enabled && library.posters && (
           <Row
             icon={<KeyRound size={phone ? 17 : 14} />}

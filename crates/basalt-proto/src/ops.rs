@@ -156,6 +156,11 @@ pub enum Op {
     /// A speed test between this device and the host: see
     /// [`crate::msg::speed_test`].
     SpeedTest = 42,
+    /// A film's timeline pictures: whether they are made, and how they are
+    /// laid out. Asking starts making them. See [`crate::msg::PreviewsRequest`].
+    Previews = 43,
+    /// One sheet of a film's timeline pictures, as JPEG.
+    PreviewSheet = 44,
 }
 
 impl Op {
@@ -164,7 +169,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::SpeedTest as u8;
+    pub const LAST: u8 = Op::PreviewSheet as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -210,6 +215,8 @@ impl Op {
             40 => Op::MusicMine,
             41 => Op::Segments,
             42 => Op::SpeedTest,
+            43 => Op::Previews,
+            44 => Op::PreviewSheet,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -394,6 +401,8 @@ mod tests {
             Op::MusicMine,
             Op::Segments,
             Op::SpeedTest,
+            Op::Previews,
+            Op::PreviewSheet,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

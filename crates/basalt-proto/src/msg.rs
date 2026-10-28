@@ -345,6 +345,10 @@ pub enum ManageAction {
     SetPosters {
         enabled: bool,
     },
+    /// Timeline pictures on or off.
+    SetPreviews {
+        enabled: bool,
+    },
     SetTmdbKey {
         key: String,
     },
@@ -988,6 +992,49 @@ pub mod speed_test {
         out.extend_from_slice(data);
         out
     }
+}
+
+/// Asks for a film's timeline pictures.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewsRequest {
+    /// Vault-relative.
+    pub path: String,
+}
+
+/// How a film's timeline pictures are laid out: picture `n` shows second
+/// `n * interval`, and is square `n % (columns * rows)` of sheet
+/// `n / (columns * rows)`, counted along the rows.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewMeta {
+    pub interval: f64,
+    pub columns: u32,
+    pub rows: u32,
+    pub tile_width: u32,
+    pub tile_height: u32,
+    pub count: u32,
+    pub sheets: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewsResponse {
+    /// Absent while they are being made, when they are switched off, or for
+    /// a file the host cannot make them for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<PreviewMeta>,
+    /// Being made now: worth asking again in a while.
+    #[serde(default)]
+    pub making: bool,
+}
+
+/// Asks for one sheet of a film's timeline pictures.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewSheetRequest {
+    pub path: String,
+    pub index: u32,
 }
 
 /// What a speed test measured.

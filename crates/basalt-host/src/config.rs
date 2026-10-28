@@ -66,6 +66,11 @@ pub struct HostConfig {
     #[serde(default)]
     pub posters: bool,
 
+    /// Small pictures along each film's timeline, made on this computer and
+    /// kept in its own folder. On by default: nothing leaves the host.
+    #[serde(default = "default_true")]
+    pub previews: bool,
+
     /// TMDb key, for titles the keyless source does not have. Optional.
     ///
     /// Only consulted when [`Self::posters`] is on and the free source found
@@ -161,6 +166,7 @@ impl HostConfig {
             start_with_windows: false,
             library_enabled: false,
             posters: false,
+            previews: true,
             tmdb_key: String::new(),
             automatic_updates: true,
             progress_per_device: false,

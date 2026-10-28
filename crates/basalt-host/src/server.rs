@@ -85,6 +85,8 @@ pub struct Host {
     /// Intros and credits found on this drive: see `media::segments`.
     segments: std::sync::Mutex<crate::media::segments::Store>,
     segment_finder: std::sync::atomic::AtomicBool,
+    /// Films whose timeline pictures are being made, by path.
+    previews_making: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Thumbnails being made at once. Two: a grid scrolled quickly asks for
     /// dozens, and making them all together would starve everything else the
     /// host is doing — a film being streamed, most of all.
@@ -296,6 +298,7 @@ impl Host {
             music_mine: std::sync::Mutex::new(music_mine),
             segments: std::sync::Mutex::new(segments),
             segment_finder: std::sync::atomic::AtomicBool::new(false),
+            previews_making: std::sync::Mutex::default(),
             thumb_gate: tokio::sync::Semaphore::new(2),
             thumbs_written: std::sync::atomic::AtomicUsize::new(0),
             measured: std::sync::Mutex::new(measured),
@@ -598,7 +601,7 @@ impl Host {
             tokio::time::sleep(std::time::Duration::from_secs(90)).await;
             loop {
                 let worked = if host.quiet_for_a_minute().await {
-                    host.find_segments_once().await
+                    host.find_segments_once().await || host.make_previews_once().await
                 } else {
                     false
                 };
@@ -1501,6 +1504,165 @@ impl Host {
     /// they are on this machine already, and deleting them would be a second
     /// decision nobody asked for. Turning it on scans, which is what actually
     /// fetches them.
+    /// Timeline pictures on or off. Off, the ones made stay until the space
+    /// is wanted; nothing new is made.
+    pub fn set_previews(&self, enabled: bool) -> Result<()> {
+        self.config.lock().expect("config lock").previews = enabled;
+        self.persist()
+    }
+
+    /// A film's timeline pictures: made already, or being made now (asking
+    /// starts it, so somebody starting a film gets them within a minute or
+    /// two), or not at all when switched off.
+    pub async fn previews_of(
+        self: &Arc<Self>,
+        rel: &str,
+    ) -> Result<basalt_proto::msg::PreviewsResponse> {
+        let vault = self
+            .vault()
+            .await
+            .ok_or_else(|| HostError::Unavailable(self.vault_name()))?;
+        let entry = vault.stat(rel)?;
+        let dir = crate::media::previews::dir_for(
+            &crate::media::previews::root(self.config_dir()),
+            rel,
+            entry.size,
+            entry.mtime,
+        );
+        if let Some(meta) = crate::media::previews::read_meta(&dir) {
+            return Ok(basalt_proto::msg::PreviewsResponse {
+                meta: Some(proto_meta(meta)),
+                making: false,
+            });
+        }
+        if !self.config.lock().expect("config lock").previews {
+            return Ok(basalt_proto::msg::PreviewsResponse::default());
+        }
+        let path = vault.resolve(rel)?;
+        let making = self.make_previews(rel, path, dir);
+        Ok(basalt_proto::msg::PreviewsResponse { meta: None, making })
+    }
+
+    /// Starts making a film's pictures, unless it is already being done.
+    /// Whether they are being made now.
+    fn make_previews(
+        self: &Arc<Self>,
+        rel: &str,
+        video: std::path::PathBuf,
+        dir: std::path::PathBuf,
+    ) -> bool {
+        let Some(ffmpeg) = self.converter.ffmpeg() else {
+            return false;
+        };
+        if !self
+            .previews_making
+            .lock()
+            .expect("previews lock")
+            .insert(rel.to_string())
+        {
+            return true;
+        }
+        let host = Arc::clone(self);
+        let rel = rel.to_string();
+        let root = crate::media::previews::root(self.config_dir());
+        tokio::task::spawn_blocking(move || {
+            if let Some(duration) = crate::media::segments::duration(&ffmpeg, &video) {
+                let _ = std::fs::create_dir_all(&root);
+                if let Err(e) = crate::media::previews::make(&ffmpeg, &video, duration, &dir) {
+                    tracing::debug!("no timeline pictures for {rel}: {e}");
+                }
+                crate::media::previews::trim(&root, crate::media::previews::BUDGET);
+            }
+            host.previews_making
+                .lock()
+                .expect("previews lock")
+                .remove(&rel);
+        });
+        true
+    }
+
+    /// One sheet of a film's timeline pictures.
+    pub async fn preview_sheet(&self, rel: &str, index: u32) -> Result<Vec<u8>> {
+        let vault = self
+            .vault()
+            .await
+            .ok_or_else(|| HostError::Unavailable(self.vault_name()))?;
+        let entry = vault.stat(rel)?;
+        let dir = crate::media::previews::dir_for(
+            &crate::media::previews::root(self.config_dir()),
+            rel,
+            entry.size,
+            entry.mtime,
+        );
+        crate::media::previews::sheet(&dir, index)
+            .ok_or_else(|| HostError::NotFound(format!("pictures for {rel}")))
+    }
+
+    /// While idle: the next film or episode without timeline pictures, made,
+    /// newest first, until they fill most of their space. Whether one was.
+    async fn make_previews_once(self: &Arc<Self>) -> bool {
+        if !self.config.lock().expect("config lock").previews {
+            return false;
+        }
+        let root = crate::media::previews::root(self.config_dir());
+        let full = {
+            let root = root.clone();
+            tokio::task::spawn_blocking(move || crate::media::previews::used(&root))
+                .await
+                .unwrap_or(0)
+        };
+        if full > crate::media::previews::BUDGET / 10 * 9 {
+            return false;
+        }
+        let Some(vault) = self.vault().await else {
+            return false;
+        };
+        let mut videos: Vec<(i64, String)> = {
+            let library = self.library.lock().expect("library lock");
+            library
+                .items
+                .iter()
+                .flat_map(|item| {
+                    let mut out: Vec<(i64, String)> = item
+                        .path
+                        .clone()
+                        .map(|p| (item.added, p))
+                        .into_iter()
+                        .collect();
+                    for season in &item.seasons {
+                        out.extend(season.episodes.iter().map(|e| (e.added, e.path.clone())));
+                    }
+                    out
+                })
+                .collect()
+        };
+        videos.sort_by_key(|v| std::cmp::Reverse(v.0));
+        for (_, rel) in videos {
+            let Ok(entry) = vault.stat(&rel) else {
+                continue;
+            };
+            let dir = crate::media::previews::dir_for(&root, &rel, entry.size, entry.mtime);
+            if crate::media::previews::read_meta(&dir).is_some() {
+                continue;
+            }
+            let Ok(path) = vault.resolve(&rel) else {
+                continue;
+            };
+            self.make_previews(&rel, path, dir);
+            // One at a time: wait for it before saying the work is done.
+            while self
+                .previews_making
+                .lock()
+                .expect("previews lock")
+                .contains(&rel)
+            {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            return true;
+        }
+        false
+    }
+
     pub async fn set_posters(self: &Arc<Self>, enabled: bool) -> Result<()> {
         self.config.lock().expect("config lock").posters = enabled;
         self.persist()?;
@@ -2578,12 +2740,13 @@ impl Host {
     /// holding `library` — which also stopped every scan from saving its index,
     /// and `registry`, which stopped paired devices from connecting at all.
     fn library_status(&self) -> crate::ui::LibraryStatus {
-        let (enabled, posters, has_key) = {
+        let (enabled, posters, has_key, previews) = {
             let config = self.config.lock().expect("config lock");
             (
                 config.library_enabled,
                 config.posters,
                 !config.tmdb_key.trim().is_empty(),
+                config.previews,
             )
         };
         let scanning = self.is_scanning();
@@ -2602,6 +2765,7 @@ impl Host {
             music,
             photos,
             enabled,
+            previews,
             scanning,
             films: library
                 .items
@@ -4301,6 +4465,17 @@ where
             }
         }
 
+        Op::Previews => {
+            let req: basalt_proto::msg::PreviewsRequest = decode(payload)?;
+            reply(stream, &host.previews_of(&req.path).await?).await?;
+        }
+
+        Op::PreviewSheet => {
+            let req: basalt_proto::msg::PreviewSheetRequest = decode(payload)?;
+            let bytes = host.preview_sheet(&req.path, req.index).await?;
+            write_ok(stream, &bytes).await?;
+        }
+
         Op::Segments => {
             let req: basalt_proto::msg::SegmentsRequest = decode(payload)?;
             reply(stream, &host.segments_of(&req.path)).await?;
@@ -4552,4 +4727,16 @@ struct Serving {
     vault: Arc<Vault>,
     generation: u64,
     root: std::path::PathBuf,
+}
+
+fn proto_meta(meta: crate::media::previews::Meta) -> basalt_proto::msg::PreviewMeta {
+    basalt_proto::msg::PreviewMeta {
+        interval: meta.interval,
+        columns: meta.columns,
+        rows: meta.rows,
+        tile_width: meta.tile_width,
+        tile_height: meta.tile_height,
+        count: meta.count,
+        sheets: meta.sheets,
+    }
 }

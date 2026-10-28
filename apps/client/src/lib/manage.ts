@@ -113,6 +113,8 @@ export interface ManagedHostStatus {
     uncertain: number
     withArt: number
     posters: boolean
+    /** Timeline pictures made. Absent from hosts before 1.6.3. */
+    previews?: boolean
     hasKey: boolean
     videos: number
     music: number
@@ -199,6 +201,7 @@ export type ManageAction =
   | { do: 'setLibrary'; enabled: boolean }
   | { do: 'rescan' }
   | { do: 'setPosters'; enabled: boolean }
+  | { do: 'setPreviews'; enabled: boolean }
   | { do: 'setTmdbKey'; key: string }
   | { do: 'setConversion'; enabled: boolean }
   | { do: 'setConversionAtOnce'; atOnce: number | null }

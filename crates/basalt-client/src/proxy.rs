@@ -235,6 +235,17 @@ async fn handle(
         };
     }
 
+    // A sheet of the film's timeline pictures: the same URL with `?sheet=N`.
+    if let Some(index) = sheet_index(&target) {
+        return match client.preview_sheet(&path, index).await {
+            Ok(bytes) => respond_image(&mut stream, &bytes, method == "HEAD").await,
+            Err(e) => {
+                tracing::debug!("no timeline pictures for {path}: {e}");
+                respond_status(&mut stream, 404, "Not Found").await
+            }
+        };
+    }
+
     // Converted on the host as it is watched: the same URL with
     // `?convert=<seconds>`, for a device that cannot play the file itself.
     if let Some(start) = convert_start(&target) {
@@ -481,6 +492,15 @@ async fn respond_image(stream: &mut TcpStream, bytes: &[u8], head_only: bool) ->
     Ok(())
 }
 
+/// The sheet in `?sheet=N`, when the request is for timeline pictures.
+fn sheet_index(target: &str) -> Option<u32> {
+    let (_, query) = target.split_once('?')?;
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("sheet="))
+        .and_then(|n| n.parse().ok())
+}
+
 /// The size in `?thumb=N`, when the request is for a thumbnail.
 fn thumb_size(target: &str) -> Option<u32> {
     let (_, query) = target.split_once('?')?;
@@ -623,6 +643,16 @@ fn percent_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_timeline_sheet_is_asked_for_in_the_query() {
+        assert_eq!(super::sheet_index("/tok/Films%2Fa.mkv?sheet=3"), Some(3));
+        assert_eq!(
+            super::sheet_index("/tok/Films%2Fa.mkv?v=1&sheet=0"),
+            Some(0)
+        );
+        assert_eq!(super::sheet_index("/tok/Films%2Fa.mkv?thumb=320"), None);
+    }
+
     #[test]
     fn a_thumbnail_is_asked_for_in_the_query() {
         assert_eq!(
