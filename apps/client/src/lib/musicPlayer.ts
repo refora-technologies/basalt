@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react'
 
-import type { Listening } from './api'
+import type { Listening, MusicCommand, NowSession } from './api'
 import type { Queue } from './queue'
 
 /**
@@ -35,6 +35,19 @@ export interface MusicPlayerApi {
   expanded: boolean
   /** Stops and forgets the queue. */
   stop: () => void
+  /**
+   * The profile's other devices playing now, newest first. Empty for a
+   * device not signed in to a profile, and for a host before 1.6.3.
+   */
+  others: NowSession[]
+  /** The host's clock less this device's, in milliseconds. */
+  hostOffset: number
+  /** The music moves here: this device carries on from where it is, and that one stops. */
+  playHere: (session: NowSession) => void
+  /** This device joins in, from the same place; that one keeps playing. */
+  playBoth: (session: NowSession) => void
+  /** Asks that device to play, pause, skip or stop. */
+  steer: (session: NowSession, action: MusicCommand['action'], position?: number) => void
 }
 
 export const MusicPlayerContext = createContext<MusicPlayerApi | null>(null)

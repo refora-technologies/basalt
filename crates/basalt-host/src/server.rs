@@ -59,6 +59,11 @@ pub struct Host {
     /// Sent whenever the profiles or the owner's rules about them change, so
     /// every device watching asks again at once: see [`stream_changes`].
     profile_changes: tokio::sync::broadcast::Sender<()>,
+    /// What each profile's devices are playing now, and what they ask of
+    /// each other.
+    music_live: std::sync::Mutex<crate::music_now::Live>,
+    /// A profile whose devices' music changed, for their watches to say so.
+    music_changes: tokio::sync::broadcast::Sender<String>,
     /// The household's key, and the member statements made and taken back.
     authority: std::sync::Mutex<crate::authority::Authority>,
     /// This host's public key, as an owner's endorsement names it.
@@ -293,6 +298,8 @@ impl Host {
             watch_generation: tokio::sync::watch::Sender::new(0),
             access_changes: tokio::sync::broadcast::Sender::new(16),
             profile_changes: tokio::sync::broadcast::Sender::new(16),
+            music_live: std::sync::Mutex::new(crate::music_now::Live::default()),
+            music_changes: tokio::sync::broadcast::Sender::new(64),
             authority: std::sync::Mutex::new(authority),
             host_key,
             drive_lost: std::sync::atomic::AtomicBool::new(drive_lost),
@@ -3469,6 +3476,14 @@ fn load_stars(path: &std::path::Path) -> std::collections::HashMap<String, Vec<S
         .unwrap_or_default()
 }
 
+/// The time in Unix milliseconds, for what changes within a second.
+pub(crate) fn unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3559,7 +3574,8 @@ impl Batch {
             | Change::Removed { .. }
             | Change::Modified { .. }
             | Change::LibraryChanged
-            | Change::ProfilesChanged => {}
+            | Change::ProfilesChanged
+            | Change::MusicNow => {}
         }
     }
 }
@@ -4550,7 +4566,7 @@ where
         // for as long as the client wants it and writes a response per change.
         Op::Watch => {
             let request: WatchRequest = decode(payload).unwrap_or_default();
-            stream_changes(stream, host, session, request.profiles).await?;
+            stream_changes(stream, host, session, request.profiles, request.music).await?;
         }
 
         Op::Library => {
@@ -4846,6 +4862,69 @@ where
             reply(stream, &host.segments_for(&req.path).await).await?;
         }
 
+        Op::MusicNow => {
+            let req: basalt_proto::msg::MusicNowRequest = decode(payload).unwrap_or_default();
+            host.check_profile(session)?;
+            let now = unix_ms();
+            // A device on its own keeps its music to itself: nothing to see.
+            let (Some((profile, _)), Some(device)) =
+                (session.profile.clone(), session.device.clone())
+            else {
+                let nothing = basalt_proto::msg::MusicNowResponse {
+                    now,
+                    ..Default::default()
+                };
+                reply(stream, &nothing).await?;
+                return Ok(());
+            };
+            let form = device
+                .form
+                .and_then(|f| serde_json::to_value(f).ok())
+                .and_then(|v| v.as_str().map(str::to_string));
+            let (answer, changed) = {
+                let mut live = host.music_live.lock().expect("music lock");
+                let changed = live.report(
+                    &profile,
+                    &device.device_id,
+                    &device.name,
+                    form,
+                    req.report,
+                    req.stopped,
+                    now,
+                );
+                let answer = basalt_proto::msg::MusicNowResponse {
+                    now,
+                    sessions: live.others(&profile, &device.device_id, now),
+                    commands: live.take_commands(&device.device_id),
+                };
+                (answer, changed)
+            };
+            if changed {
+                let _ = host.music_changes.send(profile);
+            }
+            reply(stream, &answer).await?;
+        }
+
+        Op::MusicCommand => {
+            let req: basalt_proto::msg::MusicCommandRequest = decode(payload)?;
+            host.check_profile(session)?;
+            let profile = session.profile.clone().map(|(id, _)| id).ok_or_else(|| {
+                HostError::Denied("music is shared between a profile's devices only".into())
+            })?;
+            let from = session
+                .device
+                .as_ref()
+                .map(|d| d.name.clone())
+                .unwrap_or_default();
+            host.music_live
+                .lock()
+                .expect("music lock")
+                .command(&profile, &from, req, unix_ms())
+                .map_err(|why| HostError::NotFound(why.into()))?;
+            let _ = host.music_changes.send(profile);
+            write_ok(stream, &[]).await?;
+        }
+
         Op::MusicMine => {
             let req: basalt_proto::msg::MusicMineRequest = decode(payload).unwrap_or_default();
             // A device on its own keeps its playlists itself, as it does stars.
@@ -4901,6 +4980,7 @@ async fn stream_changes<S>(
     host: &Arc<Host>,
     session: &mut Session,
     profiles: bool,
+    music: bool,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -4908,6 +4988,9 @@ where
     let device = session.device_key();
     let mut access_changes = host.access_changes.subscribe();
     let mut profile_changes = host.profile_changes.subscribe();
+    let mut music_changes = host.music_changes.subscribe();
+    // Told only for the profile this watch acts for.
+    let profile = session.profile.clone().map(|(id, _)| id);
     let mut events = match host.watch().await {
         Some(watch) => watch.subscribe(),
         None => {
@@ -4947,6 +5030,22 @@ where
                 // Missed notices are still one notice: the device asks again
                 // and gets everything as it is now.
                 let told = WatchEvent { change: basalt_proto::msg::Change::ProfilesChanged };
+                if reply(stream, &told).await.is_err() {
+                    return Ok(());
+                }
+                continue;
+            }
+            changed = music_changes.recv(), if music && profile.is_some() => {
+                let ours = match changed {
+                    Ok(whose) => profile.as_deref() == Some(whose.as_str()),
+                    // Missed some: one notice covers them, as above.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+                };
+                if !ours {
+                    continue;
+                }
+                let told = WatchEvent { change: basalt_proto::msg::Change::MusicNow };
                 if reply(stream, &told).await.is_err() {
                     return Ok(());
                 }

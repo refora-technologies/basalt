@@ -682,6 +682,10 @@ pub enum Change {
     /// ask again who may use this device and as whom. Only sent to a watch
     /// that asked for it.
     ProfilesChanged,
+    /// What the profile's devices are playing changed: ask again with
+    /// [`crate::ops::Op::MusicNow`]. Only sent to a watch that asked for it,
+    /// signed in to that profile.
+    MusicNow,
 }
 
 impl Change {
@@ -704,7 +708,10 @@ impl Change {
                 let (a, b) = (parent(from), parent(to));
                 if a == b { vec![a] } else { vec![a, b] }
             }
-            Change::Resynchronise | Change::LibraryChanged | Change::ProfilesChanged => Vec::new(),
+            Change::Resynchronise
+            | Change::LibraryChanged
+            | Change::ProfilesChanged
+            | Change::MusicNow => Vec::new(),
         }
     }
 }
@@ -717,6 +724,10 @@ pub struct WatchRequest {
     /// always sent, because a device from before it would not understand it.
     #[serde(default)]
     pub profiles: bool,
+    /// Also tell this device when what its profile's other devices are
+    /// playing changes, as [`Change::MusicNow`].
+    #[serde(default)]
+    pub music: bool,
 }
 
 /// One streamed frame on a watch connection.
@@ -952,6 +963,85 @@ pub struct Listening {
     pub from: String,
     /// Unix seconds.
     pub updated: i64,
+}
+
+/// What this device is playing, for the profile's other devices to see, and
+/// a question: what are they playing? A device not signed in to a profile
+/// is answered with nothing; it keeps its music to itself.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicNowRequest {
+    /// What it plays now. Absent with `stopped` false: only asking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<NowReport>,
+    /// It has stopped playing: forgotten at once.
+    #[serde(default)]
+    pub stopped: bool,
+}
+
+/// What one device plays.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NowReport {
+    /// The queue, the song in it and the second it is at.
+    pub listening: Listening,
+    /// Playing rather than paused.
+    pub playing: bool,
+    /// The song's length in seconds, when known.
+    pub duration: f64,
+}
+
+/// What the profile's other devices are playing, and what this one was asked
+/// to do.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MusicNowResponse {
+    /// The host's clock, in Unix milliseconds: a device works out where a
+    /// song is now from `at` with it, whatever its own clock says.
+    pub now: i64,
+    pub sessions: Vec<NowSession>,
+    /// Asked of this device since it last asked, oldest first.
+    pub commands: Vec<MusicCommand>,
+}
+
+/// One of the profile's devices, playing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NowSession {
+    /// The device's id, to send it a command.
+    pub device: String,
+    /// Its name, as the host lists it.
+    pub name: String,
+    /// What kind of device it said it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub form: Option<String>,
+    pub report: NowReport,
+    /// When it last told, on the host's clock, in Unix milliseconds: the
+    /// song's second was `report.listening.position` then.
+    pub at: i64,
+}
+
+/// Something one device asks another to do.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MusicCommand {
+    /// `play`, `pause`, `next`, `previous`, `seek` or `stop`.
+    pub action: String,
+    /// For `seek`: where to, in seconds.
+    pub position: f64,
+    /// The name of the device that asked.
+    pub from: String,
+}
+
+/// Asks another of the profile's devices, playing, to do something.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicCommandRequest {
+    /// The device asked, by its id from [`NowSession::device`].
+    pub device: String,
+    pub action: String,
+    #[serde(default)]
+    pub position: f64,
 }
 
 /// Asks where a film's or an episode's intro and credits are.

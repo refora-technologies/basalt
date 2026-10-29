@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion, useDragControls } from 'framer-motion'
 import {
   ChevronDown,
   Heart,
+  Laptop,
   ListMusic,
   Pause,
   Play,
@@ -11,6 +12,9 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
+  Smartphone,
+  Tablet,
+  Tv,
   Volume2,
   VolumeX,
   X,
@@ -19,6 +23,8 @@ import {
 import { useBack } from '@/mobile/useBack'
 import { type Song, formatDuration } from '@/lib/music'
 import { useMusicClock, useMusicPlayer } from '@/lib/musicPlayer'
+import type { NowSession } from '@/lib/api'
+import { livePosition, songOf as remoteSong } from '@/lib/musicNow'
 import { upNext } from '@/lib/queue'
 import { cn } from '@/lib/utils'
 
@@ -43,7 +49,11 @@ export interface NowPlayingProps {
 export function MusicBar({ base, layout, songOf, liked, onLike }: NowPlayingProps): React.JSX.Element | null {
   const player = useMusicPlayer()
   const clock = useMusicClock()
-  if (!player?.current) return null
+  // Nothing playing here: what plays on the profile's other devices, if anything.
+  if (!player?.current) {
+    const there = player?.others[0]
+    return there ? <RemoteBar base={base} layout={layout} songOf={songOf} session={there} /> : null
+  }
   const song = songOf(player.current)
   const isLiked = liked.has(song.path)
   const fraction = clock.duration > 0 ? Math.min(1, clock.position / clock.duration) : 0
@@ -238,6 +248,18 @@ function FullPlayer({
         <div className="min-w-0 text-center">
           <div className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-textFaint">Playing from</div>
           <div className="truncate text-[13px] font-semibold text-text">{player.queue?.from}</div>
+          {/* Played on both: said, with a way to stop it there. */}
+          {player.others[0] && (
+            <button
+              type="button"
+              onClick={() => player.steer(player.others[0]!, 'stop')}
+              className="mx-auto mt-1 flex max-w-full items-center gap-1.5 rounded-full bg-white/[0.08] px-2.5 py-0.5 text-[11px] text-textDim transition-colors hover:bg-white/[0.14] hover:text-text"
+            >
+              <DeviceIcon form={player.others[0].form} size={11} />
+              <span className="truncate">Also on {player.others[0].name}</span>
+              <span className="text-textFaint">· stop there</span>
+            </button>
+          )}
         </div>
         <IconButton label="Queue" onClick={() => setQueueOpen((q) => !q)}>
           <ListMusic size={22} className={cn(queueOpen && 'text-text')} />
@@ -304,6 +326,171 @@ function FullPlayer({
         </div>
       </div>
     </motion.div>
+  )
+}
+
+/** A device's picture, by what it says it is. */
+function DeviceIcon({ form, size }: { form?: NowSession['form']; size: number }): React.JSX.Element {
+  const Icon = form === 'phone' ? Smartphone : form === 'tablet' ? Tablet : form === 'tv' ? Tv : Laptop
+  return <Icon size={size} className="shrink-0" />
+}
+
+/** The time now, again and again, for a clock that moves. */
+function useTicking(every: number, on: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!on) return undefined
+    const timer = setInterval(() => setNow(Date.now()), every)
+    return () => clearInterval(timer)
+  }, [every, on])
+  return now
+}
+
+/**
+ * Music playing on another of the profile's devices, with nothing playing
+ * here: what it is, where, its place moving along, and its buttons, which
+ * steer that device. Play here moves it to this one; Play on both joins in.
+ */
+function RemoteBar({
+  base,
+  layout,
+  songOf,
+  session,
+}: {
+  base: string
+  layout: MusicLayout
+  songOf: (path: string) => Song
+  session: NowSession
+}): React.JSX.Element | null {
+  const player = useMusicPlayer()
+  const playing = session.report.playing
+  const now = useTicking(500, playing)
+  const [choices, setChoices] = useState(false)
+  const path = remoteSong(session)
+  if (!player || !path) return null
+  const song = songOf(path)
+  const at = livePosition(session, player.hostOffset, now)
+  const total = session.report.duration
+  const fraction = total > 0 ? Math.min(1, at / total) : 0
+  const where = (
+    <span className="flex min-w-0 items-center gap-1 text-basalt">
+      <DeviceIcon form={session.form} size={12} />
+      <span className="truncate">Playing on {session.name}</span>
+    </span>
+  )
+
+  if (layout === 'phone') {
+    return (
+      <div className="relative mx-2 mb-1.5 shrink-0 overflow-hidden rounded-xl bg-[#1d1d21] shadow-[0_8px_26px_rgba(0,0,0,0.5)]">
+        <div role="button" tabIndex={0} onClick={() => setChoices((c) => !c)} className="relative flex h-14 items-center gap-2.5 pl-2 pr-1">
+          <Cover base={base} path={song.cover ? song.path : null} mtime={song.mtime} name={song.album} label={false} className="w-10 shrink-0 rounded-md" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13px] font-semibold text-text">{song.title}</div>
+            <div className="text-[11.5px]">{where}</div>
+          </div>
+          <IconButton label={playing ? 'Pause it there' : 'Play it there'} onClick={() => player.steer(session, playing ? 'pause' : 'play')}>
+            {playing ? <Pause size={22} className="fill-current text-text" /> : <Play size={22} className="fill-current text-text" />}
+          </IconButton>
+          <div className="absolute inset-x-2.5 bottom-0 h-[2px] overflow-hidden rounded-full bg-white/[0.12]">
+            <div className="h-full bg-basalt" style={{ width: `${fraction * 100}%` }} />
+          </div>
+        </div>
+        <AnimatePresence initial={false}>
+          {choices && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="flex gap-2 overflow-hidden px-2"
+            >
+              <button
+                type="button"
+                onClick={() => player.playHere(session)}
+                className="my-2 flex-1 rounded-full bg-white py-2 text-[13px] font-semibold text-black"
+              >
+                Play here
+              </button>
+              <button
+                type="button"
+                onClick={() => player.playBoth(session)}
+                className="my-2 flex-1 rounded-full border border-white/[0.16] py-2 text-[13px] text-text"
+              >
+                Play on both
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className={cn(
+        'relative z-[1] grid shrink-0 grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)] items-center border-t border-line bg-[#0d0d0f] px-4',
+        layout === 'tv' ? 'h-24' : 'h-[72px]',
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <Cover base={base} path={song.cover ? song.path : null} mtime={song.mtime} name={song.album} label={false} className={cn('shrink-0 rounded-md', layout === 'tv' ? 'w-16' : 'w-12')} />
+        <span className="min-w-0">
+          <span className="block truncate text-[13.5px] font-semibold text-text">{song.title}</span>
+          <span className="block text-[12px]">{where}</span>
+        </span>
+      </div>
+      <div className="flex flex-col items-center gap-1.5">
+        <div className="flex items-center gap-3">
+          <IconButton label="Previous, there" onClick={() => player.steer(session, 'previous')}>
+            <SkipBack size={18} className="fill-current text-text" />
+          </IconButton>
+          <button
+            type="button"
+            onClick={() => player.steer(session, playing ? 'pause' : 'play')}
+            aria-label={playing ? 'Pause it there' : 'Play it there'}
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black transition-transform active:scale-95"
+          >
+            {playing ? <Pause size={16} className="fill-current" /> : <Play size={16} className="ml-0.5 fill-current" />}
+          </button>
+          <IconButton label="Next, there" onClick={() => player.steer(session, 'next')}>
+            <SkipForward size={18} className="fill-current text-text" />
+          </IconButton>
+        </div>
+        <div className="flex w-full items-center gap-2.5">
+          <Time value={at} />
+          <button
+            type="button"
+            aria-label="Move it there"
+            onClick={(e) => {
+              const box = e.currentTarget.getBoundingClientRect()
+              if (total > 0) player.steer(session, 'seek', ((e.clientX - box.left) / box.width) * total)
+            }}
+            className="relative h-4 w-full"
+          >
+            <span className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/[0.12]">
+              <span className="block h-full bg-basalt" style={{ width: `${fraction * 100}%` }} />
+            </span>
+          </button>
+          <Time value={total > 0 ? total : null} />
+        </div>
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => player.playBoth(session)}
+          className="rounded-full px-3 py-1.5 text-[12px] text-textDim transition-colors hover:bg-white/[0.06] hover:text-text"
+        >
+          Play on both
+        </button>
+        <button
+          type="button"
+          onClick={() => player.playHere(session)}
+          className="rounded-full bg-white px-3.5 py-1.5 text-[12px] font-semibold text-black transition-transform active:scale-95"
+        >
+          Play here
+        </button>
+      </div>
+    </div>
   )
 }
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { api, type Listening } from '@/lib/api'
+import { ApiError, api, onMusicNow, type Listening, type MusicCommand, type NowReport, type NowSession } from '@/lib/api'
 import {
   MusicClockContext,
   MusicPlayerContext,
@@ -24,6 +24,7 @@ import {
 } from '@/lib/queue'
 import { claimPress, pressForKey } from '@/lib/systemMedia'
 import { useMpv } from '@/lib/useMpv'
+import { livePosition } from '@/lib/musicNow'
 
 /**
  * The music player for the whole app.
@@ -40,11 +41,17 @@ import { useMpv } from '@/lib/useMpv'
 export function MusicPlayer({
   onStarts,
   onListening,
+  who,
   children,
 }: {
   onStarts: () => void
   /** What is playing, to keep for Continue listening; often while playing. */
   onListening: (listening: Listening) => void
+  /**
+   * The host and profile this device plays as: what it plays is shared with
+   * that profile's other devices, and theirs with it. Null on its own.
+   */
+  who: string | null
   children: React.ReactNode
 }): React.JSX.Element {
   const [queue, setQueue] = useState<Queue | null>(null)
@@ -67,6 +74,34 @@ export function MusicPlayer({
     setPaused(false)
     starts.current()
   }, [])
+
+  // ---- Shared with the profile's other devices ----
+  const [others, setOthers] = useState<NowSession[]>([])
+  const [hostOffset, setHostOffset] = useState(0)
+  /** A host that does not know of it: asked no more. */
+  const unknown = useRef(false)
+  const obey = useRef<(commands: MusicCommand[]) => void>(() => {})
+  const report = useRef<() => NowReport | null>(() => null)
+  const whoRef = useRef(who)
+  whoRef.current = who
+
+  const exchange = useCallback(async (request: { report?: NowReport; stopped?: boolean }) => {
+    const asked = whoRef.current
+    if (!asked || unknown.current) return
+    try {
+      const answer = await api.musicNow(request)
+      if (whoRef.current !== asked) return
+      setHostOffset(answer.now - Date.now())
+      setOthers(answer.sessions)
+      if (answer.commands.length > 0) obey.current(answer.commands)
+    } catch (e) {
+      if (e instanceof ApiError && (e.kind === 'unsupported' || e.kind === 'incompatible')) unknown.current = true
+    }
+  }, [])
+  const tell = useCallback(() => {
+    const now = report.current()
+    void exchange(now ? { report: now } : {})
+  }, [exchange])
 
   const api_: MusicPlayerApi = useMemo(
     () => ({
@@ -103,7 +138,11 @@ export function MusicPlayer({
           setQueue(back)
         }
       },
-      seek: (seconds) => controls.current?.seek(seconds),
+      seek: (seconds) => {
+        controls.current?.seek(seconds)
+        // Others see the jump at once, not at the next report.
+        setTimeout(tell, 600)
+      },
       setShuffle: (on) => setQueue((q) => (q ? shuffleOf(q, on) : q)),
       cycleRepeat: () => setQueue((q) => (q ? cycleRepeatOf(q) : q)),
       removeUpNext: (index) => setQueue((q) => (q ? queueRemove(q, index) : q)),
@@ -114,9 +153,139 @@ export function MusicPlayer({
         setQueue(null)
         setExpanded(false)
       },
+      others,
+      hostOffset,
+      playHere: (session) => {
+        const { queue: there, position } = fromListening({
+          ...session.report.listening,
+          position: livePosition(session, hostOffset, Date.now()),
+        })
+        if (there.songs.length === 0) return
+        begin(there, position)
+        void api.musicCommand(session.device, 'stop').catch(() => {})
+      },
+      playBoth: (session) => {
+        const { queue: there, position } = fromListening({
+          ...session.report.listening,
+          position: livePosition(session, hostOffset, Date.now()),
+        })
+        if (there.songs.length > 0) begin(there, position)
+      },
+      steer: (session, action, position = 0) => {
+        // Shown at once; the device's own next report puts it right.
+        if (action === 'play' || action === 'pause') {
+          setOthers((list) =>
+            list.map((s) =>
+              s.device === session.device
+                ? {
+                    ...s,
+                    at: Date.now() + hostOffset,
+                    report: {
+                      ...s.report,
+                      playing: action === 'play',
+                      listening: { ...s.report.listening, position: livePosition(s, hostOffset, Date.now()) },
+                    },
+                  }
+                : s,
+            ),
+          )
+        }
+        void api.musicCommand(session.device, action, position).catch(() => void tell())
+      },
     }),
-    [queue, paused, expanded, begin],
+    [queue, paused, expanded, begin, others, hostOffset, tell],
   )
+
+  // What this device plays, as told to the others.
+  report.current = () =>
+    queue
+      ? {
+          listening: toListening(queue, clockRef.current.position, Math.floor(Date.now() / 1000)),
+          playing: !paused,
+          duration: clockRef.current.duration,
+        }
+      : null
+
+  // What the others ask of this one.
+  const latest = useRef(api_)
+  latest.current = api_
+  obey.current = (commands) => {
+    for (const command of commands) {
+      const music = latest.current
+      switch (command.action) {
+        case 'play':
+          if (music.paused) music.togglePause()
+          break
+        case 'pause':
+          if (!music.paused) music.togglePause()
+          break
+        case 'next':
+          music.next()
+          break
+        case 'previous':
+          music.previous()
+          break
+        case 'seek':
+          music.seek(command.position)
+          break
+        case 'stop':
+          music.stop()
+          break
+      }
+    }
+  }
+
+  // Another profile, another drive, or none: the last one's devices go, and
+  // the new one's are asked for.
+  useEffect(() => {
+    setOthers([])
+    unknown.current = false
+    if (who) tell()
+  }, [who, tell])
+
+  // Told when something changes on the profile's other devices.
+  useEffect(() => {
+    let stop: (() => void) | null = null
+    let gone = false
+    void onMusicNow(() => tell()).then((unlisten) => {
+      if (gone) unlisten()
+      else stop = unlisten
+    })
+    return () => {
+      gone = true
+      stop?.()
+    }
+  }, [tell])
+
+  // Told what plays here: a new song, play or pause at once, and every few
+  // seconds while it plays so the others' clocks stay right. Stopping says so.
+  const playingSong = queue ? currentOf(queue) : null
+  const at = queue?.at
+  const wasPlaying = useRef(false)
+  useEffect(() => {
+    if (queue) {
+      wasPlaying.current = true
+      tell()
+    } else if (wasPlaying.current) {
+      wasPlaying.current = false
+      void exchange({ stopped: true })
+    }
+    // `queue` itself changes as songs are added; the song and its place are what matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playingSong, at, paused, tell, exchange])
+  useEffect(() => {
+    if (!queue || paused) return undefined
+    const timer = setInterval(tell, REPORT_EVERY_MS)
+    return () => clearInterval(timer)
+  }, [queue, paused, tell])
+  // While another plays, asked now and then: one that went away without a
+  // word (off the network, out of battery) is forgotten by the host.
+  const othersPlaying = others.length > 0
+  useEffect(() => {
+    if (!othersPlaying) return undefined
+    const timer = setInterval(tell, CHECK_OTHERS_MS)
+    return () => clearInterval(timer)
+  }, [othersPlaying, tell])
 
   // A new song starts at nothing: mpv's clock still says where the last one
   // was until the next file opens, and the bar, the lock screen and the rest
@@ -225,6 +394,11 @@ export function MusicPlayer({
     </MusicPlayerContext.Provider>
   )
 }
+
+/** How often a device playing tells the others where it is. */
+const REPORT_EVERY_MS = 5_000
+/** How often a device asks after the others while one plays. */
+const CHECK_OTHERS_MS = 10_000
 
 interface EngineControls {
   togglePause: () => void

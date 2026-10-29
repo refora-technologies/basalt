@@ -1447,7 +1447,12 @@ export function App(): React.JSX.Element {
   // Music plays in a player of its own, around the whole app, so it goes on
   // while somebody browses. Starting it closes any film.
   return (
-    <MusicPlayer onStarts={() => model.setPlaying(null)} onListening={model.musicMine.setListening}>
+    <MusicPlayer
+      onStarts={() => model.setPlaying(null)}
+      onListening={model.musicMine.setListening}
+      // Shared with the profile's other devices on this host; on its own, kept here.
+      who={model.profileId && model.vault.status?.hostId ? `${model.vault.status.hostId}/${model.profileId}` : null}
+    >
       <MusicBridge model={model} />
       <SystemMedia model={model} />
       {mobile ? <MobileApp model={model} /> : <DesktopApp model={model} />}

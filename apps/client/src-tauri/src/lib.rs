@@ -355,6 +355,10 @@ fn start_watching(client: &Arc<Basalt>, app: &tauri::AppHandle) {
             basalt_client::WatchNotice::ProfilesChanged => {
                 let _ = told.emit("basalt://profiles", ());
             }
+            // What the profile's other devices play changed: the window asks.
+            basalt_client::WatchNotice::MusicNow => {
+                let _ = told.emit("basalt://music-now", ());
+            }
             notice => {
                 if let basalt_client::WatchNotice::Removed(removed) = notice {
                     let _ = told.emit("basalt://removed", removed.to_string());
@@ -648,6 +652,25 @@ async fn music_mine(
     request: basalt_proto::msg::MusicMineRequest,
 ) -> Answer<basalt_proto::msg::MusicMine> {
     Ok(state.client.music_mine(request).await?)
+}
+
+/// What this device plays, told to the host, and what the profile's other
+/// devices play, with what they asked of this one.
+#[tauri::command]
+async fn music_now(
+    state: State<'_, AppState>,
+    request: basalt_proto::msg::MusicNowRequest,
+) -> Answer<basalt_proto::msg::MusicNowResponse> {
+    Ok(state.client.music_now(request).await?)
+}
+
+/// Asks another of the profile's devices, playing, to do something.
+#[tauri::command]
+async fn music_command(
+    state: State<'_, AppState>,
+    request: basalt_proto::msg::MusicCommandRequest,
+) -> Answer<()> {
+    Ok(state.client.music_command(request).await?)
 }
 
 /// Whether a film's timeline pictures are made, and how they are laid out.
@@ -1792,6 +1815,8 @@ pub fn run() {
             collections,
             music,
             music_mine,
+            music_now,
+            music_command,
             segments,
             speed_test,
             previews,

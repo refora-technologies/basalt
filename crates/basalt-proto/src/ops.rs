@@ -161,6 +161,12 @@ pub enum Op {
     Previews = 43,
     /// One sheet of a film's timeline pictures, as JPEG.
     PreviewSheet = 44,
+    /// What this device is playing, told to the host, and what the profile's
+    /// other devices are playing: see [`crate::msg::MusicNowRequest`].
+    MusicNow = 45,
+    /// Asks another of the profile's devices to pause, play, skip or stop:
+    /// see [`crate::msg::MusicCommandRequest`].
+    MusicCommand = 46,
 }
 
 impl Op {
@@ -169,7 +175,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::PreviewSheet as u8;
+    pub const LAST: u8 = Op::MusicCommand as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -217,6 +223,8 @@ impl Op {
             42 => Op::SpeedTest,
             43 => Op::Previews,
             44 => Op::PreviewSheet,
+            45 => Op::MusicNow,
+            46 => Op::MusicCommand,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -403,6 +411,8 @@ mod tests {
             Op::SpeedTest,
             Op::Previews,
             Op::PreviewSheet,
+            Op::MusicNow,
+            Op::MusicCommand,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

@@ -959,6 +959,7 @@ impl Notices {
                 basalt_client::WatchNotice::Removed(e) => format!("removed: {e}"),
                 basalt_client::WatchNotice::AccessChanged => "access".to_string(),
                 basalt_client::WatchNotice::ProfilesChanged => "profiles".to_string(),
+                basalt_client::WatchNotice::MusicNow => "music".to_string(),
             };
             inner.lock().expect("notices lock").push(said);
         }

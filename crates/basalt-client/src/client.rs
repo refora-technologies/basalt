@@ -1675,6 +1675,29 @@ impl Basalt {
         lease.check(result)
     }
 
+    /// What this device plays, told to the host (or that it stopped), and
+    /// what the profile's other devices play, with what they asked of this one.
+    pub async fn music_now(
+        &self,
+        request: basalt_proto::msg::MusicNowRequest,
+    ) -> Result<basalt_proto::msg::MusicNowResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.music_now(&request).await;
+        lease.check(result)
+    }
+
+    /// Asks another of the profile's devices, playing, to do something.
+    pub async fn music_command(
+        &self,
+        request: basalt_proto::msg::MusicCommandRequest,
+    ) -> Result<()> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.music_command(&request).await;
+        lease.check(result)
+    }
+
     /// Whether a film's timeline pictures are made; asking starts them.
     pub async fn previews(&self, path: &str) -> Result<basalt_proto::msg::PreviewsResponse> {
         let pool = self.pool().await?;
@@ -1953,6 +1976,7 @@ impl Basalt {
                 _ = profile_changes.changed() => return Ok(WatchEnd::ProfileChanged),
                 change = session.watch_next() => match change? {
                     Change::ProfilesChanged => on_notice(WatchNotice::ProfilesChanged),
+                    Change::MusicNow => on_notice(WatchNotice::MusicNow),
                     change => on_change(change),
                 },
             }
@@ -2625,6 +2649,8 @@ pub enum WatchNotice {
     /// The profiles, or the owner's rules about them, changed on the host:
     /// [`Basalt::identity`] says who may use this device now.
     ProfilesChanged,
+    /// What the profile's other devices play changed: [`Basalt::music_now`].
+    MusicNow,
 }
 
 /// Why one watch connection ended without failing.

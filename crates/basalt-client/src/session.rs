@@ -847,6 +847,29 @@ impl Session {
             .map_err(Into::into)
     }
 
+    /// What this device plays, told; what the profile's others play, heard.
+    pub async fn music_now(
+        &mut self,
+        request: &basalt_proto::msg::MusicNowRequest,
+    ) -> Result<basalt_proto::msg::MusicNowResponse> {
+        call_json(&mut self.stream, Op::MusicNow, request)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Asks another of the profile's devices to pause, play, skip or stop.
+    pub async fn music_command(
+        &mut self,
+        request: &basalt_proto::msg::MusicCommandRequest,
+    ) -> Result<()> {
+        let body = serde_json::to_vec(request).map_err(|e| {
+            crate::ClientError::Config(format!("could not encode the command: {e}"))
+        })?;
+        write_request(&mut self.stream, Op::MusicCommand, &body).await?;
+        read_response(&mut self.stream).await?;
+        Ok(())
+    }
+
     /// Whether a film's timeline pictures are made, and how they are laid out.
     pub async fn previews(&mut self, path: &str) -> Result<basalt_proto::msg::PreviewsResponse> {
         call_json(
@@ -1100,8 +1123,11 @@ impl Session {
         write_request(
             &mut self.stream,
             Op::Watch,
-            &serde_json::to_vec(&WatchRequest { profiles: true })
-                .map_err(|e| ClientError::Protocol(e.to_string()))?,
+            &serde_json::to_vec(&WatchRequest {
+                profiles: true,
+                music: true,
+            })
+            .map_err(|e| ClientError::Protocol(e.to_string()))?,
         )
         .await?;
         Ok(())

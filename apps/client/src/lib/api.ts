@@ -407,6 +407,40 @@ export interface MusicMine {
   listening?: Listening | null
 }
 
+/** What one device plays. Mirrors `basalt_proto::msg::NowReport`. */
+export interface NowReport {
+  listening: Listening
+  playing: boolean
+  /** Seconds, when known. */
+  duration: number
+}
+
+/** Another of the profile's devices, playing. */
+export interface NowSession {
+  /** Its id, to send it a command. */
+  device: string
+  name: string
+  form?: 'phone' | 'tablet' | 'tv' | 'computer' | 'other' | null
+  report: NowReport
+  /** When it told, host Unix milliseconds: the song was at `position` then. */
+  at: number
+}
+
+/** Something one device asks of another. */
+export interface MusicCommand {
+  action: 'play' | 'pause' | 'next' | 'previous' | 'seek' | 'stop'
+  position: number
+  /** The name of the device that asked. */
+  from: string
+}
+
+export interface MusicNowResponse {
+  /** The host's clock, Unix milliseconds. */
+  now: number
+  sessions: NowSession[]
+  commands: MusicCommand[]
+}
+
 /** How a film's timeline pictures are laid out. Mirrors `PreviewMeta`. */
 export interface PreviewMeta {
   interval: number
@@ -677,6 +711,16 @@ export const api = {
    */
   musicMine: (request: { playlists?: Playlist[]; listening?: Listening }) =>
     call<MusicMine>('music_mine', { request }),
+  /** What this device plays (or that it stopped), told; what the others play. */
+  musicNow: (asked: { report?: NowReport; stopped?: boolean }) => {
+    const request = { stopped: false, ...asked }
+    return call<MusicNowResponse>('music_now', { request })
+  },
+  /** Asks another of the profile's devices to pause, play, skip or stop. */
+  musicCommand: (device: string, action: MusicCommand['action'], position = 0) => {
+    const request = { device, action, position }
+    return call<void>('music_command', { request })
+  },
   /** The start of every media URL. A percent-encoded path goes on the end. */
   mediaBase: () => call<string>('media_base'),
   /** Poster bytes for one item, as a data URL the interface can hand to an
@@ -822,6 +866,13 @@ export async function onRemoved(handler: (message: string) => void): Promise<() 
  * them, and when a request finds this device's sign-in no longer stands.
  * Either way: ask again who is using this device.
  */
+/** Told when what the profile's other devices play changes. */
+export async function onMusicNow(handler: () => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen('basalt://music-now', () => handler())
+}
+
 export async function onProfilesChanged(handler: () => void): Promise<() => void> {
   const local = (): void => handler()
   window.addEventListener(SIGNED_OUT_EVENT, local)
@@ -1370,6 +1421,32 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     // The browser preview: an intro early on, to see the button.
     case 'segments':
       return { intro: [4, 30] } as T
+    // `?remotemusic`: another of the profile's devices playing, to see how
+    // it is shown.
+    case 'music_now': {
+      const now = Date.now()
+      if (!new URLSearchParams(location.search).has('remotemusic')) return { now, sessions: [], commands: [] } as T
+      const songs = showcase.music().map((t) => t.path)
+      return {
+        now,
+        sessions: [
+          {
+            device: 'laptop',
+            name: 'Maya’s laptop',
+            form: 'computer',
+            at: now - 40_000,
+            report: {
+              listening: { queue: songs.slice(0, 6), index: 1, position: 30, shuffle: false, repeat: 'off', from: 'Northern Hours', updated: 0 },
+              playing: true,
+              duration: 214,
+            },
+          },
+        ],
+        commands: [],
+      } as T
+    }
+    case 'music_command':
+      return undefined as T
     case 'music_mine': {
       const request = (args?.request ?? {}) as { playlists?: Playlist[]; listening?: Listening }
       if (request.playlists) mockMusicMine.playlists = request.playlists
