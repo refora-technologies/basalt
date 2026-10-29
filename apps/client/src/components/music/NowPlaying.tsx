@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import {
   ChevronDown,
   Heart,
@@ -151,19 +152,71 @@ export function NowPlaying({
     return true
   })
   const coming = useMemo(() => (player?.queue ? upNext(player.queue) : []), [player?.queue])
-  if (!open || !player?.current) return null
+  return (
+    <AnimatePresence>
+      {open && player?.current && (
+        <FullPlayer
+          key="full"
+          base={base}
+          layout={layout}
+          songOf={songOf}
+          liked={liked}
+          onLike={onLike}
+          belowTitleBar={belowTitleBar}
+          queueOpen={queueOpen}
+          setQueueOpen={setQueueOpen}
+          coming={coming}
+        />
+      )}
+    </AnimatePresence>
+  )
+}
+
+/** How the full player comes up from the bar and goes back into it. */
+const SHEET = { duration: 0.42, ease: [0.32, 0.72, 0, 1] as const }
+
+function FullPlayer({
+  base,
+  layout,
+  songOf,
+  liked,
+  onLike,
+  belowTitleBar,
+  queueOpen,
+  setQueueOpen,
+  coming,
+}: NowPlayingProps & {
+  belowTitleBar?: boolean
+  queueOpen: boolean
+  setQueueOpen: React.Dispatch<React.SetStateAction<boolean>>
+  coming: string[]
+}): React.JSX.Element | null {
+  const player = useMusicPlayer()
+  if (!player?.current) return null
   const song = songOf(player.current)
   const isLiked = liked.has(song.path)
   const wide = layout !== 'phone'
   const hue = hueOf(song.album)
 
   return (
-    <div
+    <motion.div
+      // Up from the bar, and back down into it.
+      initial={{ y: '100%' }}
+      animate={{ y: 0 }}
+      exit={{ y: '100%' }}
+      transition={SHEET}
       className={cn('fixed inset-x-0 bottom-0 z-40 flex flex-col', belowTitleBar ? 'top-9' : 'top-0')}
-      style={{ background: `linear-gradient(180deg, hsl(${hue} 18% 19%), #0B0B0C 64%)` }}
+      style={{
+        background: `linear-gradient(180deg, hsl(${hue} 18% 19%), #0B0B0C 64%)`,
+        // Clear of a phone's status bar, its gesture bar and, turned on its
+        // side, its cut-out: the sizes Android gives, else the page's own.
+        paddingTop: 'var(--inset-top, env(safe-area-inset-top, 0px))',
+        paddingLeft: 'var(--inset-left, env(safe-area-inset-left, 0px))',
+        paddingRight: 'var(--inset-right, env(safe-area-inset-right, 0px))',
+      }}
       data-remote-scope=""
     >
-      <div className="flex h-14 shrink-0 items-center justify-between px-3 pt-[env(safe-area-inset-top)]">
+      <div className="flex h-14 shrink-0 items-center justify-between px-3">
         <IconButton label="Close the player" onClick={() => player.setExpanded(false)}>
           <ChevronDown size={26} />
         </IconButton>
@@ -211,7 +264,10 @@ export function NowPlaying({
           </div>
         )}
 
-        <div className={cn('shrink-0', wide ? 'w-[min(52vw,520px)]' : 'pb-[max(28px,env(safe-area-inset-bottom))] pt-4')}>
+        <div
+          className={cn('shrink-0', wide ? 'w-[min(52vw,520px)]' : 'pt-4')}
+          style={wide ? undefined : { paddingBottom: 'calc(var(--inset-bottom, env(safe-area-inset-bottom, 0px)) + 28px)' }}
+        >
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="truncate text-[22px] font-bold tracking-[-0.02em] text-text">{song.title}</div>
@@ -229,7 +285,7 @@ export function NowPlaying({
           </div>
         </div>
       </div>
-    </div>
+    </motion.div>
   )
 }
 
