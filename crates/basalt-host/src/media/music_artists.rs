@@ -63,6 +63,13 @@ pub fn refuse(config_dir: &Path, name: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The artist's MusicBrainz id, once found: not searched for again.
+fn mbid_path(config_dir: &Path, name: &str) -> PathBuf {
+    config_dir
+        .join(DIR)
+        .join(format!("artist-{}.mbid", key(name)))
+}
+
 fn miss_path(config_dir: &Path, name: &str) -> PathBuf {
     config_dir
         .join(DIR)
@@ -73,6 +80,13 @@ fn key(name: &str) -> String {
     let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
     blake3::hash(name.to_lowercase().as_bytes()).to_hex()[..20].to_string()
 }
+
+/// The credit a fanart.tv photo is shown with.
+const FANART_CREDIT: &str = "Photo: fanart.tv";
+
+/// Between questions to fanart.tv: it publishes no limit, and is asked
+/// gently all the same.
+const FANART_PAUSE: std::time::Duration = std::time::Duration::from_millis(600);
 
 /// An artist's photo, if fetched, and its credit, if it needs one.
 pub fn photo(config_dir: &Path, name: &str) -> Option<(PathBuf, Option<String>)> {
@@ -151,7 +165,7 @@ pub async fn fetch_missing(names: Vec<String>, config_dir: &Path, fanart_key: &s
     };
     let mut added = 0;
     for name in wanted {
-        match fetch_one(&client, &name, fanart_key).await {
+        match fetch_one(&client, config_dir, &name, fanart_key).await {
             Lookup::Found { bytes, credit } => {
                 if std::fs::write(photo_path(config_dir, &name), bytes).is_ok() {
                     let credit_file = credit_path(config_dir, &name);
@@ -194,8 +208,13 @@ pub fn forget_misses(config_dir: &Path) {
     }
 }
 
-async fn fetch_one(client: &reqwest::Client, name: &str, fanart_key: &str) -> Lookup {
-    match photo_by_musicbrainz(client, name, fanart_key).await {
+async fn fetch_one(
+    client: &reqwest::Client,
+    config_dir: &Path,
+    name: &str,
+    fanart_key: &str,
+) -> Lookup {
+    match photo_by_musicbrainz(client, config_dir, name, fanart_key).await {
         Ok(Some(found)) => return found,
         Ok(None) => {}
         Err(why) => {
@@ -222,10 +241,11 @@ async fn fetch_one(client: &reqwest::Client, name: &str, fanart_key: &str) -> Lo
 /// key) or the one MusicBrainz links. `Ok(None)`: none that way.
 async fn photo_by_musicbrainz(
     client: &reqwest::Client,
+    config_dir: &Path,
     name: &str,
     fanart_key: &str,
 ) -> Result<Option<Lookup>, String> {
-    let Some(artist) = find_artist(client, name).await? else {
+    let Some(artist) = artist_id(client, config_dir, name).await? else {
         return Ok(None);
     };
     if !fanart_key.trim().is_empty() {
@@ -234,7 +254,7 @@ async fn photo_by_musicbrainz(
             Ok(Some(bytes)) => {
                 return Ok(Some(Lookup::Found {
                     bytes,
-                    credit: Some("Photo: fanart.tv".into()),
+                    credit: Some(FANART_CREDIT.into()),
                 }));
             }
             Ok(None) => {}
@@ -263,6 +283,88 @@ struct ArtistHit {
     name: String,
     #[serde(default)]
     score: u32,
+}
+
+/// The artist's MusicBrainz id: kept from an earlier search, else searched
+/// for (and kept). MusicBrainz is asked once a second at most, and an artist
+/// it was asked about once is not asked about again.
+async fn artist_id(
+    client: &reqwest::Client,
+    config_dir: &Path,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let kept = mbid_path(config_dir, name);
+    if let Ok(id) = std::fs::read_to_string(&kept) {
+        let id = id.trim().to_string();
+        if !id.is_empty() {
+            return Ok(Some(id));
+        }
+    }
+    let found = find_artist(client, name).await?;
+    if let Some(id) = &found {
+        let _ = std::fs::write(&kept, id);
+    }
+    Ok(found)
+}
+
+/// Photos fetched before a fanart.tv key was added, looked up there again:
+/// one found replaces the one kept. Those taken down stay down; an artist
+/// fanart.tv does not have keeps the photo they had. How many changed.
+pub async fn upgrade_to_fanart(names: Vec<String>, config_dir: &Path, fanart_key: &str) -> usize {
+    let key = fanart_key.trim();
+    if key.is_empty() {
+        return 0;
+    }
+    let wanted: Vec<String> = names
+        .into_iter()
+        .filter(|n| worth_asking(n) && !refused_path(config_dir, n).is_file())
+        .filter(|n| match photo(config_dir, n) {
+            Some((_, credit)) => credit.as_deref() != Some(FANART_CREDIT),
+            None => false,
+        })
+        .collect();
+    if wanted.is_empty() {
+        return 0;
+    }
+    let Some(client) = super::music_art::web_client() else {
+        return 0;
+    };
+    let mut changed = 0;
+    for name in wanted {
+        let searched = !mbid_path(config_dir, &name).is_file();
+        let artist = match artist_id(&client, config_dir, &name).await {
+            Ok(Some(artist)) => artist,
+            Ok(None) => continue,
+            Err(why) => {
+                tracing::debug!("not looked up on fanart.tv this time: {name}: {why}");
+                continue;
+            }
+        };
+        if searched {
+            tokio::time::sleep(BETWEEN_LOOKUPS).await;
+        }
+        match fanart_photo(&client, &artist, key).await {
+            Ok(Some(bytes)) => {
+                if std::fs::write(photo_path(config_dir, &name), bytes).is_ok() {
+                    let _ = std::fs::write(credit_path(config_dir, &name), FANART_CREDIT);
+                    changed += 1;
+                }
+            }
+            Ok(None) => {}
+            Err(why) => {
+                tracing::debug!("fanart.tv had no answer for {name}: {why}");
+                // Turned away: the rest would be too.
+                if why.contains("turned away") {
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(FANART_PAUSE).await;
+    }
+    if changed > 0 {
+        tracing::info!("{changed} artist photo(s) now from fanart.tv");
+    }
+    changed
 }
 
 /// The artist on MusicBrainz by this name exactly, by its id. A near name
@@ -344,7 +446,7 @@ async fn fanart_entry(
     for param in ["client_key", "api_key"] {
         let asked =
             reqwest::Url::parse_with_params(&url, &[(param, key)]).map_err(|e| e.to_string())?;
-        let response = client.get(asked).send().await.map_err(|e| e.to_string())?;
+        let response = get_politely(client, asked).await?;
         match response.status() {
             s if s == reqwest::StatusCode::UNAUTHORIZED || s == reqwest::StatusCode::FORBIDDEN => {
                 continue;
@@ -534,11 +636,8 @@ async fn photo_by_wikidata(
         ],
     )
     .map_err(|e| e.to_string())?;
-    let found: WikidataSearch = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
+    let found: WikidataSearch = get_politely(client, url)
+        .await?
         .error_for_status()
         .map_err(|e| e.to_string())?
         .json()
@@ -625,13 +724,12 @@ async fn entity_claims(client: &reqwest::Client, item: &str) -> Result<Claims, S
     if !item.starts_with('Q') || !item[1..].chars().all(|c| c.is_ascii_digit()) {
         return Ok(Claims::new());
     }
-    let entity: Entity = client
-        .get(format!(
-            "https://www.wikidata.org/wiki/Special:EntityData/{item}.json"
-        ))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
+    let url = reqwest::Url::parse(&format!(
+        "https://www.wikidata.org/wiki/Special:EntityData/{item}.json"
+    ))
+    .map_err(|e| e.to_string())?;
+    let entity: Entity = get_politely(client, url)
+        .await?
         .error_for_status()
         .map_err(|e| e.to_string())?
         .json()
@@ -667,11 +765,8 @@ async fn commons_info(client: &reqwest::Client, file: &str) -> Result<Option<Com
         ],
     )
     .map_err(|e| e.to_string())?;
-    let answer: serde_json::Value = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
+    let answer: serde_json::Value = get_politely(client, url)
+        .await?
         .error_for_status()
         .map_err(|e| e.to_string())?
         .json()
@@ -804,13 +899,47 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// A GET that waits when the service asks it to: "429 too many" or "503
+/// busy" is asked again after the wait it names (Retry-After, at most a
+/// minute; 5 s when it names none), twice, before giving up for now.
+async fn get_politely(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+) -> Result<reqwest::Response, String> {
+    let mut tries = 0;
+    loop {
+        let response = client
+            .get(url.clone())
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let status = response.status();
+        let slow_down = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || status == reqwest::StatusCode::SERVICE_UNAVAILABLE;
+        if !slow_down || tries == 2 {
+            return Ok(response);
+        }
+        tries += 1;
+        let wait = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(5)
+            .clamp(1, 60);
+        tracing::debug!(
+            "{} asked to wait {wait} s",
+            url.host_str().unwrap_or("a service")
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+    }
+}
+
 /// A picture from the web; anything that is not one is refused.
 async fn picture(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
-    let bytes = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
+    let url = reqwest::Url::parse(url).map_err(|e| e.to_string())?;
+    let bytes = get_politely(client, url)
+        .await?
         .error_for_status()
         .map_err(|e| e.to_string())?
         .bytes()
@@ -926,6 +1055,30 @@ mod tests {
             .block_on(fetch_missing(vec!["Rowan".into()], &dir, ""));
         assert_eq!(fetched, 0);
         assert!(!miss_path(&dir, "Rowan").exists(), "not even looked up");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn with_a_key_only_photos_from_elsewhere_are_looked_up_again() {
+        let dir = std::env::temp_dir().join(format!("basalt-upgrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(DIR)).unwrap();
+        // Already from fanart.tv, and taken down: neither is asked about,
+        // so nothing goes to the network here.
+        std::fs::write(photo_path(&dir, "Daft Punk"), b"jpeg").unwrap();
+        std::fs::write(credit_path(&dir, "Daft Punk"), FANART_CREDIT).unwrap();
+        refuse(&dir, "Rowan").unwrap();
+        let changed = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(upgrade_to_fanart(
+                vec!["Daft Punk".into(), "Rowan".into(), "Nobody Yet".into()],
+                &dir,
+                "a key",
+            ));
+        assert_eq!(changed, 0);
+        assert!(!mbid_path(&dir, "Daft Punk").exists(), "not searched for");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -87,6 +87,9 @@ pub struct Host {
     music_again: std::sync::atomic::AtomicBool,
     /// Album covers being fetched now.
     music_art_running: std::sync::atomic::AtomicBool,
+    /// A fanart.tv key was added: the artist photos fetched before it are
+    /// looked up there again, at the next run.
+    fanart_upgrade: std::sync::atomic::AtomicBool,
     /// Each profile's playlists and listening on this drive.
     music_mine: std::sync::Mutex<crate::media::music::Mine>,
     /// Intros and credits found on this drive: see `media::segments`.
@@ -311,6 +314,7 @@ impl Host {
             music_reading: std::sync::atomic::AtomicBool::new(false),
             music_again: std::sync::atomic::AtomicBool::new(false),
             music_art_running: std::sync::atomic::AtomicBool::new(false),
+            fanart_upgrade: std::sync::atomic::AtomicBool::new(false),
             music_mine: std::sync::Mutex::new(music_mine),
             segments: std::sync::Mutex::new(segments),
             segment_finder: std::sync::atomic::AtomicBool::new(false),
@@ -1642,22 +1646,42 @@ impl Host {
         let host = Arc::clone(self);
         tokio::spawn(async move {
             host.mark_music_art().await;
-            let (wanted, fanart_key) = {
-                let config = host.config.lock().expect("config lock");
-                (config.music_covers, config.fanart_key.clone())
-            };
-            if wanted {
-                let albums = host.albums_without_covers();
-                let dir = host.config_dir().to_path_buf();
-                if crate::media::music_art::fetch_missing(albums, &dir).await > 0 {
-                    host.mark_music_art().await;
-                }
-                let names = {
-                    let stored = host.music.lock().expect("music lock");
-                    artist_names(&stored.tracks)
+            loop {
+                let (wanted, fanart_key) = {
+                    let config = host.config.lock().expect("config lock");
+                    (config.music_covers, config.fanart_key.clone())
                 };
-                if crate::media::music_artists::fetch_missing(names, &dir, &fanart_key).await > 0 {
-                    host.music_changed().await;
+                let upgrade = host.fanart_upgrade.swap(false, Ordering::SeqCst);
+                if wanted {
+                    let albums = host.albums_without_covers();
+                    let dir = host.config_dir().to_path_buf();
+                    if crate::media::music_art::fetch_missing(albums, &dir).await > 0 {
+                        host.mark_music_art().await;
+                    }
+                    let names = {
+                        let stored = host.music.lock().expect("music lock");
+                        artist_names(&stored.tracks)
+                    };
+                    // A key just added: the photos from before it, looked up
+                    // on fanart.tv; then the artists still without one.
+                    let mut changed = 0;
+                    if upgrade && !fanart_key.trim().is_empty() {
+                        changed += crate::media::music_artists::upgrade_to_fanart(
+                            names.clone(),
+                            &dir,
+                            &fanart_key,
+                        )
+                        .await;
+                    }
+                    changed +=
+                        crate::media::music_artists::fetch_missing(names, &dir, &fanart_key).await;
+                    if changed > 0 {
+                        host.music_changed().await;
+                    }
+                }
+                // Asked for again while it ran (a key added meanwhile): once more.
+                if !host.fanart_upgrade.load(Ordering::SeqCst) {
+                    break;
                 }
             }
             host.music_art_running.store(false, Ordering::SeqCst);
@@ -1771,6 +1795,8 @@ impl Host {
         self.persist()?;
         if !key.is_empty() {
             crate::media::music_artists::forget_misses(self.config_dir());
+            self.fanart_upgrade
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             self.fetch_music_art();
         }
         Ok(())

@@ -217,7 +217,9 @@ export function PlayerOverlay({
     setShowControls(false)
   }, [])
 
-  const pinned = mpv.paused || menu || qualityMenu || overBar || !mpv.picture
+  /** A finger or the pointer holding the seek bar: the controls, and the picture of the moment, stay. */
+  const [seeking, setSeeking] = useState(false)
+  const pinned = mpv.paused || menu || qualityMenu || overBar || !mpv.picture || seeking
 
   // On a phone, back puts an open menu away before it closes the film.
   useBack(menu || qualityMenu, () => {
@@ -227,6 +229,10 @@ export function PlayerOverlay({
   })
   const controlsUp = showControls || pinned
   const open = item !== null
+  // A film closed mid-drag, the bar never let go: the next one starts free.
+  useEffect(() => {
+    if (!open) setSeeking(false)
+  }, [open])
 
   // Any movement anywhere brings them back, including over the controls. A
   // key does too, but from the key handler itself — see there for why.
@@ -2070,6 +2076,12 @@ export function PlayerOverlay({
                 scrubbing.current.next = null
                 void mpv.seekTo(fraction * mpv.duration)
               }}
+              onHolding={(holding) => {
+                setSeeking(holding)
+                // Let go: the controls stay their usual while from now, not
+                // from before the drag, when they would go at once.
+                if (!holding) keepControls()
+              }}
               disabled={mpv.duration === 0}
             />
 
@@ -2685,6 +2697,7 @@ export function Scrubber({
   preview,
   onScrub,
   onSeek,
+  onHolding,
   disabled,
 }: {
   percent: number
@@ -2696,6 +2709,8 @@ export function Scrubber({
   onScrub: (fraction: number) => void
   /** Where it was let go: the seek. */
   onSeek: (fraction: number) => void
+  /** Held, and let go: the controls around it stay while it is held. */
+  onHolding?: (holding: boolean) => void
   disabled: boolean
 }): React.JSX.Element {
   // Where the pointer holds it, while it does; then where it was let go,
@@ -2730,6 +2745,7 @@ export function Scrubber({
   }
   const letGo = (fraction: number): void => {
     holding.current = false
+    onHolding?.(false)
     setHeld(null)
     setLanding(fraction)
     onSeek(fraction)
@@ -2755,6 +2771,7 @@ export function Scrubber({
       onPointerDown={(e) => {
         if (disabled) return
         holding.current = true
+        onHolding?.(true)
         follow(e.currentTarget, e.clientX)
         try {
           e.currentTarget.setPointerCapture(e.pointerId)
