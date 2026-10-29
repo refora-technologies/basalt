@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, motion, useDragControls } from 'framer-motion'
 import {
   ChevronDown,
   Heart,
@@ -192,6 +192,12 @@ function FullPlayer({
   coming: string[]
 }): React.JSX.Element | null {
   const player = useMusicPlayer()
+  // Pulled down by its top or its cover, as a phone's music players are.
+  const drag = useDragControls()
+  const touch = layout !== 'tv' && typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
+  const pull = (e: React.PointerEvent): void => {
+    if (touch) drag.start(e)
+  }
   if (!player?.current) return null
   const song = songOf(player.current)
   const isLiked = liked.has(song.path)
@@ -205,6 +211,15 @@ function FullPlayer({
       animate={{ y: 0 }}
       exit={{ y: '100%' }}
       transition={SHEET}
+      drag={touch ? 'y' : false}
+      dragControls={drag}
+      dragListener={false}
+      dragConstraints={{ top: 0, bottom: 0 }}
+      dragElastic={{ top: 0, bottom: 0.7 }}
+      onDragEnd={(_, info) => {
+        // Far enough, or flicked: put away. Otherwise it springs back.
+        if (info.offset.y > 140 || info.velocity.y > 700) player.setExpanded(false)
+      }}
       className={cn('fixed inset-x-0 bottom-0 z-40 flex flex-col', belowTitleBar ? 'top-9' : 'top-0')}
       style={{
         background: `linear-gradient(180deg, hsl(${hue} 18% 19%), #0B0B0C 64%)`,
@@ -216,7 +231,7 @@ function FullPlayer({
       }}
       data-remote-scope=""
     >
-      <div className="flex h-14 shrink-0 items-center justify-between px-3">
+      <div className="flex h-14 shrink-0 touch-none items-center justify-between px-3" onPointerDown={pull}>
         <IconButton label="Close the player" onClick={() => player.setExpanded(false)}>
           <ChevronDown size={26} />
         </IconButton>
@@ -231,7 +246,10 @@ function FullPlayer({
 
       <div className={cn('flex min-h-0 flex-1', wide ? 'items-center justify-center gap-14 px-14' : 'flex-col px-7')}>
         {(!queueOpen || wide) && (
-          <div className={cn('flex justify-center', wide ? 'w-[min(44vh,420px)]' : 'min-h-0 flex-1 items-center')}>
+          <div
+            className={cn('flex justify-center', wide ? 'w-[min(44vh,420px)]' : 'min-h-0 flex-1 touch-none items-center')}
+            onPointerDown={pull}
+          >
             <Cover
               base={base}
               path={song.cover ? song.path : null}
