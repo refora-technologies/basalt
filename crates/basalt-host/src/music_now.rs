@@ -43,6 +43,10 @@ struct Entry {
 pub struct Live {
     playing: HashMap<String, HashMap<String, Entry>>,
     commands: HashMap<String, Vec<MusicCommand>>,
+    /// Devices playing in sync, by profile and then by device: the group
+    /// each is in. A group is named after the device the first one joined,
+    /// and any number of the profile's devices may be in it.
+    groups: HashMap<String, HashMap<String, String>>,
 }
 
 impl Live {
@@ -62,7 +66,8 @@ impl Live {
     ) -> bool {
         let devices = self.playing.entry(profile.to_string()).or_default();
         if stopped {
-            return devices.remove(device).is_some();
+            let gone = devices.remove(device).is_some();
+            return self.leave(profile, device) || gone;
         }
         let Some(report) = report else {
             return false;
@@ -88,7 +93,19 @@ impl Live {
         let Some(devices) = self.playing.get_mut(profile) else {
             return Vec::new();
         };
+        let before: Vec<String> = devices.keys().cloned().collect();
         devices.retain(|_, e| now - e.at < STALE_MS);
+        let gone: Vec<String> = before
+            .into_iter()
+            .filter(|d| !devices.contains_key(d))
+            .collect();
+        for device in &gone {
+            self.leave(profile, device);
+        }
+        let groups = self.groups.get(profile);
+        let Some(devices) = self.playing.get(profile) else {
+            return Vec::new();
+        };
         let mut sessions: Vec<NowSession> = devices
             .iter()
             .filter(|(id, _)| id.as_str() != device)
@@ -98,6 +115,7 @@ impl Live {
                 form: e.form.clone(),
                 report: e.report.clone(),
                 at: e.at,
+                group: groups.and_then(|g| g.get(id)).cloned(),
             })
             .collect();
         // The most recently started first: the one somebody is likeliest
@@ -133,6 +151,15 @@ impl Live {
         if !playing {
             return Err("that device isn't playing anything for this profile now");
         }
+        // Joining and leaving are the host's to keep, so every device of the
+        // group knows every other, however many there are.
+        match asked.action.as_str() {
+            "link" if !from_device.is_empty() => self.join(profile, from_device, &asked.device),
+            "unlink" if !from_device.is_empty() => {
+                self.leave(profile, from_device);
+            }
+            _ => {}
+        }
         let queue = self.commands.entry(asked.device).or_default();
         queue.push(MusicCommand {
             action: asked.action,
@@ -146,6 +173,67 @@ impl Live {
             queue.remove(0);
         }
         Ok(())
+    }
+}
+
+impl Live {
+    /// The group `device` plays in sync in, and the one in it all keep to
+    /// (None when that is `device` itself).
+    pub fn group_of(&self, profile: &str, device: &str) -> (Option<String>, Option<String>) {
+        let Some(groups) = self.groups.get(profile) else {
+            return (None, None);
+        };
+        let Some(group) = groups.get(device) else {
+            return (None, None);
+        };
+        let mut members: Vec<&String> = groups
+            .iter()
+            .filter(|(_, g)| *g == group)
+            .map(|(d, _)| d)
+            .collect();
+        members.sort();
+        // The one the group is named after while it is in it; else the first
+        // by id. Every member works it out the same.
+        let anchor = if members.contains(&group) {
+            group.clone()
+        } else {
+            members.first().map(|d| (*d).clone()).unwrap_or_default()
+        };
+        let anchor = (anchor != device).then_some(anchor);
+        (Some(group.clone()), anchor)
+    }
+
+    /// `device` joins the group `to` is in; or the two make one, named after `to`.
+    fn join(&mut self, profile: &str, device: &str, to: &str) {
+        let groups = self.groups.entry(profile.to_string()).or_default();
+        let group = groups.get(to).cloned().unwrap_or_else(|| to.to_string());
+        // Leaving another group first: one group at a time.
+        if groups.get(device).is_some_and(|g| *g != group) {
+            self.leave(profile, device);
+        }
+        let groups = self.groups.entry(profile.to_string()).or_default();
+        groups.insert(to.to_string(), group.clone());
+        groups.insert(device.to_string(), group);
+    }
+
+    /// `device` leaves its group; one left on its own is in none. Whether
+    /// anything changed.
+    fn leave(&mut self, profile: &str, device: &str) -> bool {
+        let Some(groups) = self.groups.get_mut(profile) else {
+            return false;
+        };
+        let Some(group) = groups.remove(device) else {
+            return false;
+        };
+        let left: Vec<String> = groups
+            .iter()
+            .filter(|(_, g)| **g == group)
+            .map(|(d, _)| d.clone())
+            .collect();
+        if left.len() == 1 {
+            groups.remove(&left[0]);
+        }
+        true
     }
 }
 
@@ -278,6 +366,112 @@ mod tests {
         );
         assert_eq!(live.others("maya", "phone", STALE_MS - 1).len(), 1);
         assert!(live.others("maya", "phone", STALE_MS).is_empty());
+    }
+
+    #[test]
+    fn any_number_of_devices_play_in_one_group_keeping_to_one() {
+        let mut live = Live::default();
+        for device in ["laptop", "phone", "tablet"] {
+            live.report(
+                "maya",
+                device,
+                device,
+                None,
+                Some(playing("b.mp3", 10.0, true)),
+                false,
+                0,
+            );
+        }
+        let link = |to: &str| MusicCommandRequest {
+            device: to.into(),
+            action: "link".into(),
+            position: 0.0,
+            listening: None,
+            clock: None,
+        };
+        // The phone joins the laptop; then the tablet joins the phone.
+        live.command("maya", "Phone", "phone", link("laptop"), 100)
+            .unwrap();
+        live.command("maya", "Tablet", "tablet", link("phone"), 200)
+            .unwrap();
+        for device in ["laptop", "phone", "tablet"] {
+            let (group, _) = live.group_of("maya", device);
+            assert_eq!(
+                group.as_deref(),
+                Some("laptop"),
+                "{device} is in the one group"
+            );
+        }
+        // All keep to the laptop, which keeps to nobody.
+        assert_eq!(live.group_of("maya", "tablet").1.as_deref(), Some("laptop"));
+        assert_eq!(live.group_of("maya", "phone").1.as_deref(), Some("laptop"));
+        assert_eq!(live.group_of("maya", "laptop").1, None);
+        // Each sees the others in it.
+        let seen = live.others("maya", "tablet", 300);
+        assert!(seen.iter().all(|s| s.group.as_deref() == Some("laptop")));
+
+        // The laptop leaves: the other two keep each other, and keep to one.
+        live.command(
+            "maya",
+            "Laptop",
+            "laptop",
+            MusicCommandRequest {
+                action: "unlink".into(),
+                ..link("phone")
+            },
+            400,
+        )
+        .unwrap();
+        assert_eq!(live.group_of("maya", "laptop"), (None, None));
+        assert_eq!(
+            live.group_of("maya", "phone").1,
+            None,
+            "the first by id is followed"
+        );
+        assert_eq!(live.group_of("maya", "tablet").1.as_deref(), Some("phone"));
+
+        // The phone stops: the tablet is on its own.
+        live.report("maya", "phone", "phone", None, None, true, 500);
+        assert_eq!(live.group_of("maya", "tablet"), (None, None));
+    }
+
+    #[test]
+    fn a_device_forgotten_leaves_its_group() {
+        let mut live = Live::default();
+        live.report(
+            "maya",
+            "laptop",
+            "Laptop",
+            None,
+            Some(playing("b.mp3", 1.0, true)),
+            false,
+            0,
+        );
+        live.report(
+            "maya",
+            "phone",
+            "Phone",
+            None,
+            Some(playing("b.mp3", 1.0, true)),
+            false,
+            STALE_MS,
+        );
+        live.command(
+            "maya",
+            "Phone",
+            "phone",
+            MusicCommandRequest {
+                device: "laptop".into(),
+                action: "link".into(),
+                position: 0.0,
+                listening: None,
+                clock: None,
+            },
+            STALE_MS,
+        )
+        .unwrap_err();
+        // The laptop is forgotten by then: no group was made with it.
+        assert_eq!(live.group_of("maya", "phone"), (None, None));
     }
 
     #[test]

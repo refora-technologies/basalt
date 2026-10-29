@@ -30,8 +30,12 @@ export const SEEK_ABOVE_SECONDS = 0.25
 export const NUDGE_ABOVE_SECONDS = 0.012
 /** Closer than this, it is in step: two speakers in one room sound as one. */
 export const IN_STEP_SECONDS = 0.004
-/** The most it plays faster or slower to make it up: a little over 1%, not heard. */
+/** The most it plays faster or slower to make up a small gap: a little over 1%, not heard. */
 export const MAX_RATE_CHANGE = 0.012
+/** A gap past this, in seconds, is made up faster, so it does not linger. */
+const WIDE_GAP_SECONDS = 0.06
+/** How much faster or slower then, at most: still a pitch nobody hears change. */
+const MAX_WIDE_RATE_CHANGE = 0.02
 /** How quickly it makes it up: the gap shrinks by about this many seconds' worth. */
 const CATCH_UP_SECONDS = 4
 /** The most a seek is aimed ahead to make up for its own time. */
@@ -82,7 +86,8 @@ export function keepInStep(step: {
   const gap = gaps.reduce((a, b) => a + b, 0) / gaps.length
   const making = step.rate !== 1
   if (Math.abs(gap) > (making ? IN_STEP_SECONDS : NUDGE_ABOVE_SECONDS)) {
-    const change = Math.max(-MAX_RATE_CHANGE, Math.min(MAX_RATE_CHANGE, gap / CATCH_UP_SECONDS))
+    const most = Math.abs(gap) > WIDE_GAP_SECONDS ? MAX_WIDE_RATE_CHANGE : MAX_RATE_CHANGE
+    const change = Math.max(-most, Math.min(most, gap / CATCH_UP_SECONDS))
     return { do: 'rate', rate: Math.round((1 + change) * 10_000) / 10_000, lead }
   }
   return { do: 'rate', rate: 1, lead }

@@ -51,8 +51,9 @@ describe('keeping two devices in step', () => {
     // 40 ms behind: a hair faster. 40 ms ahead: a hair slower.
     expect(step(60.04, 60)).toEqual({ do: 'rate', rate: 1.01, lead: 0 })
     expect(step(60, 60.04)).toEqual({ do: 'rate', rate: 0.99, lead: 0 })
-    // Never more than a little over 1%.
-    expect(step(60.2, 60)).toEqual({ do: 'rate', rate: 1.012, lead: 0 })
+    // Never more than a little over 1% for a small gap; 2% for a wider one.
+    expect(step(60.045, 60)).toEqual({ do: 'rate', rate: 1.0113, lead: 0 })
+    expect(step(60.2, 60)).toEqual({ do: 'rate', rate: 1.02, lead: 0 })
   })
 
   it('keeps making it up until within a few milliseconds, then plays at its own speed', () => {

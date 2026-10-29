@@ -1035,6 +1035,14 @@ pub struct MusicNowResponse {
     pub sessions: Vec<NowSession>,
     /// Asked of this device since it last asked, oldest first.
     pub commands: Vec<MusicCommand>,
+    /// The devices this one plays in sync with, as one group: its name,
+    /// the same for all of them. None when it plays on its own. From 1.6.3.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// The device of the group this one keeps to: the same one for all of
+    /// them, so they all keep to one. None when this is that one, or alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
 }
 
 /// One of the profile's devices, playing.
@@ -1052,6 +1060,9 @@ pub struct NowSession {
     /// When it last told, on the host's clock, in Unix milliseconds: the
     /// song's second was `report.listening.position` then.
     pub at: i64,
+    /// The group it plays in sync in, if any: see [`MusicNowResponse::group`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// Something one device asks another to do.

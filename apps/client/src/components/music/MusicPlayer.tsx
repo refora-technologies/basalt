@@ -96,6 +96,13 @@ export function MusicPlayer({
   const [holding, setHolding] = useState(false)
   const holdingRef = useRef(holding)
   holdingRef.current = holding
+  // Never waiting for long: a start that did not come (the song changed, the
+  // player closed) must not leave it out of the keeping in step for good.
+  useEffect(() => {
+    if (!holding) return undefined
+    const giveUp = setTimeout(() => setHolding(false), HOLD_AT_MOST_MS)
+    return () => clearTimeout(giveUp)
+  }, [holding])
   /** The moment a song changed by hand here starts, for the devices in sync. */
   const handStart = useRef<number | null>(null)
   /**
@@ -153,8 +160,8 @@ export function MusicPlayer({
    * other said before then is out of date, and not followed.
    */
   const corrected = useRef(0)
-  /** Checks in a row the leader was not there: past a few, it plays on alone. */
-  const leaderMissing = useRef(0)
+  /** Until when the host's word on the group is not taken: it has just been told of a change. */
+  const membershipSettles = useRef(0)
   /**
    * How far ahead of the other to seek: a seek over the network takes a
    * moment to start playing again, and lands that much behind. Learnt from
@@ -231,6 +238,21 @@ export function MusicPlayer({
       offsetRef.current = offset
       setHostOffset((was) => (Math.abs(was - offset) < 1 ? was : offset))
       setOthers(answer.sessions)
+      // The devices in sync with this one, and the one all of them keep to,
+      // as the host keeps them: however many there are, each knows all the
+      // others. Just after joining or leaving, the host may not have heard
+      // yet: its answer then is not taken.
+      if (Date.now() > membershipSettles.current) {
+        const members = answer.group
+          ? answer.sessions.filter((s) => s.group === answer.group).map((s) => s.device)
+          : []
+        setLinked((was) => (sameMembers(was, members) ? was : members))
+        const anchor = answer.group ? (answer.anchor ?? null) : null
+        if (anchor !== leader.current) {
+          leader.current = anchor
+          if (anchor === null) setRate(1)
+        }
+      }
       if (answer.commands.length > 0) obey.current(answer.commands)
     } catch (e) {
       if (e instanceof ApiError && (e.kind === 'unsupported' || e.kind === 'incompatible')) unknown.current = true
@@ -330,6 +352,7 @@ export function MusicPlayer({
       stop: () => {
         // Put away here: the devices in sync play on, on their own.
         toLinked('unlink')
+        membershipSettles.current = Date.now() + MEMBERSHIP_SETTLES_MS
         setLinked([])
         leader.current = null
         setRate(1)
@@ -339,6 +362,7 @@ export function MusicPlayer({
       linked,
       unlink: () => {
         toLinked('unlink')
+        membershipSettles.current = Date.now() + MEMBERSHIP_SETTLES_MS
         setLinked([])
         leader.current = null
         setRate(1)
@@ -361,8 +385,8 @@ export function MusicPlayer({
         if (asked.report.listening.queue.length === 0) return
         // In sync from now on: this one keeps to that one, and tells it so.
         leader.current = asked.device
-        leaderMissing.current = 0
         corrected.current = Date.now() + START_TOGETHER_MS + CLOCK_CHECK_MS
+        membershipSettles.current = Date.now() + MEMBERSHIP_SETTLES_MS
         setLinked([asked.device])
         setHolding(true)
         void api.musicCommand(asked.device, 'link').catch(() => {})
@@ -436,15 +460,10 @@ export function MusicPlayer({
   const obeyOne = (command: MusicCommand): void => {
     const music = latest.current
     switch (command.action) {
+      // Who joined or left: the host keeps the group, and this answer
+      // already says who is in it now.
       case 'link':
-        setLinked((l) => (l.includes(command.fromDevice) ? l : [...l, command.fromDevice]))
-        break
       case 'unlink':
-        setLinked((l) => l.filter((d) => d !== command.fromDevice))
-        if (leader.current === command.fromDevice) {
-          leader.current = null
-          setRate(1)
-        }
         break
       case 'load': {
         const there = command.listening
@@ -523,16 +542,9 @@ export function MusicPlayer({
       const id = leader.current
       if (!id || holdingRef.current) return
       const theirs = othersRef.current.find((s) => s.device === id)
-      if (!theirs) {
-        // Gone without a word (closed, off the network): on its own now.
-        leaderMissing.current += 1
-        if (leaderMissing.current >= 4) {
-          leader.current = null
-          setLinked((l) => l.filter((d) => d !== id))
-        }
-        return
-      }
-      leaderMissing.current = 0
+      // Gone without a word (closed, off the network): the host forgets it
+      // in a few seconds and names another for the group to keep to.
+      if (!theirs) return
       // Said before this one last changed, or too soon after: a seek takes a
       // moment to land, and the other a moment to say what it did.
       const said = (theirs.report.clock ?? theirs.at) - offsetRef.current
@@ -803,11 +815,20 @@ export function MusicPlayer({
  * How far ahead a song started together is started: time for each device
  * to open it and have it ready, paused at its first second.
  */
-const START_TOGETHER_MS = 1_400
+const START_TOGETHER_MS = 1_800
 /** The same, for playing on after a pause: the song is open already. */
 const RESUME_TOGETHER_MS = 500
+/** The longest a start at a moment is waited for. */
+const HOLD_AT_MOST_MS = 8_000
 /** Following another, how long a song ended waits for it to say what is next. */
 const AWAIT_LEADER_MS = 4_000
+
+/** After joining or leaving, how long the host is given to have heard of it. */
+const MEMBERSHIP_SETTLES_MS = 3_000
+
+function sameMembers(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((d) => b.includes(d))
+}
 
 /** Quick questions to the host before starting together, to know its clock well. */
 const CLOCK_CHECKS = 4

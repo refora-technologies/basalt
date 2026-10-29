@@ -439,6 +439,8 @@ export interface NowSession {
   report: NowReport
   /** When it told, host Unix milliseconds: the song was at `position` then. */
   at: number
+  /** The group it plays in sync in, if any. */
+  group?: string | null
 }
 
 /** Something one device asks of another. */
@@ -461,6 +463,10 @@ export interface MusicNowResponse {
   now: number
   sessions: NowSession[]
   commands: MusicCommand[]
+  /** The group this device plays in sync in, the same name for all in it; absent alone. */
+  group?: string | null
+  /** The device of the group this one keeps to; absent when it is this one, or alone. */
+  anchor?: string | null
 }
 
 /** How a film's timeline pictures are laid out. Mirrors `PreviewMeta`. */

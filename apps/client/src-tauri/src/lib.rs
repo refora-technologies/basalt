@@ -1586,13 +1586,17 @@ pub fn run() {
     // a port. Debug builds only; `BASALT_DEV_ISOLATED` names its folder.
     #[cfg(all(windows, debug_assertions))]
     if let Some(folder) = dev_isolated() {
-        // Named as what it is, on the host's list of devices.
+        // Named as what it is, on the host's list of devices; a second copy
+        // beside the first by `BASALT_DEV_NAME`, on its own port by
+        // `BASALT_DEV_PORT` (9223 unless set).
         let name = std::env::var("COMPUTERNAME").unwrap_or_default();
-        std::env::set_var("COMPUTERNAME", format!("{name} (development copy)"));
+        let which = std::env::var("BASALT_DEV_NAME").unwrap_or_else(|_| "development copy".into());
+        std::env::set_var("COMPUTERNAME", format!("{name} ({which})"));
         std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", folder.join("webview"));
+        let port = std::env::var("BASALT_DEV_PORT").unwrap_or_else(|_| "9223".into());
         std::env::set_var(
             "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-            "--autoplay-policy=no-user-gesture-required --remote-debugging-port=9223",
+            format!("--autoplay-policy=no-user-gesture-required --remote-debugging-port={port}"),
         );
     }
 

@@ -5018,10 +5018,14 @@ where
                     req.stopped,
                     now,
                 );
+                let sessions = live.others(&profile, &device.device_id, now);
+                let (group, anchor) = live.group_of(&profile, &device.device_id);
                 let answer = basalt_proto::msg::MusicNowResponse {
                     now,
-                    sessions: live.others(&profile, &device.device_id, now),
+                    sessions,
                     commands: live.take_commands(&device.device_id),
+                    group,
+                    anchor,
                 };
                 (answer, changed)
             };
