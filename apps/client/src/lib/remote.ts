@@ -202,6 +202,20 @@ function settle(): void {
   const within = scope()
   const current = document.activeElement
   if (current && current !== document.body && within.contains(current)) return
+  // Lost from a part of the screen that changed under it (the music bar
+  // turning from another device's music to this one's): found again there,
+  // not back at the top of the page.
+  const region = lastRegion
+  lastRegion = null
+  if (region && region.isConnected && within.contains(region)) {
+    const there = pressables(region)
+    const back = there.find((el) => el.matches('[data-remote-region-first]')) ?? there[0]
+    if (back) {
+      placed = back
+      focus(back)
+      return
+    }
+  }
   const all = pressables(within)
   // A screen still loading its content waits for it, rather than starting
   // on the side rail; a press before then starts wherever it can.
@@ -212,6 +226,12 @@ function settle(): void {
     focus(placed)
   }
 }
+
+/**
+ * The part of the screen marked `data-remote-region` the focus was last in:
+ * where it is found again if what it was on goes.
+ */
+let lastRegion: Element | null = null
 
 /**
  * Where `settle` put the focus, until a key moves it. A screen whose start
@@ -290,6 +310,9 @@ export function startRemote(): void {
     }
     startCameLate()
   }, 150)
+  document.addEventListener('focusin', (e) => {
+    lastRegion = e.target instanceof Element ? e.target.closest('[data-remote-region]') : null
+  })
   window.addEventListener('keydown', (e) => {
     placed = null
     if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return

@@ -184,7 +184,9 @@ export function MusicSection(props: MusicSectionProps): React.JSX.Element {
       <div
         ref={scroller}
         className={cn(
-          'min-h-0 flex-1 overflow-y-auto overscroll-contain',
+          // What the remote or a key moves to is scrolled clear of a page's
+          // sticky header (the back arrow), not under it.
+          'min-h-0 flex-1 scroll-pt-16 overflow-y-auto overscroll-contain',
           layout === 'phone' ? 'px-4 pb-28' : layout === 'tv' ? 'px-12 pb-24' : 'px-6 pb-28',
         )}
       >

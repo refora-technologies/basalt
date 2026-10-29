@@ -59,27 +59,31 @@ export function MusicBar(props: NowPlayingProps): React.JSX.Element {
   if (there) lastThere.current = there
   const kind = here ? 'here' : there ? 'there' : null
   return (
-    <AnimatePresence initial={false}>
-      {kind && (
-        <motion.div
-          key={kind}
-          // Up into place as music starts, and back down as it closes.
-          initial={{ height: 0, opacity: 0, y: 28, overflow: 'hidden' }}
-          animate={{ height: 'auto', opacity: 1, y: 0, transitionEnd: { overflow: 'visible' } }}
-          exit={{ height: 0, opacity: 0, y: 28, overflow: 'hidden' }}
-          transition={{ duration: 0.34, ease: [0.32, 0.72, 0, 1] }}
-          className="relative z-[1] shrink-0"
-        >
-          {kind === 'here' ? (
-            <BarHere {...props} path={here ?? lastSong.current} />
-          ) : (
-            lastThere.current && (
-              <RemoteBar base={props.base} layout={props.layout} songOf={props.songOf} session={there ?? lastThere.current} />
-            )
-          )}
-        </motion.div>
-      )}
-    </AnimatePresence>
+    // The remote's focus in the bar when it changes (another device's music
+    // taken over, say) is found again in it, on its play button.
+    <div className="contents" data-remote-region="">
+      <AnimatePresence initial={false}>
+        {kind && (
+          <motion.div
+            key={kind}
+            // Up into place as music starts, and back down as it closes.
+            initial={{ height: 0, opacity: 0, y: 28, overflow: 'hidden' }}
+            animate={{ height: 'auto', opacity: 1, y: 0, transitionEnd: { overflow: 'visible' } }}
+            exit={{ height: 0, opacity: 0, y: 28, overflow: 'hidden' }}
+            transition={{ duration: 0.34, ease: [0.32, 0.72, 0, 1] }}
+            className="relative z-[1] shrink-0"
+          >
+            {kind === 'here' ? (
+              <BarHere {...props} path={here ?? lastSong.current} />
+            ) : (
+              lastThere.current && (
+                <RemoteBar base={props.base} layout={props.layout} songOf={props.songOf} session={there ?? lastThere.current} />
+              )
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   )
 }
 
@@ -529,6 +533,7 @@ function RemoteBar({
             type="button"
             onClick={() => player.steer(session, playing ? 'pause' : 'play')}
             aria-label={playing ? 'Pause it there' : 'Play it there'}
+            data-remote-region-first=""
             className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black transition-transform active:scale-95"
           >
             {playing ? <Pause size={16} className="fill-current" /> : <Play size={16} className="ml-0.5 fill-current" />}
@@ -595,6 +600,7 @@ function Controls({ compact }: { compact?: boolean }): React.JSX.Element | null 
         data-remote-first={compact ? undefined : ''}
         onClick={player.togglePause}
         aria-label={player.paused ? 'Play' : 'Pause'}
+        data-remote-region-first=""
         className={cn(
           'flex items-center justify-center rounded-full bg-white text-black transition-transform active:scale-95',
           compact ? 'h-9 w-9' : 'h-[68px] w-[68px]',
