@@ -22,7 +22,6 @@ Or with `docker run`:
 
 ```sh
 docker run -d --name basalt --network host \
-  -e PUID=1000 -e PGID=1000 \
   -v /srv/basalt/config:/config \
   -v /srv/media:/media/Media \
   --restart unless-stopped ghcr.io/refora-technologies/basalt-host:latest
@@ -48,7 +47,7 @@ Setting up and pairing only happen on your own network.
 |---|---|
 | `/config` | The host's identity and paired devices. Keep it: lose it, and every device pairs again. |
 | `/media/...` | Each folder mounted here is a drive the host can share. Add `:ro` for read only. |
-| `PUID`, `PGID` | The user and group the host runs as: the owner of your media (default 1000). |
+| `PUID`, `PGID` | Optional. The host runs as the owner of the first folder under `/media`, so it can add files there; set these to run it as another user. |
 | `BASALT_HOST_NAME` | What devices call it at first. Renamed any time in Manage host. |
 | `network_mode: host` | Lets devices find the host by themselves. Without it, publish `7742/tcp` and `7743/udp`, and use "Enter the address or computer name" in the app. |
 | `/dev/dri` | Pass it in for faster video conversion with Intel or AMD graphics. |
