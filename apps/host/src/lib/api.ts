@@ -40,6 +40,14 @@ export interface PreviewsNow {
   total: number
 }
 
+/** The last "make the missing ones": still looking, or how many it found. */
+export interface PreviewsCheck {
+  checking: boolean
+  found: number
+  /** Unix seconds. */
+  at: number
+}
+
 /** How the media index is getting on. */
 export interface LibraryStatus {
   enabled: boolean
@@ -59,6 +67,8 @@ export interface LibraryStatus {
   previewsWhen?: PreviewsWhen
   /** What they are being made for now, if anything. */
   previewsNow?: PreviewsNow | null
+  /** The last "make the missing ones". Absent from hosts before 1.6.3. */
+  previewsCheck?: PreviewsCheck | null
   /** Whether album covers are looked up online. */
   musicCovers?: boolean
   /** Whether a TMDb key is set. The key itself never leaves the host. */
@@ -792,9 +802,13 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
       case 'set_previews_when':
         sample.status.library.previewsWhen = args?.when as PreviewsWhen
         return sample.status
-      case 'make_missing_previews':
-        sample.status.library.previewsNow = { name: 'Dune: Part Two (2024)', done: 2, total: 37 }
+      case 'make_missing_previews': {
+        // `?nonemissing` shows the answer when every film has them already.
+        const none = new URLSearchParams(location.search).has('nonemissing')
+        sample.status.library.previewsCheck = { checking: false, found: none ? 0 : 37, at: Math.floor(Date.now() / 1000) }
+        sample.status.library.previewsNow = none ? null : { name: 'Dune: Part Two (2024)', done: 2, total: 37 }
         return sample.status
+      }
       case 'set_previews':
         sample.status.library.previews = Boolean(args?.enabled)
         return sample.status as T

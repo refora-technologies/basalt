@@ -189,6 +189,8 @@ pub struct LibraryStatus {
     pub previews_when: basalt_proto::msg::PreviewsWhen,
     /// What the host is making timeline pictures for right now, if anything.
     pub previews_now: Option<PreviewsNow>,
+    /// The last "make the missing ones": looking, or what it found.
+    pub previews_check: Option<PreviewsCheck>,
     /// Whether album covers are looked up online.
     pub music_covers: bool,
     /// Whether a TMDb key has been supplied at all.
@@ -215,6 +217,18 @@ pub struct PreviewsNow {
     /// many. Both zero for a single film (one just played, or found idle).
     pub done: usize,
     pub total: usize,
+}
+
+/// The last "make the missing ones", as pressed in a window.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewsCheck {
+    /// Still looking for films and episodes without them.
+    pub checking: bool,
+    /// How many it found without them, once it has looked.
+    pub found: usize,
+    /// Unix seconds: when it started looking, or when it finished.
+    pub at: i64,
 }
 
 /// A drive offered on the setup screen.
@@ -444,6 +458,7 @@ mod tests {
                 previews: true,
                 previews_when: basalt_proto::msg::PreviewsWhen::Idle,
                 previews_now: None,
+                previews_check: None,
                 music_covers: false,
                 has_key: false,
                 scanned_at: 0,
@@ -533,6 +548,7 @@ mod tests {
             previews: true,
             previews_when: basalt_proto::msg::PreviewsWhen::Idle,
             previews_now: None,
+            previews_check: None,
             music_covers: false,
             has_key: true,
             scanned_at: 4,
@@ -551,6 +567,7 @@ mod tests {
                 "photos",
                 "posters",
                 "previews",
+                "previewsCheck",
                 "previewsNow",
                 "previewsWhen",
                 "scannedAt",

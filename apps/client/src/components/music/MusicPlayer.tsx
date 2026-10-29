@@ -58,6 +58,8 @@ export function MusicPlayer({
   clockRef.current = clock
   const starts = useRef(onStarts)
   starts.current = onStarts
+  /** Songs in a row that could not be opened: past the whole queue, it stops. */
+  const failures = useRef(0)
 
   const begin = useCallback((next: Queue, at = 0) => {
     startAt.current = at
@@ -122,6 +124,9 @@ export function MusicPlayer({
   const playingNow = queue ? currentOf(queue) : null
   const turn = queue?.at
   useEffect(() => {
+    if (clock.duration > 0) failures.current = 0
+  }, [clock.duration])
+  useEffect(() => {
     setClock((c) => ({ ...c, position: 0, duration: 0 }))
   }, [playingNow, turn])
 
@@ -184,6 +189,21 @@ export function MusicPlayer({
             controls={controls}
             onClock={setClock}
             onPaused={setPaused}
+            onFailed={() =>
+              setQueue((q) => {
+                if (!q) return q
+                failures.current += 1
+                const moved = nextOf(q, true)
+                // Every song tried and none would open: paused, not looping.
+                if (!moved || failures.current >= q.songs.length) {
+                  failures.current = 0
+                  setPaused(true)
+                  return q
+                }
+                startAt.current = 0
+                return moved
+              })
+            }
             onEnded={() =>
               setQueue((q) => {
                 if (!q) return q
@@ -226,6 +246,7 @@ function Engine({
   onClock,
   onPaused,
   onEnded,
+  onFailed,
 }: {
   path: string | null
   /** Its place in the queue: the same song twice in a row still loads again. */
@@ -235,6 +256,8 @@ function Engine({
   onClock: (clock: { position: number; duration: number; volume: number }) => void
   onPaused: (paused: boolean) => void
   onEnded: () => void
+  /** The song could not be opened at all. */
+  onFailed: () => void
 }): null {
   const mpv = useMpv()
   const { load, stop, togglePause, seekTo, setVolume } = mpv
@@ -279,6 +302,12 @@ function Engine({
   useEffect(() => {
     if (mpv.ended) ended.current()
   }, [mpv.ended])
+
+  const failed = useRef(onFailed)
+  failed.current = onFailed
+  useEffect(() => {
+    if (mpv.loadFailed) failed.current()
+  }, [mpv.loadFailed])
 
   return null
 }

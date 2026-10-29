@@ -92,6 +92,9 @@ pub struct Host {
     /// A run of "make the missing ones": how many done of how many, while it
     /// goes. Also what "as films arrive" uses after each scan.
     previews_run: std::sync::Mutex<Option<(usize, usize)>>,
+    /// The last "make the missing ones": still looking, or how many it found
+    /// and when, so the windows can say "none missing" rather than nothing.
+    previews_check: std::sync::Mutex<Option<crate::ui::PreviewsCheck>>,
     /// Thumbnails being made at once. Two: a grid scrolled quickly asks for
     /// dozens, and making them all together would starve everything else the
     /// host is doing — a film being streamed, most of all.
@@ -306,6 +309,7 @@ impl Host {
             segment_finder: std::sync::atomic::AtomicBool::new(false),
             previews_making: std::sync::Mutex::default(),
             previews_run: std::sync::Mutex::new(None),
+            previews_check: std::sync::Mutex::new(None),
             thumb_gate: tokio::sync::Semaphore::new(2),
             thumbs_written: std::sync::atomic::AtomicUsize::new(0),
             measured: std::sync::Mutex::new(measured),
@@ -1781,10 +1785,20 @@ impl Host {
             }
             *run = Some((0, 0));
         }
+        *self.previews_check.lock().expect("previews lock") = Some(crate::ui::PreviewsCheck {
+            checking: true,
+            found: 0,
+            at: unix_now(),
+        });
         let host = Arc::clone(self);
         tokio::spawn(async move {
             let missing = host.missing_previews().await;
             let total = missing.len();
+            *host.previews_check.lock().expect("previews lock") = Some(crate::ui::PreviewsCheck {
+                checking: false,
+                found: total,
+                at: unix_now(),
+            });
             for (done, (rel, path, dir)) in missing.into_iter().enumerate() {
                 if !host.config.lock().expect("config lock").previews || host.previews_full().await
                 {
@@ -3095,6 +3109,7 @@ impl Host {
             )
         };
         let previews_now = self.previews_now();
+        let previews_check = self.previews_check.lock().expect("previews lock").clone();
         let scanning = self.is_scanning();
         // Counted as the devices list them: Videos without what was filed.
         let (_, filed) = self.filed_videos();
@@ -3114,6 +3129,7 @@ impl Host {
             previews,
             previews_when,
             previews_now,
+            previews_check,
             music_covers,
             scanning,
             films: library

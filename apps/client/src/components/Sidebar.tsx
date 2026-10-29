@@ -48,8 +48,8 @@ const NAV: { key: NavKey; label: string; icon: typeof FolderOpen }[] = [
 const LIBRARY: { key: NavKey; label: string; icon: typeof FolderOpen }[] = [
   { key: 'movies', label: 'Movies', icon: Clapperboard },
   { key: 'series', label: 'TV Series', icon: Tv },
-  { key: 'videos', label: 'Videos', icon: Video },
   { key: 'music', label: 'Music', icon: Music },
+  { key: 'videos', label: 'Videos', icon: Video },
   { key: 'photos', label: 'Photos', icon: Image },
 ]
 

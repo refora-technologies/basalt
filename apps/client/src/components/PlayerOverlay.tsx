@@ -1480,6 +1480,24 @@ export function PlayerOverlay({
     keepControls()
   }
 
+  // The mouse wheel turns the volume, as in every desktop player: up is
+  // louder. Not over a menu (subtitles, quality), whose list it scrolls.
+  const onWheel = useRef<(e: WheelEvent) => void>(() => {})
+  onWheel.current = (e: WheelEvent): void => {
+    if (e.deltaY === 0) return
+    const target = e.target as HTMLElement | null
+    if (target?.closest('[role="menu"], [role="listbox"], [role="dialog"], [data-scrolls]')) return
+    void mpv.nudgeVolume(e.deltaY < 0 ? 5 : -5)
+    flashVolume()
+    keepControls()
+  }
+  useEffect(() => {
+    if (!open || TV || TOUCH) return undefined
+    const listener = (e: WheelEvent): void => onWheel.current(e)
+    window.addEventListener('wheel', listener, { passive: true })
+    return () => window.removeEventListener('wheel', listener)
+  }, [open])
+
   useEffect(() => {
     if (!open) return undefined
     const listener = (e: KeyboardEvent): void => onKey.current(e)
@@ -2264,7 +2282,7 @@ function QualityMenu({
           <X size={14} />
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
+      <div className="min-h-0 flex-1 overflow-y-auto py-1.5" data-scrolls="">
         <QualityChoice
           icon={Sparkles}
           label="Optimised for this device"
@@ -2437,12 +2455,12 @@ function SubtitleMenu({
       </div>
 
       {styling ? (
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto" data-scrolls="">
           <SubtitleStylePanel style={mpv.subtitleStyle} onChange={(look) => void mpv.setSubtitleStyle(look)} />
         </div>
       ) : (
       <>
-      <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
+      <div className="min-h-0 flex-1 overflow-y-auto py-1.5" data-scrolls="">
         <Choice label="Off" active={mpv.subtitleId === null} onClick={() => onChoose(null)} />
         {inFile.map((track) => {
           const label = labelOf(describeSub(track))

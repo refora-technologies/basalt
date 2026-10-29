@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
+  Check,
   Cpu,
   Film,
   Images,
@@ -15,7 +16,7 @@ import {
   Video,
   type LucideIcon,
 } from 'lucide-react'
-import type { LibrarySections, ManagedHostStatus, PreviewsWhen } from '@/lib/manage'
+import type { LibrarySections, ManagedHostStatus, PreviewsCheck, PreviewsWhen } from '@/lib/manage'
 import { cn } from '@/lib/utils'
 import { Group, Pill, Row, Rows, Segmented, Toggle, ago, useLayout } from './parts'
 import type { Tools } from './tools'
@@ -160,6 +161,7 @@ function PreviewsControls({ m, view }: Pick<Tools, 'm' | 'view'>): React.JSX.Ele
   const when = library.previewsWhen ?? 'idle'
   const now = library.previewsNow ?? null
   const running = now !== null && now.total > 0
+  const asked = useMissingCheck(library.previewsCheck ?? null)
   return (
     <>
       <div className="px-4 py-3.5">
@@ -174,6 +176,20 @@ function PreviewsControls({ m, view }: Pick<Tools, 'm' | 'view'>): React.JSX.Ele
           {PREVIEWS_WHEN.find((w) => w.value === when)?.explained}
         </p>
       </div>
+      {asked.phase === 'looking' && !now && (
+        <Row
+          icon={<Loader2 size={phone ? 17 : 14} className="animate-spin text-basalt" />}
+          title="Looking for films without them…"
+          sub="Every film and episode on the drive is checked."
+        />
+      )}
+      {asked.phase === 'none' && !now && (
+        <Row
+          icon={<Check size={phone ? 17 : 14} className="text-basalt" />}
+          title="None missing"
+          sub="Every film and episode has its timeline pictures already."
+        />
+      )}
       {now && (
         <Row
           icon={<Loader2 size={phone ? 17 : 14} className="animate-spin text-basalt" />}
@@ -189,11 +205,48 @@ function PreviewsControls({ m, view }: Pick<Tools, 'm' | 'view'>): React.JSX.Ele
             ? 'Going through every film and episode without them.'
             : 'Every film and episode without timeline pictures gets them, one after another, starting now.'
         }
-        disabled={running || m.busy === 'makeMissingPreviews'}
-        onClick={() => void m.act({ do: 'makeMissingPreviews' })}
+        disabled={running || asked.phase === 'looking' || m.busy === 'makeMissingPreviews'}
+        onClick={() => {
+          asked.press()
+          void m.act({ do: 'makeMissingPreviews' })
+        }}
       />
     </>
   )
+}
+
+/** How long "none missing" stays, once said. */
+const NONE_SHOWN_MS = 8_000
+/** Past this with no answer, the look is taken as over. */
+const LOOK_GIVES_UP_MS = 30_000
+
+/**
+ * What became of pressing "Make the missing ones now": looking, then either
+ * the pictures being made (shown as they are) or "none missing". Without it
+ * the press did nothing anyone could see when nothing was missing, and read
+ * as a button that does not work.
+ */
+function useMissingCheck(check: PreviewsCheck | null): { phase: 'idle' | 'looking' | 'none'; press: () => void } {
+  const [phase, setPhase] = useState<'idle' | 'looking' | 'none'>('idle')
+  // The check the host reported before the press, to tell its answer from an old one.
+  const before = useRef<number | null>(null)
+  useEffect(() => {
+    if (phase !== 'looking' || !check || check.checking) return
+    if (check.at === before.current) return
+    setPhase(check.found === 0 ? 'none' : 'idle')
+  }, [check, phase])
+  useEffect(() => {
+    if (phase === 'idle') return undefined
+    const timer = setTimeout(() => setPhase('idle'), phase === 'none' ? NONE_SHOWN_MS : LOOK_GIVES_UP_MS)
+    return () => clearTimeout(timer)
+  }, [phase])
+  return {
+    phase,
+    press: () => {
+      before.current = check && !check.checking ? check.at : null
+      setPhase('looking')
+    },
+  }
 }
 
 /**
@@ -218,8 +271,8 @@ const SECTIONS: Array<{
 }> = [
   { key: 'movies', label: 'Movies', icon: Film, amount: (l) => l.films },
   { key: 'series', label: 'TV Series', icon: Tv, amount: (l) => l.series },
-  { key: 'videos', label: 'Videos', icon: Video, amount: (l) => l.videos },
   { key: 'music', label: 'Music', icon: Music, amount: (l) => l.music },
+  { key: 'videos', label: 'Videos', icon: Video, amount: (l) => l.videos },
   { key: 'photos', label: 'Photos', icon: Images, amount: (l) => l.photos },
 ]
 

@@ -350,3 +350,23 @@ html[data-shape] .shadow-lift {
   border-radius: 99px;
   background: #f4f4f5;
 }
+
+/* A song still loading: a soft light along its line, rather than an empty
+   line and 0:00 at both ends, which read as broken. */
+@keyframes music-loading {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+.music-loading {
+  animation: music-loading 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .music-loading {
+    animation: none;
+    opacity: 0.4;
+  }
+}

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
   Check,
@@ -15,7 +15,7 @@ import {
   Tv,
   Video,
 } from 'lucide-react'
-import type { HostStatus, PreviewsWhen, Sections } from '@/lib/api'
+import type { HostStatus, PreviewsCheck, PreviewsWhen, Sections } from '@/lib/api'
 import { About } from './About'
 import { ConversionPanel, conversionDetail } from './ConversionPanel'
 import { Segmented } from './ProfileAccess'
@@ -450,8 +450,8 @@ interface SectionCard {
 const SECTION_CARDS: SectionCard[] = [
   { key: 'movies', label: 'Movies', icon: Film, recognised: true, amount: (l) => l.films },
   { key: 'series', label: 'TV Series', icon: Tv, recognised: true, amount: (l) => l.series },
-  { key: 'videos', label: 'Videos', icon: Video, amount: (l) => l.videos },
   { key: 'music', label: 'Music', icon: Music, amount: (l) => l.music },
+  { key: 'videos', label: 'Videos', icon: Video, amount: (l) => l.videos },
   { key: 'photos', label: 'Photos', icon: ImageIcon, amount: (l) => l.photos },
 ]
 
@@ -558,6 +558,7 @@ function TimelinePictures({
   onMakeMissing: () => void
 }): React.JSX.Element | null {
   const { previews: on, previewsWhen, previewsNow } = status.library
+  const asked = useMissingCheck(status.library.previewsCheck ?? null)
   // A host before these existed reports nothing to switch.
   if (on === undefined) return null
   const when = previewsWhen ?? 'idle'
@@ -590,6 +591,18 @@ function TimelinePictures({
               {PREVIEWS_WHEN.find((w) => w.value === when)?.explained}
             </p>
           </div>
+          {asked.phase === 'looking' && !previewsNow && (
+            <div className="flex items-center gap-2 text-[11px] text-textDim">
+              <Loader2 size={11} className="shrink-0 animate-spin text-basalt" />
+              Looking for films and episodes without them…
+            </div>
+          )}
+          {asked.phase === 'none' && !previewsNow && (
+            <div className="flex items-center gap-2 text-[11px] text-textDim">
+              <Check size={12} className="shrink-0 text-basalt" />
+              None missing: every film and episode has them already.
+            </div>
+          )}
           {previewsNow && (
             <div className="flex items-center gap-2 text-[11px] text-textDim">
               <Loader2 size={11} className="shrink-0 animate-spin text-basalt" />
@@ -600,8 +613,11 @@ function TimelinePictures({
             </div>
           )}
           <button
-            onClick={onMakeMissing}
-            disabled={running}
+            onClick={() => {
+              asked.press()
+              onMakeMissing()
+            }}
+            disabled={running || asked.phase === 'looking'}
             className="rounded-full border border-white/[0.12] px-3.5 py-1.5 text-[12px] text-text transition-colors hover:bg-white/[0.05] disabled:opacity-50"
           >
             {running ? 'Making the missing ones…' : 'Make the missing ones now'}
@@ -610,6 +626,38 @@ function TimelinePictures({
       )}
     </div>
   )
+}
+
+/** How long "none missing" stays, once said. */
+const NONE_SHOWN_MS = 8_000
+/** Past this with no answer, the look is taken as over. */
+const LOOK_GIVES_UP_MS = 30_000
+
+/**
+ * What became of pressing "Make the missing ones now": looking, then either
+ * the pictures being made or "none missing". Without it the press did
+ * nothing anyone could see when nothing was missing. As in Manage host.
+ */
+function useMissingCheck(check: PreviewsCheck | null): { phase: 'idle' | 'looking' | 'none'; press: () => void } {
+  const [phase, setPhase] = useState<'idle' | 'looking' | 'none'>('idle')
+  const before = useRef<number | null>(null)
+  useEffect(() => {
+    if (phase !== 'looking' || !check || check.checking) return
+    if (check.at === before.current) return
+    setPhase(check.found === 0 ? 'none' : 'idle')
+  }, [check, phase])
+  useEffect(() => {
+    if (phase === 'idle') return undefined
+    const timer = setTimeout(() => setPhase('idle'), phase === 'none' ? NONE_SHOWN_MS : LOOK_GIVES_UP_MS)
+    return () => clearTimeout(timer)
+  }, [phase])
+  return {
+    phase,
+    press: () => {
+      before.current = check && !check.checking ? check.at : null
+      setPhase('looking')
+    },
+  }
 }
 
 /** Album covers from the internet, for albums whose songs carry none. */

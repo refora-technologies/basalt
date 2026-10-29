@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
   ChevronDown,
   Heart,
@@ -11,6 +11,7 @@ import {
   SkipBack,
   SkipForward,
   Volume2,
+  VolumeX,
   X,
 } from 'lucide-react'
 
@@ -66,8 +67,19 @@ export function MusicBar({ base, layout, songOf, liked, onLike }: NowPlayingProp
           <IconButton label={player.paused ? 'Play' : 'Pause'} onClick={player.togglePause}>
             {player.paused ? <Play size={22} className="fill-current text-text" /> : <Pause size={22} className="fill-current text-text" />}
           </IconButton>
+          {/* Paused, the bar can be put away: the music stops, and Continue
+              listening keeps where it was. */}
+          {player.paused && (
+            <IconButton label="Close the player" onClick={player.stop}>
+              <X size={20} />
+            </IconButton>
+          )}
           <div className="absolute inset-x-2.5 bottom-0 h-[2px] overflow-hidden rounded-full bg-white/[0.12]">
-            <div className="h-full bg-white" style={{ width: `${fraction * 100}%` }} />
+            {clock.duration > 0 ? (
+              <div className="h-full bg-white" style={{ width: `${fraction * 100}%` }} />
+            ) : (
+              <Loading thin />
+            )}
           </div>
         </div>
       </div>
@@ -108,6 +120,10 @@ export function MusicBar({ base, layout, songOf, liked, onLike }: NowPlayingProp
           <ListMusic size={17} />
         </IconButton>
         {layout === 'wide' && <Volume />}
+        {/* Put away: the music stops, and Continue listening keeps where it was. */}
+        <IconButton label="Close the player" onClick={player.stop}>
+          <X size={17} />
+        </IconButton>
       </div>
     </div>
   )
@@ -275,6 +291,23 @@ function Scrubber({ compact }: { compact?: boolean }): React.JSX.Element {
   const [held, setHeld] = useState<number | null>(null)
   const at = held ?? clock.position
   const total = clock.duration
+  // Not known until the song has opened: a light along the line meanwhile.
+  if (total <= 0) {
+    return (
+      <div className={cn('flex w-full items-center', compact ? 'gap-2.5' : 'flex-col gap-1.5')}>
+        {compact && <Time value={null} />}
+        <Loading />
+        {compact ? (
+          <Time value={null} />
+        ) : (
+          <div className="flex w-full justify-between">
+            <Time value={null} />
+            <Time value={null} />
+          </div>
+        )}
+      </div>
+    )
+  }
   return (
     <div className={cn('flex w-full items-center', compact ? 'gap-2.5' : 'flex-col gap-1.5')}>
       {compact && <Time value={at} />}
@@ -309,20 +342,55 @@ function Scrubber({ compact }: { compact?: boolean }): React.JSX.Element {
   )
 }
 
-function Time({ value, minus }: { value: number; minus?: boolean }): React.JSX.Element {
+/** A time, or a dash while it is not known yet. */
+function Time({ value, minus }: { value: number | null; minus?: boolean }): React.JSX.Element {
   return (
     <span className="w-10 shrink-0 text-center font-mono text-[11px] tabular-nums text-textFaint">
-      {minus ? '-' : ''}
-      {formatDuration(value * 1000) || '0:00'}
+      {value === null ? '\u2013:\u2013\u2013' : `${minus ? '-' : ''}${formatDuration(value * 1000) || '0:00'}`}
     </span>
   )
 }
 
+/** The line while a song is still loading. */
+function Loading({ thin }: { thin?: boolean }): React.JSX.Element {
+  return (
+    <div
+      role="progressbar"
+      aria-label="Loading the song"
+      className={cn('relative w-full overflow-hidden rounded-full bg-white/[0.12]', thin ? 'h-full' : 'my-[6px] h-1')}
+    >
+      <div className="music-loading absolute inset-y-0 left-0 w-1/3 rounded-full bg-gradient-to-r from-transparent via-white/60 to-transparent" />
+    </div>
+  )
+}
+
+/** How much one notch of a mouse wheel turns the volume. */
+const WHEEL_STEP = 5
+
 function Volume(): React.JSX.Element {
   const clock = useMusicClock()
+  // What it was before the speaker was clicked to mute, to go back to.
+  const before = useRef(70)
+  const set = (volume: number): void => clock.setVolume(Math.max(0, Math.min(100, Math.round(volume))))
   return (
-    <div className="ml-1 flex items-center gap-2">
-      <Volume2 size={16} />
+    <div
+      className="ml-1 flex items-center gap-2"
+      // The wheel over the speaker or the slider: up is louder.
+      onWheel={(e) => set(clock.volume + (e.deltaY < 0 ? WHEEL_STEP : -WHEEL_STEP))}
+    >
+      <button
+        type="button"
+        aria-label={clock.volume === 0 ? 'Unmute' : 'Mute'}
+        onClick={() => {
+          if (clock.volume > 0) {
+            before.current = clock.volume
+            set(0)
+          } else set(before.current || 70)
+        }}
+        className="text-textDim transition-colors hover:text-text"
+      >
+        {clock.volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
+      </button>
       <input
         type="range"
         min={0}

@@ -283,9 +283,14 @@ function apply(action: ManageAction): boolean {
     case 'setPreviewsWhen':
       status.library.previewsWhen = action.when
       break
-    case 'makeMissingPreviews':
-      status.library.previewsNow = { name: 'Dune: Part Two (2024)', done: 2, total: 37 }
+    case 'makeMissingPreviews': {
+      // `?nonemissing` shows the answer when every film has them already.
+      const none = typeof location !== 'undefined' && new URLSearchParams(location.search).has('nonemissing')
+      const at = Math.floor(Date.now() / 1000)
+      status.library.previewsCheck = { checking: false, found: none ? 0 : 37, at }
+      status.library.previewsNow = none ? null : { name: 'Dune: Part Two (2024)', done: 2, total: 37 }
       break
+    }
     case 'setMusicCovers':
       status.library.musicCovers = action.enabled
       break

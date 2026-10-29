@@ -92,8 +92,8 @@ type LibrarySection = 'movies' | 'series' | 'videos' | 'music' | 'photos'
 const SECTIONS: Array<Section & { key: LibrarySection }> = [
   { key: 'movies', label: 'Movies', icon: Film },
   { key: 'series', label: 'TV Series', icon: Tv },
-  { key: 'videos', label: 'Videos', icon: Video },
   { key: 'music', label: 'Music', icon: Music },
+  { key: 'videos', label: 'Videos', icon: Video },
   { key: 'photos', label: 'Photos', icon: Images },
 ]
 

@@ -100,6 +100,14 @@ export interface PreviewsNow {
   total: number
 }
 
+/** The last "make the missing ones": still looking, or how many it found. */
+export interface PreviewsCheck {
+  checking: boolean
+  found: number
+  /** Unix seconds, on the host's clock. */
+  at: number
+}
+
 
 export interface ManagedHostStatus {
   hostId: string
@@ -130,6 +138,8 @@ export interface ManagedHostStatus {
     previewsWhen?: PreviewsWhen
     /** What they are being made for right now, if anything. */
     previewsNow?: PreviewsNow | null
+    /** The last "make the missing ones". Absent from hosts before 1.6.3. */
+    previewsCheck?: PreviewsCheck | null
     /** Album covers looked up online. Absent from hosts before 1.6.3. */
     musicCovers?: boolean
     hasKey: boolean
