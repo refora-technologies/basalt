@@ -273,11 +273,15 @@ export function MusicPlayer({
     // `queue` itself changes as songs are added; the song and its place are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playingSong, at, paused, tell, exchange])
+  // Paused, it still says it is there, less often: the host forgets a device
+  // silent for 20 s, and a paused one forgotten could not be asked to stop
+  // when its music moved to another device.
+  const hasQueue = queue !== null
   useEffect(() => {
-    if (!queue || paused) return undefined
-    const timer = setInterval(tell, REPORT_EVERY_MS)
+    if (!hasQueue) return undefined
+    const timer = setInterval(tell, paused ? REPORT_PAUSED_EVERY_MS : REPORT_EVERY_MS)
     return () => clearInterval(timer)
-  }, [queue, paused, tell])
+  }, [hasQueue, paused, tell])
   // While another plays, asked now and then: one that went away without a
   // word (off the network, out of battery) is forgotten by the host.
   const othersPlaying = others.length > 0
@@ -397,6 +401,8 @@ export function MusicPlayer({
 
 /** How often a device playing tells the others where it is. */
 const REPORT_EVERY_MS = 5_000
+/** How often a paused one says it is still there: well inside the host's 20 s. */
+const REPORT_PAUSED_EVERY_MS = 8_000
 /** How often a device asks after the others while one plays. */
 const CHECK_OTHERS_MS = 10_000
 
