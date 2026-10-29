@@ -25,6 +25,7 @@ import {
 import { claimPress, pressForKey } from '@/lib/systemMedia'
 import * as mpvBackend from '@/lib/mpvBackend'
 import { useMpv } from '@/lib/useMpv'
+import { rememberVolume, rememberedVolume } from '@/lib/volumes'
 import {
   type ClockSample,
   type Estimate,
@@ -85,6 +86,37 @@ export function MusicPlayer({
   starts.current = onStarts
   /** Songs in a row that could not be opened: past the whole queue, it stops. */
   const failures = useRef(0)
+  /**
+   * When the next song opened starts (Unix ms), opened paused until then:
+   * devices in sync start a song at the same moment rather than each when
+   * it has opened. Taken by the player as it opens the song.
+   */
+  const holdUntil = useRef<number | null>(null)
+  /** Waiting for that moment: shown as playing, since it is about to. */
+  const [holding, setHolding] = useState(false)
+  const holdingRef = useRef(holding)
+  holdingRef.current = holding
+  /** The moment a song changed by hand here starts, for the devices in sync. */
+  const handStart = useRef<number | null>(null)
+  /**
+   * How long this device's player takes to make sound once unpaused, in ms:
+   * it is unpaused that much before the moment. Learnt from each start,
+   * and kept, as it is the device's own.
+   */
+  const startLag = useRef(readStartLag())
+  /** A start at a moment: a second on, where it got to says how late it really began. */
+  const checkStart = (position: number, at: number): void => {
+    setTimeout(() => {
+      void measure.current().then((exact) => {
+        if (!exact) return
+        const late = position + (exact.at - at) / 1000 - exact.position
+        // Far off is something else (a seek, a stall): not the player's own lag.
+        if (Math.abs(late) > 0.5) return
+        startLag.current = Math.max(0, Math.min(MAX_START_LAG_MS, startLag.current + late * 1000 * 0.7))
+        saveStartLag(startLag.current)
+      })
+    }, START_CHECK_MS)
+  }
 
   const begin = useCallback((next: Queue, at = 0) => {
     startAt.current = at
@@ -94,6 +126,8 @@ export function MusicPlayer({
   }, [])
 
   // ---- Shared with the profile's other devices ----
+  /** The host's clock less this one's, as worked out from the quickest answers. */
+  const offsetRef = useRef(0)
   const [others, setOthers] = useState<NowSession[]>([])
   const [hostOffset, setHostOffset] = useState(0)
   /** A host that does not know of it: asked no more. */
@@ -154,16 +188,31 @@ export function MusicPlayer({
     estimate.current = smoothed(estimate.current, { position: start + (rate.current * at) / 1000, at }, rate.current)
     return estimate.current
   }
-  const toLinked = useCallback((action: MusicCommand['action'], position = 0, listening?: Listening) => {
-    if (remote.current) return
-    corrected.current = Date.now()
-    for (const device of linkedRef.current) {
-      void api.musicCommand(device, action, position, listening).catch(() => {})
-    }
-  }, [])
+  const toLinked = useCallback(
+    (action: MusicCommand['action'], position = 0, listening?: Listening, startsAt?: number) => {
+      if (remote.current) return
+      corrected.current = Math.max(Date.now(), startsAt ?? 0)
+      // When to start, on the host's clock: each device turns it into its own.
+      const clock = startsAt === undefined ? undefined : Math.round(startsAt + offsetRef.current)
+      for (const device of linkedRef.current) {
+        void api.musicCommand(device, action, position, listening, clock).catch(() => {})
+      }
+    },
+    [],
+  )
+  /**
+   * A song chosen here, with devices in sync: it opens paused and starts a
+   * moment from now, and they are told to start it then too.
+   */
+  const startTogether = (): void => {
+    if (remote.current || linkedRef.current.length === 0) return
+    const at = Date.now() + START_TOGETHER_MS
+    holdUntil.current = at
+    handStart.current = at
+    setHolding(true)
+  }
 
-  /** The host's clock less this one's, as worked out from the quickest answers. */
-  const offsetRef = useRef(0)
+
   const clockSamples = useRef<ClockSample[]>([])
   const exchange = useCallback(async (request: { report?: NowReport; stopped?: boolean }) => {
     const asked = whoRef.current
@@ -190,9 +239,10 @@ export function MusicPlayer({
   const tell = useCallback(() => {
     void (async () => {
       let now = report.current()
-      // In sync, where the song is is read from the player to the
-      // millisecond, with the moment on the host's clock.
-      if (now?.playing && linkedRef.current.length > 0) {
+      // Playing, where the song is is read from the player to the
+      // millisecond, with the moment on the host's clock: another device
+      // joining starts from it, in step from the first second.
+      if (now?.playing) {
         const exact = await measure.current()
         if (exact) {
           now = {
@@ -210,27 +260,41 @@ export function MusicPlayer({
     () => ({
       queue,
       current: queue ? currentOf(queue) : null,
-      paused,
+      // About to start at an agreed moment: shown as playing.
+      paused: paused && !holding,
       play: (paths, index, from, shuffle = false) => {
         if (paths.length === 0) return
         handChanged.current = !remote.current
+        startTogether()
         begin(queueOf(paths, index, from, shuffle))
       },
       resume: (listening) => {
         const { queue: resumed, position } = fromListening(listening)
         if (resumed.songs.length === 0) return
         handChanged.current = !remote.current
+        startTogether()
         begin(resumed, position)
       },
       playNext: (paths) => setQueue((q) => (q ? queuePlayNext(q, paths) : q)),
       addToQueue: (paths) => setQueue((q) => (q ? queueAdd(q, paths) : q)),
       togglePause: () => {
         if (!queue) return
+        // Played again with devices in sync: from here, a moment from now,
+        // on all of them at once.
+        if (paused && !remote.current && linkedRef.current.length > 0) {
+          const at = Date.now() + RESUME_TOGETHER_MS
+          const from = positionNow()
+          setHolding(true)
+          controls.current?.playAt(from, at)
+          toLinked('play', from, undefined, at)
+          return
+        }
         controls.current?.togglePause()
         toLinked(paused ? 'play' : 'pause')
       },
       next: () => {
         handChanged.current = !remote.current
+        startTogether()
         setQueue((q) => {
           if (!q) return q
           const moved = nextOf(q)
@@ -246,6 +310,7 @@ export function MusicPlayer({
           toLinked('seek', 0)
         } else {
           handChanged.current = !remote.current
+          startTogether()
           startAt.current = 0
           setQueue(back)
         }
@@ -292,19 +357,34 @@ export function MusicPlayer({
         begin(there, position)
         void api.musicCommand(session.device, 'stop').catch(() => {})
       },
-      playBoth: (session) => {
-        const { queue: there, position } = fromListening({
-          ...session.report.listening,
-          position: livePosition(session, hostOffset, Date.now()),
-        })
-        if (there.songs.length === 0) return
-        begin(there, position)
+      playBoth: (asked) => {
+        if (asked.report.listening.queue.length === 0) return
         // In sync from now on: this one keeps to that one, and tells it so.
-        leader.current = session.device
+        leader.current = asked.device
         leaderMissing.current = 0
-        corrected.current = Date.now()
-        setLinked([session.device])
-        void api.musicCommand(session.device, 'link').catch(() => {})
+        corrected.current = Date.now() + START_TOGETHER_MS + CLOCK_CHECK_MS
+        setLinked([asked.device])
+        setHolding(true)
+        void api.musicCommand(asked.device, 'link').catch(() => {})
+        void (async () => {
+          // The host's clock first, to the millisecond: a few quick
+          // questions, the quickest answer trusted. Then the other's latest
+          // word on where it is.
+          for (let i = 0; i < CLOCK_CHECKS; i++) await exchange({})
+          const session = othersRef.current.find((s) => s.device === asked.device) ?? asked
+          const offset = offsetRef.current
+          // Not from where that one is now, but from where it will be a
+          // moment from now, starting then: in step from the first second.
+          const at = Date.now() + START_TOGETHER_MS
+          const { queue: there } = fromListening(session.report.listening)
+          if (there.songs.length === 0) {
+            setHolding(false)
+            return
+          }
+          holdUntil.current = at
+          corrected.current = at
+          begin(there, livePosition(session, offset, at))
+        })()
       },
       steer: (session, action, position = 0) => {
         // Shown at once; the device's own next report puts it right.
@@ -328,7 +408,7 @@ export function MusicPlayer({
         void api.musicCommand(session.device, action, position).catch(() => void tell())
       },
     }),
-    [queue, paused, expanded, begin, others, hostOffset, tell, linked, toLinked, setRate],
+    [queue, paused, holding, expanded, begin, others, hostOffset, tell, linked, toLinked, setRate],
   )
 
   // Where it is this instant: the player tells its clock a few times a
@@ -345,7 +425,7 @@ export function MusicPlayer({
     queue
       ? {
           listening: toListening(queue, positionNow(), Math.floor(Date.now() / 1000)),
-          playing: !paused,
+          playing: !paused || holding,
           duration: clockRef.current.duration,
         }
       : null
@@ -370,15 +450,38 @@ export function MusicPlayer({
         const there = command.listening
         if (!there) break
         const song = there.queue[there.index]
+        // When the other starts it, here: then, or as far in as it is by now.
+        const at = command.clock ? command.clock - offsetRef.current : null
+        const late = at === null ? 0 : Math.max(0, (Date.now() - at) / 1000)
         if (song && song === music.current) {
-          if (Math.abs(there.position - positionNow()) > SEEK_ABOVE_SECONDS) music.seek(there.position)
-          if (music.paused) music.togglePause()
-        } else music.resume(there)
+          if (at !== null && at > Date.now()) {
+            setHolding(true)
+            controls.current?.playAt(there.position, at)
+          } else {
+            const from = there.position + late
+            if (Math.abs(from - positionNow()) > SEEK_ABOVE_SECONDS) music.seek(from)
+            if (music.paused) music.togglePause()
+          }
+        } else {
+          if (at !== null && at > Date.now()) {
+            holdUntil.current = at
+            setHolding(true)
+          }
+          music.resume({ ...there, position: there.position + late })
+        }
+        corrected.current = Math.max(Date.now(), at ?? 0)
         break
       }
-      case 'play':
-        if (music.paused) music.togglePause()
+      case 'play': {
+        const at = command.clock ? command.clock - offsetRef.current : null
+        if (at !== null) {
+          // From the second it was paused at there, at the agreed moment.
+          setHolding(true)
+          controls.current?.playAt(command.position + Math.max(0, (Date.now() - at) / 1000), Math.max(at, Date.now()))
+          corrected.current = Math.max(Date.now(), at)
+        } else if (music.paused) music.togglePause()
         break
+      }
       case 'pause':
         if (!music.paused) music.togglePause()
         break
@@ -418,7 +521,7 @@ export function MusicPlayer({
     let busy = false
     const follow = async (): Promise<void> => {
       const id = leader.current
-      if (!id) return
+      if (!id || holdingRef.current) return
       const theirs = othersRef.current.find((s) => s.device === id)
       if (!theirs) {
         // Gone without a word (closed, off the network): on its own now.
@@ -508,7 +611,9 @@ export function MusicPlayer({
   useEffect(() => {
     let stop: (() => void) | null = null
     let gone = false
-    void onMusicNow(() => tell()).then((unlisten) => {
+    // What the others ask is fetched at once: a song to start together
+    // has only a moment to open. What this one plays is told after.
+    void onMusicNow(() => void exchange({}).then(tell)).then((unlisten) => {
       if (gone) unlisten()
       else stop = unlisten
     })
@@ -516,7 +621,7 @@ export function MusicPlayer({
       gone = true
       stop?.()
     }
-  }, [tell])
+  }, [tell, exchange])
 
   // Told what plays here: a new song, play or pause at once, and every few
   // seconds while it plays so the others' clocks stay right. Stopping says so.
@@ -538,7 +643,9 @@ export function MusicPlayer({
   useEffect(() => {
     if (!handChanged.current || !queue) return
     handChanged.current = false
-    toLinked('load', startAt.current, toListening(queue, startAt.current, Math.floor(Date.now() / 1000)))
+    const startsAt = handStart.current ?? undefined
+    handStart.current = null
+    toLinked('load', startAt.current, toListening(queue, startAt.current, Math.floor(Date.now() / 1000)), startsAt)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playingSong, at, toLinked])
 
@@ -630,6 +737,12 @@ export function MusicPlayer({
             path={currentOf(queue)}
             turn={queue.at}
             startAt={startAt}
+            holdUntil={holdUntil}
+            startLag={startLag}
+            onStarted={(position, at) => {
+              setHolding(false)
+              if (position !== null) checkStart(position, at)
+            }}
             controls={controls}
             onClock={clockChanged}
             onPaused={setPaused}
@@ -648,7 +761,23 @@ export function MusicPlayer({
                 return moved
               })
             }
-            onEnded={() =>
+            onEnded={() => {
+              // Following another: it says what comes next, and when, so both
+              // start it together. Not heard from in a few seconds, on alone.
+              if (leader.current && linkedRef.current.length > 0) {
+                const ending = queue ? currentOf(queue) : null
+                setTimeout(() => {
+                  if (latest.current.current === ending && latest.current.queue && !holdingRef.current) {
+                    latest.current.next()
+                  }
+                }, AWAIT_LEADER_MS)
+                return
+              }
+              // Followed by others: the next song starts together.
+              if (linkedRef.current.length > 0) {
+                handChanged.current = true
+                startTogether()
+              }
               setQueue((q) => {
                 if (!q) return q
                 const moved = nextOf(q, true)
@@ -662,12 +791,49 @@ export function MusicPlayer({
                 if (moved.at === q.at) controls.current?.restart()
                 return moved
               })
-            }
+            }}
           />
         )}
       </MusicClockContext.Provider>
     </MusicPlayerContext.Provider>
   )
+}
+
+/**
+ * How far ahead a song started together is started: time for each device
+ * to open it and have it ready, paused at its first second.
+ */
+const START_TOGETHER_MS = 1_400
+/** The same, for playing on after a pause: the song is open already. */
+const RESUME_TOGETHER_MS = 500
+/** Following another, how long a song ended waits for it to say what is next. */
+const AWAIT_LEADER_MS = 4_000
+
+/** Quick questions to the host before starting together, to know its clock well. */
+const CLOCK_CHECKS = 4
+/** About how long they take. */
+const CLOCK_CHECK_MS = 300
+
+/** How long after a start at a moment it checks where it got to. */
+const START_CHECK_MS = 1_200
+/** The most a player is taken to need to make sound once unpaused. */
+const MAX_START_LAG_MS = 400
+
+function readStartLag(): number {
+  try {
+    const kept = Number(localStorage.getItem('basalt.music.startLag'))
+    return Number.isFinite(kept) ? Math.max(0, Math.min(MAX_START_LAG_MS, kept)) : 0
+  } catch {
+    return 0
+  }
+}
+
+function saveStartLag(ms: number): void {
+  try {
+    localStorage.setItem('basalt.music.startLag', String(Math.round(ms)))
+  } catch {
+    // Not kept: learnt again next time.
+  }
 }
 
 /** How often a device in sync checks it keeps to the other. */
@@ -694,6 +860,8 @@ interface EngineControls {
   read: () => Promise<Reading[] | null>
   /** Plays a hair faster or slower, to make up a gap with a device in sync. */
   setRate: (rate: number) => void
+  /** Paused at `position`, then playing from it at `at` (Unix ms). */
+  playAt: (position: number, at: number) => void
 }
 
 /** Reads of the player's clock taken to work out the second: about a fifth of a second's worth. */
@@ -707,6 +875,9 @@ function Engine({
   path,
   turn,
   startAt,
+  holdUntil,
+  startLag,
+  onStarted,
   controls,
   onClock,
   onPaused,
@@ -717,6 +888,12 @@ function Engine({
   /** Its place in the queue: the same song twice in a row still loads again. */
   turn: number
   startAt: React.MutableRefObject<number>
+  /** When the song opened next starts (Unix ms), opened paused until then. Taken as it opens. */
+  holdUntil: React.MutableRefObject<number | null>
+  /** How long the player takes to make sound once unpaused (ms): unpaused that much early. */
+  startLag: React.MutableRefObject<number>
+  /** A song held for its moment has started: from where, and at what moment; or nothing was held. */
+  onStarted: (position: number | null, at: number) => void
   controls: React.MutableRefObject<EngineControls | null>
   onClock: (clock: { position: number; duration: number; volume: number }) => void
   onPaused: (paused: boolean) => void
@@ -726,6 +903,42 @@ function Engine({
 }): null {
   const mpv = useMpv()
   const { load, stop, togglePause, seekTo, setVolume } = mpv
+  /** Which wait for a moment is the latest: an older one gives way. */
+  const waiting = useRef(0)
+  const started = useRef(onStarted)
+  started.current = onStarted
+
+  /**
+   * Plays at `at` (Unix ms) from `position`, once the song is ready there:
+   * opened, done seeking. Ready only after `at`, it starts as far in as it
+   * would be by then.
+   */
+  const release = async (position: number, at: number, mine: number): Promise<void> => {
+    if (!inTauri()) {
+      started.current(null, at)
+      return
+    }
+    const until = Date.now() + 8_000
+    for (;;) {
+      if (waiting.current !== mine) return
+      const [pos, seeking] = await Promise.all([
+        mpvBackend.getProperty('time-pos', 'double').catch(() => null),
+        mpvBackend.getProperty('seeking', 'flag').catch(() => null),
+      ])
+      if ((pos !== null && seeking === false) || Date.now() > until) break
+      await new Promise((done) => setTimeout(done, 40))
+    }
+    // Unpaused a little before the moment, by as long as this player takes
+    // to make sound.
+    const wait = at - startLag.current - Date.now()
+    if (wait > 0) await new Promise((done) => setTimeout(done, wait))
+    if (waiting.current !== mine) return
+    const late = Date.now() - (at - startLag.current)
+    if (late > 40) await seekTo(position + late / 1000)
+    await mpv.setPaused(false)
+    // Late enough to seek, the check would learn from the seek: not checked.
+    started.current(late > 40 ? null : position, at)
+  }
 
   controls.current = {
     togglePause: () => {
@@ -735,7 +948,11 @@ function Engine({
     },
     restart: () => void seekTo(0).then(() => mpv.setPaused(false)),
     seek: (seconds) => void seekTo(Math.max(0, seconds)),
-    setVolume: (volume) => void setVolume(Math.max(0, Math.min(100, volume))),
+    setVolume: (volume) => {
+      const level = Math.max(0, Math.min(100, volume))
+      rememberVolume('music', level)
+      void setVolume(level)
+    },
     read: async () => {
       if (!inTauri()) return null
       const readings: Reading[] = []
@@ -748,6 +965,13 @@ function Engine({
       }
       return readings
     },
+    playAt: (position, at) => {
+      const mine = ++waiting.current
+      void mpv
+        .setPaused(true)
+        .then(() => seekTo(Math.max(0, position)))
+        .then(() => release(position, at, mine))
+    },
     // mpv keeps the pitch at a speed this close to 1.
     setRate: (rate) => {
       if (inTauri()) void mpvBackend.command('set', ['speed', rate.toFixed(4)]).catch(() => {})
@@ -759,13 +983,27 @@ function Engine({
     let cancelled = false
     const from = startAt.current
     startAt.current = 0
-    void api.mediaUrl(path).then((url) => {
-      if (!cancelled) void load(url, from, undefined, true)
+    // To start at an agreed moment: opened paused, and played then.
+    const at = holdUntil.current
+    holdUntil.current = null
+    const mine = ++waiting.current
+    // Opened at once: any wait for a moment before it is over.
+    if (at === null) started.current(null, Date.now())
+    void api.mediaUrl(path).then(async (url) => {
+      if (cancelled) return
+      // At music's own volume, as last set: not the film's, nor full.
+      await setVolume(rememberedVolume('music'))
+      if (cancelled) return
+      void load(url, from, undefined, true, at !== null).then(() => {
+        if (at !== null) void release(from, at, mine)
+      })
     })
     return () => {
       cancelled = true
     }
-  }, [path, turn, load, startAt])
+    // `release` is the same work every render; the song is what matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path, turn, load, startAt, holdUntil, setVolume])
 
   // Stopped when the queue goes: the film player may want mpv next, at its
   // own speed.

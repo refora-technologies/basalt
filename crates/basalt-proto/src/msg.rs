@@ -1071,6 +1071,10 @@ pub struct MusicCommand {
     /// For `load`: the queue and the second to play from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listening: Option<Listening>,
+    /// For `load` and `play`: when to start, on the host's clock in Unix
+    /// milliseconds, so devices in sync start at the same moment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<i64>,
 }
 
 /// Asks another of the profile's devices, playing, to do something.
@@ -1085,6 +1089,9 @@ pub struct MusicCommandRequest {
     /// For `load`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listening: Option<Listening>,
+    /// For `load` and `play`: when to start, on the host's clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<i64>,
 }
 
 /// Asks where a film's or an episode's intro and credits are.

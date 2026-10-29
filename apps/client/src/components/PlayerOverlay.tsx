@@ -66,6 +66,7 @@ import { getProperty } from '@/lib/mpvBackend'
 import { isMobileShell } from '@/lib/platform'
 import { noteFilmFinished } from '@/lib/review'
 import { useBack } from '@/mobile/useBack'
+import { rememberVolume, rememberedVolume } from '@/lib/volumes'
 
 /**
  * A phone or tablet: fingers, not a pointer.
@@ -196,6 +197,8 @@ export function PlayerOverlay({
     volumeTimer.current = setTimeout(() => setVolumeOsd(false), 1200)
   }, [])
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** The film's volume has been put in place: what it changes to now is kept as the films' volume. */
+  const volumeKept = useRef(false)
 
   const keepControls = useCallback(() => {
     setShowControls(true)
@@ -233,6 +236,15 @@ export function PlayerOverlay({
   useEffect(() => {
     if (!open) setSeeking(false)
   }, [open])
+  // The volume as changed during a film, by the slider, the wheel or keys,
+  // kept for the next one. Closed, music may change it: not kept then.
+  useEffect(() => {
+    if (!open) {
+      volumeKept.current = false
+      return
+    }
+    if (volumeKept.current) rememberVolume('video', mpv.volume)
+  }, [open, mpv.volume])
 
   // Any movement anywhere brings them back, including over the controls. A
   // key does too, but from the key handler itself — see there for why.
@@ -417,6 +429,11 @@ export function PlayerOverlay({
           return
         }
         const at = resumeAt > 0 ? resumeAt : 0
+        // At the films' own volume, as last set: not music's, nor full.
+        volumeKept.current = false
+        await mpv.setVolume(rememberedVolume('video'))
+        if (cancelled) return
+        volumeKept.current = true
         // A device that has struggled with pictures this large starts with
         // the host's conversion, when the host can give one: opening the file
         // first only to find it cannot keep up cost seconds every episode.

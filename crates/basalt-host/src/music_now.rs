@@ -140,6 +140,7 @@ impl Live {
             from: from.to_string(),
             from_device: from_device.to_string(),
             listening: asked.listening,
+            clock: asked.clock,
         });
         if queue.len() > MAX_COMMANDS {
             queue.remove(0);
@@ -296,6 +297,7 @@ mod tests {
             action: action.into(),
             position: 0.0,
             listening: None,
+            clock: None,
         };
         assert!(
             live.command("maya", "Phone", "phone", ask("laptop", "pause"), 1_000)

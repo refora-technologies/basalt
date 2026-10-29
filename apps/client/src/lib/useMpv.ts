@@ -555,7 +555,7 @@ export interface Mpv extends MpvState {
    * Opens a file. `audioOnly`: music, whose cover the app draws itself; mpv
    * is told not to show it as a picture (see the load).
    */
-  load: (url: string, startAt: number, converted?: ConvertedSource, audioOnly?: boolean) => Promise<void>
+  load: (url: string, startAt: number, converted?: ConvertedSource, audioOnly?: boolean, paused?: boolean) => Promise<void>
   /** Plays what is open in the lighter mode: see [`LIGHTER_OPTIONS`]. */
   lighten: () => Promise<void>
   /** Stops playback and lets the window go opaque again. */
@@ -1064,7 +1064,7 @@ function useAppMpv(): Mpv {
   }, [readTracks, readLength, restoreAdded, checkStrain])
 
   const load = useCallback(
-    async (url: string, startAt: number, source?: ConvertedSource, audioOnly = false) => {
+    async (url: string, startAt: number, source?: ConvertedSource, audioOnly = false, paused = false) => {
       if (!inTauri()) return
       const mine = ++generation.current
       eof.current = false
@@ -1107,7 +1107,7 @@ function useAppMpv(): Mpv {
         // A file that is chosen is a file somebody wants to watch. Pause
         // survives `loadfile`, so without this the next episode after a
         // paused one opened paused, looking like it had not loaded.
-        await set('pause', 'no')
+        await set('pause', paused ? 'yes' : 'no')
         // Unpaused as part of the load, not only before it. A file that had
         // played to its end is still sitting paused there, and mpv re-applies
         // that end-of-file pause for as long as it is — so an unpause sent
@@ -1119,7 +1119,9 @@ function useAppMpv(): Mpv {
           source
             ? ['pause=no', 'rebase-start-time=no', ...keep]
             : [
-                'pause=no',
+                // Opened paused to start at an agreed moment, with another
+                // device playing the same song.
+                paused ? 'pause=yes' : 'pause=no',
                 startAt > 1 ? `start=${startAt.toFixed(3)}` : '',
                 // A song's cover is a picture track to mpv, and shown, it
                 // opened mpv's picture behind the window: on Windows that
@@ -1282,7 +1284,12 @@ function useAppMpv(): Mpv {
 
   const setVolume = useCallback(
     async (volume: number) => {
-      if (inTauri()) await set('volume', Math.round(volume))
+      if (!inTauri()) return
+      await set('volume', Math.round(volume))
+      // Shown at once. mpv tells of a change only to whoever was watching
+      // when it happened: set before a song opened, the slider kept showing
+      // the old volume while the song played at the new one.
+      setState((s) => (s.volume === Math.round(volume) ? s : { ...s, volume: Math.round(volume) }))
     },
     [set],
   )

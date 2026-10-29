@@ -452,6 +452,8 @@ export interface MusicCommand {
   fromDevice: string
   /** For `load`: the queue and the second to play from. */
   listening?: Listening | null
+  /** For `load` and `play`: when to start, on the host's clock (Unix ms). */
+  clock?: number | null
 }
 
 export interface MusicNowResponse {
@@ -737,8 +739,8 @@ export const api = {
     return call<MusicNowResponse>('music_now', { request })
   },
   /** Asks another of the profile's devices to pause, play, skip or stop. */
-  musicCommand: (device: string, action: MusicCommand['action'], position = 0, listening?: Listening) => {
-    const request = { device, action, position, listening }
+  musicCommand: (device: string, action: MusicCommand['action'], position = 0, listening?: Listening, clock?: number) => {
+    const request = { device, action, position, listening, clock }
     return call<void>('music_command', { request })
   },
   /** The start of every media URL. A percent-encoded path goes on the end. */
