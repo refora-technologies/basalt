@@ -1365,6 +1365,10 @@ export function PlayerOverlay({
             void mpv.seekBy(e.key === 'ArrowRight' ? 10 : -10)
             return true
           case 'Enter':
+            // Skip intro and Next episode stand on their own, with the
+            // controls put away, and take the focus when they come: OK
+            // presses them. Taken as "pause", it paused the intro instead.
+            if (target?.closest('[data-segment]')) return false
             // A control keeps the focus while the controls are put away; OK
             // then pauses, whichever it is, and never closes the film.
             if (onControl && controlsUp) return false
@@ -2997,6 +3001,7 @@ function SegmentButton({
     <motion.button
       ref={button}
       key={kind}
+      data-segment=""
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}

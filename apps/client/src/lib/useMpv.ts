@@ -403,6 +403,9 @@ const OBSERVED = [
   ['sid', 'int64', 'none'],
   ['aid', 'int64', 'none'],
   ['sub-delay', 'double', 'none'],
+  // The picture's width: a slow decoder's first frame can come after the
+  // opening was judged, and the film then played behind "sound only".
+  ['dwidth', 'int64', 'none'],
 ] as const satisfies mpv.MpvObservableProperty[]
 
 /**
@@ -843,6 +846,9 @@ function useAppMpv(): Mpv {
                 return { ...s, atEof: data === true, ended: hasEnded(data, s.position, s.duration, s.paused) }
               case 'paused-for-cache':
                 return { ...s, buffering: data === true }
+              case 'dwidth':
+                // A picture after all, once the file is open: shown.
+                return Number(data) > 0 && s.started && !s.picture ? { ...s, picture: true } : s
               case 'sid':
                 return { ...s, subtitleId: data === null ? null : Number(data) }
               case 'aid':
