@@ -989,6 +989,11 @@ pub struct NowReport {
     pub playing: bool,
     /// The song's length in seconds, when known.
     pub duration: f64,
+    /// When the song was at `listening.position`, on the host's clock in Unix
+    /// milliseconds, as the device worked it out. Devices playing in sync
+    /// need it to the millisecond; without it, the moment the host heard.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock: Option<i64>,
 }
 
 /// What the profile's other devices are playing, and what this one was asked

@@ -179,6 +179,7 @@ mod tests {
             },
             playing: on,
             duration: 200.0,
+            clock: None,
         }
     }
 

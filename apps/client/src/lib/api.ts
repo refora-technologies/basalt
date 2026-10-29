@@ -413,6 +413,12 @@ export interface NowReport {
   playing: boolean
   /** Seconds, when known. */
   duration: number
+  /**
+   * When the song was at `listening.position`, on the host's clock (Unix ms),
+   * as the device worked it out to the millisecond. Without it, when the host
+   * heard.
+   */
+  clock?: number | null
 }
 
 /** Another of the profile's devices, playing. */

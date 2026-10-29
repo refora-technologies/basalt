@@ -1914,6 +1914,7 @@ async fn a_profiles_devices_see_and_steer_each_others_music() {
         },
         playing: true,
         duration: 180.0,
+        clock: None,
     };
     let playing = MusicNowRequest {
         report: Some(report.clone()),
