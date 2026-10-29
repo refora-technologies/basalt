@@ -16,6 +16,8 @@ export interface MusicPlayerApi {
   /** The song playing or paused now, by path. */
   current: string | null
   paused: boolean
+  /** The host is out of reach: the song waits for it, and carries on when it is back. */
+  reconnecting: boolean
   /** Plays `paths` from `index`, named after what they came from. */
   play: (paths: string[], index: number, from: string, shuffle?: boolean) => void
   /** Carries on with what was playing: the same queue, from the same second. */

@@ -55,6 +55,7 @@ export function MusicPlayer({
   onStarts,
   onListening,
   who,
+  connected,
   children,
 }: {
   onStarts: () => void
@@ -65,9 +66,36 @@ export function MusicPlayer({
    * that profile's other devices, and theirs with it. Null on its own.
    */
   who: string | null
+  /** Whether the host is reachable, as the app knows it. */
+  connected: boolean
   children: React.ReactNode
 }): React.JSX.Element {
   const [queue, setQueue] = useState<Queue | null>(null)
+  // ---- The host out of reach ----
+  /** A song would not open because the host was out of reach: waiting for it, not skipping. */
+  const [reconnecting, setReconnecting] = useState(false)
+  /** Opening the same song again, from where it was, once the host is back. */
+  const [again, setAgain] = useState(0)
+  const connectedRef = useRef(connected)
+  connectedRef.current = connected
+  /** Where the song was when the host went: it carries on from there. */
+  const waitFrom = useRef(0)
+  // Waiting: the song is tried again when the app has the host back, and
+  // every few seconds in case it has not noticed.
+  useEffect(() => {
+    if (!reconnecting) return undefined
+    const tryAgain = (): void => {
+      void hostReachable(connectedRef.current).then((reachable) => {
+        if (!reachable) return
+        setReconnecting(false)
+        startAt.current = waitFrom.current
+        setAgain((n) => n + 1)
+      })
+    }
+    if (connected) tryAgain()
+    const timer = setInterval(tryAgain, RETRY_HOST_MS)
+    return () => clearInterval(timer)
+  }, [reconnecting, connected])
   const [paused, setPaused] = useState(false)
   const [expanded, setExpanded] = useState(false)
   /** Where to start the next song loaded: a song carried on from elsewhere. */
@@ -282,6 +310,7 @@ export function MusicPlayer({
     () => ({
       queue,
       current: queue ? currentOf(queue) : null,
+      reconnecting,
       // About to start at an agreed moment: shown as playing.
       paused: paused && !holding,
       play: (paths, index, from, shuffle = false) => {
@@ -432,7 +461,7 @@ export function MusicPlayer({
         void api.musicCommand(session.device, action, position).catch(() => void tell())
       },
     }),
-    [queue, paused, holding, expanded, begin, others, hostOffset, tell, linked, toLinked, setRate],
+    [queue, paused, holding, reconnecting, expanded, begin, others, hostOffset, tell, linked, toLinked, setRate],
   )
 
   // Where it is this instant: the player tells its clock a few times a
@@ -748,6 +777,7 @@ export function MusicPlayer({
           <Engine
             path={currentOf(queue)}
             turn={queue.at}
+            again={again}
             startAt={startAt}
             holdUntil={holdUntil}
             startLag={startLag}
@@ -759,18 +789,28 @@ export function MusicPlayer({
             onClock={clockChanged}
             onPaused={setPaused}
             onFailed={() =>
-              setQueue((q) => {
-                if (!q) return q
-                failures.current += 1
-                const moved = nextOf(q, true)
-                // Every song tried and none would open: paused, not looping.
-                if (!moved || failures.current >= q.songs.length) {
-                  failures.current = 0
-                  setPaused(true)
-                  return q
+              void hostReachable(connectedRef.current).then((reachable) => {
+                // The host out of reach: every song would fail the same. This
+                // one waits for it, from where it was, rather than skipping
+                // through the whole queue.
+                if (!reachable) {
+                  waitFrom.current = clockRef.current.position
+                  setReconnecting(true)
+                  return
                 }
-                startAt.current = 0
-                return moved
+                setQueue((q) => {
+                  if (!q) return q
+                  failures.current += 1
+                  const moved = nextOf(q, true)
+                  // Every song tried and none would open: paused, not looping.
+                  if (!moved || failures.current >= q.songs.length) {
+                    failures.current = 0
+                    setPaused(true)
+                    return q
+                  }
+                  startAt.current = 0
+                  return moved
+                })
               })
             }
             onEnded={() => {
@@ -835,6 +875,28 @@ const CLOCK_CHECKS = 4
 /** About how long they take. */
 const CLOCK_CHECK_MS = 300
 
+/** While waiting for the host, how often the song is tried again. */
+const RETRY_HOST_MS = 4_000
+
+/**
+ * Whether the host answers. The app's own word first: not connected is not
+ * reachable. Connected by its word, asked: a failure to open a song comes a
+ * moment before the app notices the host has gone.
+ */
+async function hostReachable(connected: boolean): Promise<boolean> {
+  if (!connected) return false
+  try {
+    await Promise.race([
+      api.musicNow({}),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('no answer')), 3_000)),
+    ])
+    return true
+  } catch (e) {
+    // An answer, even "not known here", is the host answering.
+    return e instanceof ApiError && (e.kind === 'unsupported' || e.kind === 'incompatible')
+  }
+}
+
 /** How long after a start at a moment it checks where it got to. */
 const START_CHECK_MS = 1_200
 /** The most a player is taken to need to make sound once unpaused. */
@@ -895,6 +957,7 @@ const CLOCK_READS = 16
 function Engine({
   path,
   turn,
+  again,
   startAt,
   holdUntil,
   startLag,
@@ -908,6 +971,8 @@ function Engine({
   path: string | null
   /** Its place in the queue: the same song twice in a row still loads again. */
   turn: number
+  /** Opened again when this moves on: after the host came back. */
+  again: number
   startAt: React.MutableRefObject<number>
   /** When the song opened next starts (Unix ms), opened paused until then. Taken as it opens. */
   holdUntil: React.MutableRefObject<number | null>
@@ -1024,7 +1089,7 @@ function Engine({
     }
     // `release` is the same work every render; the song is what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, turn, load, startAt, holdUntil, setVolume])
+  }, [path, turn, again, load, startAt, holdUntil, setVolume])
 
   // Stopped when the queue goes: the film player may want mpv next, at its
   // own speed.

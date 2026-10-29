@@ -1452,6 +1452,8 @@ export function App(): React.JSX.Element {
       onListening={model.musicMine.setListening}
       // Shared with the profile's other devices on this host; on its own, kept here.
       who={model.profileId && model.vault.status?.hostId ? `${model.vault.status.hostId}/${model.profileId}` : null}
+      // A song that will not open while the host is out of reach waits for it.
+      connected={model.vault.status?.connected !== false}
     >
       <MusicBridge model={model} />
       <SystemMedia model={model} />

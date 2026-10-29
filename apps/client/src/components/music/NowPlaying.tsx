@@ -111,7 +111,9 @@ function BarHere({
           <Cover base={base} path={song.cover ? song.path : null} mtime={song.mtime} name={song.album} label={false} className="w-10 shrink-0 rounded-md" />
           <div className="min-w-0 flex-1">
             <div className="truncate text-[13px] font-semibold text-text">{song.title}</div>
-            {player.linked.length > 0 ? (
+            {player.reconnecting ? (
+              <div className="truncate text-[11.5px] text-textFaint">Reconnecting to the host…</div>
+            ) : player.linked.length > 0 ? (
               <div className="flex items-center gap-1 truncate text-[11.5px] text-basalt">
                 <Link2 size={11} className="shrink-0" />
                 <span className="truncate">In sync with {syncedWith(player)}</span>
@@ -164,7 +166,9 @@ function BarHere({
         <Cover base={base} path={song.cover ? song.path : null} mtime={song.mtime} name={song.album} label={false} className={cn('shrink-0 rounded-md', layout === 'tv' ? 'w-16' : 'w-12')} />
         <span className="min-w-0">
           <span className="block truncate text-[13.5px] font-semibold text-text">{song.title}</span>
-          <span className="block truncate text-[12px] text-textFaint">{song.artist}</span>
+          <span className="block truncate text-[12px] text-textFaint">
+            {player.reconnecting ? 'Reconnecting to the host…' : song.artist}
+          </span>
         </span>
       </button>
       <div className="flex flex-col items-center gap-1.5">
