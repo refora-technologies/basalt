@@ -25,7 +25,9 @@ const JUMP_SECONDS: f64 = 3.0;
 const MAX_COMMANDS: usize = 16;
 
 /// The actions a device may ask of another.
-const ACTIONS: &[&str] = &["play", "pause", "next", "previous", "seek", "stop"];
+const ACTIONS: &[&str] = &[
+    "play", "pause", "next", "previous", "seek", "stop", "load", "link", "unlink",
+];
 
 #[derive(Debug, Clone)]
 struct Entry {
@@ -116,6 +118,7 @@ impl Live {
         &mut self,
         profile: &str,
         from: &str,
+        from_device: &str,
         asked: MusicCommandRequest,
         now: i64,
     ) -> Result<(), &'static str> {
@@ -135,6 +138,8 @@ impl Live {
             action: asked.action,
             position: asked.position,
             from: from.to_string(),
+            from_device: from_device.to_string(),
+            listening: asked.listening,
         });
         if queue.len() > MAX_COMMANDS {
             queue.remove(0);
@@ -289,25 +294,33 @@ mod tests {
             device: device.into(),
             action: action.into(),
             position: 0.0,
+            listening: None,
         };
         assert!(
-            live.command("maya", "Phone", ask("laptop", "pause"), 1_000)
+            live.command("maya", "Phone", "phone", ask("laptop", "pause"), 1_000)
                 .is_ok()
         );
         assert!(
-            live.command("sam", "Tablet", ask("laptop", "pause"), 1_000)
+            live.command("sam", "Tablet", "tablet", ask("laptop", "pause"), 1_000)
                 .is_err()
         );
         assert!(
-            live.command("maya", "Phone", ask("nobody", "pause"), 1_000)
+            live.command("maya", "Phone", "phone", ask("nobody", "pause"), 1_000)
                 .is_err()
         );
         assert!(
-            live.command("maya", "Phone", ask("laptop", "format the drive"), 1_000)
-                .is_err()
+            live.command(
+                "maya",
+                "Phone",
+                "phone",
+                ask("laptop", "format the drive"),
+                1_000
+            )
+            .is_err()
         );
         let got = live.take_commands("laptop");
         assert_eq!(got.len(), 1);
+        assert_eq!(got[0].from_device, "phone", "who to keep in sync with");
         assert_eq!(
             (got[0].action.as_str(), got[0].from.as_str()),
             ("pause", "Phone")

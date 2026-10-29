@@ -428,10 +428,15 @@ export interface NowSession {
 
 /** Something one device asks of another. */
 export interface MusicCommand {
-  action: 'play' | 'pause' | 'next' | 'previous' | 'seek' | 'stop'
+  /** `load`, `link` and `unlink` are between devices playing in sync. */
+  action: 'play' | 'pause' | 'next' | 'previous' | 'seek' | 'stop' | 'load' | 'link' | 'unlink'
   position: number
   /** The name of the device that asked. */
   from: string
+  /** Its id. */
+  fromDevice: string
+  /** For `load`: the queue and the second to play from. */
+  listening?: Listening | null
 }
 
 export interface MusicNowResponse {
@@ -717,8 +722,8 @@ export const api = {
     return call<MusicNowResponse>('music_now', { request })
   },
   /** Asks another of the profile's devices to pause, play, skip or stop. */
-  musicCommand: (device: string, action: MusicCommand['action'], position = 0) => {
-    const request = { device, action, position }
+  musicCommand: (device: string, action: MusicCommand['action'], position = 0, listening?: Listening) => {
+    const request = { device, action, position, listening }
     return call<void>('music_command', { request })
   },
   /** The start of every media URL. A percent-encoded path goes on the end. */

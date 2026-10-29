@@ -1025,12 +1025,19 @@ pub struct NowSession {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MusicCommand {
-    /// `play`, `pause`, `next`, `previous`, `seek` or `stop`.
+    /// `play`, `pause`, `next`, `previous`, `seek`, `stop`; or, between
+    /// devices playing in sync, `load` (play `listening`, from its second),
+    /// `link` and `unlink`.
     pub action: String,
     /// For `seek`: where to, in seconds.
     pub position: f64,
     /// The name of the device that asked.
     pub from: String,
+    /// Its id: the device to keep in sync with, for `link`.
+    pub from_device: String,
+    /// For `load`: the queue and the second to play from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listening: Option<Listening>,
 }
 
 /// Asks another of the profile's devices, playing, to do something.
@@ -1042,6 +1049,9 @@ pub struct MusicCommandRequest {
     pub action: String,
     #[serde(default)]
     pub position: f64,
+    /// For `load`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listening: Option<Listening>,
 }
 
 /// Asks where a film's or an episode's intro and credits are.

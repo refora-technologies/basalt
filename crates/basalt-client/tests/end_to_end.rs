@@ -1932,6 +1932,7 @@ async fn a_profiles_devices_see_and_steer_each_others_music() {
             device: heard.sessions[0].device.clone(),
             action: "pause".into(),
             position: 0.0,
+            listening: None,
         })
         .await
         .expect("the phone asks the laptop to pause");

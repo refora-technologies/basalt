@@ -44,8 +44,15 @@ export interface MusicPlayerApi {
   hostOffset: number
   /** The music moves here: this device carries on from where it is, and that one stops. */
   playHere: (session: NowSession) => void
-  /** This device joins in, from the same place; that one keeps playing. */
+  /**
+   * This device joins in, in sync: the same song at the same second, and
+   * play, pause, seek and skip on either one do it on both.
+   */
   playBoth: (session: NowSession) => void
+  /** The devices playing in sync with this one, by id. */
+  linked: string[]
+  /** This device plays on alone; the others carry on too. */
+  unlink: () => void
   /** Asks that device to play, pause, skip or stop. */
   steer: (session: NowSession, action: MusicCommand['action'], position?: number) => void
 }

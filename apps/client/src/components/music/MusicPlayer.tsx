@@ -24,7 +24,7 @@ import {
 } from '@/lib/queue'
 import { claimPress, pressForKey } from '@/lib/systemMedia'
 import { useMpv } from '@/lib/useMpv'
-import { livePosition } from '@/lib/musicNow'
+import { IN_STEP_SECONDS, keepInStep, livePosition, songOf as remoteSong } from '@/lib/musicNow'
 
 /**
  * The music player for the whole app.
@@ -63,6 +63,12 @@ export function MusicPlayer({
   const [clock, setClock] = useState({ position: 0, duration: 0, volume: 100 })
   const clockRef = useRef(clock)
   clockRef.current = clock
+  /** When the clock last moved: the player tells it a few times a second. */
+  const clockMoved = useRef(0)
+  const clockChanged = useCallback((next: { position: number; duration: number; volume: number }) => {
+    if (next.position !== clockRef.current.position) clockMoved.current = Date.now()
+    setClock(next)
+  }, [])
   const starts = useRef(onStarts)
   starts.current = onStarts
   /** Songs in a row that could not be opened: past the whole queue, it stops. */
@@ -84,6 +90,40 @@ export function MusicPlayer({
   const report = useRef<() => NowReport | null>(() => null)
   const whoRef = useRef(who)
   whoRef.current = who
+
+  // ---- Playing in sync with others ----
+  /** The devices playing in sync with this one: the same song, the same second. */
+  const [linked, setLinked] = useState<string[]>([])
+  const linkedRef = useRef(linked)
+  linkedRef.current = linked
+  /** The one this device keeps to, when it joined another's music. */
+  const leader = useRef<string | null>(null)
+  /** Applying what another device asked: not sent back to it. */
+  const remote = useRef(false)
+  /** The song changed by a hand here: sent to the devices in sync. */
+  const handChanged = useRef(false)
+  /**
+   * When it last changed by itself, by a hand here or a correction: what the
+   * other said before then is out of date, and not followed.
+   */
+  const corrected = useRef(0)
+  /** Checks in a row the leader was not there: past a few, it plays on alone. */
+  const leaderMissing = useRef(0)
+  /**
+   * How far ahead of the other to seek: a seek over the network takes a
+   * moment to start playing again, and lands that much behind. Learnt from
+   * where each correction landed.
+   */
+  const lead = useRef(0)
+  /** A correction made, to see where it landed at the next check. */
+  const checkLanding = useRef(false)
+  const toLinked = useCallback((action: MusicCommand['action'], position = 0, listening?: Listening) => {
+    if (remote.current) return
+    corrected.current = Date.now()
+    for (const device of linkedRef.current) {
+      void api.musicCommand(device, action, position, listening).catch(() => {})
+    }
+  }, [])
 
   const exchange = useCallback(async (request: { report?: NowReport; stopped?: boolean }) => {
     const asked = whoRef.current
@@ -110,36 +150,46 @@ export function MusicPlayer({
       paused,
       play: (paths, index, from, shuffle = false) => {
         if (paths.length === 0) return
+        handChanged.current = !remote.current
         begin(queueOf(paths, index, from, shuffle))
       },
       resume: (listening) => {
         const { queue: resumed, position } = fromListening(listening)
-        if (resumed.songs.length > 0) begin(resumed, position)
+        if (resumed.songs.length === 0) return
+        handChanged.current = !remote.current
+        begin(resumed, position)
       },
       playNext: (paths) => setQueue((q) => (q ? queuePlayNext(q, paths) : q)),
       addToQueue: (paths) => setQueue((q) => (q ? queueAdd(q, paths) : q)),
       togglePause: () => {
         if (!queue) return
         controls.current?.togglePause()
+        toLinked(paused ? 'play' : 'pause')
       },
-      next: () =>
+      next: () => {
+        handChanged.current = !remote.current
         setQueue((q) => {
           if (!q) return q
           const moved = nextOf(q)
           if (moved) startAt.current = 0
           return moved ?? q
-        }),
+        })
+      },
       previous: () => {
         if (!queue) return
         const { queue: back, restart } = previousOf(queue, clockRef.current.position)
-        if (restart) controls.current?.seek(0)
-        else {
+        if (restart) {
+          controls.current?.seek(0)
+          toLinked('seek', 0)
+        } else {
+          handChanged.current = !remote.current
           startAt.current = 0
           setQueue(back)
         }
       },
       seek: (seconds) => {
         controls.current?.seek(seconds)
+        toLinked('seek', seconds)
         // Others see the jump at once, not at the next report.
         setTimeout(tell, 600)
       },
@@ -150,8 +200,18 @@ export function MusicPlayer({
       expanded,
       setExpanded,
       stop: () => {
+        // Put away here: the devices in sync play on, on their own.
+        toLinked('unlink')
+        setLinked([])
+        leader.current = null
         setQueue(null)
         setExpanded(false)
+      },
+      linked,
+      unlink: () => {
+        toLinked('unlink')
+        setLinked([])
+        leader.current = null
       },
       others,
       hostOffset,
@@ -161,6 +221,8 @@ export function MusicPlayer({
           position: livePosition(session, hostOffset, Date.now()),
         })
         if (there.songs.length === 0) return
+        setLinked([])
+        leader.current = null
         begin(there, position)
         void api.musicCommand(session.device, 'stop').catch(() => {})
       },
@@ -169,7 +231,14 @@ export function MusicPlayer({
           ...session.report.listening,
           position: livePosition(session, hostOffset, Date.now()),
         })
-        if (there.songs.length > 0) begin(there, position)
+        if (there.songs.length === 0) return
+        begin(there, position)
+        // In sync from now on: this one keeps to that one, and tells it so.
+        leader.current = session.device
+        leaderMissing.current = 0
+        corrected.current = Date.now()
+        setLinked([session.device])
+        void api.musicCommand(session.device, 'link').catch(() => {})
       },
       steer: (session, action, position = 0) => {
         // Shown at once; the device's own next report puts it right.
@@ -193,14 +262,23 @@ export function MusicPlayer({
         void api.musicCommand(session.device, action, position).catch(() => void tell())
       },
     }),
-    [queue, paused, expanded, begin, others, hostOffset, tell],
+    [queue, paused, expanded, begin, others, hostOffset, tell, linked, toLinked],
   )
+
+  // Where it is this instant: the player tells its clock a few times a
+  // second (a phone four), so the last one told is up to that much behind.
+  const positionNow = (): number => {
+    const { position, duration } = clockRef.current
+    if (paused || clockMoved.current === 0) return position
+    const since = Math.min(1, (Date.now() - clockMoved.current) / 1000)
+    return duration > 0 ? Math.min(duration, position + since) : position + since
+  }
 
   // What this device plays, as told to the others.
   report.current = () =>
     queue
       ? {
-          listening: toListening(queue, clockRef.current.position, Math.floor(Date.now() / 1000)),
+          listening: toListening(queue, positionNow(), Math.floor(Date.now() / 1000)),
           playing: !paused,
           duration: clockRef.current.duration,
         }
@@ -209,31 +287,119 @@ export function MusicPlayer({
   // What the others ask of this one.
   const latest = useRef(api_)
   latest.current = api_
-  obey.current = (commands) => {
-    for (const command of commands) {
-      const music = latest.current
-      switch (command.action) {
-        case 'play':
+  const obeyOne = (command: MusicCommand): void => {
+    const music = latest.current
+    switch (command.action) {
+      case 'link':
+        setLinked((l) => (l.includes(command.fromDevice) ? l : [...l, command.fromDevice]))
+        break
+      case 'unlink':
+        setLinked((l) => l.filter((d) => d !== command.fromDevice))
+        if (leader.current === command.fromDevice) leader.current = null
+        break
+      case 'load': {
+        const there = command.listening
+        if (!there) break
+        const song = there.queue[there.index]
+        if (song && song === music.current) {
+          if (Math.abs(there.position - positionNow()) > IN_STEP_SECONDS) music.seek(there.position)
           if (music.paused) music.togglePause()
-          break
-        case 'pause':
-          if (!music.paused) music.togglePause()
-          break
-        case 'next':
-          music.next()
-          break
-        case 'previous':
-          music.previous()
-          break
-        case 'seek':
-          music.seek(command.position)
-          break
-        case 'stop':
-          music.stop()
-          break
+        } else music.resume(there)
+        break
       }
+      case 'play':
+        if (music.paused) music.togglePause()
+        break
+      case 'pause':
+        if (!music.paused) music.togglePause()
+        break
+      case 'next':
+        music.next()
+        break
+      case 'previous':
+        music.previous()
+        break
+      case 'seek':
+        music.seek(command.position)
+        break
+      case 'stop':
+        music.stop()
+        break
     }
   }
+  obey.current = (commands) => {
+    // Done because another device asked: never sent back to it.
+    remote.current = true
+    try {
+      for (const command of commands) obeyOne(command)
+    } finally {
+      remote.current = false
+    }
+  }
+
+  // Keeping to the device this one joined: the same song, play or pause as
+  // it does, and the same second, within a quarter of one.
+  const othersRef = useRef(others)
+  othersRef.current = others
+  const offsetRef = useRef(hostOffset)
+  offsetRef.current = hostOffset
+  const position = useRef(positionNow)
+  position.current = positionNow
+  const following = linked.length > 0 && queue !== null
+  useEffect(() => {
+    if (!following) return undefined
+    const follow = (): void => {
+      const id = leader.current
+      if (!id) return
+      const theirs = othersRef.current.find((s) => s.device === id)
+      if (!theirs) {
+        // Gone without a word (closed, off the network): on its own now.
+        leaderMissing.current += 1
+        if (leaderMissing.current >= 4) {
+          leader.current = null
+          setLinked((l) => l.filter((d) => d !== id))
+        }
+        return
+      }
+      leaderMissing.current = 0
+      // Said before this one last changed, or too soon after: a seek takes a
+      // moment to land, and the other a moment to say what it did.
+      const said = theirs.at - offsetRef.current
+      if (said < corrected.current || Date.now() - corrected.current < SETTLE_MS) return
+      const music = latest.current
+      const at = livePosition(theirs, offsetRef.current, Date.now())
+      remote.current = true
+      try {
+        const step = keepInStep({
+          theirSong: remoteSong(theirs),
+          mySong: music.current,
+          theirs: at,
+          mine: position.current(),
+          lead: lead.current,
+          landed: checkLanding.current,
+        })
+        if (step.do === 'load') {
+          music.resume({ ...theirs.report.listening, position: at })
+          corrected.current = Date.now()
+          return
+        }
+        if (theirs.report.playing === music.paused) music.togglePause()
+        // Paused there, the second is not checked: it is where it was.
+        if (!theirs.report.playing) return
+        checkLanding.current = false
+        lead.current = step.lead
+        if (step.do === 'seek') {
+          controls.current?.seek(step.to)
+          corrected.current = Date.now()
+          checkLanding.current = true
+        }
+      } finally {
+        remote.current = false
+      }
+    }
+    const timer = setInterval(follow, FOLLOW_EVERY_MS)
+    return () => clearInterval(timer)
+  }, [following])
 
   // Another profile, another drive, or none: the last one's devices go, and
   // the new one's are asked for.
@@ -273,6 +439,14 @@ export function MusicPlayer({
     // `queue` itself changes as songs are added; the song and its place are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playingSong, at, paused, tell, exchange])
+  // A song chosen by a hand here goes to the devices in sync, from its start.
+  useEffect(() => {
+    if (!handChanged.current || !queue) return
+    handChanged.current = false
+    toLinked('load', startAt.current, toListening(queue, startAt.current, Math.floor(Date.now() / 1000)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playingSong, at, toLinked])
+
   // Paused, it still says it is there, less often: the host forgets a device
   // silent for 20 s, and a paused one forgotten could not be asked to stop
   // when its music moved to another device.
@@ -360,7 +534,7 @@ export function MusicPlayer({
             turn={queue.at}
             startAt={startAt}
             controls={controls}
-            onClock={setClock}
+            onClock={clockChanged}
             onPaused={setPaused}
             onFailed={() =>
               setQueue((q) => {
@@ -398,6 +572,11 @@ export function MusicPlayer({
     </MusicPlayerContext.Provider>
   )
 }
+
+/** How often a device in sync checks it keeps to the other. */
+const FOLLOW_EVERY_MS = 1_500
+/** After a correction, how long before the next: a seek takes a moment to land. */
+const SETTLE_MS = 3_000
 
 /** How often a device playing tells the others where it is. */
 const REPORT_EVERY_MS = 5_000

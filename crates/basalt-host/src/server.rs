@@ -4911,15 +4911,15 @@ where
             let profile = session.profile.clone().map(|(id, _)| id).ok_or_else(|| {
                 HostError::Denied("music is shared between a profile's devices only".into())
             })?;
-            let from = session
+            let (from, from_device) = session
                 .device
                 .as_ref()
-                .map(|d| d.name.clone())
+                .map(|d| (d.name.clone(), d.device_id.clone()))
                 .unwrap_or_default();
             host.music_live
                 .lock()
                 .expect("music lock")
-                .command(&profile, &from, req, unix_ms())
+                .command(&profile, &from, &from_device, req, unix_ms())
                 .map_err(|why| HostError::NotFound(why.into()))?;
             let _ = host.music_changes.send(profile);
             write_ok(stream, &[]).await?;

@@ -4,6 +4,7 @@ import {
   ChevronDown,
   Heart,
   Laptop,
+  Link2,
   ListMusic,
   Pause,
   Play,
@@ -22,7 +23,7 @@ import {
 
 import { useBack } from '@/mobile/useBack'
 import { type Song, formatDuration } from '@/lib/music'
-import { useMusicClock, useMusicPlayer } from '@/lib/musicPlayer'
+import { type MusicPlayerApi, useMusicClock, useMusicPlayer } from '@/lib/musicPlayer'
 import type { NowSession } from '@/lib/api'
 import { livePosition, songOf as remoteSong } from '@/lib/musicNow'
 import { upNext } from '@/lib/queue'
@@ -46,15 +47,55 @@ export interface NowPlayingProps {
  * on a computer and a TV along the bottom of the window. Tap it for the full
  * player.
  */
-export function MusicBar({ base, layout, songOf, liked, onLike }: NowPlayingProps): React.JSX.Element | null {
+export function MusicBar(props: NowPlayingProps): React.JSX.Element {
+  const player = useMusicPlayer()
+  // What was last shown, so the bar going away still shows it as it goes.
+  const lastSong = useRef<string | null>(null)
+  const lastThere = useRef<NowSession | null>(null)
+  const here = player?.current ?? null
+  // Nothing playing here: what plays on the profile's other devices, if anything.
+  const there = here ? null : (player?.others[0] ?? null)
+  if (here) lastSong.current = here
+  if (there) lastThere.current = there
+  const kind = here ? 'here' : there ? 'there' : null
+  return (
+    <AnimatePresence initial={false}>
+      {kind && (
+        <motion.div
+          key={kind}
+          // Up into place as music starts, and back down as it closes.
+          initial={{ height: 0, opacity: 0, y: 28, overflow: 'hidden' }}
+          animate={{ height: 'auto', opacity: 1, y: 0, transitionEnd: { overflow: 'visible' } }}
+          exit={{ height: 0, opacity: 0, y: 28, overflow: 'hidden' }}
+          transition={{ duration: 0.34, ease: [0.32, 0.72, 0, 1] }}
+          className="relative z-[1] shrink-0"
+        >
+          {kind === 'here' ? (
+            <BarHere {...props} path={here ?? lastSong.current} />
+          ) : (
+            lastThere.current && (
+              <RemoteBar base={props.base} layout={props.layout} songOf={props.songOf} session={there ?? lastThere.current} />
+            )
+          )}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}
+
+/** The bar with music playing on this device. */
+function BarHere({
+  base,
+  layout,
+  songOf,
+  liked,
+  onLike,
+  path,
+}: NowPlayingProps & { path: string | null }): React.JSX.Element | null {
   const player = useMusicPlayer()
   const clock = useMusicClock()
-  // Nothing playing here: what plays on the profile's other devices, if anything.
-  if (!player?.current) {
-    const there = player?.others[0]
-    return there ? <RemoteBar base={base} layout={layout} songOf={songOf} session={there} /> : null
-  }
-  const song = songOf(player.current)
+  if (!player || !path) return null
+  const song = songOf(path)
   const isLiked = liked.has(song.path)
   const fraction = clock.duration > 0 ? Math.min(1, clock.position / clock.duration) : 0
 
@@ -70,7 +111,14 @@ export function MusicBar({ base, layout, songOf, liked, onLike }: NowPlayingProp
           <Cover base={base} path={song.cover ? song.path : null} mtime={song.mtime} name={song.album} label={false} className="w-10 shrink-0 rounded-md" />
           <div className="min-w-0 flex-1">
             <div className="truncate text-[13px] font-semibold text-text">{song.title}</div>
-            <div className="truncate text-[11.5px] text-textFaint">{song.artist}</div>
+            {player.linked.length > 0 ? (
+              <div className="flex items-center gap-1 truncate text-[11.5px] text-basalt">
+                <Link2 size={11} className="shrink-0" />
+                <span className="truncate">In sync with {syncedWith(player)}</span>
+              </div>
+            ) : (
+              <div className="truncate text-[11.5px] text-textFaint">{song.artist}</div>
+            )}
           </div>
           <IconButton label={isLiked ? 'Unlike' : 'Like'} onClick={() => onLike(song, !isLiked)}>
             <Heart size={20} className={cn(isLiked && 'fill-current text-text')} />
@@ -124,6 +172,18 @@ export function MusicBar({ base, layout, songOf, liked, onLike }: NowPlayingProp
         <Scrubber compact />
       </div>
       <div className="flex items-center justify-end gap-1 text-textDim">
+        {player.linked.length > 0 && (
+          <button
+            type="button"
+            onClick={player.unlink}
+            // Short, as the bar's corner is narrow; the whole of it in the tip.
+            title={`In sync with ${syncedWith(player)}. Click to stop syncing.`}
+            className="mr-1 flex shrink-0 items-center gap-1.5 rounded-full bg-basalt/[0.18] px-2.5 py-1 text-[11.5px] text-text transition-colors hover:bg-basalt/[0.28]"
+          >
+            <Link2 size={12} />
+            In sync
+          </button>
+        )}
         <IconButton label={isLiked ? 'Unlike' : 'Like'} onClick={() => onLike(song, !isLiked)}>
           <Heart size={17} className={cn(isLiked && 'fill-current text-text')} />
         </IconButton>
@@ -138,6 +198,12 @@ export function MusicBar({ base, layout, songOf, liked, onLike }: NowPlayingProp
       </div>
     </div>
   )
+}
+
+/** The device, or devices, this one plays in sync with, by name. */
+function syncedWith(player: MusicPlayerApi): string {
+  const names = player.linked.map((id) => player.others.find((s) => s.device === id)?.name ?? 'your other device')
+  return names.length > 1 ? `${names.length} devices` : (names[0] ?? '')
 }
 
 /** The full player: the cover, the song, its place in it, and the queue. */
@@ -248,8 +314,19 @@ function FullPlayer({
         <div className="min-w-0 text-center">
           <div className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-textFaint">Playing from</div>
           <div className="truncate text-[13px] font-semibold text-text">{player.queue?.from}</div>
-          {/* Played on both: said, with a way to stop it there. */}
-          {player.others[0] && (
+          {/* In sync with another: said, with a way to play on alone. Played
+              on both but not in sync: said, with a way to stop it there. */}
+          {player.linked.length > 0 ? (
+            <button
+              type="button"
+              onClick={player.unlink}
+              className="mx-auto mt-1 flex max-w-full items-center gap-1.5 rounded-full bg-basalt/[0.18] px-2.5 py-0.5 text-[11px] text-text transition-colors hover:bg-basalt/[0.28]"
+            >
+              <Link2 size={11} />
+              <span className="truncate">In sync with {syncedWith(player)}</span>
+              <span className="text-textDim">· stop syncing</span>
+            </button>
+          ) : player.others[0] && (
             <button
               type="button"
               onClick={() => player.steer(player.others[0]!, 'stop')}
