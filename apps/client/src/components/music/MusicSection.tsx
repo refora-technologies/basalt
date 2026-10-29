@@ -164,7 +164,10 @@ export function MusicSection(props: MusicSectionProps): React.JSX.Element {
   }
 
   return (
-    <div className="flex h-full flex-col" data-remote-scope="">
+    // Part of the page for the remote, as the other sections are: as a scope
+    // of its own it held the focus in Music, away from the side rail, the
+    // section switch above and the music bar below.
+    <div className="flex h-full flex-col">
       {pages.length === 0 && !query.trim() && (
         <SectionTabs
           items={VIEWS}

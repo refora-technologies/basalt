@@ -11,6 +11,8 @@
 use serde::{Deserialize, Serialize};
 
 /// The song playing, as the page describes it.
+// On a phone the page tells Android itself; these are the computer's.
+#[cfg_attr(mobile, allow(dead_code))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NowPlaying {
@@ -31,6 +33,7 @@ pub struct NowPlaying {
 }
 
 /// A button pressed in the system's controls.
+#[cfg_attr(mobile, allow(dead_code))]
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Pressed {
     /// `play`, `pause`, `toggle`, `next`, `previous`, `stop` or `seek`.

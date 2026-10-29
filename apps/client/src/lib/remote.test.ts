@@ -50,6 +50,22 @@ describe('nearest', () => {
     expect(nearest(here, [rail], 'left')).toBe('rail')
   })
 
+  // The speed test's button sat under the right end of the wide Change drive,
+  // and down went past it to the next row every time.
+  it('takes a button under the end of a wide one as straight ahead', () => {
+    const wide = box(0, 0, 520, 40)
+    const underEnd = { item: 'test', box: box(450, 70, 70, 30) }
+    const twoRowsDown = { item: 'next', box: box(0, 160, 520, 40) }
+    expect(nearest(wide, [twoRowsDown, underEnd], 'down')).toBe('test')
+    expect(nearest(underEnd.box, [twoRowsDown, { item: 'wide', box: wide }], 'up')).toBe('wide')
+  })
+
+  it('between two in line, takes the one nearer the middle', () => {
+    const left = { item: 'left', box: box(0, 60, 40, 40) }
+    const middle = { item: 'middle', box: box(40, 60, 40, 40) }
+    expect(nearest(here, [left, middle], 'down')).toBe('middle')
+  })
+
   it('finds nothing when nothing is that way', () => {
     expect(nearest(here, [{ item: 'above', box: box(0, -100, 100, 40) }], 'down')).toBeNull()
   })

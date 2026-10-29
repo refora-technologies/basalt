@@ -18,6 +18,7 @@ export function SpeedTest({ padded }: { padded?: boolean }): React.JSX.Element {
   const [failed, setFailed] = useState<string | null>(null)
 
   const run = async (): Promise<void> => {
+    if (testing) return
     setTesting(true)
     setFailed(null)
     try {
@@ -42,8 +43,10 @@ export function SpeedTest({ padded }: { padded?: boolean }): React.JSX.Element {
         </div>
         <button
           onClick={() => void run()}
-          disabled={testing}
-          className="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-line px-3.5 text-[12.5px] text-textDim transition-colors hover:border-lineBright hover:text-text disabled:opacity-60"
+          // Busy, not disabled: a disabled button loses the focus, and on a
+          // television the remote's ring jumped to the top of the page.
+          aria-disabled={testing}
+          className="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-line px-3.5 text-[12.5px] text-textDim transition-colors hover:border-lineBright hover:text-text aria-disabled:opacity-60"
         >
           {testing ? <Loader2 size={13} className="animate-spin" /> : <Gauge size={13} />}
           {testing ? 'Testing…' : result ? 'Test again' : 'Test'}

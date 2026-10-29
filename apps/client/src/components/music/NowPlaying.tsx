@@ -85,7 +85,9 @@ export function MusicBar({ base, layout, songOf, liked, onLike }: NowPlayingProp
         'relative z-[1] grid shrink-0 grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)] items-center border-t border-line bg-[#0d0d0f] px-4',
         layout === 'tv' ? 'h-24' : 'h-[72px]',
       )}
-      data-remote-scope=""
+      // Not a scope of its own for the remote: the bar is part of the page,
+      // and as one it held the remote's focus, so nothing above it could be
+      // reached while music played.
     >
       <button onClick={() => player.setExpanded(true)} className="flex min-w-0 items-center gap-3 text-left">
         <Cover base={base} path={song.cover ? song.path : null} mtime={song.mtime} name={song.album} label={false} className={cn('shrink-0 rounded-md', layout === 'tv' ? 'w-16' : 'w-12')} />
@@ -230,7 +232,9 @@ function Controls({ compact }: { compact?: boolean }): React.JSX.Element | null 
         <SkipBack size={size} className="fill-current text-text" />
       </IconButton>
       <button
-        data-remote-first=""
+        // Where the remote starts in the full player; the bar's is not, or
+        // every page would open with the focus on it.
+        data-remote-first={compact ? undefined : ''}
         onClick={player.togglePause}
         aria-label={player.paused ? 'Play' : 'Pause'}
         className={cn(
