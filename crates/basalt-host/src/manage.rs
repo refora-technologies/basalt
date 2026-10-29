@@ -59,6 +59,7 @@ impl Host {
             ManageAction::SetMusicCovers { enabled } => self.set_music_covers(enabled)?,
             ManageAction::SetTmdbKey { key } => self.set_tmdb_key(&key).await?,
             ManageAction::SetFanartKey { key } => self.set_fanart_key(&key).await?,
+            ManageAction::RemoveArtistPhoto { name } => self.remove_artist_photo(&name).await?,
             ManageAction::SetConversion { enabled } => self.set_conversion_enabled(enabled)?,
             ManageAction::SetConversionAtOnce { at_once } => {
                 self.set_conversion_at_once(at_once)?

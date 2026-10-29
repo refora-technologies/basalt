@@ -368,6 +368,11 @@ pub enum ManageAction {
     SetFanartKey {
         key: String,
     },
+    /// An artist's photo taken down, as of somebody else of the same name;
+    /// none is looked for again. From 1.6.3.
+    RemoveArtistPhoto {
+        name: String,
+    },
     SetConversion {
         enabled: bool,
     },

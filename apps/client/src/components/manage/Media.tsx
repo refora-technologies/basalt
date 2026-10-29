@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { LibrarySections, ManagedHostStatus, PreviewsCheck, PreviewsWhen } from '@/lib/manage'
+import { FANART_KEY_PAGE, openExternal } from '@/lib/links'
 import { cn } from '@/lib/utils'
 import { Group, Pill, Row, Rows, Segmented, Toggle, ago, useLayout } from './parts'
 import type { Tools } from './tools'
@@ -102,6 +103,7 @@ export function LibraryGroup({ m, view, prompt, confirm }: Tools): React.JSX.Ele
             }
             end={
               <span className="flex shrink-0 gap-1.5">
+                {!library.hasFanartKey && <Pill onClick={() => void openExternal(FANART_KEY_PAGE)}>Get a key</Pill>}
                 {library.hasFanartKey && (
                   <Pill
                     onClick={() =>

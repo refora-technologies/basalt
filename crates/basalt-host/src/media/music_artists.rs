@@ -41,6 +41,28 @@ fn credit_path(config_dir: &Path, name: &str) -> PathBuf {
         .join(format!("artist-{}.credit", key(name)))
 }
 
+/// Marks an artist whose photo was taken down as the wrong person: never
+/// looked for again.
+fn refused_path(config_dir: &Path, name: &str) -> PathBuf {
+    config_dir
+        .join(DIR)
+        .join(format!("artist-{}.refused", key(name)))
+}
+
+/// Takes an artist's photo down, as of somebody else of the same name, and
+/// keeps it from being fetched again.
+pub fn refuse(config_dir: &Path, name: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(config_dir.join(DIR))?;
+    std::fs::write(refused_path(config_dir, name), b"")?;
+    for path in [photo_path(config_dir, name), credit_path(config_dir, name)] {
+        match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn miss_path(config_dir: &Path, name: &str) -> PathBuf {
     config_dir
         .join(DIR)
@@ -112,7 +134,9 @@ pub async fn fetch_missing(names: Vec<String>, config_dir: &Path, fanart_key: &s
         .into_iter()
         .filter(|n| worth_asking(n))
         .filter(|n| {
-            !photo_path(config_dir, n).is_file() && !recently_missed(&miss_path(config_dir, n))
+            !photo_path(config_dir, n).is_file()
+                && !refused_path(config_dir, n).is_file()
+                && !recently_missed(&miss_path(config_dir, n))
         })
         .collect();
     if wanted.is_empty() {
@@ -171,29 +195,17 @@ pub fn forget_misses(config_dir: &Path) {
 }
 
 async fn fetch_one(client: &reqwest::Client, name: &str, fanart_key: &str) -> Lookup {
-    let artist = match find_artist(client, name).await {
-        Ok(Some(artist)) => artist,
-        Ok(None) => return Lookup::NotFound,
+    match photo_by_musicbrainz(client, name, fanart_key).await {
+        Ok(Some(found)) => return found,
+        Ok(None) => {}
         Err(why) => {
             tracing::debug!("no photo for {name} this time: {why}");
             return Lookup::Failed;
         }
-    };
-    if !fanart_key.trim().is_empty() {
-        match fanart_photo(client, &artist, fanart_key.trim()).await {
-            Ok(Some(bytes)) => {
-                return Lookup::Found {
-                    bytes,
-                    credit: None,
-                };
-            }
-            Ok(None) => {}
-            // A key turned away, or fanart.tv down: Wikidata may still have one.
-            Err(why) => tracing::debug!("fanart.tv had no answer for {name}: {why}"),
-        }
     }
-    tokio::time::sleep(BETWEEN_LOOKUPS).await;
-    match commons_photo(client, &artist).await {
+    // Not on MusicBrainz, or no photo there: many artists, Sri Lanka's among
+    // them, are on Wikidata all the same.
+    match photo_by_wikidata(client, name).await {
         Ok(Some((bytes, credit))) => Lookup::Found {
             bytes,
             credit: Some(credit),
@@ -204,6 +216,39 @@ async fn fetch_one(client: &reqwest::Client, name: &str, fanart_key: &str) -> Lo
             Lookup::Failed
         }
     }
+}
+
+/// The artist found on MusicBrainz, then their photo on fanart.tv (with a
+/// key) or the one MusicBrainz links. `Ok(None)`: none that way.
+async fn photo_by_musicbrainz(
+    client: &reqwest::Client,
+    name: &str,
+    fanart_key: &str,
+) -> Result<Option<Lookup>, String> {
+    let Some(artist) = find_artist(client, name).await? else {
+        return Ok(None);
+    };
+    if !fanart_key.trim().is_empty() {
+        match fanart_photo(client, &artist, fanart_key.trim()).await {
+            // Said where it is from, as every photo is.
+            Ok(Some(bytes)) => {
+                return Ok(Some(Lookup::Found {
+                    bytes,
+                    credit: Some("Photo: fanart.tv".into()),
+                }));
+            }
+            Ok(None) => {}
+            // A key turned away, or fanart.tv down: Wikidata may still have one.
+            Err(why) => tracing::debug!("fanart.tv had no answer for {name}: {why}"),
+        }
+    }
+    tokio::time::sleep(BETWEEN_LOOKUPS).await;
+    Ok(commons_photo(client, &artist)
+        .await?
+        .map(|(bytes, credit)| Lookup::Found {
+            bytes,
+            credit: Some(credit),
+        }))
 }
 
 #[derive(Deserialize)]
@@ -257,6 +302,9 @@ fn same_name(a: &str, b: &str) -> bool {
 struct Fanart {
     #[serde(default)]
     artistthumb: Vec<FanartImage>,
+    /// Wide pictures of the artist: the middle of one stands in for a portrait.
+    #[serde(default)]
+    artistbackground: Vec<FanartImage>,
 }
 
 #[derive(Deserialize)]
@@ -326,11 +374,14 @@ async fn fanart_photo(
         FanartAnswer::Unknown => return Ok(None),
         FanartAnswer::Refused => return Err("the key was turned away".into()),
     };
-    // The best liked first.
-    entry
-        .artistthumb
-        .sort_by_key(|i| std::cmp::Reverse(i.likes()));
-    let Some(best) = entry.artistthumb.first() else {
+    // A portrait, the best liked; else the best liked wide picture.
+    let pictures = if entry.artistthumb.is_empty() {
+        &mut entry.artistbackground
+    } else {
+        &mut entry.artistthumb
+    };
+    pictures.sort_by_key(|i| std::cmp::Reverse(i.likes()));
+    let Some(best) = pictures.first() else {
         return Ok(None);
     };
     picture(client, &best.url).await.map(Some)
@@ -402,7 +453,16 @@ async fn commons_photo(
         });
     }
     let Some(file) = file else { return Ok(None) };
-    let Some(info) = commons_info(client, &file).await? else {
+    commons_file(client, &file).await
+}
+
+/// A Commons file at the photo's size, with its credit; None when its
+/// licence is not one it can be shown under.
+async fn commons_file(
+    client: &reqwest::Client,
+    file: &str,
+) -> Result<Option<(Vec<u8>, String)>, String> {
+    let Some(info) = commons_info(client, file).await? else {
         return Ok(None);
     };
     let Some(credit) = credit_for(&info) else {
@@ -410,6 +470,112 @@ async fn commons_photo(
     };
     let bytes = picture(client, &info.thumb).await?;
     Ok(Some((bytes, credit)))
+}
+
+/// What Wikidata says someone does, or what something is, that makes them
+/// a musician or a band: singer, playback singer, vocalist, musician,
+/// singer-songwriter, composer, music director, rapper, DJ, record producer,
+/// instrumentalists; musical group, band, duo.
+/// Between questions to Wikidata and Commons.
+const WIKIMEDIA_PAUSE: std::time::Duration = std::time::Duration::from_millis(400);
+
+const MUSICAL: &[&str] = &[
+    "Q177220", "Q2405480", "Q2643890", "Q639669", "Q488205", "Q36834", "Q1198887", "Q1415090",
+    "Q2252262", "Q130857", "Q183945", "Q855091", "Q486748", "Q1259917", "Q386854", "Q1075651",
+    "Q158852", "Q822146", "Q215380", "Q2088357", "Q9212979", "Q216337", "Q641066", "Q5741069",
+];
+
+#[derive(Deserialize)]
+struct WikidataSearch {
+    /// Always there in an answer: without it, Wikidata said no (too many
+    /// questions for now), which is not "nobody of that name".
+    search: Vec<WikidataHit>,
+}
+
+#[derive(Deserialize)]
+struct WikidataHit {
+    id: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+}
+
+/// The language a name is searched in: Sinhala or Tamil when written in
+/// that script, else English.
+fn search_language(name: &str) -> &'static str {
+    if name.chars().any(|c| ('\u{0D80}'..='\u{0DFF}').contains(&c)) {
+        "si"
+    } else if name.chars().any(|c| ('\u{0B80}'..='\u{0BFF}').contains(&c)) {
+        "ta"
+    } else {
+        "en"
+    }
+}
+
+/// The artist on Wikidata by this name exactly, as a musician or a band,
+/// then their photo. Two musicians of the same name and it is left: a
+/// photo of the wrong person is worse than none.
+async fn photo_by_wikidata(
+    client: &reqwest::Client,
+    name: &str,
+) -> Result<Option<(Vec<u8>, String)>, String> {
+    let language = search_language(name);
+    let url = reqwest::Url::parse_with_params(
+        "https://www.wikidata.org/w/api.php",
+        &[
+            ("action", "wbsearchentities"),
+            ("format", "json"),
+            ("type", "item"),
+            ("limit", "7"),
+            ("language", language),
+            ("uselang", language),
+            ("search", name),
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    let found: WikidataSearch = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut musicians = Vec::new();
+    for hit in found
+        .search
+        .into_iter()
+        .filter(|h| same_name(&h.label, name) || h.aliases.iter().any(|a| same_name(a, name)))
+    {
+        // Wikidata asks to be asked one thing at a time, unhurried.
+        tokio::time::sleep(WIKIMEDIA_PAUSE).await;
+        let claims = entity_claims(client, &hit.id).await?;
+        let is = |property: &str| {
+            claims.get(property).is_some_and(|all| {
+                all.iter().any(|c| {
+                    c.mainsnak
+                        .datavalue
+                        .as_ref()
+                        .and_then(|v| v.value["id"].as_str())
+                        .is_some_and(|id| MUSICAL.contains(&id))
+                })
+            })
+        };
+        if is("P106") || is("P31") {
+            musicians.push(claims);
+        }
+    }
+    let [only] = musicians.as_slice() else {
+        return Ok(None);
+    };
+    let Some(file) = image_of(only) else {
+        return Ok(None);
+    };
+    tokio::time::sleep(WIKIMEDIA_PAUSE).await;
+    commons_file(client, &file).await
 }
 
 #[derive(Deserialize)]
@@ -440,8 +606,24 @@ struct DataValue {
 
 /// The Commons file Wikidata gives as the artist's image (P18).
 async fn wikidata_photo(client: &reqwest::Client, item: &str) -> Result<Option<String>, String> {
+    Ok(image_of(&entity_claims(client, item).await?))
+}
+
+type Claims = std::collections::HashMap<String, Vec<Claim>>;
+
+fn image_of(claims: &Claims) -> Option<String> {
+    claims
+        .get("P18")
+        .and_then(|all| all.first())
+        .and_then(|c| c.mainsnak.datavalue.as_ref())
+        .and_then(|v| v.value.as_str())
+        .map(str::to_string)
+}
+
+/// What Wikidata says of an item; nothing for an id that is not one.
+async fn entity_claims(client: &reqwest::Client, item: &str) -> Result<Claims, String> {
     if !item.starts_with('Q') || !item[1..].chars().all(|c| c.is_ascii_digit()) {
-        return Ok(None);
+        return Ok(Claims::new());
     }
     let entity: Entity = client
         .get(format!(
@@ -457,13 +639,10 @@ async fn wikidata_photo(client: &reqwest::Client, item: &str) -> Result<Option<S
         .map_err(|e| e.to_string())?;
     Ok(entity
         .entities
-        .values()
+        .into_values()
         .next()
-        .and_then(|e| e.claims.get("P18"))
-        .and_then(|claims| claims.first())
-        .and_then(|c| c.mainsnak.datavalue.as_ref())
-        .and_then(|v| v.value.as_str())
-        .map(str::to_string))
+        .map(|e| e.claims)
+        .unwrap_or_default())
 }
 
 /// A Commons file's picture at a size, and who made it under what licence.
@@ -498,6 +677,9 @@ async fn commons_info(client: &reqwest::Client, file: &str) -> Result<Option<Com
         .json()
         .await
         .map_err(|e| e.to_string())?;
+    if answer.get("error").is_some() {
+        return Err(format!("Commons said no: {}", answer["error"]["info"]));
+    }
     let Some(info) = answer["query"]["pages"]
         .as_object()
         .and_then(|pages| pages.values().next())
@@ -523,7 +705,7 @@ async fn commons_info(client: &reqwest::Client, file: &str) -> Result<Option<Com
     Ok(Some(CommonsInfo {
         thumb,
         licence: field("LicenseShortName"),
-        author: field("Artist"),
+        author: without_brackets(&field("Artist")),
     }))
 }
 
@@ -576,6 +758,28 @@ fn plain_text(html: &str) -> String {
     if out.chars().count() > 80 {
         let cut: String = out.chars().take(77).collect();
         format!("{}...", cut.trim_end())
+    } else {
+        out
+    }
+}
+
+/// A name without what follows it in brackets: "Mr A. Ratnaweera (in
+/// Sinhala)" is "Mr A. Ratnaweera". Whole when nothing is left outside.
+fn without_brackets(text: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0u32;
+    for c in text.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    let out = out.trim_end_matches([',', ';', ':']).trim().to_string();
+    if out.is_empty() {
+        text.trim().to_string()
     } else {
         out
     }
@@ -669,11 +873,67 @@ mod tests {
     }
 
     #[test]
+    fn a_photographer_is_named_without_the_notes_after() {
+        assert_eq!(
+            without_brackets("Mr Anuradha Ratnaweera (අනුරාධ රත්නවීර මහතා)"),
+            "Mr Anuradha Ratnaweera"
+        );
+        assert_eq!(
+            without_brackets(
+                "Mrs Leela Herath (Copyright holder Leela Herath (nee Ratnayaka) has granted ..."
+            ),
+            "Mrs Leela Herath"
+        );
+        assert_eq!(without_brackets("(Unknown)"), "(Unknown)");
+    }
+
+    #[test]
+    fn a_wikidata_refusal_is_not_an_empty_search() {
+        let refused = r#"{"error":{"code":"maxlag","info":"Waiting"}}"#;
+        assert!(serde_json::from_str::<WikidataSearch>(refused).is_err());
+        let empty = r#"{"searchinfo":{"search":"x"},"search":[],"success":1}"#;
+        assert!(
+            serde_json::from_str::<WikidataSearch>(empty)
+                .unwrap()
+                .search
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn a_linked_file_name_is_read_back() {
         assert_eq!(
             percent_decode("Daft_Punk_%282013%29.jpg"),
             "Daft Punk (2013).jpg"
         );
+    }
+
+    #[test]
+    fn a_photo_taken_down_is_not_fetched_again() {
+        let dir = std::env::temp_dir().join(format!("basalt-refuse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(DIR)).unwrap();
+        std::fs::write(photo_path(&dir, "Rowan"), b"jpeg").unwrap();
+        std::fs::write(credit_path(&dir, "Rowan"), b"Photo: someone").unwrap();
+        assert!(photo(&dir, "Rowan").is_some());
+        refuse(&dir, "rowan").unwrap();
+        assert!(photo(&dir, "Rowan").is_none(), "gone, whatever the case");
+        // Not asked about again: nothing is fetched, without any network.
+        let fetched = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(fetch_missing(vec!["Rowan".into()], &dir, ""));
+        assert_eq!(fetched, 0);
+        assert!(!miss_path(&dir, "Rowan").exists(), "not even looked up");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_name_is_searched_in_its_own_script() {
+        assert_eq!(search_language("Yohani"), "en");
+        assert_eq!(search_language("අමරදේව"), "si");
+        assert_eq!(search_language("இளையராஜா"), "ta");
     }
 
     #[test]

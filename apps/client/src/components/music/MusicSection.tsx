@@ -79,6 +79,8 @@ export interface MusicSectionProps {
   /** What was playing last, to carry on with. */
   listening: Listening | null
   onResume: () => void
+  /** Takes down an artist's photo of the wrong person. Only where this device manages the host. */
+  onWrongPhoto?: (name: string) => void
 }
 
 export function MusicSection(props: MusicSectionProps): React.JSX.Element {
@@ -654,7 +656,20 @@ function ArtistPage(
               .join(' · ')}
           </div>
           {/* The photo's licence asks for its credit: who took it, and the licence. */}
-          {artist.photo?.credit && <div className="mt-1.5 text-[10.5px] leading-snug text-textFaint">{artist.photo.credit}</div>}
+          {artist.photo && (artist.photo.credit || props.onWrongPhoto) && (
+            <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 text-[10.5px] leading-snug text-textFaint">
+              {artist.photo.credit && <span>{artist.photo.credit}</span>}
+              {props.onWrongPhoto && (
+                <button
+                  type="button"
+                  onClick={() => props.onWrongPhoto?.(artist.name)}
+                  className="underline decoration-white/20 underline-offset-2 transition-colors hover:text-textDim"
+                >
+                  Wrong person?
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
       <Actions

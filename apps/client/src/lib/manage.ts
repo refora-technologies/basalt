@@ -241,6 +241,7 @@ export type ManageAction =
   | { do: 'setMusicCovers'; enabled: boolean }
   | { do: 'setTmdbKey'; key: string }
   | { do: 'setFanartKey'; key: string }
+  | { do: 'removeArtistPhoto'; name: string }
   | { do: 'setConversion'; enabled: boolean }
   | { do: 'setConversionAtOnce'; atOnce: number | null }
   | { do: 'measureConversion' }

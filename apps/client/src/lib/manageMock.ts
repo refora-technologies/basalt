@@ -295,6 +295,8 @@ function apply(action: ManageAction): boolean {
     case 'setMusicCovers':
       status.library.musicCovers = action.enabled
       break
+    case 'removeArtistPhoto':
+      break
     case 'setFanartKey': {
       const key = action.key.trim()
       // The preview turns away a key that is plainly not one, as fanart.tv would.

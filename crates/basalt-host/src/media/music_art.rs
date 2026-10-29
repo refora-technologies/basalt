@@ -119,6 +119,9 @@ pub async fn fetch_missing(albums: Vec<CoverKey>, config_dir: &Path) -> usize {
 /// The client the music artwork is fetched with: a User-Agent naming
 /// Basalt and where to find who makes it, as MusicBrainz and Wikimedia ask.
 pub(crate) fn web_client() -> Option<reqwest::Client> {
+    // Secure connections need their maths chosen once per process; the host's
+    // own server does it too, but artwork may be fetched before it does.
+    basalt_net::tls::init_crypto();
     reqwest::Client::builder()
         .timeout(TIMEOUT)
         .user_agent(concat!(

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import type { AppModel } from '@/App'
 import { android } from '@/lib/android'
-import type { Listening } from '@/lib/api'
+import { api, type Listening } from '@/lib/api'
 import { type Song, isSong, songFromFile } from '@/lib/music'
 import { useMusicClock, useMusicPlayer } from '@/lib/musicPlayer'
 import { next as nextOf } from '@/lib/queue'
@@ -123,6 +123,23 @@ export function useMusicProps(
     if (musicMine.listening) player?.resume(musicMine.listening)
   }, [musicMine.listening, player])
 
+  // A photo of somebody else of the same name: taken down by whoever manages
+  // the host, for every device, and not looked for again.
+  const canManage = model.vault.status?.canManage === true
+  const refresh = music.refresh
+  const onWrongPhoto = useCallback(
+    (name: string) =>
+      void confirm({
+        title: `Remove this photo of ${name}?`,
+        message: 'For when it is somebody else of the same name. Their album cover shows instead, on every device, and no photo is looked for again.',
+        confirmLabel: 'Remove photo',
+        danger: true,
+      }).then((yes) => {
+        if (yes) void api.manage({ do: 'removeArtistPhoto', name }).then(refresh, () => {})
+      }),
+    [confirm, refresh],
+  )
+
   return {
     music,
     base: mediaBase,
@@ -138,6 +155,7 @@ export function useMusicProps(
     onRemoveFromPlaylist,
     listening: musicMine.listening,
     onResume,
+    onWrongPhoto: canManage ? onWrongPhoto : undefined,
     songOf,
   }
 }

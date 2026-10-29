@@ -22,6 +22,9 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         {
+          "url": "https://fanart.tv/get-an-api-key/"
+        },
+        {
           "url": "https://basalt.reforatech.com"
         },
         {

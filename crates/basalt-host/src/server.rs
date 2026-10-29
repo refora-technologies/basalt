@@ -1739,6 +1739,14 @@ impl Host {
             .await;
     }
 
+    /// Takes an artist's photo down for good: the wrong person of that name.
+    pub async fn remove_artist_photo(&self, name: &str) -> Result<()> {
+        crate::media::music_artists::refuse(self.config_dir(), name.trim())
+            .map_err(|e| HostError::BadRequest(format!("could not remove the photo: {e}")))?;
+        self.music_changed().await;
+        Ok(())
+    }
+
     /// Stores the optional fanart.tv key, once fanart.tv has taken it, and
     /// looks again for the artists without a photo. Empty removes it.
     pub async fn set_fanart_key(self: &Arc<Self>, key: &str) -> Result<()> {

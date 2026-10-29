@@ -16,12 +16,15 @@ import {
   Video,
 } from 'lucide-react'
 import type { HostStatus, PreviewsCheck, PreviewsWhen, Sections } from '@/lib/api'
-import { About } from './About'
+import { About, openExternal } from './About'
 import { ConversionPanel, conversionDetail } from './ConversionPanel'
 import { Segmented } from './ProfileAccess'
 import { Switch } from './ui/Switch'
 import { ActionRow, Group, SettingRow } from './ui/Group'
 import { cn, formatAgo } from '@/lib/utils'
+
+/** Where a fanart.tv personal key is made, free with an account. */
+const FANART_KEY_PAGE = 'https://fanart.tv/get-an-api-key/'
 
 /**
  * The settings this app has, in four panels: what the host does with the
@@ -739,7 +742,14 @@ function AlbumCovers({
             <p className="text-[11px] leading-relaxed text-textFaint">
               Artist photos already work without this. A personal key from a free fanart.tv
               account finds photos for more artists. It is checked with fanart.tv before it is
-              kept, and never shown again.
+              kept, and never shown again.{' '}
+              <button
+                type="button"
+                onClick={() => void openExternal(FANART_KEY_PAGE)}
+                className="text-textDim underline decoration-white/20 underline-offset-2 transition-colors hover:text-text"
+              >
+                Get a free key
+              </button>
             </p>
             <div className="mt-2.5 flex items-center gap-1.5">
               <input
