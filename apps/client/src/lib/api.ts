@@ -376,6 +376,15 @@ export interface MusicResponse {
   reading: boolean
   /** Absent when the revision asked for is still current. */
   tracks?: MusicTrack[] | null
+  /** The artists the host has a photo of, sent with the songs. From 1.6.3. */
+  artists?: ArtistPhoto[]
+}
+
+/** An artist the host has a photo of. Mirrors `basalt_proto::msg::ArtistPhoto`. */
+export interface ArtistPhoto {
+  name: string
+  /** Who took it and its licence, shown with it, when it asks for that. */
+  credit?: string | null
 }
 
 /** A playlist, kept on the host for a profile. Mirrors `basalt_proto::msg::Playlist`. */

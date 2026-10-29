@@ -363,6 +363,11 @@ pub enum ManageAction {
     SetTmdbKey {
         key: String,
     },
+    /// A fanart.tv key of the owner's own, for artist photos; empty removes
+    /// it. From 1.6.3.
+    SetFanartKey {
+        key: String,
+    },
     SetConversion {
         enabled: bool,
     },
@@ -438,6 +443,10 @@ impl ManageAction {
         match self {
             ManageAction::SetTmdbKey { key } if key.is_empty() => "removed the TMDb key".into(),
             ManageAction::SetTmdbKey { .. } => "set a TMDb key".into(),
+            ManageAction::SetFanartKey { key } if key.is_empty() => {
+                "removed the fanart.tv key".into()
+            }
+            ManageAction::SetFanartKey { .. } => "set a fanart.tv key".into(),
             other => format!("{other:?}"),
         }
     }
@@ -872,6 +881,20 @@ pub struct MusicResponse {
     /// Absent when `known_revision` already matched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracks: Option<Vec<MusicTrack>>,
+    /// The artists the host has a photo of, sent with the songs. From 1.6.3.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artists: Vec<ArtistPhoto>,
+}
+
+/// An artist with a photo: asked for as a thumbnail with
+/// [`ThumbnailRequest::artist`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ArtistPhoto {
+    pub name: String,
+    /// Who took it and its licence, to show with it, when it asks for that.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit: Option<String>,
 }
 
 /// One song, as its tags describe it. Every tag may be missing: a file with
@@ -1376,6 +1399,10 @@ pub struct ThumbnailRequest {
     /// format the device cannot show itself.
     #[serde(default)]
     pub size: u32,
+    /// The photo of this artist instead, from 1.6.3. `path` is one of their
+    /// songs, so a host from before shows that song's cover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
 }
 
 /// A film or a series. Episodes hang off the series.

@@ -14,7 +14,7 @@
  * still one album, not one per singer.
  */
 
-import type { MediaFile, MusicTrack } from './api'
+import type { ArtistPhoto, MediaFile, MusicTrack } from './api'
 import { stemOf, trackInfo } from './mediaInfo'
 
 export interface Song {
@@ -57,6 +57,18 @@ export interface Artist {
   albums: Album[]
   /** Every song they sing, on their albums and elsewhere. */
   songs: Song[]
+  /** Their photo, when the host has one. */
+  photo?: { credit: string | null; version: number } | null
+}
+
+/** Artists with their photos, by the name the host gave each. */
+export function withPhotos(artists: Artist[], photos: ArtistPhoto[], version: number): Artist[] {
+  if (photos.length === 0) return artists
+  const byName = new Map(photos.map((p) => [key(p.name), p]))
+  return artists.map((artist) => {
+    const photo = byName.get(artist.id)
+    return photo ? { ...artist, photo: { credit: photo.credit ?? null, version } } : artist
+  })
 }
 
 export const UNKNOWN_ARTIST = 'Unknown artist'

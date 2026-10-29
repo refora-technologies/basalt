@@ -430,6 +430,19 @@ impl Host {
     /// Anything that cannot be pictured — no mpv beside the host, a file the
     /// decoders do not read — is "not found", which the device shows as its
     /// ordinary tile.
+    /// An artist's photo, at a thumbnail's size.
+    pub async fn artist_thumbnail(&self, name: &str, size: u32) -> Result<Vec<u8>> {
+        let missing = || HostError::NotFound(format!("a photo of {name}"));
+        let (photo, _) =
+            crate::media::music_artists::photo(self.config_dir(), name).ok_or_else(missing)?;
+        let bucket = crate::media::thumbs::bucket(size);
+        let _turn = self.thumb_gate.acquire().await.map_err(|_| missing())?;
+        tokio::task::spawn_blocking(move || crate::media::thumbs::from_file(&photo, bucket))
+            .await
+            .map_err(|e| HostError::BadRequest(format!("the thumbnail panicked: {e}")))?
+            .map_err(|e| HostError::NotFound(e.to_string()))
+    }
+
     pub async fn thumbnail(&self, rel: &str, size: u32) -> Result<Vec<u8>> {
         let vault = self
             .vault()
@@ -530,12 +543,32 @@ impl Host {
     pub fn music_response(&self, known_revision: u64) -> basalt_proto::msg::MusicResponse {
         use std::sync::atomic::Ordering;
         let stored = self.music.lock().expect("music lock");
+        let sending = known_revision != stored.revision || stored.revision == 0;
         basalt_proto::msg::MusicResponse {
             revision: stored.revision,
             reading: self.music_reading.load(Ordering::SeqCst) || self.is_scanning(),
-            tracks: (known_revision != stored.revision || stored.revision == 0)
-                .then(|| stored.tracks.clone()),
+            artists: if sending {
+                self.artist_photos(&stored.tracks)
+            } else {
+                Vec::new()
+            },
+            tracks: sending.then(|| stored.tracks.clone()),
         }
+    }
+
+    /// The artists of these songs the host has a photo of.
+    fn artist_photos(
+        &self,
+        tracks: &[basalt_proto::msg::MusicTrack],
+    ) -> Vec<basalt_proto::msg::ArtistPhoto> {
+        let dir = self.config_dir();
+        artist_names(tracks)
+            .into_iter()
+            .filter_map(|name| {
+                let (_, credit) = crate::media::music_artists::photo(dir, &name)?;
+                Some(basalt_proto::msg::ArtistPhoto { name, credit })
+            })
+            .collect()
     }
 
     /// Brings the music up to date with the collections, in the background:
@@ -1609,12 +1642,22 @@ impl Host {
         let host = Arc::clone(self);
         tokio::spawn(async move {
             host.mark_music_art().await;
-            let wanted = host.config.lock().expect("config lock").music_covers;
+            let (wanted, fanart_key) = {
+                let config = host.config.lock().expect("config lock");
+                (config.music_covers, config.fanart_key.clone())
+            };
             if wanted {
                 let albums = host.albums_without_covers();
                 let dir = host.config_dir().to_path_buf();
                 if crate::media::music_art::fetch_missing(albums, &dir).await > 0 {
                     host.mark_music_art().await;
+                }
+                let names = {
+                    let stored = host.music.lock().expect("music lock");
+                    artist_names(&stored.tracks)
+                };
+                if crate::media::music_artists::fetch_missing(names, &dir, &fanart_key).await > 0 {
+                    host.music_changed().await;
                 }
             }
             host.music_art_running.store(false, Ordering::SeqCst);
@@ -1676,6 +1719,53 @@ impl Host {
         }
         self.announce(basalt_proto::msg::Change::LibraryChanged)
             .await;
+    }
+
+    /// The music's revision moves on and devices are told: something they
+    /// show of it changed, such as the artists with photos.
+    async fn music_changed(&self) {
+        let snapshot = {
+            let mut stored = self.music.lock().expect("music lock");
+            stored.revision = crate::media::next_revision(stored.revision);
+            stored.clone()
+        };
+        if let Some(root) = self.vault_path() {
+            let path = crate::media::music::stored_path(self.config_dir(), &root);
+            if let Err(e) = snapshot.save(&path) {
+                tracing::warn!("could not save the music: {e}");
+            }
+        }
+        self.announce(basalt_proto::msg::Change::LibraryChanged)
+            .await;
+    }
+
+    /// Stores the optional fanart.tv key, once fanart.tv has taken it, and
+    /// looks again for the artists without a photo. Empty removes it.
+    pub async fn set_fanart_key(self: &Arc<Self>, key: &str) -> Result<()> {
+        let key = key.trim().to_string();
+        if !key.is_empty() {
+            match crate::media::music_artists::fanart_key_works(&key).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(HostError::BadRequest(
+                        "The key was not accepted by fanart.tv. Check it there and paste it again."
+                            .into(),
+                    ));
+                }
+                Err(why) => {
+                    return Err(HostError::BadRequest(format!(
+                        "Could not reach fanart.tv to check the key: {why}"
+                    )));
+                }
+            }
+        }
+        self.config.lock().expect("config lock").fanart_key = key.clone();
+        self.persist()?;
+        if !key.is_empty() {
+            crate::media::music_artists::forget_misses(self.config_dir());
+            self.fetch_music_art();
+        }
+        Ok(())
     }
 
     /// The fetched album cover for a song, if there is one.
@@ -3104,7 +3194,7 @@ impl Host {
     /// holding `library` — which also stopped every scan from saving its index,
     /// and `registry`, which stopped paired devices from connecting at all.
     fn library_status(&self) -> crate::ui::LibraryStatus {
-        let (enabled, posters, has_key, previews, previews_when, music_covers) = {
+        let (enabled, posters, has_key, previews, previews_when, music_covers, has_fanart_key) = {
             let config = self.config.lock().expect("config lock");
             (
                 config.library_enabled,
@@ -3113,6 +3203,7 @@ impl Host {
                 config.previews,
                 config.previews_when,
                 config.music_covers,
+                !config.fanart_key.trim().is_empty(),
             )
         };
         let previews_now = self.previews_now();
@@ -3138,6 +3229,7 @@ impl Host {
             previews_now,
             previews_check,
             music_covers,
+            has_fanart_key,
             scanning,
             films: library
                 .items
@@ -4942,7 +5034,10 @@ where
 
         Op::Thumbnail => {
             let req: basalt_proto::msg::ThumbnailRequest = decode(payload)?;
-            let bytes = host.thumbnail(&req.path, req.size).await?;
+            let bytes = match &req.artist {
+                Some(name) => host.artist_thumbnail(name, req.size).await?,
+                None => host.thumbnail(&req.path, req.size).await?,
+            };
             write_ok(stream, &bytes).await?;
         }
 
@@ -4955,6 +5050,35 @@ where
         }
     }
     Ok(())
+}
+
+/// Everyone the songs are by, as the app names its artists: who each album
+/// is by, and who leads each song. Once each, whatever the case.
+fn artist_names(tracks: &[basalt_proto::msg::MusicTrack]) -> Vec<String> {
+    fn tag(t: &Option<String>) -> Option<&str> {
+        t.as_deref().map(str::trim).filter(|t| !t.is_empty())
+    }
+    use crate::media::music_artists::{lead_artist, worth_asking};
+    let mut seen = std::collections::HashSet::new();
+    let mut names = Vec::new();
+    let mut add = |name: &str| {
+        let name = lead_artist(name).to_string();
+        if worth_asking(&name) && seen.insert(name.to_lowercase()) {
+            names.push(name);
+        }
+    };
+    for track in tracks {
+        if let Some(by) = tag(&track.album_artist) {
+            add(by);
+        }
+        if let Some(artist) = tag(&track.artist) {
+            add(artist);
+        } else if let Some(key) = crate::media::music_names::cover_key(track) {
+            // No tags: who the file name or the folders say.
+            add(&key.artist);
+        }
+    }
+    names
 }
 
 /// Writes one response per change until the client hangs up.

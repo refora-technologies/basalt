@@ -67,16 +67,69 @@ export function LibraryGroup({ m, view, prompt, confirm }: Tools): React.JSX.Ele
             onChange={(enabled) => m.act({ do: 'setPosters', enabled })}
           />
         )}
-        {library.musicCovers !== undefined && (
-          <Toggle
-            title="Download album covers"
-            description={
-              library.musicCovers
-                ? 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive.'
-                : 'Off. Albums without a cover get one drawn. When on, the names of albums and who they are by are sent to MusicBrainz to find their covers.'
+        {library.musicCovers !== undefined &&
+          (library.hasFanartKey === undefined ? (
+            <Toggle
+              title="Download album covers"
+              description={
+                library.musicCovers
+                  ? 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive.'
+                  : 'Off. Albums without a cover get one drawn. When on, the names of albums and who they are by are sent to MusicBrainz to find their covers.'
+              }
+              checked={library.musicCovers}
+              onChange={(enabled) => m.act({ do: 'setMusicCovers', enabled })}
+            />
+          ) : (
+            <Toggle
+              title="Download album covers and artist photos"
+              description={
+                library.musicCovers
+                  ? 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive. Artists’ photos come from Wikimedia Commons, credited to who took them.'
+                  : 'Off. Albums without a cover get one drawn, and artists show an album’s cover. When on, the names of albums and artists are sent to MusicBrainz to find their artwork.'
+              }
+              checked={library.musicCovers}
+              onChange={(enabled) => m.act({ do: 'setMusicCovers', enabled })}
+            />
+          ))}
+        {library.musicCovers && library.hasFanartKey !== undefined && (
+          <Row
+            icon={<KeyRound size={phone ? 17 : 14} />}
+            title="fanart.tv key"
+            sub={
+              library.hasFanartKey
+                ? 'Saved. It is never shown again.'
+                : 'Optional: a personal key from a free fanart.tv account finds photos for more artists.'
             }
-            checked={library.musicCovers}
-            onChange={(enabled) => m.act({ do: 'setMusicCovers', enabled })}
+            end={
+              <span className="flex shrink-0 gap-1.5">
+                {library.hasFanartKey && (
+                  <Pill
+                    onClick={() =>
+                      void confirm({
+                        title: 'Remove the fanart.tv key?',
+                        message: 'Artist photos still come from Wikimedia Commons without it, for fewer artists.',
+                        confirmLabel: 'Remove',
+                        danger: true,
+                      }).then((ok) => ok && m.act({ do: 'setFanartKey', key: '' }))
+                    }
+                  >
+                    Remove
+                  </Pill>
+                )}
+                <Pill
+                  onClick={() =>
+                    prompt({
+                      title: 'Your fanart.tv key',
+                      value: '',
+                      confirmLabel: 'Check and save',
+                      onConfirm: (key) => void m.act({ do: 'setFanartKey', key }),
+                    })
+                  }
+                >
+                  {library.hasFanartKey ? 'Replace' : 'Add'}
+                </Pill>
+              </span>
+            }
           />
         )}
         {library.previews !== undefined && (

@@ -382,6 +382,15 @@ export function App(): React.JSX.Element {
                       onMusicCovers={(enabled) => {
                         void api.setMusicCovers(enabled).then(apply)
                       }}
+                      onFanartKey={(key) =>
+                        api
+                          .setFanartKey(key)
+                          .then((next) => {
+                            apply(next)
+                            return null
+                          })
+                          .catch((e: unknown) => reason(e))
+                      }
                     />
                     <ConversionSettings
                       status={current}

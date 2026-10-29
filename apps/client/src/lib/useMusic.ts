@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { api, type MediaFile, type MusicTrack } from './api'
+import { api, type ArtistPhoto, type MediaFile, type MusicTrack } from './api'
 import { ASK_AGAIN_AFTER, worthAskingAgain } from './retry'
-import { type Album, type Artist, type Song, albumsOf, artistsOf, isMusic, songFromFile, songOf } from './music'
+import { type Album, type Artist, type Song, albumsOf, artistsOf, isMusic, songFromFile, songOf, withPhotos } from './music'
 
 /**
  * The music on the drive, as albums, artists and songs.
@@ -30,6 +30,8 @@ export interface MusicState {
  */
 export function useMusic(host: string | null, files: MediaFile[]): MusicState {
   const [tracks, setTracks] = useState<MusicTrack[] | null>(null)
+  /** The artists with photos, and the revision they came with: a new one is a new picture. */
+  const [photos, setPhotos] = useState<{ list: ArtistPhoto[]; version: number }>({ list: [], version: 0 })
   const [reading, setReading] = useState(false)
   const [loaded, setLoaded] = useState(false)
   const [untagged, setUntagged] = useState(false)
@@ -59,7 +61,10 @@ export function useMusic(host: string | null, files: MediaFile[]): MusicState {
       revision.current = response.revision
       setReading(response.reading)
       // Nothing back means "you already have them", not "there are none".
-      if (response.tracks) setTracks(response.tracks)
+      if (response.tracks) {
+        setTracks(response.tracks)
+        setPhotos({ list: response.artists ?? [], version: response.revision })
+      }
       tries.current = 0
       setUntagged(false)
       setLoaded(true)
@@ -89,6 +94,7 @@ export function useMusic(host: string | null, files: MediaFile[]): MusicState {
     tries.current = 0
     if (again.current) clearTimeout(again.current)
     setTracks(null)
+    setPhotos({ list: [], version: 0 })
     setLoaded(false)
     setReading(false)
     setUntagged(false)
@@ -120,7 +126,7 @@ export function useMusic(host: string | null, files: MediaFile[]): MusicState {
     [untagged, tracks, files],
   )
   const albums = useMemo(() => albumsOf(songs), [songs])
-  const artists = useMemo(() => artistsOf(albums), [albums])
+  const artists = useMemo(() => withPhotos(artistsOf(albums), photos.list, photos.version), [albums, photos])
 
   return {
     songs,

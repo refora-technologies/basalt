@@ -143,6 +143,8 @@ export interface ManagedHostStatus {
     /** Album covers looked up online. Absent from hosts before 1.6.3. */
     musicCovers?: boolean
     hasKey: boolean
+    /** A fanart.tv key is saved, for artist photos. Absent from hosts before 1.6.3. */
+    hasFanartKey?: boolean
     videos: number
     music: number
     photos: number
@@ -238,6 +240,7 @@ export type ManageAction =
   | { do: 'makeMissingPreviews' }
   | { do: 'setMusicCovers'; enabled: boolean }
   | { do: 'setTmdbKey'; key: string }
+  | { do: 'setFanartKey'; key: string }
   | { do: 'setConversion'; enabled: boolean }
   | { do: 'setConversionAtOnce'; atOnce: number | null }
   | { do: 'measureConversion' }

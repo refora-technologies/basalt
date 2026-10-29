@@ -56,13 +56,16 @@ export function fileUrl(base: string, path: string): string {
  * page caches these for a week, and without it an edited photo would show
  * its old picture for that long.
  */
-export function thumbUrl(base: string, path: string, mtime: number, size = GRID_THUMB): string {
+export function thumbUrl(base: string, path: string, mtime: number, size = GRID_THUMB, artist?: string): string {
   // The browser preview, given showcase pictures: see `showcase.ts`.
   if (!base && showcase.showcaseAssets()) {
     return size > GRID_THUMB ? showcase.photoFor(path) : showcase.thumbFor(path)
   }
   const tag = hostTag ? `&h=${hostTag}` : ''
-  return base ? `${base}${encodeURIComponent(path)}?thumb=${size}&v=${mtime}${tag}` : ''
+  // An artist's photo: asked for with one of their songs, whose cover a
+  // host from before 1.6.3 gives instead.
+  const who = artist ? `&artist=${encodeURIComponent(artist)}` : ''
+  return base ? `${base}${encodeURIComponent(path)}?thumb=${size}&v=${mtime}${who}${tag}` : ''
 }
 
 /** Photos the webview can show as they are. Everything else goes through

@@ -89,6 +89,11 @@ pub struct HostConfig {
     #[serde(default)]
     pub tmdb_key: String,
 
+    /// fanart.tv key of the owner's own, for artist photos. Optional: without
+    /// it, artists' photos come from Wikidata, for fewer of them.
+    #[serde(default)]
+    pub fanart_key: String,
+
     /// Whether the host puts a new version in by itself, when nothing is
     /// being watched or copied. On unless turned off: a host nobody looks at
     /// is the one that falls behind. See [`crate::updates`].
@@ -181,6 +186,7 @@ impl HostConfig {
             previews_when: basalt_proto::msg::PreviewsWhen::Idle,
             music_covers: false,
             tmdb_key: String::new(),
+            fanart_key: String::new(),
             automatic_updates: true,
             progress_per_device: false,
             profiles: Vec::new(),

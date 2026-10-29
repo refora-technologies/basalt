@@ -435,6 +435,12 @@ async fn set_tmdb_key(state: State<'_, AppState>, key: String) -> Answer<HostSta
 }
 
 #[tauri::command]
+async fn set_fanart_key(state: State<'_, AppState>, key: String) -> Answer<HostStatus> {
+    state.host.set_fanart_key(&key).await?;
+    status(state).await
+}
+
+#[tauri::command]
 async fn open_vault_folder(state: State<'_, AppState>, app: tauri::AppHandle) -> Answer<()> {
     use tauri_plugin_opener::OpenerExt;
 
@@ -1103,6 +1109,7 @@ pub fn run() {
             set_conversion_at_once,
             measure_conversion,
             set_tmdb_key,
+            set_fanart_key,
             reset_profile_pin,
             remove_profile,
             add_profile,

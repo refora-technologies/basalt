@@ -22,6 +22,7 @@ export function Cover({
   round,
   className,
   label = true,
+  artist,
 }: {
   base: string
   /** A song whose thumbnail is the cover, or null to draw one. */
@@ -36,8 +37,10 @@ export function Cover({
   className?: string
   /** The name on a drawn cover; off where the name is right beside it. */
   label?: boolean
+  /** An artist's photo rather than the song's cover: `path` is one of their songs. */
+  artist?: string
 }): React.JSX.Element {
-  const src = path ? thumbUrl(base, path, mtime ?? 0, size) : ''
+  const src = path ? thumbUrl(base, path, mtime ?? 0, size, artist) : ''
   return (
     <div
       className={cn('relative aspect-square overflow-hidden', round ? 'rounded-full' : 'rounded-lg', className)}

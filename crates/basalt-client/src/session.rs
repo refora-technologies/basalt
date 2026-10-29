@@ -931,14 +931,21 @@ impl Session {
         .map_err(Into::into)
     }
 
-    /// A preview image of a video or photo, as JPEG bytes.
-    pub async fn thumbnail(&mut self, path: &str, size: u32) -> Result<Vec<u8>> {
+    /// A preview image of a video or photo, as JPEG bytes; or, with `artist`,
+    /// the photo of that artist (`path` one of their songs).
+    pub async fn thumbnail(
+        &mut self,
+        path: &str,
+        size: u32,
+        artist: Option<&str>,
+    ) -> Result<Vec<u8>> {
         write_request(
             &mut self.stream,
             Op::Thumbnail,
             &serde_json::to_vec(&basalt_proto::msg::ThumbnailRequest {
                 path: path.to_string(),
                 size,
+                artist: artist.map(str::to_string),
             })
             .map_err(|e| ClientError::Protocol(e.to_string()))?,
         )

@@ -73,6 +73,8 @@ export interface LibraryStatus {
   musicCovers?: boolean
   /** Whether a TMDb key is set. The key itself never leaves the host. */
   hasKey: boolean
+  /** Whether a fanart.tv key is set, the same way. Absent from hosts before 1.6.3. */
+  hasFanartKey?: boolean
   /** Files in Videos, Music and Photos. */
   videos: number
   music: number
@@ -395,6 +397,8 @@ export const api = {
     call('set_conversion_at_once', { atOnce }),
   measureConversion: (): Promise<HostStatus> => call('measure_conversion'),
   setTmdbKey: (key: string): Promise<HostStatus> => call('set_tmdb_key', { key }),
+  /** Checked with fanart.tv first: refused with why when it does not take the key. */
+  setFanartKey: (key: string): Promise<HostStatus> => call('set_fanart_key', { key }),
   resetProfilePin: (id: string): Promise<HostStatus> => call('reset_profile_pin', { id }),
   removeProfile: (id: string): Promise<HostStatus> => call('remove_profile', { id }),
   /** A profile made here: its person chooses the PIN at their first sign-in. */
@@ -493,6 +497,7 @@ const sample: {
       previewsNow: previewFlag('making') ? { name: 'Severance S02E04', done: 0, total: 0 } : null,
       musicCovers: false,
       hasKey: false,
+      hasFanartKey: false,
       scannedAt: Math.floor(Date.now() / 1000) - 3600,
       videos: 8,
       music: 24,
@@ -872,6 +877,15 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
       case 'set_tmdb_key':
         sample.status.library.hasKey = String(args?.key ?? '').trim().length > 0
         return sample.status
+      case 'set_fanart_key': {
+        const key = String(args?.key ?? '').trim()
+        // The preview turns away a key that is plainly not one, as fanart.tv would.
+        if (key !== '' && key.length < 20) {
+          throw new Error('The key was not accepted by fanart.tv. Check it there and paste it again')
+        }
+        sample.status.library.hasFanartKey = key.length > 0
+        return sample.status
+      }
       case 'build_info':
         return 'preview · not a real build'
       case 'app_version':

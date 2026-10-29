@@ -198,6 +198,8 @@ pub struct LibraryStatus {
     /// The key itself never leaves the host — the interface only needs to know
     /// whether one is set, so it can say so without ever displaying it.
     pub has_key: bool,
+    /// Whether a fanart.tv key has been supplied, the same way.
+    pub has_fanart_key: bool,
     /// Unix seconds of the last completed scan, zero if never.
     pub scanned_at: i64,
     /// Files in Videos, Music and Photos, found whether or not films are
@@ -461,6 +463,7 @@ mod tests {
                 previews_check: None,
                 music_covers: false,
                 has_key: false,
+                has_fanart_key: false,
                 scanned_at: 0,
                 videos: 0,
                 music: 0,
@@ -551,6 +554,7 @@ mod tests {
             previews_check: None,
             music_covers: false,
             has_key: true,
+            has_fanart_key: false,
             scanned_at: 4,
             videos: 5,
             music: 6,
@@ -561,6 +565,7 @@ mod tests {
             [
                 "enabled",
                 "films",
+                "hasFanartKey",
                 "hasKey",
                 "music",
                 "musicCovers",

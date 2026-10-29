@@ -499,6 +499,50 @@ function ArtistGrid(props: MusicSectionProps & { artists: Artist[]; nav: Nav }):
   )
 }
 
+/**
+ * An artist's picture: their photo when the host has one, else their newest
+ * album's cover, else one drawn from their name.
+ */
+function ArtistPicture({
+  base,
+  artist,
+  size,
+  className,
+}: {
+  base: string
+  artist: Artist
+  size?: number
+  className?: string
+}): React.JSX.Element {
+  const album = artist.albums[0]
+  const song = artist.songs[0] ?? album?.songs[0]
+  if (artist.photo && song) {
+    return (
+      <Cover
+        base={base}
+        path={song.path}
+        mtime={artist.photo.version}
+        name={artist.name}
+        artist={artist.name}
+        round
+        size={size}
+        className={className}
+      />
+    )
+  }
+  return (
+    <Cover
+      base={base}
+      path={album?.coverPath ?? null}
+      mtime={album?.songs[0]?.mtime}
+      name={artist.name}
+      round
+      size={size}
+      className={className}
+    />
+  )
+}
+
 function ArtistCard({
   base,
   artist,
@@ -506,8 +550,6 @@ function ArtistCard({
   layout,
   rowItem,
 }: MusicSectionProps & { artist: Artist; nav: Nav; rowItem?: boolean }): React.JSX.Element {
-  // Until artists have photos, their newest album stands in.
-  const album = artist.albums[0]
   return (
     <button
       onClick={() => nav.openArtist(artist.name)}
@@ -516,12 +558,9 @@ function ArtistCard({
         rowItem && (layout === 'tv' ? 'w-[150px] shrink-0' : layout === 'phone' ? 'w-[92px] shrink-0' : 'w-[130px] shrink-0'),
       )}
     >
-      <Cover
+      <ArtistPicture
         base={base}
-        path={album?.coverPath ?? null}
-        mtime={album?.songs[0]?.mtime}
-        name={artist.name}
-        round
+        artist={artist}
         className="w-full transition-transform duration-200 group-hover:scale-[1.03] group-focus-visible:scale-[1.05]"
       />
       <div className="mt-2 truncate text-[12.5px] font-medium text-text">{artist.name}</div>
@@ -598,21 +637,12 @@ function ArtistPage(
   const player = useMusicPlayer()
   const [all, setAll] = useState(false)
   const paths = artist.songs.map((s) => s.path)
-  const album = artist.albums[0]
   const wide = layout !== 'phone'
   return (
     <div>
       <PageHead onBack={onBack} />
       <div className={cn('flex gap-5', wide ? 'items-end pt-2' : 'flex-col items-center pt-1 text-center')}>
-        <Cover
-          base={props.base}
-          path={album?.coverPath ?? null}
-          mtime={album?.songs[0]?.mtime}
-          name={artist.name}
-          round
-          size={640}
-          className={cn(wide ? 'w-44 shrink-0' : 'w-[46%]')}
-        />
+        <ArtistPicture base={props.base} artist={artist} size={640} className={cn(wide ? 'w-44 shrink-0' : 'w-[46%]')} />
         <div className="min-w-0">
           {wide && <div className="font-mono text-[10px] uppercase tracking-[0.18em] text-textFaint">Artist</div>}
           <h2 className={cn('font-bold tracking-[-0.03em] text-text', wide ? 'mt-1 text-[34px]' : 'text-[24px]')}>
@@ -623,6 +653,8 @@ function ArtistPage(
               .filter(Boolean)
               .join(' · ')}
           </div>
+          {/* The photo's licence asks for its credit: who took it, and the licence. */}
+          {artist.photo?.credit && <div className="mt-1.5 text-[10.5px] leading-snug text-textFaint">{artist.photo.credit}</div>}
         </div>
       </div>
       <Actions

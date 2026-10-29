@@ -45,6 +45,7 @@ export function LibrarySettings({
   onPreviewsWhen,
   onMakeMissingPreviews,
   onMusicCovers,
+  onFanartKey,
 }: {
   status: HostStatus
   onLibrary: (enabled: boolean) => void
@@ -55,6 +56,8 @@ export function LibrarySettings({
   onPreviewsWhen: (when: PreviewsWhen) => void
   onMakeMissingPreviews: () => void
   onMusicCovers: (enabled: boolean) => void
+  /** Resolves to why it was not saved, or null when it was. */
+  onFanartKey: (key: string) => Promise<string | null>
 }): React.JSX.Element {
   const { library } = status
   return (
@@ -79,7 +82,7 @@ export function LibrarySettings({
         />
       )}
       {library.enabled && <Artwork status={status} onPosters={onPosters} onSave={onTmdbKey} />}
-      <AlbumCovers status={status} onChange={onMusicCovers} />
+      <AlbumCovers status={status} onChange={onMusicCovers} onKey={onFanartKey} />
       <TimelinePictures
         status={status}
         onChange={onPreviews}
@@ -660,31 +663,124 @@ function useMissingCheck(check: PreviewsCheck | null): { phase: 'idle' | 'lookin
   }
 }
 
-/** Album covers from the internet, for albums whose songs carry none. */
+/**
+ * Album covers and artist photos from the internet, for albums whose songs
+ * carry no cover, and for artists. With it, an optional fanart.tv key of the
+ * owner's own, checked with fanart.tv before it is kept.
+ */
 function AlbumCovers({
   status,
   onChange,
+  onKey,
 }: {
   status: HostStatus
   onChange: (enabled: boolean) => void
+  onKey: (key: string) => Promise<string | null>
 }): React.JSX.Element | null {
   const on = status.library.musicCovers
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [checking, setChecking] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
   if (on === undefined) return null
+  const hasKey = status.library.hasFanartKey === true
+  // A host from before 1.6.3 has no artist photos, and no key to add.
+  const photos = status.library.hasFanartKey !== undefined
+  const save = (key: string): void => {
+    setChecking(true)
+    setProblem(null)
+    void onKey(key).then((why) => {
+      setChecking(false)
+      if (why) setProblem(why)
+      else setOpen(false)
+    })
+  }
+  const title = photos ? 'Download album covers and artist photos' : 'Download album covers'
   return (
     <div className="px-4 py-3">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1 cursor-pointer select-none" onClick={() => onChange(!on)}>
-          <div className="text-[13px] text-text">Download album covers</div>
+          <div className="text-[13px] text-text">{title}</div>
           <p className="mt-0.5 text-[11.5px] leading-snug text-textFaint">
             {on
-              ? 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive.'
-              : 'Off. Albums without a cover get one drawn. When on, the names of albums and who they are by are sent to MusicBrainz to find their covers.'}
+              ? photos
+                ? 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive. Artists’ photos come from Wikimedia Commons, credited to who took them.'
+                : 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive.'
+              : photos
+                ? 'Off. Albums without a cover get one drawn, and artists show an album’s cover. When on, the names of albums and artists are sent to MusicBrainz to find their artwork.'
+                : 'Off. Albums without a cover get one drawn. When on, the names of albums and who they are by are sent to MusicBrainz to find their covers.'}
           </p>
         </div>
         <div className="mt-0.5 shrink-0">
-          <Switch checked={on} onChange={onChange} label="Download album covers" />
+          <Switch checked={on} onChange={onChange} label={title} />
         </div>
       </div>
+
+      {!on || !photos ? null : !open ? (
+        <button
+          onClick={() => {
+            setDraft('')
+            setProblem(null)
+            setOpen(true)
+          }}
+          className="mt-1.5 flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] text-textFaint transition-colors hover:bg-panel2 hover:text-textDim"
+        >
+          <ImageIcon size={11} />
+          {hasKey ? 'A fanart.tv key is saved' : 'Add a fanart.tv key for more artist photos…'}
+        </button>
+      ) : (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+          className="overflow-hidden"
+        >
+          <div className="mt-1 rounded-md border border-line bg-ink2 p-3">
+            <p className="text-[11px] leading-relaxed text-textFaint">
+              Artist photos already work without this. A personal key from a free fanart.tv
+              account finds photos for more artists. It is checked with fanart.tv before it is
+              kept, and never shown again.
+            </p>
+            <div className="mt-2.5 flex items-center gap-1.5">
+              <input
+                autoFocus
+                type="password"
+                value={draft}
+                disabled={checking}
+                placeholder={hasKey ? 'A key is saved. Paste a new one to replace it.' : 'fanart.tv personal API key'}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && draft.trim()) save(draft)
+                  if (e.key === 'Escape') setOpen(false)
+                }}
+                className="min-w-0 flex-1 rounded-sm border border-line bg-panel px-2 py-1.5 font-mono text-[11.5px] text-text outline-none transition-colors placeholder:text-textFaint focus:border-lineBright disabled:opacity-60"
+              />
+              <button
+                onClick={() => save(draft)}
+                disabled={checking || !draft.trim()}
+                className="rounded-sm px-2.5 py-1.5 text-[11px] text-textDim transition-colors hover:bg-panel2 hover:text-text disabled:opacity-50"
+              >
+                {checking ? 'Checking…' : 'Save'}
+              </button>
+              <button
+                onClick={() => setOpen(false)}
+                className="rounded-sm px-2 py-1.5 text-[11px] text-textFaint transition-colors hover:text-textDim"
+              >
+                Cancel
+              </button>
+            </div>
+            {problem && <p className="mt-2 text-[11px] leading-snug text-danger">{problem}</p>}
+            {hasKey && (
+              <button
+                onClick={() => save('')}
+                className="mt-2 text-[10.5px] text-textFaint transition-colors hover:text-danger"
+              >
+                Remove the key
+              </button>
+            )}
+          </div>
+        </motion.div>
+      )}
     </div>
   )
 }

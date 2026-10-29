@@ -1773,7 +1773,16 @@ impl Basalt {
     pub async fn thumbnail(&self, path: &str, size: u32) -> Result<Vec<u8>> {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
-        let result = lease.thumbnail(path, size).await;
+        let result = lease.thumbnail(path, size, None).await;
+        lease.check(result)
+    }
+
+    /// An artist's photo, at a thumbnail's size. `path` is one of their songs:
+    /// a host from before 1.6.3 gives that song's cover instead.
+    pub async fn artist_photo(&self, path: &str, artist: &str, size: u32) -> Result<Vec<u8>> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.thumbnail(path, size, Some(artist)).await;
         lease.check(result)
     }
 

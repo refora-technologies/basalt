@@ -23,7 +23,7 @@ use super::music_names::CoverKey;
 
 const DIR: &str = "music-art";
 /// MusicBrainz asks for one request a second at most; a little slower.
-const BETWEEN_LOOKUPS: Duration = Duration::from_millis(1100);
+pub(crate) const BETWEEN_LOOKUPS: Duration = Duration::from_millis(1100);
 /// How long an album not found is left before it is asked about again.
 const RETRY_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// A match MusicBrainz scores lower than this is not taken as the album.
@@ -84,20 +84,8 @@ pub async fn fetch_missing(albums: Vec<CoverKey>, config_dir: &Path) -> usize {
         tracing::warn!("no album cover folder: {e}");
         return 0;
     }
-    let client = match reqwest::Client::builder()
-        .timeout(TIMEOUT)
-        .user_agent(concat!(
-            "Basalt/",
-            env!("CARGO_PKG_VERSION"),
-            " ( https://basalt.reforatech.com )"
-        ))
-        .build()
-    {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::warn!("could not start the album cover client: {e}");
-            return 0;
-        }
+    let Some(client) = web_client() else {
+        return 0;
     };
 
     let mut added = 0;
@@ -128,7 +116,22 @@ pub async fn fetch_missing(albums: Vec<CoverKey>, config_dir: &Path) -> usize {
     added
 }
 
-fn recently_missed(path: &Path) -> bool {
+/// The client the music artwork is fetched with: a User-Agent naming
+/// Basalt and where to find who makes it, as MusicBrainz and Wikimedia ask.
+pub(crate) fn web_client() -> Option<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .user_agent(concat!(
+            "Basalt/",
+            env!("CARGO_PKG_VERSION"),
+            " ( https://basalt.reforatech.com )"
+        ))
+        .build()
+        .inspect_err(|e| tracing::warn!("could not start the music artwork client: {e}"))
+        .ok()
+}
+
+pub(crate) fn recently_missed(path: &Path) -> bool {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
@@ -325,7 +328,10 @@ struct ReleaseGroupRef {
 /// A MusicBrainz search. It answers "503" when asked faster than it allows,
 /// or when it is busy: asked again a little later, twice, before the album
 /// is left for the next time.
-async fn ask(client: &reqwest::Client, url: reqwest::Url) -> Result<reqwest::Response, String> {
+pub(crate) async fn ask(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+) -> Result<reqwest::Response, String> {
     let mut wait = Duration::from_secs(3);
     for _ in 0..2 {
         let response = client
@@ -422,7 +428,7 @@ fn lucene_query(artist: &str, album: &str) -> String {
 }
 
 /// Lucene's special characters, escaped, so a title cannot change the search.
-fn escape(text: &str) -> String {
+pub(crate) fn escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         if r#"+-&|!(){}[]^"~*?:\/"#.contains(c) {

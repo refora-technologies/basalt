@@ -226,7 +226,12 @@ async fn handle(
     // grid of tiles is a grid of plain image URLs the page loads lazily and
     // caches, instead of a round trip through the app for every one.
     if let Some(size) = thumb_size(&target) {
-        return match client.thumbnail(&path, size).await {
+        // An artist's photo: `?thumb=N&artist=Name`, with one of their songs.
+        let asked = match artist_name(&target) {
+            Some(name) => client.artist_photo(&path, &name, size).await,
+            None => client.thumbnail(&path, size).await,
+        };
+        return match asked {
             Ok(bytes) => respond_image(&mut stream, &bytes, method == "HEAD").await,
             Err(e) => {
                 tracing::debug!("no thumbnail for {path}: {e}");
@@ -501,6 +506,16 @@ fn sheet_index(target: &str) -> Option<u32> {
         .and_then(|n| n.parse().ok())
 }
 
+/// The artist in `?artist=Name`, when the thumbnail is their photo.
+fn artist_name(target: &str) -> Option<String> {
+    let (_, query) = target.split_once('?')?;
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("artist="))
+        .map(|name| percent_decode(&name.replace('+', " ")))
+        .filter(|name| !name.trim().is_empty())
+}
+
 /// The size in `?thumb=N`, when the request is for a thumbnail.
 fn thumb_size(target: &str) -> Option<u32> {
     let (_, query) = target.split_once('?')?;
@@ -643,6 +658,16 @@ fn percent_decode(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_artist_photo_is_asked_for_in_the_query() {
+        assert_eq!(
+            super::artist_name("/tok/Music%2Fa.mp3?thumb=320&artist=Glass%20Arcade&v=2").as_deref(),
+            Some("Glass Arcade")
+        );
+        assert_eq!(super::artist_name("/tok/Music%2Fa.mp3?thumb=320"), None);
+        assert_eq!(super::artist_name("/tok/a.mp3?thumb=320&artist="), None);
+    }
+
     #[test]
     fn a_timeline_sheet_is_asked_for_in_the_query() {
         assert_eq!(super::sheet_index("/tok/Films%2Fa.mkv?sheet=3"), Some(3));
