@@ -190,6 +190,8 @@ export function MusicPlayer({
   const corrected = useRef(0)
   /** Until when the host's word on the group is not taken: it has just been told of a change. */
   const membershipSettles = useRef(0)
+  /** The devices that said they left the group: not joined again after a host restart. */
+  const leftUs = useRef(new Set<string>())
   /**
    * How far ahead of the other to seek: a seek over the network takes a
    * moment to start playing again, and lands that much behind. Learnt from
@@ -274,11 +276,25 @@ export function MusicPlayer({
         const members = answer.group
           ? answer.sessions.filter((s) => s.group === answer.group).map((s) => s.device)
           : []
-        setLinked((was) => (sameMembers(was, members) ? was : members))
-        const anchor = answer.group ? (answer.anchor ?? null) : null
-        if (anchor !== leader.current) {
-          leader.current = anchor
-          if (anchor === null) setRate(1)
+        // In a group, and the host knows of none: it restarted (an update),
+        // and keeps groups only while it runs. Back in it with a member still
+        // playing, unless that one said it was leaving.
+        if (!answer.group && linkedRef.current.length > 0) {
+          const back = linkedRef.current.find(
+            (d) => !leftUs.current.has(d) && answer.sessions.some((s) => s.device === d),
+          )
+          if (back) {
+            membershipSettles.current = Date.now() + MEMBERSHIP_SETTLES_MS
+            void api.musicCommand(back, 'link').catch(() => {})
+          }
+        }
+        if (Date.now() > membershipSettles.current) {
+          setLinked((was) => (sameMembers(was, members) ? was : members))
+          const anchor = answer.group ? (answer.anchor ?? null) : null
+          if (anchor !== leader.current) {
+            leader.current = anchor
+            if (anchor === null) setRate(1)
+          }
         }
       }
       if (answer.commands.length > 0) obey.current(answer.commands)
@@ -416,6 +432,7 @@ export function MusicPlayer({
         leader.current = asked.device
         corrected.current = Date.now() + START_TOGETHER_MS + CLOCK_CHECK_MS
         membershipSettles.current = Date.now() + MEMBERSHIP_SETTLES_MS
+        leftUs.current.clear()
         setLinked([asked.device])
         setHolding(true)
         void api.musicCommand(asked.device, 'link').catch(() => {})
@@ -490,9 +507,13 @@ export function MusicPlayer({
     const music = latest.current
     switch (command.action) {
       // Who joined or left: the host keeps the group, and this answer
-      // already says who is in it now.
+      // already says who is in it now. One that left is remembered as
+      // having left, so a host restart does not put it back.
       case 'link':
+        leftUs.current.delete(command.fromDevice)
+        break
       case 'unlink':
+        leftUs.current.add(command.fromDevice)
         break
       case 'load': {
         const there = command.listening
@@ -897,6 +918,9 @@ async function hostReachable(connected: boolean): Promise<boolean> {
   }
 }
 
+/** Ready too late to start with the others: how far further on it starts instead, in seconds. */
+const CATCH_UP_MARGIN_S = 0.8
+
 /** How long after a start at a moment it checks where it got to. */
 const START_CHECK_MS = 1_200
 /** The most a player is taken to need to make sound once unpaused. */
@@ -999,31 +1023,46 @@ function Engine({
    * opened, done seeking. Ready only after `at`, it starts as far in as it
    * would be by then.
    */
+  /** Waits until the song is open and done seeking; false if it was given up on meanwhile. */
+  const ready = async (mine: number): Promise<boolean> => {
+    const until = Date.now() + 8_000
+    for (;;) {
+      if (waiting.current !== mine) return false
+      const [pos, seeking] = await Promise.all([
+        mpvBackend.getProperty('time-pos', 'double').catch(() => null),
+        mpvBackend.getProperty('seeking', 'flag').catch(() => null),
+      ])
+      if ((pos !== null && seeking === false) || Date.now() > until) return true
+      await new Promise((done) => setTimeout(done, 40))
+    }
+  }
+
   const release = async (position: number, at: number, mine: number): Promise<void> => {
     if (!inTauri()) {
       started.current(null, at)
       return
     }
-    const until = Date.now() + 8_000
-    for (;;) {
-      if (waiting.current !== mine) return
-      const [pos, seeking] = await Promise.all([
-        mpvBackend.getProperty('time-pos', 'double').catch(() => null),
-        mpvBackend.getProperty('seeking', 'flag').catch(() => null),
-      ])
-      if ((pos !== null && seeking === false) || Date.now() > until) break
-      await new Promise((done) => setTimeout(done, 40))
+    if (!(await ready(mine))) return
+    // `target` is played from at `when`: where the others are then.
+    let target = position
+    let when = at
+    // Ready too late for the moment (a slow phone, a slow network): not
+    // started late and made up after. Moved on to a point a little further,
+    // where the others will be once it is there, and started exactly then.
+    for (let tries = 1; when - startLag.current < Date.now() && tries <= 3; tries++) {
+      target = position + (Date.now() - at) / 1000 + CATCH_UP_MARGIN_S * tries
+      when = at + (target - position) * 1000
+      await seekTo(target)
+      if (!(await ready(mine))) return
     }
     // Unpaused a little before the moment, by as long as this player takes
     // to make sound.
-    const wait = at - startLag.current - Date.now()
+    const wait = when - startLag.current - Date.now()
     if (wait > 0) await new Promise((done) => setTimeout(done, wait))
     if (waiting.current !== mine) return
-    const late = Date.now() - (at - startLag.current)
-    if (late > 40) await seekTo(position + late / 1000)
     await mpv.setPaused(false)
-    // Late enough to seek, the check would learn from the seek: not checked.
-    started.current(late > 40 ? null : position, at)
+    // Still late after all that: not a measure of the player's own delay.
+    started.current(wait > -40 ? target : null, when)
   }
 
   controls.current = {

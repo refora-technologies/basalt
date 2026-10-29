@@ -53,8 +53,11 @@ export function MusicBar(props: NowPlayingProps): React.JSX.Element {
   const lastSong = useRef<string | null>(null)
   const lastThere = useRef<NowSession | null>(null)
   const here = player?.current ?? null
-  // Nothing playing here: what plays on the profile's other devices, if anything.
-  const there = here ? null : (player?.others[0] ?? null)
+  // Nothing playing here: what plays on the profile's other devices, if
+  // anything. The same device for as long as it is there: the list comes in
+  // a new order as each device reports, and the bar flipping between them
+  // sent "Play on both" to whichever came first at that moment.
+  const there = here ? null : pickOther(player?.others ?? [], lastThere.current)
   if (here) lastSong.current = here
   if (there) lastThere.current = there
   const kind = here ? 'here' : there ? 'there' : null
@@ -85,6 +88,16 @@ export function MusicBar(props: NowPlayingProps): React.JSX.Element {
       </AnimatePresence>
     </div>
   )
+}
+
+/**
+ * Which of the other devices the bar shows: the one shown already, while it
+ * is still there; else the first playing, else the first.
+ */
+export function pickOther(others: NowSession[], shown: NowSession | null): NowSession | null {
+  const same = shown && others.find((s) => s.device === shown.device)
+  if (same && (same.report.playing || !others.some((s) => s.report.playing))) return same
+  return others.find((s) => s.report.playing) ?? others[0] ?? null
 }
 
 /** The bar with music playing on this device. */
@@ -287,6 +300,10 @@ function FullPlayer({
   const isLiked = liked.has(song.path)
   const wide = layout !== 'phone'
   const hue = hueOf(song.album)
+  // Played on another device too, not in step with this one: one of them,
+  // the same one each time, rather than whichever reported last.
+  const alsoOn =
+    [...player.others].filter((s) => s.report.playing).sort((x, y) => x.device.localeCompare(y.device))[0] ?? null
 
   return (
     <motion.div
@@ -334,14 +351,14 @@ function FullPlayer({
               <span className="truncate">In sync with {syncedWith(player)}</span>
               <span className="text-textDim">· stop syncing</span>
             </button>
-          ) : player.others[0] && (
+          ) : alsoOn && (
             <button
               type="button"
-              onClick={() => player.steer(player.others[0]!, 'stop')}
+              onClick={() => player.steer(alsoOn, 'stop')}
               className="mx-auto mt-1 flex max-w-full items-center gap-1.5 rounded-full bg-white/[0.08] px-2.5 py-0.5 text-[11px] text-textDim transition-colors hover:bg-white/[0.14] hover:text-text"
             >
-              <DeviceIcon form={player.others[0].form} size={11} />
-              <span className="truncate">Also on {player.others[0].name}</span>
+              <DeviceIcon form={alsoOn.form} size={11} />
+              <span className="truncate">Also on {alsoOn.name}</span>
               <span className="text-textFaint">· stop there</span>
             </button>
           )}

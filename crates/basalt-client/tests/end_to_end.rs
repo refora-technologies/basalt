@@ -433,10 +433,15 @@ async fn a_different_host_at_the_same_address_is_refused() {
 
     // The first host is still running and may answer the search that follows
     // a wrong host, at whatever address it announces; which of the tests'
-    // hosts answers a search depends on the machine. Refused either way. The
+    // hosts answers a search depends on the machine, and on a busy one the
+    // search can give up first ("did not answer"). Refused every way. The
     // test below pins down how the refusal is named.
     assert!(
-        err.is_transient() || matches!(err, ClientError::WrongHost { .. }),
+        err.is_transient()
+            || matches!(
+                err,
+                ClientError::WrongHost { .. } | ClientError::HostNotFound
+            ),
         "connecting to the wrong host must fail, got: {err}"
     );
     assert!(!client.is_connected());

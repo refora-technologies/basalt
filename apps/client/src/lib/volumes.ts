@@ -7,6 +7,8 @@
  * the app opened was at full: a song turned down for the evening came back
  * loud, and so did the next film.
  */
+import { isAndroid } from './platform'
+
 export type VolumeOf = 'music' | 'video'
 
 /** Before anything was set: music a little lower, as it is listened to around other things. */
@@ -17,6 +19,9 @@ const MOST: Record<VolumeOf, number> = { music: 100, video: 130 }
 const key = (of: VolumeOf): string => `basalt.volume.${of}`
 
 export function rememberedVolume(of: VolumeOf): number {
+  // A phone or a TV has no volume in the app: its own buttons set it, and the
+  // player plays at full so they can reach all of it.
+  if (isAndroid()) return 100
   try {
     const kept = localStorage.getItem(key(of))
     if (kept === null) return FIRST[of]
