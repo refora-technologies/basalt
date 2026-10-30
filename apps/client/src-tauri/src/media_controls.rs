@@ -72,7 +72,9 @@ mod imp {
     use std::time::Duration;
 
     use souvlaki::{MediaControls, MediaMetadata, MediaPlayback, MediaPosition, PlatformConfig};
-    use tauri::{AppHandle, Emitter, Manager};
+    use tauri::{AppHandle, Emitter};
+    #[cfg(windows)]
+    use tauri::Manager;
 
     use super::NowPlaying;
 

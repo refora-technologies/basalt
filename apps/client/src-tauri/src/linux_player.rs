@@ -739,10 +739,54 @@ unsafe extern "C" fn on_update(_: *mut c_void) {
     redraw();
 }
 
+/// Whether the page is composited while a film plays, which depends on the
+/// WebKit the app runs on.
+///
+/// Up to WebKit 2.50, a see-through page drawn directly left stale pixels
+/// over the picture and then covered it, so the page is composited for a
+/// film. From 2.52 (Ubuntu 26.04) it is the other way round: drawn directly
+/// the picture shows, cleanly, and composited WebKit lets nothing painted
+/// under the page through, so the desktop showed where the film was.
+/// `BASALT_LINUX_COMPOSITE=never` or `always` overrides it, to find out what
+/// another WebKit needs.
+fn composite_for_films() -> bool {
+    static ANSWER: OnceLock<bool> = OnceLock::new();
+    *ANSWER.get_or_init(|| {
+        // SAFETY: plain reads of the version of the WebKit that is loaded.
+        let version = unsafe {
+            (
+                webkit2gtk::ffi::webkit_get_major_version(),
+                webkit2gtk::ffi::webkit_get_minor_version(),
+            )
+        };
+        let composite = match std::env::var("BASALT_LINUX_COMPOSITE").as_deref() {
+            Ok("never") => false,
+            Ok("always") => true,
+            _ => composites_for_films(version),
+        };
+        eprintln!(
+            "linux player: WebKit {}.{}, so the page is {} for films",
+            version.0,
+            version.1,
+            if composite {
+                "composited"
+            } else {
+                "drawn directly"
+            }
+        );
+        composite
+    })
+}
+
+/// See `composite_for_films`.
+fn composites_for_films((major, minor): (u32, u32)) -> bool {
+    (major, minor) < (2, 52)
+}
+
 fn redraw() {
     glib::idle_add_once(|| {
         let picture = PICTURE.load(Ordering::SeqCst);
-        if picture && !COMPOSITED.with(|c| c.get()) {
+        if picture && !COMPOSITED.with(|c| c.get()) && composite_for_films() {
             COMPOSITED.with(|c| c.set(true));
             PAGE.with(|page| page.borrow().as_ref().map(|page| compose(page, true)));
         } else if !picture && COMPOSITED.with(|c| c.get()) {
@@ -906,6 +950,14 @@ fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
     }
     FRAME.with(|f| {
         let Some(frame) = f.borrow().clone() else {
+            // No picture to show yet, or none can be drawn here: black under
+            // the page, as a player is, never the desktop showing through the
+            // window where the film should be.
+            let _ = cr.save();
+            cr.set_operator(gtk::cairo::Operator::DestOver);
+            cr.set_source_rgb(0.0, 0.0, 0.0);
+            let _ = cr.paint();
+            let _ = cr.restore();
             return;
         };
         let _ = cr.save();
@@ -1397,6 +1449,15 @@ pub fn release_in_page<R: Runtime>(window: &tauri::WebviewWindow<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn films_are_composited_only_on_webkit_before_2_52() {
+        assert!(composites_for_films((2, 44)));
+        assert!(composites_for_films((2, 50)));
+        assert!(!composites_for_films((2, 52)));
+        assert!(!composites_for_films((2, 54)));
+        assert!(!composites_for_films((3, 0)));
+    }
 
     #[test]
     fn older_mpv_is_told_loadfile_without_a_position() {
