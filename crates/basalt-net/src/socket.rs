@@ -205,7 +205,10 @@ mod local_name_tests {
 
     #[test]
     fn a_bare_computer_name_is_also_tried_as_dot_local() {
-        assert_eq!(with_local("LIVINGROOM").as_deref(), Some("LIVINGROOM.local"));
+        assert_eq!(
+            with_local("LIVINGROOM").as_deref(),
+            Some("LIVINGROOM.local")
+        );
         assert_eq!(
             with_local("living-room-pc:7742").as_deref(),
             Some("living-room-pc.local:7742")

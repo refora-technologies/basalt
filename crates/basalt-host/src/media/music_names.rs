@@ -391,11 +391,7 @@ mod tests {
                 "Far Coast",
                 "Where We Began (feat. Rue)",
             ),
-            (
-                "Ana Marlow - Slow Tide (Lyrics)",
-                "Ana Marlow",
-                "Slow Tide",
-            ),
+            ("Ana Marlow - Slow Tide (Lyrics)", "Ana Marlow", "Slow Tide"),
             (
                 "AC-DC - Back in Black [Official Video]",
                 "AC-DC",
