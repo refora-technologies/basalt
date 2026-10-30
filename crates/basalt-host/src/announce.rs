@@ -80,18 +80,23 @@ mod tests {
             eprintln!("no mDNS here; skipped");
             return;
         };
+        // Other hosts on the network answer too: listened to until this
+        // machine has, not only until somebody has.
+        let mine = basalt_net::discovery::local_addresses();
+        let is_mine = |ip: &std::net::IpAddr| mine.contains(ip) || ip.is_loopback();
         let mut answered = Vec::new();
         for _ in 0..5 {
-            answered = basalt_net::mdns::who_answers(std::time::Duration::from_millis(900)).await;
-            if !answered.is_empty() {
+            for ip in basalt_net::mdns::who_answers(std::time::Duration::from_millis(900)).await {
+                if !answered.contains(&ip) {
+                    answered.push(ip);
+                }
+            }
+            if answered.iter().any(is_mine) {
                 break;
             }
         }
-        let mine = basalt_net::discovery::local_addresses();
         assert!(
-            answered
-                .iter()
-                .any(|ip| mine.contains(ip) || ip.is_loopback()),
+            answered.iter().any(is_mine),
             "answered by {answered:?}, this machine is {mine:?}"
         );
     }

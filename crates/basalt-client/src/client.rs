@@ -388,7 +388,7 @@ impl Basalt {
     /// The list a person picks from. Nothing here is trusted: a reply can claim
     /// anything, and the TLS pin decides the truth a moment later.
     pub async fn discover(&self) -> Result<Vec<basalt_net::discovery::Found>> {
-        Ok(basalt_net::discovery::scan(basalt_net::discovery::SCAN_WINDOW).await?)
+        Ok(basalt_net::discovery::scan_patiently(basalt_net::discovery::SCAN_WINDOW).await?)
     }
 
     /// The same list, ready for a person to pick from.

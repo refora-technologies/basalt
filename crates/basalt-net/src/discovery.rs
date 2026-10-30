@@ -54,6 +54,12 @@ pub const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(3);
 /// How long a scan listens before giving up.
 pub const SCAN_WINDOW: Duration = Duration::from_millis(900);
 
+/// A scan that found nothing listens on, this much longer in all, so it
+/// hears a host's next announcement. Some networks pass a host's
+/// announcements but not a device's question: a computer in a virtual
+/// machine bridged over Wi-Fi, for one, and Wi-Fi that keeps devices apart.
+pub const QUIET_SCAN_WINDOW: Duration = Duration::from_millis(3_400);
+
 /// What a host says about itself.
 ///
 /// Chosen to be exactly what a person needs in order to pick one from a list,
@@ -208,6 +214,16 @@ async fn bind_responder() -> Result<UdpSocket> {
 /// network with two hosts, stopping early would show whichever answered fastest
 /// and hide the other.
 pub async fn scan(window: Duration) -> Result<Vec<Found>> {
+    scan_with(window, false).await
+}
+
+/// [`scan`], for the list a person picks from: finding nothing in `window`,
+/// it listens on to [`QUIET_SCAN_WINDOW`] for a host's next announcement.
+pub async fn scan_patiently(window: Duration) -> Result<Vec<Found>> {
+    scan_with(window, true).await
+}
+
+async fn scan_with(window: Duration, patient: bool) -> Result<Vec<Found>> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
         .await
         .map_err(NetError::Io)?;
@@ -230,9 +246,26 @@ pub async fn scan(window: Duration) -> Result<Vec<Found>> {
     let mut found: HashMap<String, Found> = HashMap::new();
     let deadline = tokio::time::Instant::now() + window;
     let mut buf = vec![0u8; MAX_DATAGRAM];
+    // Nothing yet when the window closes: on, to the next announcement.
+    let quiet_deadline = if patient {
+        tokio::time::Instant::now() + window.max(QUIET_SCAN_WINDOW)
+    } else {
+        deadline
+    };
+    let mut deadline = deadline;
+    let mut listen_socket = if patient {
+        announcement_listener().await
+    } else {
+        None
+    };
+    let mut listen_buf = vec![0u8; MAX_DATAGRAM];
 
     loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let mut remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() && found.is_empty() && deadline < quiet_deadline {
+            deadline = quiet_deadline;
+            remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        }
         if remaining.is_zero() {
             break;
         }
@@ -245,6 +278,23 @@ pub async fn scan(window: Duration) -> Result<Vec<Found>> {
                         // as the next read failing. One host not listening
                         // must not end the look for all the others.
                         Err(_) => continue,
+                    },
+                    // Announcements go to the discovery port, not to this
+                    // scan's own socket: heard there, where they arrive.
+                    heard = async {
+                        match &listen_socket {
+                            Some(listener) => listener.recv_from(&mut listen_buf).await.ok(),
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        match heard {
+                            Some((len, from)) => {
+                                let copy = listen_buf[..len].to_vec();
+                                buf[..len].copy_from_slice(&copy);
+                                return Some((len, from));
+                            }
+                            None => listen_socket = None,
+                        }
                     },
                     answered = async {
                         match &mdns {
@@ -262,8 +312,12 @@ pub async fn scan(window: Duration) -> Result<Vec<Found>> {
             }
         })
         .await;
-        let Ok(Some((len, from))) = received else {
-            break;
+        let (len, from) = match received {
+            Ok(Some(received)) => received,
+            // The window ran out: back to the top, which listens on when
+            // nothing was found and the scan is a patient one, or ends it.
+            Err(_) => continue,
+            Ok(None) => break,
         };
 
         let Some((reply_nonce, body)) = decode(&buf[..len]) else {
@@ -286,6 +340,16 @@ pub async fn scan(window: Duration) -> Result<Vec<Found>> {
     // Stable order, so a list on screen does not reshuffle between scans.
     hosts.sort_by(|a, b| a.beacon.host_name.cmp(&b.beacon.host_name));
     Ok(hosts)
+}
+
+/// A socket on the discovery port, to hear hosts' announcements; None when
+/// something else has the port. Never shared: a host on this same computer
+/// has it, and a second socket on it could be handed the questions meant for
+/// that host. The scan then hears answers to its own question, as before.
+async fn announcement_listener() -> Option<UdpSocket> {
+    UdpSocket::bind((Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT))
+        .await
+        .ok()
 }
 
 /// Scans until a host with this id appears, or the deadline passes.
