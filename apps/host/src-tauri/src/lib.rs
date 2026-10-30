@@ -999,25 +999,39 @@ pub fn run() {
                 let host = Arc::clone(&host);
                 tauri::async_runtime::spawn(async move {
                     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-                    let outcome = match basalt_host::bind(host, addr).await {
-                        Ok(bound) => {
-                            serving.store(true, Ordering::Relaxed);
-                            tracing::info!("serving on {}", bound.addr());
-                            basalt_host::serve(bound).await
+                    // The port taken (another copy still closing, or a host
+                    // in Docker on this computer): tried again until it is
+                    // free, so closing the other one is all it takes.
+                    let outcome = loop {
+                        match basalt_host::bind(Arc::clone(&host), addr).await {
+                            Ok(bound) => {
+                                *problem.lock().expect("problem lock") = None;
+                                serving.store(true, Ordering::Relaxed);
+                                tracing::info!("serving on {}", bound.addr());
+                                break basalt_host::serve(bound).await;
+                            }
+                            Err(basalt_host::HostError::Io(e))
+                                if e.kind() == std::io::ErrorKind::AddrInUse =>
+                            {
+                                let message = format!(
+                                    "Port {port} is already taken, probably by another copy of \
+                                     Basalt Host. Sharing starts here as soon as it is free."
+                                );
+                                {
+                                    let mut current = problem.lock().expect("problem lock");
+                                    if current.as_deref() != Some(message.as_str()) {
+                                        tracing::warn!("{message}");
+                                        *current = Some(message);
+                                    }
+                                }
+                                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            }
+                            Err(e) => break Err(e),
                         }
-                        Err(e) => Err(e),
                     };
 
                     serving.store(false, Ordering::Relaxed);
                     let message = match outcome {
-                        Err(basalt_host::HostError::Io(e))
-                            if e.kind() == std::io::ErrorKind::AddrInUse =>
-                        {
-                            format!(
-                                "Port {port} is already taken. Another copy of Basalt Host is \
-                                 probably already running."
-                            )
-                        }
                         Err(e) => format!("Sharing stopped: {e}"),
                         Ok(()) => "Sharing stopped.".to_string(),
                     };

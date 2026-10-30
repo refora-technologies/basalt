@@ -101,7 +101,7 @@ export function Machine({
                       ? online > 0
                         ? 'Ready. Nothing is moving right now.'
                         : 'Ready, and waiting for a device.'
-                      : 'Stopped. See what is wrong above.'}
+                      : 'Not sharing. The note above says why.'}
                   </li>
                 ) : (
                   now.slice(0, 3).map((line) => (

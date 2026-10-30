@@ -70,7 +70,10 @@ pub fn list() -> Vec<Drive> {
         if in_container() {
             container_drives(&mounts)
         } else {
-            linux_drives(&mounts, user_name().as_deref())
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|home| home.is_dir());
+            linux_drives(&mounts, user_name().as_deref(), home.as_deref())
         }
     }
     #[cfg(not(any(windows, target_os = "linux")))]
@@ -154,12 +157,19 @@ const DRIVE_FILE_SYSTEMS: &[&str] = &[
     "ntfs", "ntfs3", "fuseblk", "hfsplus", "apfs", "nfs", "nfs4", "cifs", "smb3", "9p", "drvfs",
 ];
 
-/// The drives a person would share, from the mount table's text: the
-/// system's own disk, a separate home, and whatever is mounted under
+/// The drives a person would share, from the mount table's text: their own
+/// home folder, the system's own disk, and whatever is mounted under
 /// `/media`, `/run/media` and `/mnt`, the places Linux puts a USB drive or a
-/// second disk. Each mounted volume once, the system first.
+/// second disk. Each mounted volume once, the home folder first.
+///
+/// On most Linux computers the system's disk is the only one, and the host,
+/// running as the person, may not add files anywhere on it but in their own
+/// folder: offered alone, it was the obvious choice and refused every
+/// upload. Their home folder holds their Videos, Music and Downloads and
+/// takes uploads. A host run as a service has its home elsewhere, and is not
+/// offered one.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn linux_drives(mounts: &str, user: Option<&str>) -> Vec<Drive> {
+fn linux_drives(mounts: &str, user: Option<&str>, home: Option<&Path>) -> Vec<Drive> {
     let mut seen_devices = std::collections::HashSet::new();
     let mut drives: Vec<Drive> = Vec::new();
     for line in mounts.lines() {
@@ -221,7 +231,37 @@ fn linux_drives(mounts: &str, user: Option<&str>) -> Vec<Drive> {
         Some("/home") => (1, String::new()),
         other => (2, other.unwrap_or_default().to_string()),
     });
+    if let Some(home) = home.filter(|home| is_a_persons_home(home)) {
+        // A /home of its own is everyone's folders, which the host can't add
+        // to either: this person's is offered in its place.
+        drives.retain(|d| d.path != Path::new("/home"));
+        let (free, total) = crate::space::for_path(home);
+        drives.insert(
+            0,
+            Drive {
+                path: home.to_path_buf(),
+                label: "Home".to_string(),
+                kind: "fixed",
+                free,
+                total,
+            },
+        );
+    }
     drives
+}
+
+/// A person's own folder, as `/home/maya` is, rather than a service's or
+/// root's.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn is_a_persons_home(home: &Path) -> bool {
+    let Some(text) = home.to_str() else {
+        return false;
+    };
+    let text = text.trim_end_matches('/');
+    ["/home/", "/var/home/"].iter().any(|place| {
+        text.strip_prefix(place)
+            .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+    })
 }
 
 /// Where, in the mount table's text, things are mounted that are not drives:
@@ -584,7 +624,7 @@ overlay /var/lib/docker/overlay2/x/merged overlay rw 0 0
 
     #[test]
     fn linux_drives_are_the_disks_a_person_would_share_and_nothing_else() {
-        let drives = linux_drives(MOUNTS, Some("maya"));
+        let drives = linux_drives(MOUNTS, Some("maya"), None);
         let paths: Vec<_> = drives
             .iter()
             .map(|d| d.path.to_string_lossy().into_owned())
@@ -607,6 +647,40 @@ overlay /var/lib/docker/overlay2/x/merged overlay rw 0 0
         assert_eq!(linux_name(&drives[1].path, &drives[1].label), "Home");
         assert_eq!(linux_name(&usb.path, &usb.label), "Media Drive");
         assert_eq!(linux_name(&drives[3].path, &drives[3].label), "backup");
+    }
+
+    #[test]
+    fn a_persons_home_folder_comes_first_in_place_of_everyones() {
+        let drives = linux_drives(MOUNTS, Some("maya"), Some(Path::new("/home/maya")));
+        let paths: Vec<_> = drives
+            .iter()
+            .map(|d| d.path.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "/home/maya",
+                "/",
+                "/media/maya/Media Drive",
+                "/mnt/backup",
+                "/mnt/nas"
+            ]
+        );
+        assert_eq!(linux_name(&drives[0].path, &drives[0].label), "Home");
+        assert_eq!(drives[0].kind, "fixed");
+    }
+
+    #[test]
+    fn only_the_disk_when_the_home_is_a_services() {
+        let one_disk = "/dev/sda2 / ext4 rw 0 0\n";
+        for home in ["/var/lib/basalt-host", "/root", "/", "/home", "/home/"] {
+            let drives = linux_drives(one_disk, None, Some(Path::new(home)));
+            let paths: Vec<_> = drives.iter().map(|d| d.path.clone()).collect();
+            assert_eq!(paths, [PathBuf::from("/")], "{home}");
+        }
+        let drives = linux_drives(one_disk, Some("maya"), Some(Path::new("/var/home/maya/")));
+        assert_eq!(drives.len(), 2);
+        assert_eq!(drives[0].label, "Home");
     }
 
     // Docker hands a container its folders as bind mounts, usually all from
@@ -642,9 +716,9 @@ grpcfuse /media/Music\\040Library fakeowner rw 0 0
 
     #[test]
     fn a_mount_table_with_nothing_wanted_lists_nothing() {
-        assert!(linux_drives("proc /proc proc rw 0 0\n", None).is_empty());
-        assert!(linux_drives("", None).is_empty());
-        assert!(linux_drives("garbage\n\n   \n", None).is_empty());
+        assert!(linux_drives("proc /proc proc rw 0 0\n", None, None).is_empty());
+        assert!(linux_drives("", None, None).is_empty());
+        assert!(linux_drives("garbage\n\n   \n", None, None).is_empty());
     }
 
     #[test]
