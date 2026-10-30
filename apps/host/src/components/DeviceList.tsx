@@ -3,7 +3,6 @@ import { AnimatePresence, motion } from 'framer-motion'
 import {
   ArrowDown,
   ArrowUp,
-  KeyRound,
   Laptop,
   Monitor,
   MonitorSmartphone,
@@ -19,6 +18,7 @@ import {
 } from 'lucide-react'
 import type { DeviceView, EndorsementView } from '@/lib/api'
 import { cn, formatAgo, formatBytes, formatRate } from '@/lib/utils'
+import { Tag } from './ui/Group'
 
 /**
  * The paired devices, and what each is doing right now.
@@ -43,7 +43,7 @@ export function DeviceList({
 }): React.JSX.Element {
   if (devices.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-line px-4 py-10 text-center">
+      <div className="px-4 py-8 text-center">
         <p className="text-[13px] text-textDim">No devices yet.</p>
         <p className="mx-auto mt-1.5 max-w-[360px] text-[11.5px] leading-relaxed text-textFaint">
           Open Basalt on a phone or computer on this network. It lists this host by name,
@@ -54,7 +54,7 @@ export function DeviceList({
   }
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="divide-y divide-white/[0.05]">
       <AnimatePresence initial={false}>
         {devices.map((device) => (
           <motion.div
@@ -99,7 +99,7 @@ export function OwnerLine({
     return (
       <p
         title="A device that manages this host confirms its identity every week, so a copy of this host can always be told apart."
-        className="mb-2.5 flex items-center gap-1.5 text-[11.5px] text-textDim"
+        className="flex items-center gap-1.5 px-4 py-2.5 text-[11.5px] text-textDim"
       >
         <ShieldCheck size={13} className="shrink-0 text-basalt" />
         Confirmed by {endorsement.by} until {until}
@@ -108,7 +108,7 @@ export function OwnerLine({
   }
   if (owners) {
     return (
-      <p className="mb-2.5 flex items-center gap-1.5 text-[11.5px] text-textFaint">
+      <p className="flex items-center gap-1.5 px-4 py-2.5 text-[11.5px] text-textFaint">
         <ShieldCheck size={13} className="shrink-0" />
         Waiting for a device that manages this host to connect and confirm it
       </p>
@@ -116,7 +116,7 @@ export function OwnerLine({
   }
   if (!devices.some((d) => d.keyed)) return null
   return (
-    <p className="mb-2.5 flex items-center gap-1.5 text-[11.5px] text-textFaint">
+    <p className="flex items-center gap-1.5 px-4 py-2.5 text-[11.5px] text-textFaint">
       <ShieldCheck size={13} className="shrink-0" />
       Let one of your devices manage this host, and it confirms this host’s identity every week
     </p>
@@ -136,10 +136,7 @@ function KeyNote({ device }: { device: DeviceView }): React.JSX.Element {
         ? ['secure key', 'Signs in with a key of its own, protected by its system.']
         : ['secure key', 'Signs in with a key of its own.']
   return (
-    <span title={title} className="flex items-center gap-1">
-      <KeyRound size={10} />
-      {label}
-    </span>
+    <span title={title}>{label}</span>
   )
 }
 
@@ -159,101 +156,75 @@ function DeviceRow({
   const [menuOpen, setMenuOpen] = useState(false)
   const moving = device.sendRate > 0 || device.receiveRate > 0
 
+  const Icon = deviceIcon(device)
+
   return (
     <div
-      className={cn(
-        'group relative flex items-center gap-3 rounded-md border border-line px-3.5 py-3 transition-colors',
-        // Background only. `border-line/60` would *replace* the token's own
-        // 0.07 alpha with 0.6 rather than scaling it, drawing the offline row
-        // with a border nine times brighter than the connected one.
-        device.online ? 'bg-panel2' : 'bg-panel/50',
-      )}
+      title={`Sent ${formatBytes(device.sent)} · received ${formatBytes(device.received)} since the host started`}
+      className="group relative flex min-h-[56px] items-center gap-3 px-4 py-2.5"
     >
-      <span className={cn('shrink-0', device.online ? 'text-text' : 'text-textFaint')}>
-        {(() => {
-          const Icon = deviceIcon(device)
-          return <Icon size={15} />
-        })()}
+      <span
+        className={cn(
+          'relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.05]',
+          device.online ? 'text-text' : 'text-textFaint',
+        )}
+      >
+        <Icon size={15} />
+        {/*
+          Online means an open connection, not a recent timestamp. A laptop
+          that shut its lid an hour ago still has a recent `lastSeen`, and
+          calling that online would be a lie the user would act on.
+        */}
+        <span
+          className={cn(
+            'absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#151517]',
+            device.online ? 'bg-emerald-400/90' : 'bg-white/20',
+            moving && 'animate-breathe',
+          )}
+        />
       </span>
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              'truncate text-[13px] font-medium',
-              device.online ? 'text-text' : 'text-textDim',
-            )}
-          >
+          <span className={cn('truncate text-[13px]', device.online ? 'text-text' : 'text-textDim')}>
             {device.name}
           </span>
-
-          {/*
-            Online means an open connection, not a recent timestamp. A laptop
-            that shut its lid an hour ago still has a recent `lastSeen`, and
-            calling that online would be a lie the user would act on.
-          */}
-          {device.online ? (
-            <span className="flex items-center gap-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-textFaint">
-              <span
-                className={cn(
-                  'h-1.5 w-1.5 rounded-full bg-basalt',
-                  moving && 'animate-breathe',
-                )}
-              />
-              connected
-            </span>
-          ) : (
-            <span className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-textFaint">
-              {formatAgo(device.lastSeen)}
-            </span>
-          )}
-
-          {device.owner && (
-            <span
-              title="Manages this host and confirms its identity"
-              className="flex items-center gap-1 rounded-[4px] border border-white/15 bg-white/[0.04] px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.1em] text-textDim"
-            >
-              <ShieldCheck size={9} />
-              manages host
-            </span>
-          )}
-
-          {!device.writable && (
-            <span
-              title="This device can read but not change anything"
-              className="rounded-[4px] border border-line px-1.5 py-[1px] font-mono text-[9px] uppercase tracking-[0.1em] text-textFaint"
-            >
-              read only
-            </span>
-          )}
         </div>
-
-        <div className="tnum mt-1 flex items-center gap-3 font-mono text-[10.5px] text-textFaint">
-          <span title="Sent to this device">↑ {formatBytes(device.sent)}</span>
-          <span title="Received from this device">↓ {formatBytes(device.received)}</span>
+        <div className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-textFaint">
+          <span>{device.online ? 'connected' : `seen ${formatAgo(device.lastSeen)}`}</span>
+          <span>·</span>
           <KeyNote device={device} />
         </div>
       </div>
 
-      {/* The live rates. Fixed width so the column does not jitter as digits
-          change, and hidden entirely when nothing is moving. */}
-      <div className="tnum hidden w-[104px] shrink-0 flex-col items-end gap-0.5 font-mono text-[11px] sm:flex">
-        <Rate icon={<ArrowUp size={9} />} value={device.sendRate} />
-        <Rate icon={<ArrowDown size={9} />} value={device.receiveRate} />
-      </div>
+      {device.owner && (
+        <Tag icon={<ShieldCheck size={10} />} title="Manages this host and confirms its identity">
+          manages
+        </Tag>
+      )}
+      {!device.writable && (
+        <Tag title="This device can read but not change anything">read only</Tag>
+      )}
+
+      {/* The live rates, only while something moves. Fixed width so the
+          column does not jitter as the digits change. */}
+      {moving && (
+        <div className="tnum hidden w-[92px] shrink-0 flex-col items-end gap-0.5 font-mono text-[10.5px] min-[600px]:flex">
+          <Rate icon={<ArrowUp size={9} />} value={device.sendRate} />
+          <Rate icon={<ArrowDown size={9} />} value={device.receiveRate} />
+        </div>
+      )}
 
       <div className="relative shrink-0">
         <button
           onClick={() => setMenuOpen((open) => !open)}
           aria-label={`Options for ${device.name}`}
           className={cn(
-            'rounded-sm p-1.5 transition-colors',
-            menuOpen
-              ? 'bg-panel2 text-text'
-              : 'text-textFaint opacity-0 hover:bg-panel2 hover:text-text group-hover:opacity-100 focus:opacity-100',
+            'flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+            menuOpen ? 'bg-white/[0.08] text-text' : 'text-textFaint hover:bg-white/[0.06] hover:text-text',
           )}
         >
-          <MoreHorizontal size={14} />
+          <MoreHorizontal size={15} />
         </button>
 
         <AnimatePresence>

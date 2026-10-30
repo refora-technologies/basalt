@@ -30,7 +30,7 @@ import {
 import { SubtitleStylePanel } from './SubtitleStylePanel'
 import type { MediaItem } from '@/lib/mockMedia'
 import { formatDuration } from '@/lib/mockMedia'
-import { ApiError, api, inTauri, type SubtitleTrack } from '@/lib/api'
+import { ApiError, api, inTauri, type PreviewMeta, type Segments, type SubtitleTrack } from '@/lib/api'
 import { chosenFor, mergeDriveSubtitles, otherSubtitles, rememberChosen } from '@/lib/driveSubtitles'
 import { onExternalFileDrop, pickSubtitleFile } from '@/lib/dialogs'
 import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
@@ -66,6 +66,7 @@ import { getProperty } from '@/lib/mpvBackend'
 import { isMobileShell } from '@/lib/platform'
 import { noteFilmFinished } from '@/lib/review'
 import { useBack } from '@/mobile/useBack'
+import { rememberVolume, rememberedVolume } from '@/lib/volumes'
 
 /**
  * A phone or tablet: fingers, not a pointer.
@@ -196,6 +197,8 @@ export function PlayerOverlay({
     volumeTimer.current = setTimeout(() => setVolumeOsd(false), 1200)
   }, [])
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** The film's volume has been put in place: what it changes to now is kept as the films' volume. */
+  const volumeKept = useRef(false)
 
   const keepControls = useCallback(() => {
     setShowControls(true)
@@ -217,7 +220,9 @@ export function PlayerOverlay({
     setShowControls(false)
   }, [])
 
-  const pinned = mpv.paused || menu || qualityMenu || overBar || !mpv.picture
+  /** A finger or the pointer holding the seek bar: the controls, and the picture of the moment, stay. */
+  const [seeking, setSeeking] = useState(false)
+  const pinned = mpv.paused || menu || qualityMenu || overBar || !mpv.picture || seeking
 
   // On a phone, back puts an open menu away before it closes the film.
   useBack(menu || qualityMenu, () => {
@@ -227,6 +232,19 @@ export function PlayerOverlay({
   })
   const controlsUp = showControls || pinned
   const open = item !== null
+  // A film closed mid-drag, the bar never let go: the next one starts free.
+  useEffect(() => {
+    if (!open) setSeeking(false)
+  }, [open])
+  // The volume as changed during a film, by the slider, the wheel or keys,
+  // kept for the next one. Closed, music may change it: not kept then.
+  useEffect(() => {
+    if (!open) {
+      volumeKept.current = false
+      return
+    }
+    if (volumeKept.current) rememberVolume('video', mpv.volume)
+  }, [open, mpv.volume])
 
   // Any movement anywhere brings them back, including over the controls. A
   // key does too, but from the key handler itself — see there for why.
@@ -293,6 +311,78 @@ export function PlayerOverlay({
     }
   }
 
+  /**
+   * Where this film's or episode's intro and credits are, if the host has
+   * found them: for Skip intro and Next episode, and so that reaching the
+   * credits counts as watched.
+   */
+  const [segments, setSegments] = useState<Segments | null>(null)
+  const segmentsRef = useRef(segments)
+  segmentsRef.current = segments
+  useEffect(() => {
+    setSegments(null)
+    if (!item) return undefined
+    let cancelled = false
+    // A host before 1.6.3 does not know the request: no buttons, as before.
+    api
+      .segments(item.id)
+      .then((found) => {
+        if (!cancelled) setSegments(found)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [item])
+
+  /**
+   * The film's timeline pictures, for the seek bar: their layout and the
+   * film's address, which the sheets are fetched from. Asking starts the
+   * host making them; while it is, asked again now and then.
+   */
+  const [previews, setPreviews] = useState<{ meta: PreviewMeta; url: string } | null>(null)
+  useEffect(() => {
+    setPreviews(null)
+    if (!item) return undefined
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let tries = 0
+    const ask = (): void => {
+      void Promise.all([api.previews(item.id), api.mediaUrl(item.id)])
+        .then(([answer, url]) => {
+          if (cancelled) return
+          if (answer.meta) setPreviews({ meta: answer.meta, url })
+          else if (answer.making && tries++ < 30) timer = setTimeout(ask, 20_000)
+        })
+        // A host before 1.6.3: the time alone, as before.
+        .catch(() => {})
+    }
+    ask()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [item])
+
+  const previewAt = useCallback(
+    (seconds: number): PreviewTile | null => {
+      if (!previews) return null
+      const { meta, url } = previews
+      const n = Math.min(meta.count - 1, Math.max(0, Math.round(seconds / meta.interval)))
+      const perSheet = meta.columns * meta.rows
+      const sheet = Math.floor(n / perSheet)
+      if (sheet >= meta.sheets) return null
+      const at = n % perSheet
+      return {
+        src: `${url}?sheet=${sheet}`,
+        column: at % meta.columns,
+        row: Math.floor(at / meta.columns),
+        meta,
+      }
+    },
+    [previews],
+  )
+
   // Reported on a timer rather than on every tick, which would be several
   // network calls a second.
   useEffect(() => {
@@ -300,7 +390,12 @@ export function PlayerOverlay({
     const mine = item.id
     const tell = (): void => {
       const { path, position, duration } = latest.current
-      if (path === mine && duration > 0) report.current?.(path, position, duration)
+      if (path !== mine || duration <= 0) return
+      // Into the credits is watched: reported as the end, so it counts as
+      // finished and the next episode is the one to carry on with.
+      const credits = segmentsRef.current?.credits
+      const done = credits !== null && credits !== undefined && position >= credits
+      report.current?.(path, done ? duration : position, duration)
     }
     const timer = setInterval(tell, 10_000)
 
@@ -334,6 +429,11 @@ export function PlayerOverlay({
           return
         }
         const at = resumeAt > 0 ? resumeAt : 0
+        // At the films' own volume, as last set: not music's, nor full.
+        volumeKept.current = false
+        await mpv.setVolume(rememberedVolume('video'))
+        if (cancelled) return
+        volumeKept.current = true
         // A device that has struggled with pictures this large starts with
         // the host's conversion, when the host can give one: opening the file
         // first only to find it cannot keep up cost seconds every episode.
@@ -1288,6 +1388,10 @@ export function PlayerOverlay({
             void mpv.seekBy(e.key === 'ArrowRight' ? 10 : -10)
             return true
           case 'Enter':
+            // Skip intro and Next episode stand on their own, with the
+            // controls put away, and take the focus when they come: OK
+            // presses them. Taken as "pause", it paused the intro instead.
+            if (target?.closest('[data-segment]')) return false
             // A control keeps the focus while the controls are put away; OK
             // then pauses, whichever it is, and never closes the film.
             if (onControl && controlsUp) return false
@@ -1377,6 +1481,14 @@ export function PlayerOverlay({
       case 'P':
         goPrevious()
         break
+      // Enter as well as f: the key people reach for. Not on a focused
+      // button or field, where Enter is that control's own.
+      case 'Enter': {
+        const on = e.target instanceof HTMLElement ? e.target.closest('button, input, select, textarea, [role="menuitem"]') : null
+        if (on) handled = false
+        else void fullscreen()
+        break
+      }
       case 'f':
         void fullscreen()
         break
@@ -1390,6 +1502,24 @@ export function PlayerOverlay({
     if (handled) e.preventDefault()
     keepControls()
   }
+
+  // The mouse wheel turns the volume, as in every desktop player: up is
+  // louder. Not over a menu (subtitles, quality), whose list it scrolls.
+  const onWheel = useRef<(e: WheelEvent) => void>(() => {})
+  onWheel.current = (e: WheelEvent): void => {
+    if (e.deltaY === 0) return
+    const target = e.target as HTMLElement | null
+    if (target?.closest('[role="menu"], [role="listbox"], [role="dialog"], [data-scrolls]')) return
+    void mpv.nudgeVolume(e.deltaY < 0 ? 5 : -5)
+    flashVolume()
+    keepControls()
+  }
+  useEffect(() => {
+    if (!open || TV || TOUCH) return undefined
+    const listener = (e: WheelEvent): void => onWheel.current(e)
+    window.addEventListener('wheel', listener, { passive: true })
+    return () => window.removeEventListener('wheel', listener)
+  }, [open])
 
   useEffect(() => {
     if (!open) return undefined
@@ -1704,6 +1834,18 @@ export function PlayerOverlay({
               )}
             </AnimatePresence>
 
+            {/* Skip intro, and Next episode at the credits. */}
+            <SegmentButton
+              segments={segments}
+              position={mpv.position}
+              duration={mpv.duration}
+              raised={controlsUp}
+              nextUp={nextUp && onPlayNext ? nextUp : null}
+              onSkipTo={(seconds) => void mpv.seekTo(seconds)}
+              onNext={() => nextUp && onPlayNext?.(nextUp.path)}
+              onEnd={onClose}
+            />
+
             {/* What is paused, and what is next. */}
             <AnimatePresence>
               {mpv.paused && mpv.picture && !mpv.buffering && !menu && (
@@ -1945,10 +2087,17 @@ export function PlayerOverlay({
             <Scrubber
               percent={percent}
               duration={mpv.duration}
+              preview={previewAt}
               onScrub={scrub}
               onSeek={(fraction) => {
                 scrubbing.current.next = null
                 void mpv.seekTo(fraction * mpv.duration)
+              }}
+              onHolding={(holding) => {
+                setSeeking(holding)
+                // Let go: the controls stay their usual while from now, not
+                // from before the drag, when they would go at once.
+                if (!holding) keepControls()
               }}
               disabled={mpv.duration === 0}
             />
@@ -2084,7 +2233,7 @@ export function PlayerOverlay({
               {!TV && (!TOUCH || mpv.picture) && (
                 <ControlButton
                   icon={TOUCH && turned === 'landscape' ? Minimize2 : Maximize2}
-                  label={TOUCH ? 'Turn the picture' : 'Fullscreen (f)'}
+                  label={TOUCH ? 'Turn the picture' : 'Full screen (Enter)'}
                   onClick={fullscreen}
                 />
               )}
@@ -2162,7 +2311,7 @@ function QualityMenu({
           <X size={14} />
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
+      <div className="min-h-0 flex-1 overflow-y-auto py-1.5" data-scrolls="">
         <QualityChoice
           icon={Sparkles}
           label="Optimised for this device"
@@ -2335,12 +2484,12 @@ function SubtitleMenu({
       </div>
 
       {styling ? (
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto" data-scrolls="">
           <SubtitleStylePanel style={mpv.subtitleStyle} onChange={(look) => void mpv.setSubtitleStyle(look)} />
         </div>
       ) : (
       <>
-      <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
+      <div className="min-h-0 flex-1 overflow-y-auto py-1.5" data-scrolls="">
         <Choice label="Off" active={mpv.subtitleId === null} onClick={() => onChoose(null)} />
         {inFile.map((track) => {
           const label = labelOf(describeSub(track))
@@ -2551,26 +2700,42 @@ function Nudge({
  * by guessing at it repeatedly, and every real player lets you scrub — the
  * pointer is captured so the drag keeps working past the ends of the bar.
  */
+/** One timeline picture: which square of which sheet. */
+export interface PreviewTile {
+  src: string
+  column: number
+  row: number
+  meta: PreviewMeta
+}
+
 export function Scrubber({
   percent,
   duration,
+  preview,
   onScrub,
   onSeek,
+  onHolding,
   disabled,
 }: {
   percent: number
   /** Seconds, for the time shown while the bar is held. */
   duration: number
+  /** The picture for a moment, if the film has timeline pictures. */
+  preview?: (seconds: number) => PreviewTile | null
   /** Where it is held now, as it moves: a quick look, not the seek. */
   onScrub: (fraction: number) => void
   /** Where it was let go: the seek. */
   onSeek: (fraction: number) => void
+  /** Held, and let go: the controls around it stay while it is held. */
+  onHolding?: (holding: boolean) => void
   disabled: boolean
 }): React.JSX.Element {
   // Where the pointer holds it, while it does; then where it was let go,
   // until the film has caught up, so the bar does not jump back to the old
   // position for the moment the seek takes.
   const [held, setHeld] = useState<number | null>(null)
+  /** Where the pointer is over the bar, on a computer, without holding it. */
+  const [hover, setHover] = useState<number | null>(null)
   const [landing, setLanding] = useState<number | null>(null)
   const holding = useRef(false)
   const last = useRef(0)
@@ -2597,6 +2762,7 @@ export function Scrubber({
   }
   const letGo = (fraction: number): void => {
     holding.current = false
+    onHolding?.(false)
     setHeld(null)
     setLanding(fraction)
     onSeek(fraction)
@@ -2622,6 +2788,7 @@ export function Scrubber({
       onPointerDown={(e) => {
         if (disabled) return
         holding.current = true
+        onHolding?.(true)
         follow(e.currentTarget, e.clientX)
         try {
           e.currentTarget.setPointerCapture(e.pointerId)
@@ -2631,9 +2798,11 @@ export function Scrubber({
         }
       }}
       onPointerMove={(e) => {
-        if (disabled || !holding.current) return
-        follow(e.currentTarget, e.clientX)
+        if (disabled) return
+        if (holding.current) follow(e.currentTarget, e.clientX)
+        else if (!TOUCH) setHover(fractionAt(e.currentTarget, e.clientX))
       }}
+      onPointerLeave={() => setHover(null)}
       onPointerUp={(e) => {
         if (!holding.current) return
         letGo(fractionAt(e.currentTarget, e.clientX))
@@ -2666,14 +2835,10 @@ export function Scrubber({
         )}
         style={{ left: `calc(${at}% - ${held !== null ? 8 : 6}px)` }}
       />
-      {/* Where it will land, above the finger that is covering the bar. */}
-      {held !== null && duration > 0 && (
-        <div
-          className="pointer-events-none absolute bottom-full mb-4 -translate-x-1/2 rounded-md bg-black/80 px-2 py-1 font-mono text-[12px] text-text tnum"
-          style={{ left: `clamp(28px, ${held * 100}%, calc(100% - 28px))` }}
-        >
-          {formatDuration(held * duration)}
-        </div>
+      {/* Where it will land, above the finger that is covering the bar: the
+          picture of that moment, when the film has them, and the time. */}
+      {(held ?? hover) !== null && duration > 0 && (
+        <MomentBubble fraction={(held ?? hover)!} duration={duration} tile={preview?.((held ?? hover)! * duration) ?? null} />
       )}
     </div>
   )
@@ -2837,4 +3002,112 @@ const SUBTITLE_EXTENSIONS = new Set(['srt', 'ass', 'ssa', 'vtt', 'sub', 'sup', '
 function isSubtitleFile(path: string): boolean {
   const dot = path.lastIndexOf('.')
   return dot > 0 && SUBTITLE_EXTENSIONS.has(path.slice(dot + 1).toLowerCase())
+}
+
+/**
+ * Skip intro, while the intro plays; Next episode (or, for a film, Skip
+ * credits) once the credits start. Offered, never done by itself: a button
+ * bottom right, above the controls when they are up. On a TV it takes the
+ * focus when it appears, so OK presses it.
+ */
+function SegmentButton({
+  segments,
+  position,
+  duration,
+  raised,
+  nextUp,
+  onSkipTo,
+  onNext,
+  onEnd,
+}: {
+  segments: Segments | null
+  position: number
+  duration: number
+  raised: boolean
+  nextUp: { path: string; label: string } | null
+  onSkipTo: (seconds: number) => void
+  onNext: () => void
+  onEnd: () => void
+}): React.JSX.Element | null {
+  const intro = segments?.intro
+  const credits = segments?.credits
+  const inIntro = !!intro && position >= intro[0] && position < intro[1] - 1
+  const inCredits =
+    credits !== null && credits !== undefined && position >= credits && (duration <= 0 || position < duration - 1)
+  const kind: 'intro' | 'next' | 'credits' | null = inIntro
+    ? 'intro'
+    : inCredits
+      ? nextUp
+        ? 'next'
+        : 'credits'
+      : null
+
+  const button = useRef<HTMLButtonElement | null>(null)
+  useEffect(() => {
+    if (kind && TV) button.current?.focus()
+  }, [kind])
+
+  if (!kind) return null
+  const label = kind === 'intro' ? 'Skip intro' : kind === 'next' ? 'Next episode' : 'Skip credits'
+  return (
+    <motion.button
+      ref={button}
+      key={kind}
+      data-segment=""
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      onClick={(e) => {
+        e.stopPropagation()
+        if (kind === 'intro') onSkipTo(intro![1])
+        else if (kind === 'next') onNext()
+        else onEnd()
+      }}
+      title={kind === 'next' && nextUp ? `Next: ${nextUp.label}` : undefined}
+      className={cn(
+        'absolute right-5 z-[3] flex h-11 items-center gap-2 rounded-lg border border-white/25 bg-black/55 px-5 text-[14px] font-semibold text-white backdrop-blur-md transition-[bottom] duration-200 hover:bg-white hover:text-black focus-visible:bg-white focus-visible:text-black',
+        raised ? 'bottom-28' : 'bottom-8',
+      )}
+    >
+      {label}
+      {kind !== 'credits' && <SkipForward size={16} className="fill-current" />}
+    </motion.button>
+  )
+}
+
+/** The picture and the time above the seek bar, kept inside the bar's ends. */
+function MomentBubble({
+  fraction,
+  duration,
+  tile,
+}: {
+  fraction: number
+  duration: number
+  tile: PreviewTile | null
+}): React.JSX.Element {
+  const width = tile ? (TOUCH ? 168 : 200) : 56
+  const scale = tile ? width / tile.meta.tileWidth : 1
+  const height = tile ? Math.round(tile.meta.tileHeight * scale) : 0
+  return (
+    <div
+      className="pointer-events-none absolute bottom-full mb-4 flex -translate-x-1/2 flex-col items-center gap-1.5"
+      style={{ left: `clamp(${width / 2}px, ${fraction * 100}%, calc(100% - ${width / 2}px))` }}
+    >
+      {tile && (
+        <div
+          className="overflow-hidden rounded-md border border-white/20 bg-black shadow-[0_8px_24px_rgba(0,0,0,0.6)]"
+          style={{
+            width,
+            height,
+            backgroundImage: `url("${tile.src}")`,
+            backgroundSize: `${tile.meta.columns * tile.meta.tileWidth * scale}px ${tile.meta.rows * tile.meta.tileHeight * scale}px`,
+            backgroundPosition: `-${tile.column * tile.meta.tileWidth * scale}px -${tile.row * tile.meta.tileHeight * scale}px`,
+          }}
+        />
+      )}
+      <div className="rounded-md bg-black/80 px-2 py-1 font-mono text-[12px] text-text tnum">
+        {formatDuration(fraction * duration)}
+      </div>
+    </div>
+  )
 }

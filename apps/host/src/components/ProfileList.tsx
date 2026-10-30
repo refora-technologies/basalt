@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Copy, KeyRound, Laptop, MoreHorizontal, Trash2, UserRound } from 'lucide-react'
+import { Check, Copy, KeyRound, MoreHorizontal, Plus, Trash2 } from 'lucide-react'
 import type { ProfileSummary } from '@/lib/api'
 import { cn, formatAgo } from '@/lib/utils'
 import { copyText } from '@/lib/copyText'
+import { Tag } from './ui/Group'
 
 /**
  * The household's profiles, and which devices are signed in to each.
@@ -78,43 +79,25 @@ export function ProfileList({
   /** A new code for a profile waiting for its PIN. */
   onNewCode: (profile: ProfileSummary) => void
 }): React.JSX.Element {
-  if (profiles.length === 0) {
-    return (
-      <div className="flex items-center gap-4 rounded-lg border border-dashed border-line px-5 py-5">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/[0.04] text-textFaint">
-          <UserRound size={18} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="text-[13px] text-textDim">No profiles yet.</p>
-          <p className="mt-1 max-w-[460px] text-[11.5px] leading-relaxed text-textFaint">
-            {ownerAdds
-              ? 'Add one here for each person. A profile keeps its own watch history and stars, and takes them from one device to the next.'
-              : 'Add one here, or anyone on a paired device can make one when they open Basalt. A profile keeps its own watch history and stars, and takes them from one device to the next.'}
-          </p>
-        </div>
-        <button
-          onClick={onAdd}
-          className="shrink-0 rounded-md border border-line bg-panel2 px-3 py-1.5 text-[11.5px] text-textDim transition-colors hover:border-lineBright hover:text-text"
-        >
-          Add profile
-        </button>
-      </div>
-    )
-  }
-
   return (
-    <div className="grid grid-cols-2 gap-2">
+    <div className="divide-y divide-white/[0.05]">
+      {profiles.length === 0 && (
+        <p className="px-4 py-3.5 text-[11.5px] leading-relaxed text-textFaint">
+          {ownerAdds
+            ? 'No profiles yet. Add one for each person: a profile keeps its own watch history and stars, and takes them from one device to the next.'
+            : 'No profiles yet. Add one here, or anyone on a paired device can make one when they open Basalt. A profile keeps its own watch history and stars.'}
+        </p>
+      )}
       <AnimatePresence initial={false}>
         {profiles.map((profile) => (
           <motion.div
             key={profile.id}
-            layout
-            initial={{ opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.98 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
           >
-            <ProfileCard
+            <ProfileRow
               profile={profile}
               onResetPin={() => onResetPin(profile)}
               onRemove={() => onRemove(profile)}
@@ -123,11 +106,30 @@ export function ProfileList({
           </motion.div>
         ))}
       </AnimatePresence>
+      <button
+        type="button"
+        onClick={onAdd}
+        className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-white/[0.03]"
+      >
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/[0.05] text-textDim">
+          <Plus size={15} />
+        </span>
+        <span className="text-[13px] text-text">Add a profile</span>
+      </button>
     </div>
   )
 }
 
-function ProfileCard({
+/** Who a profile is signed in on, as a sentence part. */
+function signedIn(profile: ProfileSummary): string {
+  const names = profile.devices.map((d) => d.name)
+  if (names.length === 0) return 'not signed in anywhere'
+  if (names.length === 1) return `on ${names[0]}`
+  if (names.length === 2) return `on ${names[0]} and ${names[1]}`
+  return `on ${names.length} devices`
+}
+
+function ProfileRow({
   profile,
   onResetPin,
   onRemove,
@@ -140,104 +142,65 @@ function ProfileCard({
 }): React.JSX.Element {
   const [menu, setMenu] = useState(false)
   const now = Date.now() / 1000
-  const active = profile.devices.filter((d) => now - d.lastUsed < 10 * 60).length
+  const active = profile.devices.some((d) => now - d.lastUsed < 10 * 60)
+  const waiting = !profile.hasPin && !profile.home
+  const devicesTitle = profile.devices
+    .map((d) => `${d.name}: ${d.remembered ? 'stays signed in' : 'signed in until the app closes'}`)
+    .join('\n')
 
   return (
-    <div className="relative h-full rounded-lg glass px-4 py-3.5">
-      <div className="flex items-center gap-3">
+    <div className="relative px-4 py-2.5">
+      <div className="flex min-h-[36px] items-center gap-3">
         <div className="relative">
-          <Avatar name={profile.name} color={profile.color} />
-          {active > 0 && (
+          <Avatar name={profile.name} color={profile.color} size={32} />
+          {active && (
             <span
               title="In use now"
-              className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-panel bg-basalt"
+              className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#151517] bg-emerald-400/90"
             />
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[13.5px] font-semibold text-text">
+          <div className="truncate text-[13px] text-text">
             {profile.name}
-            {profile.home && (
-              <span className="ml-1.5 text-[11px] font-normal text-textFaint">from {profile.home}</span>
-            )}
+            {profile.home && <span className="ml-1.5 text-[11.5px] text-textFaint">from {profile.home}</span>}
           </div>
-          <div className="mt-0.5 truncate font-mono text-[10px] text-textFaint">
-            {profile.lastUsed > 0 ? `active ${formatAgo(profile.lastUsed)}` : 'not used yet'}
+          <div className="mt-0.5 truncate text-[11.5px] text-textFaint" title={devicesTitle || undefined}>
+            {profile.home
+              ? `Signs in on ${profile.home}, with no PIN here`
+              : `${profile.lastUsed > 0 ? `Used ${formatAgo(profile.lastUsed)}` : 'Not used yet'} · ${signedIn(profile)}`}
           </div>
         </div>
+        {waiting && (
+          <Tag icon={<KeyRound size={10} />} title={profile.lastUsed === 0 ? `Waiting for ${profile.name} to sign in and choose a PIN` : 'PIN cleared: the next sign-in chooses a new one'}>
+            new pin
+          </Tag>
+        )}
         <button
           onClick={() => setMenu((open) => !open)}
           aria-label={`Options for ${profile.name}`}
-          className="flex h-7 w-7 items-center justify-center rounded-md text-textFaint transition-colors duration-150 hover:bg-white/[0.06] hover:text-text"
+          className={cn(
+            'flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors duration-150',
+            menu ? 'bg-white/[0.08] text-text' : 'text-textFaint hover:bg-white/[0.06] hover:text-text',
+          )}
         >
           <MoreHorizontal size={15} />
         </button>
       </div>
 
-      {profile.home && (
-        <div className="mt-3 flex items-center gap-2 rounded-md bg-white/[0.04] px-2.5 py-1.5 text-[11px] text-textDim">
-          <KeyRound size={12} className="shrink-0 text-textFaint" />
-          Signs in on {profile.home}, with no PIN here.
+      {waiting && profile.claimCode && (
+        <div className="ml-11 mt-2 flex items-center gap-2 rounded-md bg-white/[0.04] px-2.5 py-1.5 text-[11px]">
+          <span className="text-textFaint">Code to claim it</span>
+          <span className="select-all font-mono text-[12.5px] tracking-[0.12em] text-text">{profile.claimCode}</span>
+          <CopyCode code={profile.claimCode} />
+          <button
+            onClick={onNewCode}
+            className="ml-auto rounded px-1.5 py-0.5 text-[10.5px] text-textFaint transition-colors hover:bg-white/[0.06] hover:text-text"
+          >
+            New code
+          </button>
         </div>
       )}
-      {!profile.hasPin && !profile.home && (
-        <div className="mt-3 rounded-md bg-white/[0.04] px-2.5 py-1.5 text-[11px] text-textDim">
-          <div className="flex items-center gap-2">
-            <KeyRound size={12} className="shrink-0 text-textFaint" />
-            {profile.lastUsed === 0
-              ? `Waiting for ${profile.name} to sign in and choose a PIN.`
-              : 'PIN cleared. The next sign-in chooses a new one.'}
-          </div>
-          {profile.claimCode && (
-            <div className="mt-1.5 flex items-center gap-2 pl-5">
-              <span className="text-textFaint">Code to claim it</span>
-              <span className="select-all font-mono text-[12.5px] tracking-[0.12em] text-text">
-                {profile.claimCode}
-              </span>
-              <CopyCode code={profile.claimCode} />
-              <button
-                onClick={onNewCode}
-                className="ml-auto rounded px-1.5 py-0.5 text-[10.5px] text-textFaint transition-colors hover:bg-white/[0.06] hover:text-text"
-              >
-                New code
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="mt-3 border-t border-line pt-2.5">
-        <div className="font-mono text-[9.5px] uppercase tracking-[0.16em] text-textFaint">
-          {profile.devices.length === 0
-            ? 'Not signed in anywhere'
-            : `Signed in on ${profile.devices.length} ${profile.devices.length === 1 ? 'device' : 'devices'}`}
-        </div>
-        {profile.devices.length > 0 && (
-          <ul className="mt-2 space-y-1.5">
-            {profile.devices.map((device, index) => (
-              <li key={`${device.name}-${index}`} className="flex items-center gap-2 text-[12px]">
-                <Laptop size={12} className="shrink-0 text-textFaint" />
-                <span className="min-w-0 flex-1 truncate text-textDim">{device.name}</span>
-                <span
-                  className={cn(
-                    'shrink-0 rounded-full px-1.5 py-px font-mono text-[9px]',
-                    device.remembered
-                      ? 'bg-white/[0.06] text-textDim'
-                      : 'border border-line text-textFaint',
-                  )}
-                  title={
-                    device.remembered
-                      ? 'Stays signed in on this device'
-                      : 'Signed in until the app closes'
-                  }
-                >
-                  {device.remembered ? 'remembered' : 'this session'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
 
       <AnimatePresence>
         {menu && (

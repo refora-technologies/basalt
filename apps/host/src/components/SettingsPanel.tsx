@@ -1,52 +1,172 @@
-import { useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Film, Image as ImageIcon, Music, Pencil, RefreshCw, Tv, Video } from 'lucide-react'
-import type { HostStatus, Sections } from '@/lib/api'
-import { About } from './About'
+import { useEffect, useRef, useState } from 'react'
+import { motion } from 'framer-motion'
+import {
+  Check,
+  Cpu,
+  Film,
+  Image as ImageIcon,
+  LayoutGrid,
+  Library as LibraryIcon,
+  Loader2,
+  Monitor,
+  Music,
+  Pencil,
+  RefreshCw,
+  Tv,
+  Video,
+} from 'lucide-react'
+import type { HostStatus, PreviewsCheck, PreviewsWhen, Sections } from '@/lib/api'
+import { About, openExternal } from './About'
 import { ConversionPanel, conversionDetail } from './ConversionPanel'
+import { Segmented } from './ProfileAccess'
 import { Switch } from './ui/Switch'
+import { ActionRow, Group, SettingRow } from './ui/Group'
 import { cn, formatAgo } from '@/lib/utils'
 
+/** Where a fanart.tv personal key is made, free with an account. */
+const FANART_KEY_PAGE = 'https://fanart.tv/get-an-api-key/'
+
 /**
- * The settings this app has.
+ * The settings this app has, in four panels: what the host does with the
+ * library, converting video, what devices show, and this computer.
  *
  * Everything else a network share usually asks for — addresses, share names,
  * user accounts, firewall rules, permissions — is either decided by the
  * protocol or not a decision at all.
  *
- * Two of the four are off by default and say what turning them on means,
- * because both do something on the user's behalf that they did not ask for at
- * install time: one lets strangers on the network read the drive, the other
- * reads every folder on it.
+ * What does something on the person's behalf that they did not ask for at
+ * install time says so: a switch that lets strangers on the network join, and
+ * those that send names to an online service.
  */
-export function SettingsPanel({
+export function LibrarySettings({
   status,
-  onRequirePin,
-  onStartWithWindows,
   onLibrary,
   onRescan,
   onPosters,
   onTmdbKey,
-  onSections,
-  onRename,
+  onPreviews,
+  onPreviewsWhen,
+  onMakeMissingPreviews,
+  onMusicCovers,
+  onFanartKey,
+}: {
+  status: HostStatus
+  onLibrary: (enabled: boolean) => void
+  onRescan: () => void
+  onPosters: (enabled: boolean) => void
+  onTmdbKey: (key: string) => void
+  onPreviews: (enabled: boolean) => void
+  onPreviewsWhen: (when: PreviewsWhen) => void
+  onMakeMissingPreviews: () => void
+  onMusicCovers: (enabled: boolean) => void
+  /** Resolves to why it was not saved, or null when it was. */
+  onFanartKey: (key: string) => Promise<string | null>
+}): React.JSX.Element {
+  const { library } = status
+  return (
+    <Group icon={LibraryIcon} title="Library">
+      <SettingRow
+        onToggle={() => onLibrary(!library.enabled)}
+        title="Recognise films and series"
+        detail={
+          library.enabled
+            ? libraryDetail(status)
+            : 'Off. Your devices see folders and files exactly as they are on the drive.'
+        }
+        control={<Switch checked={library.enabled} onChange={onLibrary} label="Recognise films and series" />}
+      />
+      {library.enabled && (
+        <ActionRow
+          icon={<RefreshCw size={14} className={library.scanning ? 'animate-spin' : ''} />}
+          title={library.scanning ? 'Scanning the drive…' : 'Scan again'}
+          detail="For files just copied to the drive that haven’t appeared yet."
+          onClick={onRescan}
+          disabled={library.scanning}
+        />
+      )}
+      {library.enabled && <Artwork status={status} onPosters={onPosters} onSave={onTmdbKey} />}
+      <AlbumCovers status={status} onChange={onMusicCovers} onKey={onFanartKey} />
+      <TimelinePictures
+        status={status}
+        onChange={onPreviews}
+        onWhen={onPreviewsWhen}
+        onMakeMissing={onMakeMissingPreviews}
+      />
+    </Group>
+  )
+}
+
+export function ConversionSettings({
+  status,
   onConversion,
   onConversionAtOnce,
   onMeasureConversion,
+}: {
+  status: HostStatus
+  onConversion: (enabled: boolean) => void
+  onConversionAtOnce: (atOnce: number | null) => void
+  onMeasureConversion: () => void
+}): React.JSX.Element {
+  const { conversion } = status
+  return (
+    <Group
+      icon={Cpu}
+      title="Video conversion"
+      aside={conversion.active.length > 0 ? `${conversion.active.length} converting now` : undefined}
+    >
+      <SettingRow
+        onToggle={conversion.available ? () => onConversion(!conversion.enabled) : undefined}
+        title="Convert video for devices that can’t play it"
+        detail={conversionDetail(conversion)}
+        control={
+          conversion.available ? (
+            <Switch
+              checked={conversion.enabled}
+              onChange={onConversion}
+              label="Convert video for devices that can’t play it"
+            />
+          ) : undefined
+        }
+        extra={
+          <ConversionPanel conversion={conversion} onAtOnce={onConversionAtOnce} onMeasure={onMeasureConversion} />
+        }
+      />
+    </Group>
+  )
+}
+
+export function SectionSettings({
+  status,
+  onSections,
+}: {
+  status: HostStatus
+  onSections: (sections: Sections) => void
+}): React.JSX.Element {
+  return (
+    <Group icon={LayoutGrid} title="Sections on your devices">
+      <div className="px-4 py-3">
+        <p className="text-[11.5px] leading-snug text-textFaint">
+          What each device shows under Library. Hiding a section only tidies the list. Every file is
+          still in Files.
+        </p>
+        <SectionPicker sections={status.sections} library={status.library} onChange={onSections} />
+      </div>
+    </Group>
+  )
+}
+
+export function ComputerSettings({
+  status,
+  onRequirePin,
+  onStartWithWindows,
+  onRename,
   build,
   onOpenLog,
 }: {
   status: HostStatus
   onRequirePin: (require: boolean) => void
   onStartWithWindows: (enabled: boolean) => void
-  onLibrary: (enabled: boolean) => void
-  onRescan: () => void
-  onPosters: (enabled: boolean) => void
-  onTmdbKey: (key: string) => void
-  onSections: (sections: Sections) => void
   onRename: (name: string) => void
-  onConversion: (enabled: boolean) => void
-  onConversionAtOnce: (atOnce: number | null) => void
-  onMeasureConversion: () => void
   /** Which build this is, for telling one install from another. */
   build: string
   onOpenLog: () => void
@@ -60,10 +180,11 @@ export function SettingsPanel({
     if (name && name !== status.hostName) onRename(name)
     else setDraft(status.hostName)
   }
+  const startLabel = status.platform === 'windows' ? 'Start when Windows starts' : 'Start when you log in'
 
   return (
-    <div className="rounded-lg glass divide-y divide-line">
-      <Row
+    <Group icon={Monitor} title="This computer">
+      <SettingRow
         onToggle={() => onRequirePin(!status.requirePin)}
         title="Ask for a PIN when pairing"
         detail={
@@ -72,101 +193,21 @@ export function SettingsPanel({
             : 'Any device on this network can join and open the drive without a PIN.'
         }
         warn={!status.requirePin}
-        control={
-          <Switch
-            checked={status.requirePin}
-            onChange={onRequirePin}
-            label="Ask for a PIN when pairing"
-          />
-        }
+        control={<Switch checked={status.requirePin} onChange={onRequirePin} label="Ask for a PIN when pairing" />}
       />
 
-      <Row
-        onToggle={() => onLibrary(!status.library.enabled)}
-        title="Recognise films and series"
-        detail={
-          status.library.enabled
-            ? libraryDetail(status)
-            : 'Off. Your devices see folders and files exactly as they are on the drive.'
-        }
-        control={
-          <Switch
-            checked={status.library.enabled}
-            onChange={onLibrary}
-            label="Recognise films and series"
-          />
-        }
-        extra={
-          status.library.enabled ? (
-            <>
-              <button
-                onClick={onRescan}
-                disabled={status.library.scanning}
-                className="mt-2.5 flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] text-textFaint transition-colors hover:bg-panel2 hover:text-textDim disabled:opacity-50"
-              >
-                <RefreshCw size={11} className={status.library.scanning ? 'animate-spin' : ''} />
-                {status.library.scanning ? 'Scanning…' : 'Scan again'}
-              </button>
-              <Artwork status={status} onPosters={onPosters} onSave={onTmdbKey} />
-            </>
-          ) : null
-        }
-      />
-
-      <Row
-        onToggle={
-          status.conversion.available ? () => onConversion(!status.conversion.enabled) : undefined
-        }
-        title="Convert video for devices that can’t play it"
-        detail={conversionDetail(status.conversion)}
-        control={
-          status.conversion.available ? (
-            <Switch
-              checked={status.conversion.enabled}
-              onChange={onConversion}
-              label="Convert video for devices that can’t play it"
-            />
-          ) : undefined
-        }
-        extra={
-          <ConversionPanel
-            conversion={status.conversion}
-            onAtOnce={onConversionAtOnce}
-            onMeasure={onMeasureConversion}
-          />
-        }
-      />
-
-      <Row
-        title="Sections on your devices"
-        detail="What each device shows under Library. Hiding a section only tidies the list. Every file is still in Files."
-        extra={
-          <SectionPicker
-            sections={status.sections}
-            library={status.library}
-            onChange={onSections}
-          />
-        }
-      />
-
-      <Row
+      <SettingRow
         onToggle={() => onStartWithWindows(!status.startWithWindows)}
-        title={status.platform === 'windows' ? 'Start when Windows starts' : 'Start when you log in'}
+        title={startLabel}
         detail={
           status.platform === 'windows'
             ? 'Opens in the notification area at login, so the drive is there before you go looking for it.'
             : 'Opens in the background at login, so the drive is there before you go looking for it.'
         }
-        control={
-          <Switch
-            checked={status.startWithWindows}
-            onChange={onStartWithWindows}
-            label={status.platform === 'windows' ? 'Start when Windows starts' : 'Start when you log in'}
-          />
-        }
+        control={<Switch checked={status.startWithWindows} onChange={onStartWithWindows} label={startLabel} />}
       />
 
-      <Row
+      <SettingRow
         title="This host’s name"
         detail="What your devices see in their list, before they pair."
         control={
@@ -185,13 +226,13 @@ export function SettingsPanel({
                   }
                 }}
                 onBlur={commitName}
-                className="w-[160px] rounded-sm border border-lineBright bg-ink2 px-2 py-1 font-mono text-[12px] text-text outline-none"
+                className="w-[160px] rounded-md border border-lineBright bg-ink2 px-2 py-1 font-mono text-[12px] text-text outline-none"
               />
               <button
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={commitName}
                 aria-label="Save the name"
-                className="rounded-sm p-1.5 text-textDim transition-colors hover:bg-panel2 hover:text-text"
+                className="rounded-md p-1.5 text-textDim transition-colors hover:bg-white/[0.06] hover:text-text"
               >
                 <Check size={13} />
               </button>
@@ -202,52 +243,48 @@ export function SettingsPanel({
                 setDraft(status.hostName)
                 setEditingName(true)
               }}
-              className="flex items-center gap-2 rounded-sm px-2 py-1 font-mono text-[12px] text-textDim transition-colors hover:bg-panel2 hover:text-text"
+              className="flex max-w-[200px] items-center gap-2 rounded-md px-2 py-1 font-mono text-[12px] text-textDim transition-colors hover:bg-white/[0.06] hover:text-text"
             >
-              {status.hostName}
-              <Pencil size={11} />
+              <span className="truncate">{status.hostName}</span>
+              <Pencil size={11} className="shrink-0" />
             </button>
           )
         }
       />
 
-      <div className="px-5 py-3.5">
-        <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
-          Address
-        </div>
-        <div className="tnum mt-1.5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11.5px] text-textDim">
-          {status.addresses.length > 0 ? (
-            <>
-              {/* The network the computer actually uses comes first. The
-                  rest are usually adapters other software adds — VirtualBox,
-                  WSL — and are shown quietly after it. */}
-              <span>
+      <div className="px-4 py-3">
+        <div className="flex items-baseline justify-between gap-4">
+          <span className="text-[13px] text-text">Address</span>
+          <span className="tnum min-w-0 truncate font-mono text-[12px] text-textDim">
+            {status.addresses.length > 0 ? (
+              <>
                 {status.addresses[0]}
                 <span className="text-textFaint">:{status.port}</span>
-              </span>
-              {status.addresses.length > 1 && (
-                <span className="text-textFaint">also {status.addresses.slice(1).join(', ')}</span>
-              )}
-            </>
-          ) : (
-            <span className="text-textFaint">No network connection</span>
-          )}
+              </>
+            ) : (
+              <span className="text-textFaint">No network connection</span>
+            )}
+          </span>
         </div>
-        <p className="mt-2 text-[11px] leading-relaxed text-textFaint">
-          {/* Shown because it is occasionally useful to know, and never
-              because anyone has to type it. */}
-          Only for reference. Your devices find this host by themselves, even when its
-          address changes.
+        {/* The network the computer actually uses comes first. The rest are
+            usually adapters other software adds (VirtualBox, WSL), shown
+            quietly after it. */}
+        {status.addresses.length > 1 && (
+          <div className="tnum mt-1 truncate text-right font-mono text-[10.5px] text-textFaint">
+            also {status.addresses.slice(1).join(', ')}
+          </div>
+        )}
+        <p className="mt-1.5 text-[11.5px] leading-snug text-textFaint">
+          Only for reference. Your devices find this host by themselves, even when its address changes.
         </p>
-
-        {/* Which build this is, and where it writes its log. Both exist
-            because "am I running the new one?" and "where do I look when it
-            misbehaves?" each cost a round trip to answer once. */}
-        <div className="tnum mt-3 border-t border-line pt-3 font-mono text-[10px] text-textFaint">
-          <div>{build || 'build unknown'}</div>
+        {/* Which build this is, and where it writes its log: "am I running
+            the new one?" and "where do I look when it misbehaves?" each cost
+            a round trip to answer once. */}
+        <div className="tnum mt-2.5 flex items-center justify-between gap-3 font-mono text-[10px] text-textFaint">
+          <span className="truncate">{build || 'build unknown'}</span>
           <button
             onClick={onOpenLog}
-            className="mt-1 underline decoration-dotted underline-offset-2 transition-colors hover:text-textDim"
+            className="shrink-0 underline decoration-dotted underline-offset-2 transition-colors hover:text-textDim"
           >
             open the log folder
           </button>
@@ -257,7 +294,7 @@ export function SettingsPanel({
       <div id="host-about" className="scroll-mt-6">
         <About product="Basalt Host" platform={status.platform} />
       </div>
-    </div>
+    </Group>
   )
 }
 
@@ -309,14 +346,14 @@ function Artwork({
   const total = films + series
 
   return (
-    <div className="mt-2.5 border-t border-line pt-2.5">
+    <div className="px-4 py-3">
       <div className="flex items-start gap-3">
         <div
           className="min-w-0 flex-1 cursor-pointer select-none"
           onClick={() => onPosters(!posters)}
         >
-          <div className="text-[12px] text-textDim">Download posters</div>
-          <p className="mt-0.5 text-[11px] leading-relaxed text-textFaint">
+          <div className="text-[13px] text-text">Download posters</div>
+          <p className="mt-0.5 text-[11.5px] leading-snug text-textFaint">
             {/* Said plainly, because this is the actual cost of the switch and
                 no key is required any more to make somebody think about it. */}
             {posters
@@ -406,56 +443,6 @@ function Artwork({
   )
 }
 
-function Row({
-  title,
-  detail,
-  control,
-  warn,
-  extra,
-  onToggle,
-}: {
-  title: string
-  detail: string
-  /** For a row whose control is a switch: clicking the words flips it too,
-   *  as clicking a label does anywhere else. */
-  onToggle?: () => void
-  control?: React.ReactNode
-  warn?: boolean
-  /** Rendered under the detail, for a control the row itself cannot hold. */
-  extra?: React.ReactNode
-}): React.JSX.Element {
-  return (
-    <div className="flex items-start gap-4 px-5 py-4">
-      <div className="min-w-0 flex-1">
-        <div
-          onClick={onToggle}
-          className={onToggle ? 'group cursor-pointer select-none' : undefined}
-        >
-        <div className="text-[13px] font-medium text-text">{title}</div>
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.p
-            key={detail}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            className={
-              warn
-                ? 'mt-1 text-[11.5px] leading-relaxed text-danger'
-                : 'mt-1 text-[11.5px] leading-relaxed text-textFaint'
-            }
-          >
-            {detail}
-          </motion.p>
-        </AnimatePresence>
-        </div>
-        {extra}
-      </div>
-      <div className="mt-0.5 shrink-0">{control}</div>
-    </div>
-  )
-}
-
 interface SectionCard {
   key: keyof Sections
   label: string
@@ -469,8 +456,8 @@ interface SectionCard {
 const SECTION_CARDS: SectionCard[] = [
   { key: 'movies', label: 'Movies', icon: Film, recognised: true, amount: (l) => l.films },
   { key: 'series', label: 'TV Series', icon: Tv, recognised: true, amount: (l) => l.series },
-  { key: 'videos', label: 'Videos', icon: Video, amount: (l) => l.videos },
   { key: 'music', label: 'Music', icon: Music, amount: (l) => l.music },
+  { key: 'videos', label: 'Videos', icon: Video, amount: (l) => l.videos },
   { key: 'photos', label: 'Photos', icon: ImageIcon, amount: (l) => l.photos },
 ]
 
@@ -538,6 +525,272 @@ function SectionPicker({
             ? 'Devices show Files, Recent and Starred only.'
             : `${shown} of ${SECTION_CARDS.length} sections shown. Changes reach connected devices at once.`}
       </p>
+    </div>
+  )
+}
+
+/**
+ * Timeline pictures: small pictures along each film's timeline, made here
+ * and kept in the host's own folder. Nothing leaves the computer, so it is
+ * on unless turned off; the switch is for the disk space and the work.
+ */
+const PREVIEWS_WHEN: Array<{ value: PreviewsWhen; label: string; explained: string }> = [
+  {
+    value: 'arrive',
+    label: 'As they arrive',
+    explained: 'Made as soon as a film or episode is on the drive, even while something plays.',
+  },
+  {
+    value: 'idle',
+    label: 'While idle',
+    explained: 'Made when nothing has been watched or converted for a minute, one film at a time.',
+  },
+  {
+    value: 'play',
+    label: 'When played',
+    explained: 'Made only for a film when somebody first plays it. Nothing in the background.',
+  },
+]
+
+function TimelinePictures({
+  status,
+  onChange,
+  onWhen,
+  onMakeMissing,
+}: {
+  status: HostStatus
+  onChange: (enabled: boolean) => void
+  onWhen: (when: PreviewsWhen) => void
+  onMakeMissing: () => void
+}): React.JSX.Element | null {
+  const { previews: on, previewsWhen, previewsNow } = status.library
+  const asked = useMissingCheck(status.library.previewsCheck ?? null)
+  // A host before these existed reports nothing to switch.
+  if (on === undefined) return null
+  const when = previewsWhen ?? 'idle'
+  const running = previewsNow != null && previewsNow.total > 0
+  return (
+    <div className="px-4 py-3">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1 cursor-pointer select-none" onClick={() => onChange(!on)}>
+          <div className="text-[13px] text-text">Timeline pictures</div>
+          <p className="mt-0.5 text-[11.5px] leading-snug text-textFaint">
+            {on
+              ? 'Small pictures along each film’s timeline, made on this computer and kept with the host’s own files, up to 2 GB. A film played for the first time gets them then.'
+              : 'Off. Moving along a film’s timeline shows the time only.'}
+          </p>
+        </div>
+        <div className="mt-0.5 shrink-0">
+          <Switch checked={on} onChange={onChange} label="Timeline pictures" />
+        </div>
+      </div>
+      {on && previewsWhen !== undefined && (
+        <div className="mt-2.5 space-y-2.5">
+          <div className="flex flex-col items-start">
+            <Segmented<PreviewsWhen>
+              id="previews-when-choice"
+              value={when}
+              options={PREVIEWS_WHEN.map(({ value, label }) => ({ value, label }))}
+              onChange={onWhen}
+            />
+            <p className="mt-1.5 text-[11px] leading-relaxed text-textFaint">
+              {PREVIEWS_WHEN.find((w) => w.value === when)?.explained}
+            </p>
+          </div>
+          {asked.phase === 'looking' && !previewsNow && (
+            <div className="flex items-center gap-2 text-[11px] text-textDim">
+              <Loader2 size={11} className="shrink-0 animate-spin text-basalt" />
+              Looking for films and episodes without them…
+            </div>
+          )}
+          {asked.phase === 'none' && !previewsNow && (
+            <div className="flex items-center gap-2 text-[11px] text-textDim">
+              <Check size={12} className="shrink-0 text-basalt" />
+              None missing: every film and episode has them already.
+            </div>
+          )}
+          {previewsNow && (
+            <div className="flex items-center gap-2 text-[11px] text-textDim">
+              <Loader2 size={11} className="shrink-0 animate-spin text-basalt" />
+              <span className="min-w-0 truncate">
+                Making timeline pictures: {previewsNow.name}
+                {running && ` · ${previewsNow.done + 1} of ${previewsNow.total}`}
+              </span>
+            </div>
+          )}
+          <button
+            onClick={() => {
+              asked.press()
+              onMakeMissing()
+            }}
+            disabled={running || asked.phase === 'looking'}
+            className="rounded-full border border-white/[0.12] px-3.5 py-1.5 text-[12px] text-text transition-colors hover:bg-white/[0.05] disabled:opacity-50"
+          >
+            {running ? 'Making the missing ones…' : 'Make the missing ones now'}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** How long "none missing" stays, once said. */
+const NONE_SHOWN_MS = 8_000
+/** Past this with no answer, the look is taken as over. */
+const LOOK_GIVES_UP_MS = 30_000
+
+/**
+ * What became of pressing "Make the missing ones now": looking, then either
+ * the pictures being made or "none missing". Without it the press did
+ * nothing anyone could see when nothing was missing. As in Manage host.
+ */
+function useMissingCheck(check: PreviewsCheck | null): { phase: 'idle' | 'looking' | 'none'; press: () => void } {
+  const [phase, setPhase] = useState<'idle' | 'looking' | 'none'>('idle')
+  const before = useRef<number | null>(null)
+  useEffect(() => {
+    if (phase !== 'looking' || !check || check.checking) return
+    if (check.at === before.current) return
+    setPhase(check.found === 0 ? 'none' : 'idle')
+  }, [check, phase])
+  useEffect(() => {
+    if (phase === 'idle') return undefined
+    const timer = setTimeout(() => setPhase('idle'), phase === 'none' ? NONE_SHOWN_MS : LOOK_GIVES_UP_MS)
+    return () => clearTimeout(timer)
+  }, [phase])
+  return {
+    phase,
+    press: () => {
+      before.current = check && !check.checking ? check.at : null
+      setPhase('looking')
+    },
+  }
+}
+
+/**
+ * Album covers and artist photos from the internet, for albums whose songs
+ * carry no cover, and for artists. With it, an optional fanart.tv key of the
+ * owner's own, checked with fanart.tv before it is kept.
+ */
+function AlbumCovers({
+  status,
+  onChange,
+  onKey,
+}: {
+  status: HostStatus
+  onChange: (enabled: boolean) => void
+  onKey: (key: string) => Promise<string | null>
+}): React.JSX.Element | null {
+  const on = status.library.musicCovers
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [checking, setChecking] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
+  if (on === undefined) return null
+  const hasKey = status.library.hasFanartKey === true
+  // A host from before 1.6.3 has no artist photos, and no key to add.
+  const photos = status.library.hasFanartKey !== undefined
+  const save = (key: string): void => {
+    setChecking(true)
+    setProblem(null)
+    void onKey(key).then((why) => {
+      setChecking(false)
+      if (why) setProblem(why)
+      else setOpen(false)
+    })
+  }
+  const title = photos ? 'Download album covers and artist photos' : 'Download album covers'
+  return (
+    <div className="px-4 py-3">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1 cursor-pointer select-none" onClick={() => onChange(!on)}>
+          <div className="text-[13px] text-text">{title}</div>
+          <p className="mt-0.5 text-[11.5px] leading-snug text-textFaint">
+            {on
+              ? photos
+                ? 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive. Artists’ photos come from Wikimedia Commons, credited to who took them.'
+                : 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive.'
+              : photos
+                ? 'Off. Albums without a cover get one drawn, and artists show an album’s cover. When on, the names of albums and artists are sent to MusicBrainz to find their artwork.'
+                : 'Off. Albums without a cover get one drawn. When on, the names of albums and who they are by are sent to MusicBrainz to find their covers.'}
+          </p>
+        </div>
+        <div className="mt-0.5 shrink-0">
+          <Switch checked={on} onChange={onChange} label={title} />
+        </div>
+      </div>
+
+      {!on || !photos ? null : !open ? (
+        <button
+          onClick={() => {
+            setDraft('')
+            setProblem(null)
+            setOpen(true)
+          }}
+          className="mt-1.5 flex items-center gap-1.5 rounded-sm px-2 py-1 text-[11px] text-textFaint transition-colors hover:bg-panel2 hover:text-textDim"
+        >
+          <ImageIcon size={11} />
+          {hasKey ? 'A fanart.tv key is saved' : 'Add a fanart.tv key for more artist photos…'}
+        </button>
+      ) : (
+        <motion.div
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+          className="overflow-hidden"
+        >
+          <div className="mt-1 rounded-md border border-line bg-ink2 p-3">
+            <p className="text-[11px] leading-relaxed text-textFaint">
+              Artist photos already work without this. A personal key from a free fanart.tv
+              account finds photos for more artists. It is checked with fanart.tv before it is
+              kept, and never shown again.{' '}
+              <button
+                type="button"
+                onClick={() => void openExternal(FANART_KEY_PAGE)}
+                className="text-textDim underline decoration-white/20 underline-offset-2 transition-colors hover:text-text"
+              >
+                Get a free key
+              </button>
+            </p>
+            <div className="mt-2.5 flex items-center gap-1.5">
+              <input
+                autoFocus
+                type="password"
+                value={draft}
+                disabled={checking}
+                placeholder={hasKey ? 'A key is saved. Paste a new one to replace it.' : 'fanart.tv personal API key'}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && draft.trim()) save(draft)
+                  if (e.key === 'Escape') setOpen(false)
+                }}
+                className="min-w-0 flex-1 rounded-sm border border-line bg-panel px-2 py-1.5 font-mono text-[11.5px] text-text outline-none transition-colors placeholder:text-textFaint focus:border-lineBright disabled:opacity-60"
+              />
+              <button
+                onClick={() => save(draft)}
+                disabled={checking || !draft.trim()}
+                className="rounded-sm px-2.5 py-1.5 text-[11px] text-textDim transition-colors hover:bg-panel2 hover:text-text disabled:opacity-50"
+              >
+                {checking ? 'Checking…' : 'Save'}
+              </button>
+              <button
+                onClick={() => setOpen(false)}
+                className="rounded-sm px-2 py-1.5 text-[11px] text-textFaint transition-colors hover:text-textDim"
+              >
+                Cancel
+              </button>
+            </div>
+            {problem && <p className="mt-2 text-[11px] leading-snug text-danger">{problem}</p>}
+            {hasKey && (
+              <button
+                onClick={() => save('')}
+                className="mt-2 text-[10.5px] text-textFaint transition-colors hover:text-danger"
+              >
+                Remove the key
+              </button>
+            )}
+          </div>
+        </motion.div>
+      )}
     </div>
   )
 }

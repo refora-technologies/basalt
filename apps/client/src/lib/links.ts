@@ -13,6 +13,8 @@ export const REPO = 'https://github.com/refora-technologies/basalt'
 export const HOST_DOWNLOAD = `${WEBSITE}/download/host`
 export const PLAY_LISTING = 'https://play.google.com/store/apps/details?id=com.reforatech.basalt'
 export const FEEDBACK_EMAIL = 'reforatech@gmail.com'
+/** Where a fanart.tv personal key is made, free with an account. */
+export const FANART_KEY_PAGE = 'https://fanart.tv/get-an-api-key/'
 
 /**
  * Opens a link in the default browser, or the mail app for `mailto:`.

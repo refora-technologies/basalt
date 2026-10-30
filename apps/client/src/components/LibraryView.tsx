@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { isMobileShell } from '@/lib/platform'
 import { itemQuality } from '@/lib/quality'
 import { QualityTag } from './QualityTag'
@@ -42,6 +42,8 @@ export function LibraryView({
   onItemMore,
   onEpisodeMore,
   mediaBase = '',
+  openSeries,
+  onOpenedSeries,
 }: {
   kind: 'film' | 'series'
   items: LibraryItem[]
@@ -78,8 +80,20 @@ export function LibraryView({
   onEpisodeMore?: (item: LibraryItem, episode: LibraryEpisode, season: number) => void
   /** Where the host's pictures come from, for each episode's picture. */
   mediaBase?: string
+  /**
+   * A series to open, by id: where the player goes back to after one of its
+   * episodes. Taken once; `onOpenedSeries` says so.
+   */
+  openSeries?: string | null
+  onOpenedSeries?: () => void
 }): React.JSX.Element {
   const [open, setOpen] = useState<LibraryItem | null>(null)
+  useEffect(() => {
+    if (!openSeries) return
+    const series = items.find((item) => item.id === openSeries && item.kind === 'series')
+    if (series) setOpen(series)
+    onOpenedSeries?.()
+  }, [openSeries, items, onOpenedSeries])
 
   /**
    * How far through an item is, for the bar across its poster.

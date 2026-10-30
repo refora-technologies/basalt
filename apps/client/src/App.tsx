@@ -41,7 +41,7 @@ import {
   type SortDirection,
   type SortField,
 } from '@/components/SortMenu'
-import { MusicList, PhotoGrid, VideoGrid, sortTracks } from '@/components/MediaViews'
+import { PhotoGrid, VideoGrid, sortTracks } from '@/components/MediaViews'
 import { SettingsView } from '@/components/SettingsView'
 import { ManageHost } from '@/components/manage/ManageHost'
 import { NoDrive } from '@/components/NoDrive'
@@ -86,6 +86,12 @@ import { transferId, useTransfers } from '@/lib/useTransfers'
 import { nameOf, useFileActions } from '@/lib/useFileActions'
 import { useAsyncSubscription, useLatest } from '@/lib/useAsyncSubscription'
 import { useStars } from '@/lib/useStars'
+import { useMusic } from '@/lib/useMusic'
+import { MusicPlayer } from '@/components/music/MusicPlayer'
+import { MusicSection } from '@/components/music/MusicSection'
+import { MusicBar, NowPlaying } from '@/components/music/NowPlaying'
+import { MusicBridge, SystemMedia, useMusicProps } from '@/components/music/useMusicActions'
+import { useMusicMine } from '@/lib/useMusicMine'
 import { entriesToMedia, isMediaFile, nextEpisodes } from '@/lib/media'
 import type { MediaItem } from '@/lib/mockMedia'
 import {
@@ -185,6 +191,10 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
 
   const collections = useCollections(settled)
   const mediaBase = useMediaBase(host)
+  // Songs with their tags, as albums and artists; and the profile's own
+  // playlists and Continue listening.
+  const music = useMusic(settled, collections.collections.music)
+  const musicMine = useMusicMine(vault.status?.hostId, profileId, settled !== null)
   // Only for a host too old to sort the drive itself.
   const needsScan =
     collections.unsupported && (nav === 'recent' || LIBRARY_KEYS.includes(nav))
@@ -1375,6 +1385,8 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     setSigningIn,
     stars,
     collections,
+    music,
+    musicMine,
     mediaBase,
     needsScan,
     scan,
@@ -1432,12 +1444,64 @@ export type AppModel = ReturnType<typeof useAppModel>
 export function App(): React.JSX.Element {
   const mobile = isMobileShell()
   const model = useAppModel({ mobile })
-  return mobile ? <MobileApp model={model} /> : <DesktopApp model={model} />
+  // Music plays in a player of its own, around the whole app, so it goes on
+  // while somebody browses. Starting it closes any film.
+  return (
+    <MusicPlayer
+      onStarts={() => model.setPlaying(null)}
+      onListening={model.musicMine.setListening}
+      // Shared with the profile's other devices on this host; on its own, kept here.
+      who={model.profileId && model.vault.status?.hostId ? `${model.vault.status.hostId}/${model.profileId}` : null}
+      // A song that will not open while the host is out of reach waits for it.
+      connected={model.vault.status?.connected !== false}
+    >
+      <MusicBridge model={model} />
+      <SystemMedia model={model} />
+      {mobile ? <MobileApp model={model} /> : <DesktopApp model={model} />}
+    </MusicPlayer>
+  )
+}
+
+/** The Music section on a computer. */
+function DesktopMusic({ model }: { model: AppModel }): React.JSX.Element {
+  return <MusicSection {...useMusicProps(model, 'wide', model.query)} />
+}
+
+/** The bar along the bottom while music plays, and the full player. */
+function DesktopMusicBar({ model }: { model: AppModel }): React.JSX.Element {
+  const props = useMusicProps(model, 'wide', '')
+  return (
+    <>
+      <MusicBar {...props} />
+      <NowPlaying {...props} belowTitleBar />
+    </>
+  )
 }
 
 function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
   // Choosing another drive while connected: the drive list, with a way back.
   const [changingDrive, setChangingDrive] = useState(false)
+  /**
+   * Where closing the player goes back to: an episode to its series' list of
+   * episodes, a film to the movies. Wherever it was started from — Continue
+   * watching, a search, Recent — back is where it belongs in the library.
+   */
+  const [seriesAfterPlayer, setSeriesAfterPlayer] = useState<string | null>(null)
+  const clearSeriesAfterPlayer = useCallback(() => setSeriesAfterPlayer(null), [])
+  const backFromPlayer = (item: { id: string } | null): void => {
+    if (!item) return
+    for (const entry of model.mediaItems) {
+      if (entry.kind === 'film' && entry.path === item.id) {
+        model.setNav('movies')
+        return
+      }
+      if (entry.kind === 'series' && entry.seasons.some((s) => s.episodes.some((e) => e.path === item.id))) {
+        model.setNav('series')
+        setSeriesAfterPlayer(entry.id)
+        return
+      }
+    }
+  }
   const [introducing, setIntroducing] = useState(() => !onboarded())
   const {
     vault,
@@ -1847,6 +1911,8 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                 playing={playing !== null}
                 onPlay={(path) => void playPath(path)}
                 onForget={watched.forget}
+                openSeries={seriesAfterPlayer}
+                onOpenedSeries={clearSeriesAfterPlayer}
               />
             ) : isLibrary ? (
               libraryFiles.length === 0 ? (
@@ -1866,11 +1932,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                   onOpen={(index) => setViewer({ photos: libraryFiles, index })}
                 />
               ) : nav === 'music' ? (
-                <MusicList
-                  files={libraryFiles}
-                  playing={playing?.id ?? null}
-                  onPlay={(file) => setPlaying(musicItem(file))}
-                />
+                <DesktopMusic model={model} />
               ) : (
                 <VideoGrid
                   files={libraryFiles}
@@ -1938,6 +2000,8 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
         </main>
       </div>
 
+      <DesktopMusicBar model={model} />
+
       <TransfersPanel
         transfers={transfers.transfers}
         open={transfersOpen}
@@ -1973,6 +2037,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
       <PlayerOverlay
         item={playing}
         onClose={() => {
+          backFromPlayer(playing)
           setPlaying(null)
           // The player reports one last position as it unmounts; picking the
           // list up straight after means Continue watching is right by the

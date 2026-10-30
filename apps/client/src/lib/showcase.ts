@@ -18,6 +18,7 @@ import type {
   DirEntry,
   LibraryItem,
   MediaFile,
+  MusicTrack,
   ProfileView,
   Watched,
 } from './api'
@@ -186,6 +187,25 @@ function musicFiles(): MediaFile[] {
       path: `Music/${album.artist}/${album.album}/${pad(i + 1)} ${title}.flac`,
       size: Math.round((24 + (i % 7) * 3) * MB),
       mtime: now() - DAY * album.day,
+    })),
+  )
+}
+
+/** The songs with the tags the host would read from them. */
+export function music(): MusicTrack[] {
+  return data.music.flatMap((album) =>
+    album.tracks.map((title, i) => ({
+      path: `Music/${album.artist}/${album.album}/${pad(i + 1)} ${title}.flac`,
+      size: Math.round((24 + (i % 7) * 3) * MB),
+      mtime: now() - DAY * album.day,
+      title,
+      artist: album.artist,
+      albumArtist: album.artist,
+      album: album.album,
+      track: i + 1,
+      year: 2026 - Math.floor(album.day / 30),
+      durationMs: (170 + ((i * 37) % 110)) * 1000,
+      cover: false,
     })),
   )
 }

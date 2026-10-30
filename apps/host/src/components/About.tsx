@@ -310,7 +310,7 @@ function feedbackLink(product: string, version: string, platform: HostStatus['pl
  * opener plugin's `allow-open-url` allows none by itself, which is how these
  * buttons came to do nothing at all. A link added here needs adding there.
  */
-async function openExternal(url: string): Promise<void> {
+export async function openExternal(url: string): Promise<void> {
   if (!inTauri()) {
     window.open(url, '_blank')
     return

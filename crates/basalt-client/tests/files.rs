@@ -520,7 +520,8 @@ async fn hidden_items_are_marked_and_kept_out_of_the_collections() {
     let (fixture, client) = start().await;
     fixture.put("desktop.ini", b"[.ShellClassInfo]");
     fixture.put("AppData/cache/thumb 1.jpg", b"not a photo anyone took");
-    fixture.put("Photos/beach.jpg", b"a real photo");
+    // Photo-sized: pictures under 16 KB are icons, not photos.
+    fixture.put("Photos/beach.jpg", &b"a real photo".repeat(2000));
     for target in ["desktop.ini", "AppData"] {
         let made = std::process::Command::new("attrib")
             .args(["+h", "+s"])
@@ -563,5 +564,57 @@ async fn hidden_items_are_marked_and_kept_out_of_the_collections() {
         photos,
         vec!["Photos/beach.jpg".to_string()],
         "nothing from a hidden folder"
+    );
+}
+
+// The songs with their tags, read by the host after its walk, and sent
+// again only when they change. A file that is not really audio is still a
+// song, with no tags; a picture beside it is its cover.
+#[tokio::test]
+async fn the_host_sends_the_songs_once_they_are_read() {
+    let (fixture, client) = start().await;
+    fixture.put("Music/Ana/Debut/01 One.mp3", b"not really an mp3");
+    fixture.put("Music/Ana/Debut/cover.jpg", b"not really a picture");
+
+    fixture.host.start_scan();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut answer = None;
+    while Instant::now() < deadline {
+        let response = client.music(0).await.expect("the music answers");
+        let tracks = response.tracks.clone().unwrap_or_default();
+        if !response.reading && tracks.len() == 1 {
+            answer = Some(response);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let answer = answer.expect("the song arrives");
+    let track = &answer.tracks.as_ref().unwrap()[0];
+    assert_eq!(track.path, "Music/Ana/Debut/01 One.mp3");
+    assert_eq!(track.title, None, "no tags to read");
+    assert!(track.cover, "the folder's cover counts");
+
+    // Asked again with what it has: nothing to send.
+    let again = client.music(answer.revision).await.unwrap();
+    assert_eq!(again.revision, answer.revision);
+    assert!(again.tracks.is_none());
+
+    // Playlists are a profile's: a device on its own keeps its own.
+    let refused = client
+        .music_mine(basalt_proto::msg::MusicMineRequest::default())
+        .await;
+    assert!(refused.is_err(), "no profile, no playlists on the host");
+}
+
+// The speed test measures both ways over the real connection.
+#[tokio::test]
+async fn the_speed_test_measures_both_ways() {
+    let (_fixture, client) = start().await;
+    let result = client.speed_test().await.expect("the test runs");
+    assert!(result.down_mbps > 1.0, "{result:?}");
+    assert!(result.up_mbps > 1.0, "{result:?}");
+    assert!(
+        result.delay_ms >= 0.0 && result.delay_ms < 1000.0,
+        "{result:?}"
     );
 }

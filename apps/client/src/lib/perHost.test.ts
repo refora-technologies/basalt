@@ -26,9 +26,10 @@ const pending = vi.hoisted(() => ({
 
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>()
+  // Answered with an Error, the call fails with it.
   const wait = (queue: Array<(value: unknown) => void>) =>
-    new Promise((resolve) => {
-      queue.push(resolve)
+    new Promise((resolve, reject) => {
+      queue.push((value) => (value instanceof Error ? reject(value) : resolve(value)))
     })
   return {
     ...actual,
@@ -150,6 +151,31 @@ describe('videos, music, photos and recent', () => {
     await waitFor(() => expect(calls.collections).toEqual([0, 0]))
     await answer('collections', lists('b.mp4'))
     expect(result.current.collections.videos.map((v) => v.path)).toEqual(['b.mp4'])
+  })
+})
+
+describe('a host restarting', () => {
+  it('is asked again, and its lists shown, rather than taken for a host too old to send them', async () => {
+    const { ApiError } = await import('./api')
+    const { result } = renderHook(() => useCollections('host-a'))
+    await answer('collections', new ApiError('offline', 'Basalt Host isn’t running'))
+    expect(result.current.unsupported).toBe(false)
+    await waitFor(() => expect(calls.collections.length).toBe(2), { timeout: 4_000 })
+    await answer('collections', {
+      revision: 7,
+      scanning: false,
+      collections: { videos: [], music: [{ path: 'Music/a.mp3', size: 1, mtime: 1 }], photos: [], recent: [], truncated: false },
+    })
+    expect(result.current.collections.music.map((m) => m.path)).toEqual(['Music/a.mp3'])
+    expect(result.current.unsupported).toBe(false)
+  })
+
+  it('a host that says it cannot is believed at once', async () => {
+    const { ApiError } = await import('./api')
+    const { result } = renderHook(() => useCollections('host-a'))
+    await answer('collections', new ApiError('unsupported', 'unknown request'))
+    expect(result.current.unsupported).toBe(true)
+    expect(calls.collections.length).toBe(1)
   })
 })
 

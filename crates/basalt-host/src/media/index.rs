@@ -244,6 +244,15 @@ pub struct Walk {
     pub subtitles: Vec<String>,
 }
 
+/// Pictures smaller than this are icons and the like, not photos.
+pub const SMALLEST_PHOTO: u64 = 16 * 1024;
+
+/// Whether a file is a picture too small to be anybody's photo.
+pub fn is_icon(path: &str, size: u64) -> bool {
+    size < SMALLEST_PHOTO
+        && basalt_proto::media::kind_of(path) == Some(basalt_proto::media::MediaKind::Image)
+}
+
 /// The whole walk: films, collections and leftovers, in one pass.
 ///
 /// `keep_going` is asked every so often, and the walk ends when it says no:
@@ -307,11 +316,12 @@ pub fn walk_within(
     // for them would mean reading every directory on the drive twice.
     let mut subtitles: Vec<String> = Vec::new();
     // Each folder with whether it is inside an extras folder, where nothing
-    // is a film but everything is still a file.
-    let mut queue = std::collections::VecDeque::from([(String::new(), false)]);
+    // is a film but everything is still a file, and whether it is inside a
+    // program's or a project's, whose files are not anybody's media.
+    let mut queue = std::collections::VecDeque::from([(String::new(), false, false)]);
     let mut visited = 0usize;
 
-    while let Some((dir, in_extras)) = queue.pop_front() {
+    while let Some((dir, in_extras, in_program)) = queue.pop_front() {
         visited += 1;
         if visited > max_dirs {
             tracing::warn!(
@@ -359,6 +369,8 @@ pub fn walk_within(
             tracing::info!("the vault root has {} entries", entries.len());
         }
 
+        let in_program = in_program || super::programs::marks(&dir, &entries);
+
         for entry in entries {
             // Hidden and system items are the computer's, not the person's:
             // a shared user folder holds AppData, and a browser's cache in it
@@ -378,7 +390,7 @@ pub fn walk_within(
                 basalt_proto::msg::EntryKind::Dir => {
                     if !parse::is_system(&path) {
                         let extras = in_extras || parse::is_extra(&path);
-                        queue.push_back((path, extras));
+                        queue.push_back((path, extras, in_program));
                     }
                 }
                 basalt_proto::msg::EntryKind::File => {
@@ -390,7 +402,9 @@ pub fn walk_within(
                         }
                         continue;
                     }
-                    walk.gathered.note(&path, entry.size, entry.mtime);
+                    if !in_program && !is_icon(&path, entry.size) {
+                        walk.gathered.note(&path, entry.size, entry.mtime);
+                    }
                     // Before the size floor: a subtitle is a few kilobytes,
                     // and the floor exists to keep home videos out of the
                     // library, not to throw away the subtitles for a film.

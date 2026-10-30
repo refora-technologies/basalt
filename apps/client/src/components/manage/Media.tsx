@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
+  Check,
   Cpu,
   Film,
   Images,
@@ -15,7 +16,8 @@ import {
   Video,
   type LucideIcon,
 } from 'lucide-react'
-import type { LibrarySections, ManagedHostStatus } from '@/lib/manage'
+import type { LibrarySections, ManagedHostStatus, PreviewsCheck, PreviewsWhen } from '@/lib/manage'
+import { FANART_KEY_PAGE, openExternal } from '@/lib/links'
 import { cn } from '@/lib/utils'
 import { Group, Pill, Row, Rows, Segmented, Toggle, ago, useLayout } from './parts'
 import type { Tools } from './tools'
@@ -66,6 +68,87 @@ export function LibraryGroup({ m, view, prompt, confirm }: Tools): React.JSX.Ele
             onChange={(enabled) => m.act({ do: 'setPosters', enabled })}
           />
         )}
+        {library.musicCovers !== undefined &&
+          (library.hasFanartKey === undefined ? (
+            <Toggle
+              title="Download album covers"
+              description={
+                library.musicCovers
+                  ? 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive.'
+                  : 'Off. Albums without a cover get one drawn. When on, the names of albums and who they are by are sent to MusicBrainz to find their covers.'
+              }
+              checked={library.musicCovers}
+              onChange={(enabled) => m.act({ do: 'setMusicCovers', enabled })}
+            />
+          ) : (
+            <Toggle
+              title="Download album covers and artist photos"
+              description={
+                library.musicCovers
+                  ? 'Albums whose songs have no cover are looked up on MusicBrainz, and their covers fetched from the Cover Art Archive. Artists’ photos come from Wikimedia Commons, credited to who took them.'
+                  : 'Off. Albums without a cover get one drawn, and artists show an album’s cover. When on, the names of albums and artists are sent to MusicBrainz to find their artwork.'
+              }
+              checked={library.musicCovers}
+              onChange={(enabled) => m.act({ do: 'setMusicCovers', enabled })}
+            />
+          ))}
+        {library.musicCovers && library.hasFanartKey !== undefined && (
+          <Row
+            icon={<KeyRound size={phone ? 17 : 14} />}
+            title="fanart.tv key"
+            sub={
+              library.hasFanartKey
+                ? 'Saved. It is never shown again.'
+                : 'Optional: a personal key from a free fanart.tv account finds photos for more artists.'
+            }
+            end={
+              <span className="flex shrink-0 gap-1.5">
+                {!library.hasFanartKey && <Pill onClick={() => void openExternal(FANART_KEY_PAGE)}>Get a key</Pill>}
+                {library.hasFanartKey && (
+                  <Pill
+                    onClick={() =>
+                      void confirm({
+                        title: 'Remove the fanart.tv key?',
+                        message: 'Artist photos still come from Wikimedia Commons without it, for fewer artists.',
+                        confirmLabel: 'Remove',
+                        danger: true,
+                      }).then((ok) => ok && m.act({ do: 'setFanartKey', key: '' }))
+                    }
+                  >
+                    Remove
+                  </Pill>
+                )}
+                <Pill
+                  onClick={() =>
+                    prompt({
+                      title: 'Your fanart.tv key',
+                      value: '',
+                      confirmLabel: 'Check and save',
+                      onConfirm: (key) => void m.act({ do: 'setFanartKey', key }),
+                    })
+                  }
+                >
+                  {library.hasFanartKey ? 'Replace' : 'Add'}
+                </Pill>
+              </span>
+            }
+          />
+        )}
+        {library.previews !== undefined && (
+          <Toggle
+            title="Timeline pictures"
+            description={
+              library.previews
+                ? 'Small pictures along each film’s timeline, made on the host and kept there, up to 2 GB. A film played for the first time gets them then.'
+                : 'Off. Moving along a film’s timeline shows the time only.'
+            }
+            checked={library.previews}
+            onChange={(enabled) => m.act({ do: 'setPreviews', enabled })}
+          />
+        )}
+        {library.previews && library.previewsWhen !== undefined && (
+          <PreviewsControls m={m} view={view} />
+        )}
         {library.enabled && library.posters && (
           <Row
             icon={<KeyRound size={phone ? 17 : 14} />}
@@ -108,6 +191,119 @@ export function LibraryGroup({ m, view, prompt, confirm }: Tools): React.JSX.Ele
   )
 }
 
+const PREVIEWS_WHEN: Array<{ value: PreviewsWhen; label: string; explained: string }> = [
+  {
+    value: 'arrive',
+    label: 'As they arrive',
+    explained: 'Made as soon as a film or episode is on the drive, even while something plays.',
+  },
+  {
+    value: 'idle',
+    label: 'While idle',
+    explained: 'Made when nothing has been watched or converted for a minute, one film at a time.',
+  },
+  {
+    value: 'play',
+    label: 'When played',
+    explained: 'Made only for a film when somebody first plays it. Nothing in the background.',
+  },
+]
+
+/** When timeline pictures are made, what is being made now, and a way to make the rest at once. */
+function PreviewsControls({ m, view }: Pick<Tools, 'm' | 'view'>): React.JSX.Element {
+  const phone = useLayout() === 'phone'
+  const { library } = view.status
+  const when = library.previewsWhen ?? 'idle'
+  const now = library.previewsNow ?? null
+  const running = now !== null && now.total > 0
+  const asked = useMissingCheck(library.previewsCheck ?? null)
+  return (
+    <>
+      <div className="px-4 py-3.5">
+        <div className={cn('mb-2 text-text', phone ? 'text-[15px]' : 'text-[13px]')}>When to make them</div>
+        <Segmented<PreviewsWhen>
+          label="When to make timeline pictures"
+          value={when}
+          options={PREVIEWS_WHEN.map(({ value, label }) => ({ value, label }))}
+          onChange={(value) => void m.act({ do: 'setPreviewsWhen', when: value })}
+        />
+        <p className={cn('mt-2 leading-snug text-textFaint', phone ? 'text-[12.5px]' : 'text-[11.5px]')}>
+          {PREVIEWS_WHEN.find((w) => w.value === when)?.explained}
+        </p>
+      </div>
+      {asked.phase === 'looking' && !now && (
+        <Row
+          icon={<Loader2 size={phone ? 17 : 14} className="animate-spin text-basalt" />}
+          title="Looking for films without them…"
+          sub="Every film and episode on the drive is checked."
+        />
+      )}
+      {asked.phase === 'none' && !now && (
+        <Row
+          icon={<Check size={phone ? 17 : 14} className="text-basalt" />}
+          title="None missing"
+          sub="Every film and episode has its timeline pictures already."
+        />
+      )}
+      {now && (
+        <Row
+          icon={<Loader2 size={phone ? 17 : 14} className="animate-spin text-basalt" />}
+          title="Making timeline pictures"
+          sub={running ? `${now.name} · ${now.done + 1} of ${now.total}` : now.name}
+        />
+      )}
+      <Row
+        icon={<Images size={phone ? 17 : 14} />}
+        title="Make the missing ones now"
+        sub={
+          running
+            ? 'Going through every film and episode without them.'
+            : 'Every film and episode without timeline pictures gets them, one after another, starting now.'
+        }
+        disabled={running || asked.phase === 'looking' || m.busy === 'makeMissingPreviews'}
+        onClick={() => {
+          asked.press()
+          void m.act({ do: 'makeMissingPreviews' })
+        }}
+      />
+    </>
+  )
+}
+
+/** How long "none missing" stays, once said. */
+const NONE_SHOWN_MS = 8_000
+/** Past this with no answer, the look is taken as over. */
+const LOOK_GIVES_UP_MS = 30_000
+
+/**
+ * What became of pressing "Make the missing ones now": looking, then either
+ * the pictures being made (shown as they are) or "none missing". Without it
+ * the press did nothing anyone could see when nothing was missing, and read
+ * as a button that does not work.
+ */
+function useMissingCheck(check: PreviewsCheck | null): { phase: 'idle' | 'looking' | 'none'; press: () => void } {
+  const [phase, setPhase] = useState<'idle' | 'looking' | 'none'>('idle')
+  // The check the host reported before the press, to tell its answer from an old one.
+  const before = useRef<number | null>(null)
+  useEffect(() => {
+    if (phase !== 'looking' || !check || check.checking) return
+    if (check.at === before.current) return
+    setPhase(check.found === 0 ? 'none' : 'idle')
+  }, [check, phase])
+  useEffect(() => {
+    if (phase === 'idle') return undefined
+    const timer = setTimeout(() => setPhase('idle'), phase === 'none' ? NONE_SHOWN_MS : LOOK_GIVES_UP_MS)
+    return () => clearTimeout(timer)
+  }, [phase])
+  return {
+    phase,
+    press: () => {
+      before.current = check && !check.checking ? check.at : null
+      setPhase('looking')
+    },
+  }
+}
+
 /**
  * What the index found, or what it is doing. A scan under way says so, rather
  * than reporting nothing found at the moment that is least likely to be true.
@@ -130,8 +326,8 @@ const SECTIONS: Array<{
 }> = [
   { key: 'movies', label: 'Movies', icon: Film, amount: (l) => l.films },
   { key: 'series', label: 'TV Series', icon: Tv, amount: (l) => l.series },
-  { key: 'videos', label: 'Videos', icon: Video, amount: (l) => l.videos },
   { key: 'music', label: 'Music', icon: Music, amount: (l) => l.music },
+  { key: 'videos', label: 'Videos', icon: Video, amount: (l) => l.videos },
   { key: 'photos', label: 'Photos', icon: Images, amount: (l) => l.photos },
 ]
 

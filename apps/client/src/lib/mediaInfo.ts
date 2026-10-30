@@ -80,7 +80,11 @@ export function trackInfo(path: string): TrackInfo {
   const title = (numbered ? numbered[2]! : stem).trim()
   const number = numbered ? Number(numbered[1]) : null
 
-  const folders = parts.slice(0, -1).filter((p) => !GENERIC.has(p.trim().toLowerCase()))
+  // Only the folders inside the music folder say who and what: above it is
+  // where the music is kept, "D:/Work/Old/Music/...", not who made it.
+  const above = parts.slice(0, -1)
+  const container = above.map((p) => GENERIC.has(p.trim().toLowerCase())).lastIndexOf(true)
+  const folders = above.slice(container + 1)
   const album = folders.length >= 1 ? folders[folders.length - 1]! : ''
   const artist = folders.length >= 2 ? folders[folders.length - 2]! : ''
   return { title: title || stem, artist, album, number }

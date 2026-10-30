@@ -341,6 +341,37 @@ async fn set_posters(state: State<'_, AppState>, enabled: bool) -> Answer<HostSt
     status(state).await
 }
 
+/// Album covers from the internet on or off.
+#[tauri::command]
+async fn set_music_covers(state: State<'_, AppState>, enabled: bool) -> Answer<HostStatus> {
+    state.host.set_music_covers(enabled)?;
+    status(state).await
+}
+
+/// Timeline pictures on or off.
+#[tauri::command]
+async fn set_previews(state: State<'_, AppState>, enabled: bool) -> Answer<HostStatus> {
+    state.host.set_previews(enabled)?;
+    status(state).await
+}
+
+/// When timeline pictures are made.
+#[tauri::command]
+async fn set_previews_when(
+    state: State<'_, AppState>,
+    when: basalt_proto::msg::PreviewsWhen,
+) -> Answer<HostStatus> {
+    state.host.set_previews_when(when)?;
+    status(state).await
+}
+
+/// Timeline pictures for every film and episode without them, starting now.
+#[tauri::command]
+async fn make_missing_previews(state: State<'_, AppState>) -> Answer<HostStatus> {
+    state.host.make_missing_previews();
+    status(state).await
+}
+
 /// Whether each device sees its own watch history.
 #[tauri::command]
 async fn set_sections(
@@ -400,6 +431,12 @@ async fn new_claim_code(state: State<'_, AppState>, id: String) -> Answer<HostSt
 #[tauri::command]
 async fn set_tmdb_key(state: State<'_, AppState>, key: String) -> Answer<HostStatus> {
     state.host.set_tmdb_key(&key).await?;
+    status(state).await
+}
+
+#[tauri::command]
+async fn set_fanart_key(state: State<'_, AppState>, key: String) -> Answer<HostStatus> {
+    state.host.set_fanart_key(&key).await?;
     status(state).await
 }
 
@@ -962,25 +999,39 @@ pub fn run() {
                 let host = Arc::clone(&host);
                 tauri::async_runtime::spawn(async move {
                     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-                    let outcome = match basalt_host::bind(host, addr).await {
-                        Ok(bound) => {
-                            serving.store(true, Ordering::Relaxed);
-                            tracing::info!("serving on {}", bound.addr());
-                            basalt_host::serve(bound).await
+                    // The port taken (another copy still closing, or a host
+                    // in Docker on this computer): tried again until it is
+                    // free, so closing the other one is all it takes.
+                    let outcome = loop {
+                        match basalt_host::bind(Arc::clone(&host), addr).await {
+                            Ok(bound) => {
+                                *problem.lock().expect("problem lock") = None;
+                                serving.store(true, Ordering::Relaxed);
+                                tracing::info!("serving on {}", bound.addr());
+                                break basalt_host::serve(bound).await;
+                            }
+                            Err(basalt_host::HostError::Io(e))
+                                if e.kind() == std::io::ErrorKind::AddrInUse =>
+                            {
+                                let message = format!(
+                                    "Port {port} is already taken, probably by another copy of \
+                                     Basalt Host. Sharing starts here as soon as it is free."
+                                );
+                                {
+                                    let mut current = problem.lock().expect("problem lock");
+                                    if current.as_deref() != Some(message.as_str()) {
+                                        tracing::warn!("{message}");
+                                        *current = Some(message);
+                                    }
+                                }
+                                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            }
+                            Err(e) => break Err(e),
                         }
-                        Err(e) => Err(e),
                     };
 
                     serving.store(false, Ordering::Relaxed);
                     let message = match outcome {
-                        Err(basalt_host::HostError::Io(e))
-                            if e.kind() == std::io::ErrorKind::AddrInUse =>
-                        {
-                            format!(
-                                "Port {port} is already taken. Another copy of Basalt Host is \
-                                 probably already running."
-                            )
-                        }
                         Err(e) => format!("Sharing stopped: {e}"),
                         Ok(()) => "Sharing stopped.".to_string(),
                     };
@@ -1064,10 +1115,15 @@ pub fn run() {
             set_library_enabled,
             rescan_library,
             set_posters,
+            set_previews,
+            set_previews_when,
+            make_missing_previews,
+            set_music_covers,
             set_conversion,
             set_conversion_at_once,
             measure_conversion,
             set_tmdb_key,
+            set_fanart_key,
             reset_profile_pin,
             remove_profile,
             add_profile,

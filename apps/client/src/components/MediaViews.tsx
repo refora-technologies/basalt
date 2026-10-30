@@ -57,12 +57,14 @@ export function Thumb({
   className?: string
   children?: React.ReactNode
 }): React.JSX.Element {
-  const [loaded, setLoaded] = useState(false)
-  const [failed, setFailed] = useState(false)
-  useEffect(() => {
-    setLoaded(false)
-    setFailed(false)
-  }, [src])
+  // Which picture loaded, or failed, rather than whether one did: when the
+  // picture changes in place (the next song's cover in the music bar), one
+  // the browser already has loads at once, before a reset after the change
+  // would run, and the reset hid it for good behind the placeholder.
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null)
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
+  const loaded = loadedSrc === src
+  const failed = failedSrc === src
 
   return (
     <div className={cn('relative overflow-hidden bg-[#141416]', className)}>
@@ -74,8 +76,8 @@ export function Thumb({
           loading="lazy"
           decoding="async"
           draggable={false}
-          onLoad={() => setLoaded(true)}
-          onError={() => setFailed(true)}
+          onLoad={() => setLoadedSrc(src)}
+          onError={() => setFailedSrc(src)}
           className={cn(
             'absolute inset-0 h-full w-full object-cover transition-[opacity,transform] duration-300 ease-out group-hover:scale-[1.03]',
             loaded ? 'opacity-100' : 'opacity-0',

@@ -433,10 +433,15 @@ async fn a_different_host_at_the_same_address_is_refused() {
 
     // The first host is still running and may answer the search that follows
     // a wrong host, at whatever address it announces; which of the tests'
-    // hosts answers a search depends on the machine. Refused either way. The
+    // hosts answers a search depends on the machine, and on a busy one the
+    // search can give up first ("did not answer"). Refused every way. The
     // test below pins down how the refusal is named.
     assert!(
-        err.is_transient() || matches!(err, ClientError::WrongHost { .. }),
+        err.is_transient()
+            || matches!(
+                err,
+                ClientError::WrongHost { .. } | ClientError::HostNotFound
+            ),
         "connecting to the wrong host must fail, got: {err}"
     );
     assert!(!client.is_connected());
@@ -544,6 +549,14 @@ async fn a_host_is_reached_by_its_computers_name() {
         // the address the test host listens on.
         host["machine"] = "localhost".into();
     });
+    // How long this machine takes, right now, to say nothing answers at the
+    // remembered address: on Windows about two seconds, and more on a busy
+    // machine. Tried first by the client too, and not what is measured.
+    let refused = {
+        let at = std::time::Instant::now();
+        let _ = tokio::net::TcpStream::connect(("127.0.0.2", port)).await;
+        at.elapsed()
+    };
     let client = fixture.client();
     let started = std::time::Instant::now();
     let info = client
@@ -552,10 +565,11 @@ async fn a_host_is_reached_by_its_computers_name() {
         .expect("found by the computer's name");
     assert_eq!(info.address, fixture.addr);
     // Not held up by the names that do not resolve: "localhost.local" takes
-    // Windows five seconds to give up on.
+    // Windows five seconds to give up on. A fixed limit failed now and then
+    // while every other test ran beside this one: the refusal above grew.
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(4),
-        "took {:?}",
+        started.elapsed() < refused + std::time::Duration::from_secs(3),
+        "took {:?}, of which {refused:?} saying nothing answers at the old address",
         started.elapsed()
     );
 }
@@ -1864,4 +1878,100 @@ async fn an_upload_on_a_just_cut_connection_starts_again() {
         std::fs::read(fixture.vault_path("quick.bin")).unwrap(),
         std::fs::read(&source).unwrap()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Music across a profile's devices
+// ---------------------------------------------------------------------------
+
+/// A laptop playing: a phone signed in to the same profile sees it, and can
+/// ask it to pause; a device on its own sees nothing; stopped, it is gone.
+#[tokio::test]
+async fn a_profiles_devices_see_and_steer_each_others_music() {
+    use basalt_proto::msg::{Listening, MusicCommandRequest, MusicNowRequest, NowReport};
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let maya = laptop
+        .create_profile("Maya", "2468", 0, true)
+        .await
+        .expect("a profile");
+
+    let phone_store = unique("phone-store").with_extension("json");
+    let phone = Arc::new(Basalt::open(phone_store.clone()).unwrap());
+    fixture.pair(&phone).await.expect("the phone pairs");
+    phone
+        .sign_in_profile(&maya.id, "2468", true)
+        .await
+        .expect("the phone signs in as Maya");
+
+    let asking = MusicNowRequest::default();
+    let heard = phone.music_now(asking.clone()).await.unwrap();
+    assert!(heard.sessions.is_empty(), "nothing playing yet");
+
+    let report = NowReport {
+        listening: Listening {
+            queue: vec!["Music/Ana/Debut/01 One.mp3".into()],
+            index: 0,
+            position: 12.0,
+            from: "Debut".into(),
+            ..Listening::default()
+        },
+        playing: true,
+        duration: 180.0,
+        clock: None,
+    };
+    let playing = MusicNowRequest {
+        report: Some(report.clone()),
+        stopped: false,
+    };
+    let told = laptop.music_now(playing.clone()).await.unwrap();
+    assert!(told.sessions.is_empty(), "the laptop does not see itself");
+
+    let heard = phone.music_now(asking.clone()).await.unwrap();
+    assert_eq!(heard.sessions.len(), 1, "the phone sees the laptop playing");
+    assert_eq!(heard.sessions[0].report, report);
+    assert!(heard.now >= heard.sessions[0].at);
+
+    phone
+        .music_command(MusicCommandRequest {
+            device: heard.sessions[0].device.clone(),
+            action: "pause".into(),
+            position: 0.0,
+            listening: None,
+            clock: None,
+        })
+        .await
+        .expect("the phone asks the laptop to pause");
+    let asked = laptop.music_now(playing.clone()).await.unwrap();
+    assert_eq!(asked.commands.len(), 1);
+    assert_eq!(asked.commands[0].action, "pause");
+
+    // A device on its own keeps to itself, and sees nobody's music.
+    let other_store = unique("other-store").with_extension("json");
+    let other = Arc::new(Basalt::open(other_store.clone()).unwrap());
+    fixture.pair(&other).await.expect("a third device pairs");
+    assert!(
+        other
+            .music_now(asking.clone())
+            .await
+            .unwrap()
+            .sessions
+            .is_empty()
+    );
+
+    laptop
+        .music_now(MusicNowRequest {
+            report: None,
+            stopped: true,
+        })
+        .await
+        .unwrap();
+    assert!(
+        phone.music_now(asking).await.unwrap().sessions.is_empty(),
+        "stopped, it is gone"
+    );
+
+    let _ = std::fs::remove_file(phone_store);
+    let _ = std::fs::remove_file(other_store);
 }

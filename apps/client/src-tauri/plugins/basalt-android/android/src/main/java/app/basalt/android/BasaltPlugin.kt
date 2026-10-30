@@ -114,6 +114,19 @@ class KeepAliveArgs {
 }
 
 @InvokeArg
+class MediaArgs {
+  var title: String = ""
+  var artist: String = ""
+  var album: String = ""
+  var cover: String? = null
+  var duration: Double = 0.0
+  var position: Double = 0.0
+  var playing: Boolean = false
+  var canPrevious: Boolean = true
+  var canNext: Boolean = true
+}
+
+@InvokeArg
 class LetGoArgs {
   lateinit var reason: String
 }
@@ -978,6 +991,39 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   fun letGo(invoke: Invoke) {
     val args = invoke.parseArgs(LetGoArgs::class.java)
     KeepAliveService.release(activity, args.reason)
+    invoke.resolve()
+  }
+
+  /**
+   * What music is playing, for the lock screen, the notification's player and
+   * the rest: see [MediaNow]. Their buttons come back as `media` events.
+   */
+  @Command
+  fun mediaSession(invoke: Invoke) {
+    val args = invoke.parseArgs(MediaArgs::class.java)
+    MediaNow.show(
+      activity,
+      MediaNow.Info(
+        args.title, args.artist, args.album, args.duration, args.position,
+        args.playing, args.canPrevious, args.canNext, args.cover,
+      ),
+    ) { action, position ->
+      trigger("media", JSObject().put("action", action).put("position", position))
+    }
+    // The page moves the queue on from one song to the next, and it must
+    // still run with the screen off: its process stays important while music
+    // plays, not only while it can be seen.
+    if (Build.VERSION.SDK_INT >= 26) {
+      webView?.post {
+        webView?.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+      }
+    }
+    invoke.resolve()
+  }
+
+  @Command
+  fun mediaSessionEnd(invoke: Invoke) {
+    MediaNow.end(activity)
     invoke.resolve()
   }
 

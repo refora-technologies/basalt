@@ -66,12 +66,33 @@ pub struct HostConfig {
     #[serde(default)]
     pub posters: bool,
 
+    /// Small pictures along each film's timeline, made on this computer and
+    /// kept in its own folder. On by default: nothing leaves the host.
+    #[serde(default = "default_true")]
+    pub previews: bool,
+
+    /// When they are made: as films arrive, while the host is idle (the
+    /// default), or only when one is first played.
+    #[serde(default)]
+    pub previews_when: basalt_proto::msg::PreviewsWhen,
+
+    /// Album covers looked up online for albums whose songs carry none.
+    /// Off by default, like posters: the switch is the consent to telling
+    /// MusicBrainz which albums are on the drive.
+    #[serde(default)]
+    pub music_covers: bool,
+
     /// TMDb key, for titles the keyless source does not have. Optional.
     ///
     /// Only consulted when [`Self::posters`] is on and the free source found
     /// nothing, so this widens coverage rather than unlocking the feature.
     #[serde(default)]
     pub tmdb_key: String,
+
+    /// fanart.tv key of the owner's own, for artist photos. Optional: without
+    /// it, artists' photos come from Wikidata, for fewer of them.
+    #[serde(default)]
+    pub fanart_key: String,
 
     /// Whether the host puts a new version in by itself, when nothing is
     /// being watched or copied. On unless turned off: a host nobody looks at
@@ -161,7 +182,11 @@ impl HostConfig {
             start_with_windows: false,
             library_enabled: false,
             posters: false,
+            previews: true,
+            previews_when: basalt_proto::msg::PreviewsWhen::Idle,
+            music_covers: false,
             tmdb_key: String::new(),
+            fanart_key: String::new(),
             automatic_updates: true,
             progress_per_device: false,
             profiles: Vec::new(),
@@ -389,6 +414,15 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         TempDir(dir)
+    }
+
+    #[test]
+    fn a_config_from_before_timeline_picture_timing_makes_them_while_idle() {
+        let mut saved = serde_json::to_value(HostConfig::create("laptop-b").unwrap()).unwrap();
+        saved.as_object_mut().unwrap().remove("previews_when");
+        let read: HostConfig = serde_json::from_value(saved).unwrap();
+        assert_eq!(read.previews_when, basalt_proto::msg::PreviewsWhen::Idle);
+        assert!(read.previews);
     }
 
     #[test]

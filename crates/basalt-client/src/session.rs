@@ -824,14 +824,128 @@ impl Session {
         .map_err(Into::into)
     }
 
-    /// A preview image of a video or photo, as JPEG bytes.
-    pub async fn thumbnail(&mut self, path: &str, size: u32) -> Result<Vec<u8>> {
+    /// Every song on the drive with its tags, unless the host's copy still
+    /// matches `known_revision`.
+    pub async fn music(&mut self, known_revision: u64) -> Result<basalt_proto::msg::MusicResponse> {
+        call_json(
+            &mut self.stream,
+            Op::Music,
+            &basalt_proto::msg::MusicRequest { known_revision },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    /// The profile's playlists and listening; each part given replaces the
+    /// host's copy.
+    pub async fn music_mine(
+        &mut self,
+        request: &basalt_proto::msg::MusicMineRequest,
+    ) -> Result<basalt_proto::msg::MusicMine> {
+        call_json(&mut self.stream, Op::MusicMine, request)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// What this device plays, told; what the profile's others play, heard.
+    pub async fn music_now(
+        &mut self,
+        request: &basalt_proto::msg::MusicNowRequest,
+    ) -> Result<basalt_proto::msg::MusicNowResponse> {
+        call_json(&mut self.stream, Op::MusicNow, request)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Asks another of the profile's devices to pause, play, skip or stop.
+    pub async fn music_command(
+        &mut self,
+        request: &basalt_proto::msg::MusicCommandRequest,
+    ) -> Result<()> {
+        let body = serde_json::to_vec(request).map_err(|e| {
+            crate::ClientError::Config(format!("could not encode the command: {e}"))
+        })?;
+        write_request(&mut self.stream, Op::MusicCommand, &body).await?;
+        read_response(&mut self.stream).await?;
+        Ok(())
+    }
+
+    /// Whether a film's timeline pictures are made, and how they are laid out.
+    pub async fn previews(&mut self, path: &str) -> Result<basalt_proto::msg::PreviewsResponse> {
+        call_json(
+            &mut self.stream,
+            Op::Previews,
+            &basalt_proto::msg::PreviewsRequest {
+                path: path.to_string(),
+            },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    /// One sheet of a film's timeline pictures, as JPEG bytes.
+    pub async fn preview_sheet(&mut self, path: &str, index: u32) -> Result<Vec<u8>> {
+        let request = serde_json::to_vec(&basalt_proto::msg::PreviewSheetRequest {
+            path: path.to_string(),
+            index,
+        })
+        .map_err(|e| ClientError::Protocol(e.to_string()))?;
+        write_request(&mut self.stream, Op::PreviewSheet, &request).await?;
+        Ok(read_response(&mut self.stream).await?)
+    }
+
+    /// One round of a speed test from the host: asks for `bytes` and reads
+    /// them. How many came.
+    pub async fn speed_down(&mut self, bytes: u32) -> Result<usize> {
+        write_request(
+            &mut self.stream,
+            Op::SpeedTest,
+            &basalt_proto::msg::speed_test::down(bytes),
+        )
+        .await?;
+        Ok(read_response(&mut self.stream).await?.len())
+    }
+
+    /// One round of a speed test to the host: sends `data`, waits for the nod.
+    pub async fn speed_up(&mut self, data: &[u8]) -> Result<()> {
+        write_request(
+            &mut self.stream,
+            Op::SpeedTest,
+            &basalt_proto::msg::speed_test::up(data),
+        )
+        .await?;
+        read_response(&mut self.stream).await?;
+        Ok(())
+    }
+
+    /// Where a film's or an episode's intro and credits are.
+    pub async fn segments(&mut self, path: &str) -> Result<basalt_proto::msg::SegmentsResponse> {
+        call_json(
+            &mut self.stream,
+            Op::Segments,
+            &basalt_proto::msg::SegmentsRequest {
+                path: path.to_string(),
+            },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    /// A preview image of a video or photo, as JPEG bytes; or, with `artist`,
+    /// the photo of that artist (`path` one of their songs).
+    pub async fn thumbnail(
+        &mut self,
+        path: &str,
+        size: u32,
+        artist: Option<&str>,
+    ) -> Result<Vec<u8>> {
         write_request(
             &mut self.stream,
             Op::Thumbnail,
             &serde_json::to_vec(&basalt_proto::msg::ThumbnailRequest {
                 path: path.to_string(),
                 size,
+                artist: artist.map(str::to_string),
             })
             .map_err(|e| ClientError::Protocol(e.to_string()))?,
         )
@@ -1016,8 +1130,11 @@ impl Session {
         write_request(
             &mut self.stream,
             Op::Watch,
-            &serde_json::to_vec(&WatchRequest { profiles: true })
-                .map_err(|e| ClientError::Protocol(e.to_string()))?,
+            &serde_json::to_vec(&WatchRequest {
+                profiles: true,
+                music: true,
+            })
+            .map_err(|e| ClientError::Protocol(e.to_string()))?,
         )
         .await?;
         Ok(())

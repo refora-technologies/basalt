@@ -73,8 +73,27 @@ pub fn make(path: &Path, bucket: u32) -> Result<Vec<u8>, ThumbError> {
             None => frame(path, bucket, &["0"]),
         },
         Some(MediaKind::Video) => frame(path, bucket, &POSITIONS),
+        // A song's cover: in the file, or beside it in its folder.
+        Some(MediaKind::Audio) => match super::music::cover(path) {
+            Some(cover) => encode(&shrink(cover, bucket)),
+            None => Err(ThumbError::Failed(format!("{name} has no cover"))),
+        },
         _ => Err(ThumbError::NotMedia(name)),
     }
+}
+
+/// A picture already on disk (an album cover fetched online), made into a
+/// thumbnail like any other. Blocking.
+pub fn from_file(path: &Path, bucket: u32) -> Result<Vec<u8>, ThumbError> {
+    // By what it holds, not its name: album covers fetched online are kept
+    // as `.img`, whatever kind of picture they are, and taken by the name
+    // alone not one of them was ever shown.
+    let picture = image::ImageReader::open(path)
+        .and_then(|reader| reader.with_guessed_format())
+        .map_err(|e| ThumbError::Failed(e.to_string()))?
+        .decode()
+        .map_err(|e| ThumbError::Failed(e.to_string()))?;
+    encode(&shrink(picture, bucket))
 }
 
 /// A photo, turned the way its camera said it should be.
@@ -467,6 +486,22 @@ fn default_mpv_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_picture_is_known_by_what_it_holds_not_its_name() {
+        let dir = std::env::temp_dir().join(format!("basalt-thumbs-img-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("cover.png");
+        image::RgbImage::from_pixel(64, 64, image::Rgb([200, 40, 40]))
+            .save(&png)
+            .unwrap();
+        // As album covers are kept: a picture with a name that says nothing.
+        let kept = dir.join("1a2b3c.img");
+        std::fs::rename(&png, &kept).unwrap();
+        let made = from_file(&kept, bucket(320)).expect("a picture, whatever it is called");
+        assert!(image::load_from_memory(&made).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("basalt-thumbs-{}-{name}", std::process::id()));

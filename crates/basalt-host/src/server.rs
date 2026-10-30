@@ -59,6 +59,11 @@ pub struct Host {
     /// Sent whenever the profiles or the owner's rules about them change, so
     /// every device watching asks again at once: see [`stream_changes`].
     profile_changes: tokio::sync::broadcast::Sender<()>,
+    /// What each profile's devices are playing now, and what they ask of
+    /// each other.
+    music_live: std::sync::Mutex<crate::music_now::Live>,
+    /// A profile whose devices' music changed, for their watches to say so.
+    music_changes: tokio::sync::broadcast::Sender<String>,
     /// The household's key, and the member statements made and taken back.
     authority: std::sync::Mutex<crate::authority::Authority>,
     /// This host's public key, as an owner's endorsement names it.
@@ -75,6 +80,29 @@ pub struct Host {
     library: std::sync::Mutex<crate::media::Library>,
     /// Every video, song and photo on the drive, and the newest files.
     collections: std::sync::Mutex<crate::media::collect::Stored>,
+    /// The songs on the drive with their tags: see `media::music`.
+    music: std::sync::Mutex<crate::media::music::Stored>,
+    /// A refresh of the music is under way; another was asked for meanwhile.
+    music_reading: std::sync::atomic::AtomicBool,
+    music_again: std::sync::atomic::AtomicBool,
+    /// Album covers being fetched now.
+    music_art_running: std::sync::atomic::AtomicBool,
+    /// A fanart.tv key was added: the artist photos fetched before it are
+    /// looked up there again, at the next run.
+    fanart_upgrade: std::sync::atomic::AtomicBool,
+    /// Each profile's playlists and listening on this drive.
+    music_mine: std::sync::Mutex<crate::media::music::Mine>,
+    /// Intros and credits found on this drive: see `media::segments`.
+    segments: std::sync::Mutex<crate::media::segments::Store>,
+    segment_finder: std::sync::atomic::AtomicBool,
+    /// Films whose timeline pictures are being made, by path.
+    previews_making: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// A run of "make the missing ones": how many done of how many, while it
+    /// goes. Also what "as films arrive" uses after each scan.
+    previews_run: std::sync::Mutex<Option<(usize, usize)>>,
+    /// The last "make the missing ones": still looking, or how many it found
+    /// and when, so the windows can say "none missing" rather than nothing.
+    previews_check: std::sync::Mutex<Option<crate::ui::PreviewsCheck>>,
     /// Thumbnails being made at once. Two: a grid scrolled quickly asks for
     /// dozens, and making them all together would starve everything else the
     /// host is doing — a film being streamed, most of all.
@@ -166,6 +194,27 @@ impl Host {
             )),
             None => crate::media::collect::Stored::default(),
         };
+        let music = match &config.vault_path {
+            Some(root) => crate::media::music::Stored::load(&crate::media::music::stored_path(
+                config_path.parent().unwrap_or(std::path::Path::new(".")),
+                root,
+            )),
+            None => crate::media::music::Stored::default(),
+        };
+        let music_mine = match &config.vault_path {
+            Some(root) => crate::media::music::load_mine(&crate::media::music::mine_path(
+                config_path.parent().unwrap_or(std::path::Path::new(".")),
+                root,
+            )),
+            None => crate::media::music::Mine::default(),
+        };
+        let segments = match &config.vault_path {
+            Some(root) => crate::media::segments::load(&crate::media::segments::store_path(
+                config_path.parent().unwrap_or(std::path::Path::new(".")),
+                root,
+            )),
+            None => crate::media::segments::Store::default(),
+        };
 
         let config_dir = config_path
             .parent()
@@ -252,6 +301,8 @@ impl Host {
             watch_generation: tokio::sync::watch::Sender::new(0),
             access_changes: tokio::sync::broadcast::Sender::new(16),
             profile_changes: tokio::sync::broadcast::Sender::new(16),
+            music_live: std::sync::Mutex::new(crate::music_now::Live::default()),
+            music_changes: tokio::sync::broadcast::Sender::new(64),
             authority: std::sync::Mutex::new(authority),
             host_key,
             drive_lost: std::sync::atomic::AtomicBool::new(drive_lost),
@@ -259,6 +310,17 @@ impl Host {
             state_root: std::sync::Mutex::new(state_root),
             library: std::sync::Mutex::new(library),
             collections: std::sync::Mutex::new(collections),
+            music: std::sync::Mutex::new(music),
+            music_reading: std::sync::atomic::AtomicBool::new(false),
+            music_again: std::sync::atomic::AtomicBool::new(false),
+            music_art_running: std::sync::atomic::AtomicBool::new(false),
+            fanart_upgrade: std::sync::atomic::AtomicBool::new(false),
+            music_mine: std::sync::Mutex::new(music_mine),
+            segments: std::sync::Mutex::new(segments),
+            segment_finder: std::sync::atomic::AtomicBool::new(false),
+            previews_making: std::sync::Mutex::default(),
+            previews_run: std::sync::Mutex::new(None),
+            previews_check: std::sync::Mutex::new(None),
             thumb_gate: tokio::sync::Semaphore::new(2),
             thumbs_written: std::sync::atomic::AtomicUsize::new(0),
             measured: std::sync::Mutex::new(measured),
@@ -372,6 +434,19 @@ impl Host {
     /// Anything that cannot be pictured — no mpv beside the host, a file the
     /// decoders do not read — is "not found", which the device shows as its
     /// ordinary tile.
+    /// An artist's photo, at a thumbnail's size.
+    pub async fn artist_thumbnail(&self, name: &str, size: u32) -> Result<Vec<u8>> {
+        let missing = || HostError::NotFound(format!("a photo of {name}"));
+        let (photo, _) =
+            crate::media::music_artists::photo(self.config_dir(), name).ok_or_else(missing)?;
+        let bucket = crate::media::thumbs::bucket(size);
+        let _turn = self.thumb_gate.acquire().await.map_err(|_| missing())?;
+        tokio::task::spawn_blocking(move || crate::media::thumbs::from_file(&photo, bucket))
+            .await
+            .map_err(|e| HostError::BadRequest(format!("the thumbnail panicked: {e}")))?
+            .map_err(|e| HostError::NotFound(e.to_string()))
+    }
+
     pub async fn thumbnail(&self, rel: &str, size: u32) -> Result<Vec<u8>> {
         let vault = self
             .vault()
@@ -395,10 +470,17 @@ impl Host {
         if let Ok(bytes) = tokio::fs::read(&cached).await {
             return Ok(bytes);
         }
-        let bytes = tokio::task::spawn_blocking(move || crate::media::thumbs::make(&path, bucket))
-            .await
-            .map_err(|e| HostError::BadRequest(format!("the thumbnail panicked: {e}")))?
-            .map_err(|e| HostError::NotFound(e.to_string()))?;
+        // A song without a cover of its own: its album's, fetched online.
+        let fetched = self.fetched_cover(rel);
+        let bytes = tokio::task::spawn_blocking(move || {
+            crate::media::thumbs::make(&path, bucket).or_else(|e| match fetched {
+                Some(cover) => crate::media::thumbs::from_file(&cover, bucket),
+                None => Err(e),
+            })
+        })
+        .await
+        .map_err(|e| HostError::BadRequest(format!("the thumbnail panicked: {e}")))?
+        .map_err(|e| HostError::NotFound(e.to_string()))?;
 
         if let Some(parent) = cached.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
@@ -460,6 +542,290 @@ impl Host {
         }
     }
 
+    /// The songs on the drive with their tags, unless `known_revision` is
+    /// already the host's.
+    pub fn music_response(&self, known_revision: u64) -> basalt_proto::msg::MusicResponse {
+        use std::sync::atomic::Ordering;
+        let stored = self.music.lock().expect("music lock");
+        let sending = known_revision != stored.revision || stored.revision == 0;
+        basalt_proto::msg::MusicResponse {
+            revision: stored.revision,
+            reading: self.music_reading.load(Ordering::SeqCst) || self.is_scanning(),
+            artists: if sending {
+                self.artist_photos(&stored.tracks)
+            } else {
+                Vec::new()
+            },
+            tracks: sending.then(|| stored.tracks.clone()),
+        }
+    }
+
+    /// The artists of these songs the host has a photo of.
+    fn artist_photos(
+        &self,
+        tracks: &[basalt_proto::msg::MusicTrack],
+    ) -> Vec<basalt_proto::msg::ArtistPhoto> {
+        let dir = self.config_dir();
+        artist_names(tracks)
+            .into_iter()
+            .filter_map(|name| {
+                let (_, credit) = crate::media::music_artists::photo(dir, &name)?;
+                Some(basalt_proto::msg::ArtistPhoto { name, credit })
+            })
+            .collect()
+    }
+
+    /// Brings the music up to date with the collections, in the background:
+    /// tags read for songs that are new or changed, gone ones dropped. One
+    /// at a time; asked for again meanwhile, it runs once more after.
+    pub fn refresh_music(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.music_reading.swap(true, Ordering::SeqCst) {
+            self.music_again.store(true, Ordering::SeqCst);
+            return;
+        }
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                host.music_again.store(false, Ordering::SeqCst);
+                host.read_music().await;
+                if !host.music_again.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
+            host.music_reading.store(false, Ordering::SeqCst);
+            // Asked for between the last look and letting go.
+            if host.music_again.swap(false, Ordering::SeqCst) {
+                host.refresh_music();
+            } else {
+                host.fetch_music_art();
+            }
+        });
+    }
+
+    async fn read_music(&self) {
+        let Some(serving) = self.serving().await else {
+            return;
+        };
+        let files = self
+            .collections
+            .lock()
+            .expect("collections lock")
+            .collections
+            .music
+            .clone();
+        let existing = self.music.lock().expect("music lock").clone();
+        let vault = Arc::clone(&serving.vault);
+        let next = tokio::task::spawn_blocking(move || {
+            crate::media::music::refresh(&existing, &files, |rel| vault.resolve(rel).ok())
+        })
+        .await
+        .ok()
+        .flatten();
+        let Some(next) = next else {
+            return;
+        };
+        {
+            let mut stored = self.music.lock().expect("music lock");
+            if !self.still_serving(&serving) {
+                return;
+            }
+            *stored = next.clone();
+        }
+        let path = crate::media::music::stored_path(self.config_dir(), &serving.root);
+        if let Err(e) = next.save(&path) {
+            tracing::warn!("could not save the music: {e}");
+        }
+        self.announce(basalt_proto::msg::Change::LibraryChanged)
+            .await;
+    }
+
+    /// Where a file's intro and credits are, as far as the host has found.
+    pub fn segments_of(&self, rel: &str) -> basalt_proto::msg::SegmentsResponse {
+        let store = self.segments.lock().expect("segments lock");
+        match store.get(rel) {
+            Some(found) => basalt_proto::msg::SegmentsResponse {
+                intro: found.intro,
+                credits: found.credits,
+            },
+            None => basalt_proto::msg::SegmentsResponse::default(),
+        }
+    }
+
+    /// Where an episode's intro and credits are, for the player that opens
+    /// it. Found by the host while idle; an episode not looked at yet has its
+    /// own chapters read now, which takes a moment, so a new episode whose
+    /// chapters name them has its buttons the first time it plays. Kept only
+    /// when they do: the sound shared with the other episodes is still
+    /// compared while idle for the rest.
+    pub async fn segments_for(&self, rel: &str) -> basalt_proto::msg::SegmentsResponse {
+        if self
+            .segments
+            .lock()
+            .expect("segments lock")
+            .contains_key(rel)
+        {
+            return self.segments_of(rel);
+        }
+        let none = basalt_proto::msg::SegmentsResponse::default();
+        let (Some(ffmpeg), Some(serving)) = (self.converter.ffmpeg(), self.serving().await) else {
+            return none;
+        };
+        let vault = Arc::clone(&serving.vault);
+        let (Ok(entry), Ok(path)) = (vault.stat(rel), vault.resolve(rel)) else {
+            return none;
+        };
+        let (intro, credits) = tokio::task::spawn_blocking(move || {
+            crate::media::segments::from_file_chapters(&ffmpeg, &path)
+        })
+        .await
+        .unwrap_or((None, None));
+        if intro.is_none() && credits.is_none() {
+            return none;
+        }
+        let snapshot = {
+            let mut store = self.segments.lock().expect("segments lock");
+            store.insert(
+                rel.to_string(),
+                crate::media::segments::Found {
+                    size: entry.size,
+                    mtime: entry.mtime,
+                    intro,
+                    credits,
+                },
+            );
+            store.clone()
+        };
+        let path = crate::media::segments::store_path(self.config_dir(), &serving.root);
+        if let Err(e) = crate::media::segments::save(&path, &snapshot) {
+            tracing::warn!("could not save the intros and credits found: {e}");
+        }
+        basalt_proto::msg::SegmentsResponse { intro, credits }
+    }
+
+    /// Looks for intros and credits while the host has nothing else to do,
+    /// for as long as it runs: one season (or one film) at a time, each when
+    /// nothing has been streamed or converted for a minute. Started once.
+    pub fn start_segment_finder(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.segment_finder.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+            loop {
+                let worked = if host.quiet_for_a_minute().await {
+                    host.find_segments_once().await
+                        || (host.previews_when() != basalt_proto::msg::PreviewsWhen::Play
+                            && host.make_previews_once().await)
+                } else {
+                    false
+                };
+                if !worked {
+                    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                }
+            }
+        });
+    }
+
+    /// The next season or film not looked at yet, looked at. Whether there
+    /// was one.
+    async fn find_segments_once(&self) -> bool {
+        let Some(ffmpeg) = self.converter.ffmpeg() else {
+            return false;
+        };
+        let Some(serving) = self.serving().await else {
+            return false;
+        };
+        let groups: Vec<Vec<String>> = {
+            let library = self.library.lock().expect("library lock");
+            library
+                .items
+                .iter()
+                .flat_map(|item| match item.kind {
+                    basalt_proto::msg::LibraryKind::Film => item
+                        .path
+                        .clone()
+                        .map(|p| vec![p])
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                    _ => item
+                        .seasons
+                        .iter()
+                        .map(|s| s.episodes.iter().map(|e| e.path.clone()).collect())
+                        .collect(),
+                })
+                .collect()
+        };
+        // Each file as it is now, to see which have changed since.
+        let vault = Arc::clone(&serving.vault);
+        let next = {
+            let store = self.segments.lock().expect("segments lock");
+            groups.into_iter().find_map(|group| {
+                let episodes: Vec<crate::media::segments::Episode> = group
+                    .iter()
+                    .filter_map(|rel| {
+                        let entry = vault.stat(rel).ok()?;
+                        Some(crate::media::segments::Episode {
+                            rel: rel.clone(),
+                            path: vault.resolve(rel).ok()?,
+                            size: entry.size,
+                            mtime: entry.mtime,
+                        })
+                    })
+                    .collect();
+                let stale = episodes.iter().any(|e| {
+                    store
+                        .get(&e.rel)
+                        .is_none_or(|f| f.size != e.size || f.mtime != e.mtime)
+                });
+                stale.then_some(episodes)
+            })
+        };
+        let Some(episodes) = next else {
+            return false;
+        };
+        let found =
+            tokio::task::spawn_blocking(move || crate::media::segments::find(&ffmpeg, &episodes))
+                .await
+                .unwrap_or_default();
+        let snapshot = {
+            let mut store = self.segments.lock().expect("segments lock");
+            if !self.still_serving(&serving) {
+                return true;
+            }
+            store.extend(found);
+            store.clone()
+        };
+        let path = crate::media::segments::store_path(self.config_dir(), &serving.root);
+        if let Err(e) = crate::media::segments::save(&path, &snapshot) {
+            tracing::warn!("could not save the intros and credits found: {e}");
+        }
+        true
+    }
+
+    /// One profile's playlists and listening, changed as asked and saved.
+    pub fn music_mine(
+        &self,
+        profile: &str,
+        request: basalt_proto::msg::MusicMineRequest,
+    ) -> basalt_proto::msg::MusicMine {
+        let changes = request.playlists.is_some() || request.listening.is_some();
+        let (now, snapshot) = {
+            let mut mine = self.music_mine.lock().expect("music mine lock");
+            let now = crate::media::music::apply(&mut mine, profile, request);
+            (now, changes.then(|| mine.clone()))
+        };
+        if let (Some(snapshot), Some(root)) = (snapshot, self.vault_path()) {
+            let path = crate::media::music::mine_path(self.config_dir(), &root);
+            if let Err(e) = crate::media::music::save_mine(&path, &snapshot) {
+                tracing::warn!("could not save the playlists: {e}");
+            }
+        }
+        now
+    }
+
     fn collections_path(&self) -> Option<std::path::PathBuf> {
         Some(crate::media::collect::stored_path(
             self.config_dir(),
@@ -510,18 +876,20 @@ impl Host {
                         && !crate::media::parse::is_system(path)
                         && basalt_proto::media::kind_of(path).is_some()
                 })
-                // As the walk does: nothing inside a hidden folder.
+                // As the walk does: nothing inside a hidden folder, nor a
+                // program's or a project's, and no icons.
                 .filter(|path| !vault.is_hidden_path(path))
+                .filter(|path| !crate::media::programs::within(&vault, path))
                 .filter_map(|path| {
                     let entry = vault.stat(path).ok()?;
-                    (entry.kind == basalt_proto::msg::EntryKind::File).then(|| {
-                        basalt_proto::msg::MediaFile {
-                            path: path.clone(),
-                            size: entry.size,
-                            mtime: entry.mtime,
-                            width: None,
-                            height: None,
-                        }
+                    (entry.kind == basalt_proto::msg::EntryKind::File
+                        && !crate::media::index::is_icon(path, entry.size))
+                    .then(|| basalt_proto::msg::MediaFile {
+                        path: path.clone(),
+                        size: entry.size,
+                        mtime: entry.mtime,
+                        width: None,
+                        height: None,
                     })
                 })
                 .collect();
@@ -559,7 +927,7 @@ impl Host {
     ///
     /// No walk needed: a path that is gone is gone, and everything under a
     /// folder that is gone went with it.
-    async fn file_removals(&self, paths: Vec<String>) {
+    async fn file_removals(self: &Arc<Self>, paths: Vec<String>) {
         let changed = {
             let mut stored = self.collections.lock().expect("collections lock");
             let next = crate::media::collect::remove(&stored.collections, &paths);
@@ -569,6 +937,7 @@ impl Host {
             self.save_collections();
             self.announce(basalt_proto::msg::Change::LibraryChanged)
                 .await;
+            self.refresh_music();
         }
     }
 
@@ -1254,6 +1623,491 @@ impl Host {
     /// they are on this machine already, and deleting them would be a second
     /// decision nobody asked for. Turning it on scans, which is what actually
     /// fetches them.
+    /// Album covers from the internet on or off. On, the albums without a
+    /// cover of their own are looked up now.
+    pub fn set_music_covers(self: &Arc<Self>, enabled: bool) -> Result<()> {
+        self.config.lock().expect("config lock").music_covers = enabled;
+        self.persist()?;
+        if enabled {
+            self.fetch_music_art();
+        }
+        Ok(())
+    }
+
+    /// Fetches covers for albums whose songs carry none, when switched on,
+    /// in the background and one at a time; then marks those songs as having
+    /// a cover, so devices ask for it. Covers fetched earlier are marked even
+    /// when the switch is off: they are on this computer already.
+    pub fn fetch_music_art(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.music_art_running.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            host.mark_music_art().await;
+            loop {
+                let (wanted, fanart_key) = {
+                    let config = host.config.lock().expect("config lock");
+                    (config.music_covers, config.fanart_key.clone())
+                };
+                let upgrade = host.fanart_upgrade.swap(false, Ordering::SeqCst);
+                if wanted {
+                    let albums = host.albums_without_covers();
+                    let dir = host.config_dir().to_path_buf();
+                    if crate::media::music_art::fetch_missing(albums, &dir).await > 0 {
+                        host.mark_music_art().await;
+                    }
+                    let names = {
+                        let stored = host.music.lock().expect("music lock");
+                        artist_names(&stored.tracks)
+                    };
+                    // A key just added: the photos from before it, looked up
+                    // on fanart.tv; then the artists still without one.
+                    let mut changed = 0;
+                    if upgrade && !fanart_key.trim().is_empty() {
+                        changed += crate::media::music_artists::upgrade_to_fanart(
+                            names.clone(),
+                            &dir,
+                            &fanart_key,
+                        )
+                        .await;
+                    }
+                    changed +=
+                        crate::media::music_artists::fetch_missing(names, &dir, &fanart_key).await;
+                    if changed > 0 {
+                        host.music_changed().await;
+                    }
+                }
+                // Asked for again while it ran (a key added meanwhile): once more.
+                if !host.fanart_upgrade.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
+            host.music_art_running.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// The albums, by who they are by and their name, none of whose songs
+    /// has a cover.
+    fn albums_without_covers(&self) -> Vec<crate::media::music_names::CoverKey> {
+        let stored = self.music.lock().expect("music lock");
+        let mut covered = std::collections::HashSet::new();
+        let mut all = std::collections::BTreeSet::new();
+        for track in &stored.tracks {
+            let Some(key) = crate::media::music_names::cover_key(track) else {
+                continue;
+            };
+            if track.cover {
+                covered.insert((key.artist.clone(), key.album.clone()));
+            }
+            all.insert(key);
+        }
+        all.into_iter()
+            .filter(|k| !covered.contains(&(k.artist.clone(), k.album.clone())))
+            .collect()
+    }
+
+    /// Songs whose album has a fetched cover now say they have a cover; when
+    /// any changed, the music's revision moves on and devices are told.
+    async fn mark_music_art(&self) {
+        let dir = self.config_dir().to_path_buf();
+        let changed = {
+            let mut stored = self.music.lock().expect("music lock");
+            let mut changed = false;
+            let mut known: std::collections::HashMap<(String, String), bool> =
+                std::collections::HashMap::new();
+            for track in stored.tracks.iter_mut().filter(|t| !t.cover) {
+                let Some(key) = album_key(track) else {
+                    continue;
+                };
+                let has = *known
+                    .entry(key.clone())
+                    .or_insert_with(|| crate::media::music_art::has_art(&dir, &key.0, &key.1));
+                if has {
+                    track.cover = true;
+                    changed = true;
+                }
+            }
+            if changed {
+                stored.revision = crate::media::next_revision(stored.revision);
+            }
+            changed.then(|| stored.clone())
+        };
+        let Some(snapshot) = changed else { return };
+        if let Some(root) = self.vault_path() {
+            let path = crate::media::music::stored_path(self.config_dir(), &root);
+            if let Err(e) = snapshot.save(&path) {
+                tracing::warn!("could not save the music: {e}");
+            }
+        }
+        self.announce(basalt_proto::msg::Change::LibraryChanged)
+            .await;
+    }
+
+    /// The music's revision moves on and devices are told: something they
+    /// show of it changed, such as the artists with photos.
+    async fn music_changed(&self) {
+        let snapshot = {
+            let mut stored = self.music.lock().expect("music lock");
+            stored.revision = crate::media::next_revision(stored.revision);
+            stored.clone()
+        };
+        if let Some(root) = self.vault_path() {
+            let path = crate::media::music::stored_path(self.config_dir(), &root);
+            if let Err(e) = snapshot.save(&path) {
+                tracing::warn!("could not save the music: {e}");
+            }
+        }
+        self.announce(basalt_proto::msg::Change::LibraryChanged)
+            .await;
+    }
+
+    /// Takes an artist's photo down for good: the wrong person of that name.
+    pub async fn remove_artist_photo(&self, name: &str) -> Result<()> {
+        crate::media::music_artists::refuse(self.config_dir(), name.trim())
+            .map_err(|e| HostError::BadRequest(format!("could not remove the photo: {e}")))?;
+        self.music_changed().await;
+        Ok(())
+    }
+
+    /// Stores the optional fanart.tv key, once fanart.tv has taken it, and
+    /// looks again for the artists without a photo. Empty removes it.
+    pub async fn set_fanart_key(self: &Arc<Self>, key: &str) -> Result<()> {
+        let key = key.trim().to_string();
+        if !key.is_empty() {
+            match crate::media::music_artists::fanart_key_works(&key).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(HostError::BadRequest(
+                        "The key was not accepted by fanart.tv. Check it there and paste it again."
+                            .into(),
+                    ));
+                }
+                Err(why) => {
+                    return Err(HostError::BadRequest(format!(
+                        "Could not reach fanart.tv to check the key: {why}"
+                    )));
+                }
+            }
+        }
+        self.config.lock().expect("config lock").fanart_key = key.clone();
+        self.persist()?;
+        if !key.is_empty() {
+            crate::media::music_artists::forget_misses(self.config_dir());
+            self.fanart_upgrade
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.fetch_music_art();
+        }
+        Ok(())
+    }
+
+    /// The fetched album cover for a song, if there is one.
+    fn fetched_cover(&self, rel: &str) -> Option<std::path::PathBuf> {
+        let stored = self.music.lock().expect("music lock");
+        let track = stored.tracks.iter().find(|t| t.path == rel)?;
+        let (artist, album) = album_key(track)?;
+        let path = crate::media::music_art::art_path(self.config_dir(), &artist, &album);
+        path.is_file().then_some(path)
+    }
+
+    /// Timeline pictures on or off. Off, the ones made stay until the space
+    /// is wanted; nothing new is made.
+    pub fn set_previews(&self, enabled: bool) -> Result<()> {
+        self.config.lock().expect("config lock").previews = enabled;
+        self.persist()
+    }
+
+    /// When timeline pictures are made. "As films arrive" starts on the ones
+    /// missing straight away, as a scan finding new ones would.
+    pub fn set_previews_when(
+        self: &Arc<Self>,
+        when: basalt_proto::msg::PreviewsWhen,
+    ) -> Result<()> {
+        self.config.lock().expect("config lock").previews_when = when;
+        self.persist()?;
+        if when == basalt_proto::msg::PreviewsWhen::Arrive {
+            self.make_missing_previews();
+        }
+        Ok(())
+    }
+
+    fn previews_when(&self) -> basalt_proto::msg::PreviewsWhen {
+        self.config.lock().expect("config lock").previews_when
+    }
+
+    /// Every film and episode without timeline pictures, newest first: its
+    /// path on the drive, the file, and where its pictures go.
+    async fn missing_previews(&self) -> Vec<(String, std::path::PathBuf, std::path::PathBuf)> {
+        let Some(vault) = self.vault().await else {
+            return Vec::new();
+        };
+        let mut videos: Vec<(i64, String)> = {
+            let library = self.library.lock().expect("library lock");
+            library
+                .items
+                .iter()
+                .flat_map(|item| {
+                    let mut out: Vec<(i64, String)> = item
+                        .path
+                        .clone()
+                        .map(|p| (item.added, p))
+                        .into_iter()
+                        .collect();
+                    for season in &item.seasons {
+                        out.extend(season.episodes.iter().map(|e| (e.added, e.path.clone())));
+                    }
+                    out
+                })
+                .collect()
+        };
+        // And every other video on the drive: home videos, and all of them
+        // when films are not being recognised.
+        {
+            let known: std::collections::HashSet<String> =
+                videos.iter().map(|(_, rel)| rel.clone()).collect();
+            let stored = self.collections.lock().expect("collections lock");
+            videos.extend(
+                stored
+                    .collections
+                    .videos
+                    .iter()
+                    .filter(|v| !known.contains(&v.path))
+                    .map(|v| (v.mtime, v.path.clone())),
+            );
+        }
+        videos.sort_by_key(|v| std::cmp::Reverse(v.0));
+        let root = crate::media::previews::root(self.config_dir());
+        tokio::task::spawn_blocking(move || {
+            videos
+                .into_iter()
+                .filter_map(|(_, rel)| {
+                    let entry = vault.stat(&rel).ok()?;
+                    let dir = crate::media::previews::dir_for(&root, &rel, entry.size, entry.mtime);
+                    if crate::media::previews::read_meta(&dir).is_some() {
+                        return None;
+                    }
+                    let path = vault.resolve(&rel).ok()?;
+                    Some((rel, path, dir))
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// Whether the pictures already made fill most of their space.
+    async fn previews_full(&self) -> bool {
+        let root = crate::media::previews::root(self.config_dir());
+        tokio::task::spawn_blocking(move || crate::media::previews::used(&root))
+            .await
+            .unwrap_or(0)
+            > crate::media::previews::BUDGET / 10 * 9
+    }
+
+    /// Makes the pictures every film and episode is missing, one after
+    /// another, now rather than when the host is idle. One run at a time; it
+    /// stops if they are switched off or their space fills.
+    pub fn make_missing_previews(self: &Arc<Self>) {
+        {
+            let mut run = self.previews_run.lock().expect("previews lock");
+            if run.is_some() {
+                return;
+            }
+            *run = Some((0, 0));
+        }
+        *self.previews_check.lock().expect("previews lock") = Some(crate::ui::PreviewsCheck {
+            checking: true,
+            found: 0,
+            at: unix_now(),
+        });
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            let missing = host.missing_previews().await;
+            let total = missing.len();
+            *host.previews_check.lock().expect("previews lock") = Some(crate::ui::PreviewsCheck {
+                checking: false,
+                found: total,
+                at: unix_now(),
+            });
+            for (done, (rel, path, dir)) in missing.into_iter().enumerate() {
+                if !host.config.lock().expect("config lock").previews || host.previews_full().await
+                {
+                    break;
+                }
+                *host.previews_run.lock().expect("previews lock") = Some((done, total));
+                host.make_previews(&rel, path, dir);
+                host.wait_for_previews(&rel).await;
+            }
+            *host.previews_run.lock().expect("previews lock") = None;
+        });
+    }
+
+    async fn wait_for_previews(&self, rel: &str) {
+        while self
+            .previews_making
+            .lock()
+            .expect("previews lock")
+            .contains(rel)
+        {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    }
+
+    /// What timeline pictures are being made now, as the windows show it.
+    fn previews_now(&self) -> Option<crate::ui::PreviewsNow> {
+        let rel = self
+            .previews_making
+            .lock()
+            .expect("previews lock")
+            .iter()
+            .next()
+            .cloned()?;
+        let (done, total) = self
+            .previews_run
+            .lock()
+            .expect("previews lock")
+            .unwrap_or((0, 0));
+        Some(crate::ui::PreviewsNow {
+            name: self.library_name_of(&rel),
+            done,
+            total,
+        })
+    }
+
+    /// A film or an episode as the library names it, or its file's name.
+    fn library_name_of(&self, rel: &str) -> String {
+        let library = self.library.lock().expect("library lock");
+        for item in &library.items {
+            if item.path.as_deref() == Some(rel) {
+                return match item.year {
+                    Some(year) => format!("{} ({year})", item.title),
+                    None => item.title.clone(),
+                };
+            }
+            for season in &item.seasons {
+                for episode in &season.episodes {
+                    if episode.path == rel {
+                        return format!(
+                            "{} S{:02}E{:02}",
+                            item.title, season.number, episode.number
+                        );
+                    }
+                }
+            }
+        }
+        let file = rel.rsplit('/').next().unwrap_or(rel);
+        file.rsplit_once('.')
+            .map_or(file, |(name, _)| name)
+            .to_string()
+    }
+
+    /// A film's timeline pictures: made already, or being made now (asking
+    /// starts it, so somebody starting a film gets them within a minute or
+    /// two), or not at all when switched off.
+    pub async fn previews_of(
+        self: &Arc<Self>,
+        rel: &str,
+    ) -> Result<basalt_proto::msg::PreviewsResponse> {
+        let vault = self
+            .vault()
+            .await
+            .ok_or_else(|| HostError::Unavailable(self.vault_name()))?;
+        let entry = vault.stat(rel)?;
+        let dir = crate::media::previews::dir_for(
+            &crate::media::previews::root(self.config_dir()),
+            rel,
+            entry.size,
+            entry.mtime,
+        );
+        if let Some(meta) = crate::media::previews::read_meta(&dir) {
+            return Ok(basalt_proto::msg::PreviewsResponse {
+                meta: Some(proto_meta(meta)),
+                making: false,
+            });
+        }
+        if !self.config.lock().expect("config lock").previews {
+            return Ok(basalt_proto::msg::PreviewsResponse::default());
+        }
+        let path = vault.resolve(rel)?;
+        let making = self.make_previews(rel, path, dir);
+        Ok(basalt_proto::msg::PreviewsResponse { meta: None, making })
+    }
+
+    /// Starts making a film's pictures, unless it is already being done.
+    /// Whether they are being made now.
+    fn make_previews(
+        self: &Arc<Self>,
+        rel: &str,
+        video: std::path::PathBuf,
+        dir: std::path::PathBuf,
+    ) -> bool {
+        let Some(ffmpeg) = self.converter.ffmpeg() else {
+            return false;
+        };
+        if !self
+            .previews_making
+            .lock()
+            .expect("previews lock")
+            .insert(rel.to_string())
+        {
+            return true;
+        }
+        let host = Arc::clone(self);
+        let rel = rel.to_string();
+        let root = crate::media::previews::root(self.config_dir());
+        tokio::task::spawn_blocking(move || {
+            if let Some(duration) = crate::media::segments::duration(&ffmpeg, &video) {
+                let _ = std::fs::create_dir_all(&root);
+                if let Err(e) = crate::media::previews::make(&ffmpeg, &video, duration, &dir) {
+                    tracing::debug!("no timeline pictures for {rel}: {e}");
+                }
+                crate::media::previews::trim(&root, crate::media::previews::BUDGET);
+            }
+            host.previews_making
+                .lock()
+                .expect("previews lock")
+                .remove(&rel);
+        });
+        true
+    }
+
+    /// One sheet of a film's timeline pictures.
+    pub async fn preview_sheet(&self, rel: &str, index: u32) -> Result<Vec<u8>> {
+        let vault = self
+            .vault()
+            .await
+            .ok_or_else(|| HostError::Unavailable(self.vault_name()))?;
+        let entry = vault.stat(rel)?;
+        let dir = crate::media::previews::dir_for(
+            &crate::media::previews::root(self.config_dir()),
+            rel,
+            entry.size,
+            entry.mtime,
+        );
+        crate::media::previews::sheet(&dir, index)
+            .ok_or_else(|| HostError::NotFound(format!("pictures for {rel}")))
+    }
+
+    /// While idle: the next film or episode without timeline pictures, made,
+    /// newest first, until they fill most of their space. Whether one was.
+    async fn make_previews_once(self: &Arc<Self>) -> bool {
+        if !self.config.lock().expect("config lock").previews || self.previews_full().await {
+            return false;
+        }
+        // A run of "make the missing ones" is already going through them.
+        if self.previews_run.lock().expect("previews lock").is_some() {
+            return false;
+        }
+        let Some((rel, path, dir)) = self.missing_previews().await.into_iter().next() else {
+            return false;
+        };
+        self.make_previews(&rel, path, dir);
+        // One at a time: wait for it before saying the work is done.
+        self.wait_for_previews(&rel).await;
+        true
+    }
+
     pub async fn set_posters(self: &Arc<Self>, enabled: bool) -> Result<()> {
         self.config.lock().expect("config lock").posters = enabled;
         self.persist()?;
@@ -1393,6 +2247,7 @@ impl Host {
         if self.collect_arrivals(&serving, &paths).await {
             self.announce(basalt_proto::msg::Change::LibraryChanged)
                 .await;
+            self.refresh_music();
         }
         if !self.library_enabled() {
             return;
@@ -1627,6 +2482,12 @@ impl Host {
             host.scanning.store(false, Ordering::SeqCst);
             let moved = host.drive_generation.load(Ordering::SeqCst) != began_on;
             host.measure_library();
+            // The songs the walk found, and their tags, after it.
+            host.refresh_music();
+            // New films and episodes get their timeline pictures at once.
+            if host.previews_when() == basalt_proto::msg::PreviewsWhen::Arrive {
+                host.make_missing_previews();
+            }
             match outcome {
                 Ok(true) => {
                     host.announce(basalt_proto::msg::Change::LibraryChanged)
@@ -2003,6 +2864,15 @@ impl Host {
         *self.collections.lock().expect("collections lock") = crate::media::collect::Stored::load(
             &crate::media::collect::stored_path(self.config_dir(), &root),
         );
+        *self.music.lock().expect("music lock") = crate::media::music::Stored::load(
+            &crate::media::music::stored_path(self.config_dir(), &root),
+        );
+        *self.music_mine.lock().expect("music mine lock") = crate::media::music::load_mine(
+            &crate::media::music::mine_path(self.config_dir(), &root),
+        );
+        *self.segments.lock().expect("segments lock") = crate::media::segments::load(
+            &crate::media::segments::store_path(self.config_dir(), &root),
+        );
         *self.measured.lock().expect("measured lock") = crate::media::quality::Measured::load(
             &crate::media::quality::Measured::path_for(self.config_dir(), &root),
         );
@@ -2011,8 +2881,41 @@ impl Host {
         *self.subtitles.lock().expect("subtitles lock") = Arc::default();
 
         self.start_scan();
+        self.check_writable(&vault);
+        self.start_segment_finder();
         self.announce(basalt_proto::msg::Change::Resynchronise)
             .await;
+    }
+
+    /// Tries adding a file to the folder just taken on, says in the log when
+    /// it cannot, and leaves what it found for `basalt-host status`.
+    ///
+    /// Everything but writing works without it, so a folder the host may only
+    /// read went unnoticed until an upload failed: on Linux, a folder made
+    /// with `sudo`; in Docker, one owned by root while the host runs as
+    /// `PUID`. Not asked of a drive shared read-only on purpose.
+    fn check_writable(&self, vault: &Vault) {
+        if !vault.writable() {
+            return;
+        }
+        let root = vault.root().to_path_buf();
+        let note = self.config_dir().join(crate::drives::WRITE_CHECK_FILE);
+        tokio::task::spawn_blocking(move || {
+            let writable = crate::drives::can_write(&root);
+            if !writable {
+                tracing::warn!(
+                    "Basalt Host can't add or change files in {}: browsing and playing work,                      but uploads, new folders, renames and deletes will be refused. On this                      computer, give the user Basalt Host runs as permission to change that                      folder (in Docker, the PUID and PGID user).",
+                    root.display()
+                );
+            }
+            let check = crate::drives::WriteCheck {
+                path: root,
+                writable,
+            };
+            if let Ok(text) = serde_json::to_string(&check) {
+                let _ = std::fs::write(note, text);
+            }
+        });
     }
 
     /// Notices the chosen drive going away and coming back.
@@ -2146,6 +3049,11 @@ impl Host {
         // hammering — can leave them sitting for seconds. The interface asks
         // for this every two seconds, so blocking a runtime thread here means
         // blocking it more or less permanently.
+        // The running host's own check of its folder (see `check_writable`).
+        let cannot_add_files = self.vault_path().is_some_and(|path| {
+            crate::drives::read_write_check(&self.config_path)
+                .is_some_and(|check| check.path == path && !check.writable)
+        });
         let vault = match self.vault().await {
             Some(vault) => tokio::task::spawn_blocking(move || {
                 let (free, total) = vault.space();
@@ -2155,6 +3063,7 @@ impl Host {
                     free,
                     total,
                     available: crate::drives::is_available(vault.root()),
+                    can_add_files: !cannot_add_files,
                 }
             })
             .await
@@ -2170,6 +3079,7 @@ impl Host {
                     free: 0,
                     total: 0,
                     available: false,
+                    can_add_files: true,
                 })
             }
         };
@@ -2318,14 +3228,20 @@ impl Host {
     /// holding `library` — which also stopped every scan from saving its index,
     /// and `registry`, which stopped paired devices from connecting at all.
     fn library_status(&self) -> crate::ui::LibraryStatus {
-        let (enabled, posters, has_key) = {
+        let (enabled, posters, has_key, previews, previews_when, music_covers, has_fanart_key) = {
             let config = self.config.lock().expect("config lock");
             (
                 config.library_enabled,
                 config.posters,
                 !config.tmdb_key.trim().is_empty(),
+                config.previews,
+                config.previews_when,
+                config.music_covers,
+                !config.fanart_key.trim().is_empty(),
             )
         };
+        let previews_now = self.previews_now();
+        let previews_check = self.previews_check.lock().expect("previews lock").clone();
         let scanning = self.is_scanning();
         // Counted as the devices list them: Videos without what was filed.
         let (_, filed) = self.filed_videos();
@@ -2342,6 +3258,12 @@ impl Host {
             music,
             photos,
             enabled,
+            previews,
+            previews_when,
+            previews_now,
+            previews_check,
+            music_covers,
+            has_fanart_key,
             scanning,
             films: library
                 .items
@@ -2680,6 +3602,14 @@ fn load_stars(path: &std::path::Path) -> std::collections::HashMap<String, Vec<S
         .unwrap_or_default()
 }
 
+/// The time in Unix milliseconds, for what changes within a second.
+pub(crate) fn unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 pub(crate) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2770,7 +3700,8 @@ impl Batch {
             | Change::Removed { .. }
             | Change::Modified { .. }
             | Change::LibraryChanged
-            | Change::ProfilesChanged => {}
+            | Change::ProfilesChanged
+            | Change::MusicNow => {}
         }
     }
 }
@@ -3761,7 +4692,7 @@ where
         // for as long as the client wants it and writes a response per change.
         Op::Watch => {
             let request: WatchRequest = decode(payload).unwrap_or_default();
-            stream_changes(stream, host, session, request.profiles).await?;
+            stream_changes(stream, host, session, request.profiles, request.music).await?;
         }
 
         Op::Library => {
@@ -4025,9 +4956,126 @@ where
             reply(stream, &host.collections_response(req.known_revision)).await?;
         }
 
+        Op::SpeedTest => {
+            use basalt_proto::msg::speed_test;
+            match payload.first() {
+                Some(&speed_test::DOWN) if payload.len() >= 5 => {
+                    let asked =
+                        u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]);
+                    // Zeros: the connection is encrypted, so they cross it as
+                    // anything else would, and cost nothing to make.
+                    let bytes = vec![0u8; asked.min(speed_test::MAX_DOWN) as usize];
+                    write_ok(stream, &bytes).await?;
+                }
+                Some(&speed_test::UP) => write_ok(stream, &[]).await?,
+                _ => return Err(HostError::BadRequest("not a speed test request".into())),
+            }
+        }
+
+        Op::Previews => {
+            let req: basalt_proto::msg::PreviewsRequest = decode(payload)?;
+            reply(stream, &host.previews_of(&req.path).await?).await?;
+        }
+
+        Op::PreviewSheet => {
+            let req: basalt_proto::msg::PreviewSheetRequest = decode(payload)?;
+            let bytes = host.preview_sheet(&req.path, req.index).await?;
+            write_ok(stream, &bytes).await?;
+        }
+
+        Op::Segments => {
+            let req: basalt_proto::msg::SegmentsRequest = decode(payload)?;
+            reply(stream, &host.segments_for(&req.path).await).await?;
+        }
+
+        Op::MusicNow => {
+            let req: basalt_proto::msg::MusicNowRequest = decode(payload).unwrap_or_default();
+            host.check_profile(session)?;
+            let now = unix_ms();
+            // A device on its own keeps its music to itself: nothing to see.
+            let (Some((profile, _)), Some(device)) =
+                (session.profile.clone(), session.device.clone())
+            else {
+                let nothing = basalt_proto::msg::MusicNowResponse {
+                    now,
+                    ..Default::default()
+                };
+                reply(stream, &nothing).await?;
+                return Ok(());
+            };
+            let form = device
+                .form
+                .and_then(|f| serde_json::to_value(f).ok())
+                .and_then(|v| v.as_str().map(str::to_string));
+            let (answer, changed) = {
+                let mut live = host.music_live.lock().expect("music lock");
+                let changed = live.report(
+                    &profile,
+                    &device.device_id,
+                    &device.name,
+                    form,
+                    req.report,
+                    req.stopped,
+                    now,
+                );
+                let sessions = live.others(&profile, &device.device_id, now);
+                let (group, anchor) = live.group_of(&profile, &device.device_id);
+                let answer = basalt_proto::msg::MusicNowResponse {
+                    now,
+                    sessions,
+                    commands: live.take_commands(&device.device_id),
+                    group,
+                    anchor,
+                };
+                (answer, changed)
+            };
+            if changed {
+                let _ = host.music_changes.send(profile);
+            }
+            reply(stream, &answer).await?;
+        }
+
+        Op::MusicCommand => {
+            let req: basalt_proto::msg::MusicCommandRequest = decode(payload)?;
+            host.check_profile(session)?;
+            let profile = session.profile.clone().map(|(id, _)| id).ok_or_else(|| {
+                HostError::Denied("music is shared between a profile's devices only".into())
+            })?;
+            let (from, from_device) = session
+                .device
+                .as_ref()
+                .map(|d| (d.name.clone(), d.device_id.clone()))
+                .unwrap_or_default();
+            host.music_live
+                .lock()
+                .expect("music lock")
+                .command(&profile, &from, &from_device, req, unix_ms())
+                .map_err(|why| HostError::NotFound(why.into()))?;
+            let _ = host.music_changes.send(profile);
+            write_ok(stream, &[]).await?;
+        }
+
+        Op::MusicMine => {
+            let req: basalt_proto::msg::MusicMineRequest = decode(payload).unwrap_or_default();
+            // A device on its own keeps its playlists itself, as it does stars.
+            host.check_profile(session)?;
+            let profile = session.profile.clone().map(|(id, _)| id).ok_or_else(|| {
+                HostError::Denied("playlists are kept on the host for profiles only".into())
+            })?;
+            reply(stream, &host.music_mine(&profile, req)).await?;
+        }
+
+        Op::Music => {
+            let req: basalt_proto::msg::MusicRequest = decode(payload).unwrap_or_default();
+            reply(stream, &host.music_response(req.known_revision)).await?;
+        }
+
         Op::Thumbnail => {
             let req: basalt_proto::msg::ThumbnailRequest = decode(payload)?;
-            let bytes = host.thumbnail(&req.path, req.size).await?;
+            let bytes = match &req.artist {
+                Some(name) => host.artist_thumbnail(name, req.size).await?,
+                None => host.thumbnail(&req.path, req.size).await?,
+            };
             write_ok(stream, &bytes).await?;
         }
 
@@ -4040,6 +5088,35 @@ where
         }
     }
     Ok(())
+}
+
+/// Everyone the songs are by, as the app names its artists: who each album
+/// is by, and who leads each song. Once each, whatever the case.
+fn artist_names(tracks: &[basalt_proto::msg::MusicTrack]) -> Vec<String> {
+    fn tag(t: &Option<String>) -> Option<&str> {
+        t.as_deref().map(str::trim).filter(|t| !t.is_empty())
+    }
+    use crate::media::music_artists::{lead_artist, worth_asking};
+    let mut seen = std::collections::HashSet::new();
+    let mut names = Vec::new();
+    let mut add = |name: &str| {
+        let name = lead_artist(name).to_string();
+        if worth_asking(&name) && seen.insert(name.to_lowercase()) {
+            names.push(name);
+        }
+    };
+    for track in tracks {
+        if let Some(by) = tag(&track.album_artist) {
+            add(by);
+        }
+        if let Some(artist) = tag(&track.artist) {
+            add(artist);
+        } else if let Some(key) = crate::media::music_names::cover_key(track) {
+            // No tags: who the file name or the folders say.
+            add(&key.artist);
+        }
+    }
+    names
 }
 
 /// Writes one response per change until the client hangs up.
@@ -4065,6 +5142,7 @@ async fn stream_changes<S>(
     host: &Arc<Host>,
     session: &mut Session,
     profiles: bool,
+    music: bool,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -4072,6 +5150,9 @@ where
     let device = session.device_key();
     let mut access_changes = host.access_changes.subscribe();
     let mut profile_changes = host.profile_changes.subscribe();
+    let mut music_changes = host.music_changes.subscribe();
+    // Told only for the profile this watch acts for.
+    let profile = session.profile.clone().map(|(id, _)| id);
     let mut events = match host.watch().await {
         Some(watch) => watch.subscribe(),
         None => {
@@ -4111,6 +5192,22 @@ where
                 // Missed notices are still one notice: the device asks again
                 // and gets everything as it is now.
                 let told = WatchEvent { change: basalt_proto::msg::Change::ProfilesChanged };
+                if reply(stream, &told).await.is_err() {
+                    return Ok(());
+                }
+                continue;
+            }
+            changed = music_changes.recv(), if music && profile.is_some() => {
+                let ours = match changed {
+                    Ok(whose) => profile.as_deref() == Some(whose.as_str()),
+                    // Missed some: one notice covers them, as above.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+                };
+                if !ours {
+                    continue;
+                }
+                let told = WatchEvent { change: basalt_proto::msg::Change::MusicNow };
                 if reply(stream, &told).await.is_err() {
                     return Ok(());
                 }
@@ -4256,4 +5353,23 @@ struct Serving {
     vault: Arc<Vault>,
     generation: u64,
     root: std::path::PathBuf,
+}
+
+fn proto_meta(meta: crate::media::previews::Meta) -> basalt_proto::msg::PreviewMeta {
+    basalt_proto::msg::PreviewMeta {
+        interval: meta.interval,
+        columns: meta.columns,
+        rows: meta.rows,
+        tile_width: meta.tile_width,
+        tile_height: meta.tile_height,
+        count: meta.count,
+        sheets: meta.sheets,
+    }
+}
+
+/// Who an album (or a single) is by and its name, for the covers fetched
+/// online: from the tags, else the file's name or folders, as the app reads
+/// them. None for anything the app does not show as music.
+fn album_key(track: &basalt_proto::msg::MusicTrack) -> Option<(String, String)> {
+    crate::media::music_names::cover_key(track).map(|key| (key.artist, key.album))
 }

@@ -20,9 +20,10 @@ services:
     #   - "7742:7742/tcp"
     #   - "7743:7743/udp"
     environment:
-      # The user and group that own your media (`id` on the NAS says).
-      - PUID=1000
-      - PGID=1000
+      # Basalt Host runs as whoever owns the folder you share below, so it can
+      # add files there. To run it as another user, set these to theirs:
+      # - PUID=1000
+      # - PGID=1000
       # What devices call it the first time; changeable in Manage host.
       # - BASALT_HOST_NAME=Living room server
     volumes:

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ALL_SECTIONS, api, type LibraryItem, type LibraryResponse, type Sections } from './api'
+import { ASK_AGAIN_AFTER, worthAskingAgain } from './retry'
 
 export interface MediaLibrary {
   /**
@@ -79,6 +80,9 @@ export function useMediaLibrary(host: string | null): MediaLibrary {
   const live = useRef(true)
   /** The host a request is out to, so a second one is not sent alongside. */
   const inFlight = useRef<string | null>(null)
+  /** Tries again after a failure that passes: see `worthAskingAgain`. */
+  const tries = useRef(0)
+  const again = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** The host connected to now, for discarding a late answer from another. */
   const current = useRef(host)
   current.current = host
@@ -111,9 +115,19 @@ export function useMediaLibrary(host: string | null): MediaLibrary {
         sections: { ...ALL_SECTIONS, ...(response.sections ?? {}) },
       }))
       setError(null)
+      tries.current = 0
     } catch (e) {
       if (live.current && current.current === asked) {
-        setError(e instanceof Error ? e.message : String(e))
+        // A host restarting: asked again in a moment before it is an error.
+        const tried = tries.current
+        if (worthAskingAgain(e) && tried < ASK_AGAIN_AFTER.length) {
+          tries.current = tried + 1
+          again.current = setTimeout(() => {
+            if (current.current === asked) void load()
+          }, ASK_AGAIN_AFTER[tried])
+        } else {
+          setError(e instanceof Error ? e.message : String(e))
+        }
       }
     } finally {
       if (inFlight.current === asked) inFlight.current = null

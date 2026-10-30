@@ -13,6 +13,7 @@ import {
 } from '@/lib/useMpv'
 import { About } from './About'
 import { Dropdown } from './ui/Dropdown'
+import { SpeedTest } from './SpeedTest'
 import { cn, formatBytes } from '@/lib/utils'
 
 /**
@@ -89,6 +90,7 @@ export function SettingsView({
             mono
           />
           <Row label="Access" value={status?.writable ? 'Can change files' : 'Read only'} />
+          {status?.address && <SpeedTest padded />}
           <Note>
             Basalt finds the host on your network by itself, even when its address
             changes. To use another drive, choose Change drive. This one stays paired,

@@ -117,10 +117,22 @@ pub struct ClientStore {
 /// refused while it is; it is tried again for up to a second rather than
 /// failing the save.
 fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    again(|| std::fs::rename(from, to))
+}
+
+/// Whether a file is held for a moment by something else: refused (Windows'
+/// access denied), or in use by another process, as an antivirus has a file
+/// just written while it reads it. Both pass in a moment.
+fn held(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(32 | 33))
+}
+
+/// `op`, asked again for about a second while the file is held.
+fn again<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
     let mut tries = 0;
     loop {
-        match std::fs::rename(from, to) {
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && tries < 20 => {
+        match op() {
+            Err(e) if held(&e) && tries < 20 => {
                 tries += 1;
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
@@ -155,7 +167,7 @@ impl ClientStore {
         let json = serde_json::to_vec_pretty(&self.clone().sealed())
             .map_err(|e| ClientError::Config(format!("could not encode the store: {e}")))?;
         let temp = path.with_extension("tmp");
-        std::fs::write(&temp, &json)?;
+        again(|| std::fs::write(&temp, &json))?;
         replace(&temp, path)?;
         Ok(())
     }

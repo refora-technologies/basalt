@@ -276,6 +276,47 @@ export function seekWithinConversion(
   return target >= from && target <= cachedTo && target >= position - 20
 }
 
+/** Skips this close together are one run: each aims from the last one's target. */
+export const SKIP_RUN_MS = 1000
+
+/**
+ * How long a run of skips in a conversion waits for the next tap before the
+ * host is asked for a new conversion from where they added up to.
+ */
+export const SKIP_SETTLE_MS = 600
+
+/** A run of skips: where the last one aimed, and when (performance.now()). */
+export interface SkipRun {
+  target: number
+  at: number
+}
+
+/**
+ * Where a skip of `seconds` lands.
+ *
+ * Within a run it adds to the last skip's target, not to the player's clock:
+ * the clock lags a seek that is still landing (on Android it reached the page
+ * a quarter second late, or not at all), and during a new conversion there is
+ * no clock yet. Read then, two quick skips both went 10 seconds from the same
+ * place, or the second went from the start of the film. A first skip starts
+ * from the clock, or from `fallback` (where the film was asked to play from)
+ * while there is none. Kept within the film.
+ */
+export function skipTarget(
+  run: SkipRun | null,
+  now: number,
+  clock: unknown,
+  fallback: number,
+  seconds: number,
+  duration: number,
+): number {
+  const fresh = clock === null || clock === undefined ? NaN : Number(clock)
+  const from =
+    run && now - run.at < SKIP_RUN_MS ? run.target : Number.isFinite(fresh) ? fresh : fallback
+  const end = duration > 0 ? duration : Infinity
+  return Math.min(Math.max(0, from + seconds), end)
+}
+
 /**
  * Larger than this, a video decoded in software on a phone needs the lighter
  * mode: about 1920x1200. A phone decodes 1080p in software comfortably; 4K it
@@ -362,6 +403,9 @@ const OBSERVED = [
   ['sid', 'int64', 'none'],
   ['aid', 'int64', 'none'],
   ['sub-delay', 'double', 'none'],
+  // The picture's width: a slow decoder's first frame can come after the
+  // opening was judged, and the film then played behind "sound only".
+  ['dwidth', 'int64', 'none'],
 ] as const satisfies mpv.MpvObservableProperty[]
 
 /**
@@ -396,6 +440,10 @@ export function hasEnded(
 
 /** How close to the duration still counts as the end. */
 const END_SLACK = 2
+
+/** How many times a file's length is asked for before it is left to mpv. */
+const LENGTH_TRIES = 6
+const LENGTH_RETRY_MS = 500
 
 /** One look at mpv while a file is opening. */
 export interface OpeningProbe {
@@ -503,7 +551,11 @@ export interface Mpv extends MpvState {
    * Opens a file or URL. With `converted`, opens the host's conversion of it
    * from `startAt`, and seeking past what has arrived starts a new one.
    */
-  load: (url: string, startAt: number, converted?: ConvertedSource) => Promise<void>
+  /**
+   * Opens a file. `audioOnly`: music, whose cover the app draws itself; mpv
+   * is told not to show it as a picture (see the load).
+   */
+  load: (url: string, startAt: number, converted?: ConvertedSource, audioOnly?: boolean, paused?: boolean) => Promise<void>
   /** Plays what is open in the lighter mode: see [`LIGHTER_OPTIONS`]. */
   lighten: () => Promise<void>
   /** Stops playback and lets the window go opaque again. */
@@ -766,6 +818,10 @@ function useAppMpv(): Mpv {
                 // be reopened was tried again from the beginning of the film,
                 // and loading and stopping set the position themselves.
                 if (data === null || data === undefined) return s
+                // Skips waiting to ask for a new conversion: the one still
+                // playing is left behind, and its clock would pull the time
+                // back between taps. The skips' own target stands.
+                if (skipSettle.current) return s
                 const position = Number(data) || 0
                 return {
                   ...s,
@@ -790,6 +846,9 @@ function useAppMpv(): Mpv {
                 return { ...s, atEof: data === true, ended: hasEnded(data, s.position, s.duration, s.paused) }
               case 'paused-for-cache':
                 return { ...s, buffering: data === true }
+              case 'dwidth':
+                // A picture after all, once the file is open: shown.
+                return Number(data) > 0 && s.started && !s.picture ? { ...s, picture: true } : s
               case 'sid':
                 return { ...s, subtitleId: data === null ? null : Number(data) }
               case 'aid':
@@ -825,6 +884,12 @@ function useAppMpv(): Mpv {
   const beforeLighter = useRef<Record<string, string> | null>(null)
   /** The conversion playing, and where it started from. Null otherwise. */
   const converted = useRef<(ConvertedSource & { from: number }) | null>(null)
+  /** The skips being made in a row, and the new conversion they wait to ask for. */
+  const skipRun = useRef<SkipRun | null>(null)
+  const skipSettle = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** The state as last drawn, for the skips' fallback position and the film's length. */
+  const drawn = useRef(state)
+  drawn.current = state
 
   /** Puts back whatever the lighter mode changed. */
   const undoLighter = useCallback(async () => {
@@ -917,6 +982,21 @@ function useAppMpv(): Mpv {
   }, [])
 
   /** Looks at mpv until the file is on screen, has failed, or is replaced. */
+  const readLength = useCallback(async (mine: number) => {
+    for (let tries = 0; tries < LENGTH_TRIES; tries++) {
+      if (generation.current !== mine || converted.current?.duration) return
+      const duration = Number(await readProperty('duration', 'double')) || 0
+      if (generation.current !== mine) return
+      if (duration > 0) {
+        setState((s) =>
+          s.duration > 0 ? s : { ...s, duration, ended: hasEnded(eof.current, s.position, duration, s.paused) },
+        )
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, LENGTH_RETRY_MS))
+    }
+  }, [])
+
   const watchOpening = useCallback(async (url: string, mine: number) => {
     let watch = OPENING
     let rescued = false
@@ -971,15 +1051,20 @@ function useAppMpv(): Mpv {
         // Read here as well as on a change of count: the next episode usually
         // has the same number of tracks as the last, and then no change comes.
         void readTracks()
+        // The length too. mpv tells of it as it changes, and a page that has
+        // just started (a fresh app, a reload) can miss the telling: the song
+        // then had no length, never counted as ended, and the next one never
+        // started. Asked for once the file plays, a few times if not known yet.
+        void readLength(mine)
         void restoreAdded(mine)
         if (next.verdict === 'video' && !strainChecked) void checkStrain(mine)
       }
       return
     }
-  }, [readTracks, restoreAdded, checkStrain])
+  }, [readTracks, readLength, restoreAdded, checkStrain])
 
   const load = useCallback(
-    async (url: string, startAt: number, source?: ConvertedSource) => {
+    async (url: string, startAt: number, source?: ConvertedSource, audioOnly = false, paused = false) => {
       if (!inTauri()) return
       const mine = ++generation.current
       eof.current = false
@@ -997,6 +1082,10 @@ function useAppMpv(): Mpv {
         if (!again) addedSubs.current = []
       }
       converted.current = source ? { ...source, from: startAt } : null
+      // A run of skips belongs to the film it was made in.
+      if (skipSettle.current) clearTimeout(skipSettle.current)
+      skipSettle.current = null
+      if (!source) skipRun.current = null
       setState((s) => ({
         ...s,
         ended: false,
@@ -1018,7 +1107,7 @@ function useAppMpv(): Mpv {
         // A file that is chosen is a file somebody wants to watch. Pause
         // survives `loadfile`, so without this the next episode after a
         // paused one opened paused, looking like it had not loaded.
-        await set('pause', 'no')
+        await set('pause', paused ? 'yes' : 'no')
         // Unpaused as part of the load, not only before it. A file that had
         // played to its end is still sitting paused there, and mpv re-applies
         // that end-of-file pause for as long as it is — so an unpause sent
@@ -1029,7 +1118,18 @@ function useAppMpv(): Mpv {
         const options = (
           source
             ? ['pause=no', 'rebase-start-time=no', ...keep]
-            : ['pause=no', startAt > 1 ? `start=${startAt.toFixed(3)}` : '', ...keep]
+            : [
+                // Opened paused to start at an agreed moment, with another
+                // device playing the same song.
+                paused ? 'pause=yes' : 'pause=no',
+                startAt > 1 ? `start=${startAt.toFixed(3)}` : '',
+                // A song's cover is a picture track to mpv, and shown, it
+                // opened mpv's picture behind the window: on Windows that
+                // painted over the music bar's title, play button and
+                // progress. The app shows the cover itself.
+                audioOnly ? 'vid=no' : '',
+                ...keep,
+              ]
         )
           .filter(Boolean)
           .join(',')
@@ -1129,17 +1229,50 @@ function useAppMpv(): Mpv {
     return true
   }, [])
 
+  /**
+   * Skips, from the buttons, the arrow keys and the taps either side.
+   *
+   * To a place worked out here (see `skipTarget`) rather than mpv's
+   * `relative`, which counts from where mpv thinks it is and, with a seek
+   * still landing, could count from the one before. Shown at once as the new
+   * position, so the time and the scrubber follow every tap.
+   *
+   * In a conversion, a place that has already arrived is seeked to at once.
+   * Further on needs a new conversion, which the host takes a moment to
+   * start: that waits until the taps stop, then asks once from where they
+   * added up to. Asked on every tap, each new conversion replaced the last
+   * while it was still starting, and a run of taps moved ten seconds.
+   */
   const seekBy = useCallback(
     async (seconds: number) => {
       if (!inTauri()) return
-      if (converted.current) {
-        const position = Number(await readProperty('time-pos', 'double')) || 0
-        await seekTo(Math.max(0, position + seconds))
-        return
+      const now = performance.now()
+      const source = converted.current
+      const clock = await readProperty('time-pos', 'double')
+      const fallback = source?.from ?? drawn.current.position
+      const target = skipTarget(skipRun.current, now, clock, fallback, seconds, drawn.current.duration)
+      skipRun.current = { target, at: now }
+      setState((s) => ({ ...s, position: target }))
+
+      if (skipSettle.current) clearTimeout(skipSettle.current)
+      skipSettle.current = null
+      if (source) {
+        const cachedTo = await readProperty('demuxer-cache-time', 'double')
+        const at = Number(clock) || source.from
+        const end = Number(cachedTo) || at
+        if (!seekWithinConversion(target, source.from, at, end)) {
+          skipSettle.current = setTimeout(() => {
+            skipSettle.current = null
+            if (converted.current !== source) return
+            const settled = skipRun.current?.target ?? target
+            void load(source.base, settled, { base: source.base, duration: source.duration })
+          }, SKIP_SETTLE_MS)
+          return
+        }
       }
-      await mpv.command('seek', [String(seconds), 'relative'])
+      await mpv.command('seek', [target.toFixed(3), 'absolute'])
     },
-    [seekTo],
+    [load],
   )
 
   const stepFrame = useCallback(async (direction: 1 | -1) => {
@@ -1151,7 +1284,12 @@ function useAppMpv(): Mpv {
 
   const setVolume = useCallback(
     async (volume: number) => {
-      if (inTauri()) await set('volume', Math.round(volume))
+      if (!inTauri()) return
+      await set('volume', Math.round(volume))
+      // Shown at once. mpv tells of a change only to whoever was watching
+      // when it happened: set before a song opened, the slider kept showing
+      // the old volume while the song played at the new one.
+      setState((s) => (s.volume === Math.round(volume) ? s : { ...s, volume: Math.round(volume) }))
     },
     [set],
   )

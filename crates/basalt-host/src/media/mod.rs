@@ -11,9 +11,16 @@
 pub mod art;
 pub mod collect;
 pub mod index;
+pub mod music;
+pub mod music_art;
+pub mod music_artists;
+pub mod music_names;
 pub mod parse;
+pub mod previews;
+pub mod programs;
 pub mod progress;
 pub mod quality;
+pub mod segments;
 pub mod subs;
 pub mod thumbs;
 

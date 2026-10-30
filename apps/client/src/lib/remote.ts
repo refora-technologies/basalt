@@ -47,6 +47,13 @@ interface Box {
  * How far `to` is from `from` going `direction`, or null when it is not that
  * way at all. Along the way counts once; off to the side counts double, so a
  * thing straight ahead wins over a nearer one off the line.
+ *
+ * Off to the side is the gap between their edges, nothing when one is in
+ * line with the other: a button under the right end of a wide one is
+ * straight below it. Measured from the middle of the wide one, the speed
+ * test's button under the end of Change drive lost to one two rows further
+ * down, and the remote could never reach it. Between two in line, the one
+ * nearer the middle is taken.
  */
 export function distance(from: Box, to: Box, direction: Direction): number | null {
   const fromX = (from.left + from.right) / 2
@@ -61,22 +68,22 @@ export function distance(from: Box, to: Box, direction: Direction): number | nul
     case 'right':
       if (to.left < from.right - slack) return null
       along = to.left - from.right
-      aside = Math.max(0, Math.abs(toY - fromY) - (to.bottom - to.top) / 2)
+      aside = Math.max(0, to.top - from.bottom, from.top - to.bottom) + Math.abs(toY - fromY) / 100
       break
     case 'left':
       if (to.right > from.left + slack) return null
       along = from.left - to.right
-      aside = Math.max(0, Math.abs(toY - fromY) - (to.bottom - to.top) / 2)
+      aside = Math.max(0, to.top - from.bottom, from.top - to.bottom) + Math.abs(toY - fromY) / 100
       break
     case 'down':
       if (to.top < from.bottom - slack) return null
       along = to.top - from.bottom
-      aside = Math.max(0, Math.abs(toX - fromX) - (to.right - to.left) / 2)
+      aside = Math.max(0, to.left - from.right, from.left - to.right) + Math.abs(toX - fromX) / 100
       break
     case 'up':
       if (to.bottom > from.top + slack) return null
       along = from.top - to.bottom
-      aside = Math.max(0, Math.abs(toX - fromX) - (to.right - to.left) / 2)
+      aside = Math.max(0, to.left - from.right, from.left - to.right) + Math.abs(toX - fromX) / 100
       break
   }
   return Math.max(0, along) + 2 * aside
@@ -195,6 +202,20 @@ function settle(): void {
   const within = scope()
   const current = document.activeElement
   if (current && current !== document.body && within.contains(current)) return
+  // Lost from a part of the screen that changed under it (the music bar
+  // turning from another device's music to this one's): found again there,
+  // not back at the top of the page.
+  const region = lastRegion
+  lastRegion = null
+  if (region && region.isConnected && within.contains(region)) {
+    const there = pressables(region)
+    const back = there.find((el) => el.matches('[data-remote-region-first]')) ?? there[0]
+    if (back) {
+      placed = back
+      focus(back)
+      return
+    }
+  }
   const all = pressables(within)
   // A screen still loading its content waits for it, rather than starting
   // on the side rail; a press before then starts wherever it can.
@@ -205,6 +226,12 @@ function settle(): void {
     focus(placed)
   }
 }
+
+/**
+ * The part of the screen marked `data-remote-region` the focus was last in:
+ * where it is found again if what it was on goes.
+ */
+let lastRegion: Element | null = null
 
 /**
  * Where `settle` put the focus, until a key moves it. A screen whose start
@@ -252,8 +279,10 @@ function keepsArrows(el: Element | null, direction: Direction): boolean {
   if (!el) return false
   if (el.matches('textarea, [contenteditable="true"]')) return true
   if (el instanceof HTMLInputElement) {
-    // Along a text field the arrows move the cursor; a slider takes them all.
-    if (el.type === 'range') return true
+    // Along a text field the arrows move the cursor; a slider takes left and
+    // right. Up and down leave it: taking them too, the music bar's progress
+    // held the remote, and nothing above or below it could be reached.
+    if (el.type === 'range') return direction === 'left' || direction === 'right'
     const text = !['checkbox', 'radio', 'button', 'submit'].includes(el.type)
     return text && (direction === 'left' || direction === 'right')
   }
@@ -281,6 +310,9 @@ export function startRemote(): void {
     }
     startCameLate()
   }, 150)
+  document.addEventListener('focusin', (e) => {
+    lastRegion = e.target instanceof Element ? e.target.closest('[data-remote-region]') : null
+  })
   window.addEventListener('keydown', (e) => {
     placed = null
     if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return

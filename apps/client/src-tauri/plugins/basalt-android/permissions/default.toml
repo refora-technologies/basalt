@@ -12,6 +12,8 @@ permissions = [
     "allow-take-shared",
     "allow-keep-alive",
     "allow-let-go",
+    "allow-media-session",
+    "allow-media-session-end",
     "allow-set-immersive",
     "allow-set-pip",
     "allow-local-network",

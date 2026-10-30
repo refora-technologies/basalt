@@ -626,6 +626,16 @@ impl Converter {
         *self.given.lock().expect("ffmpeg lock") = Some(path);
     }
 
+    /// The ffmpeg to use for other work than converting (reading chapters,
+    /// sound for intro detection): the installer's, else the computer's.
+    pub fn ffmpeg(&self) -> Option<PathBuf> {
+        self.given
+            .lock()
+            .expect("ffmpeg lock")
+            .clone()
+            .or_else(|| find_ffmpeg(&self.config_dir))
+    }
+
     /// Whether this is an installed host with its own ffmpeg, rather than a
     /// copy borrowing whatever the computer has, as tests and development do.
     pub fn installed(&self) -> bool {

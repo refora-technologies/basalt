@@ -53,7 +53,13 @@ impl Host {
             ManageAction::SetLibrary { enabled } => self.set_library_enabled(enabled).await?,
             ManageAction::Rescan => self.start_scan(),
             ManageAction::SetPosters { enabled } => self.set_posters(enabled).await?,
+            ManageAction::SetPreviews { enabled } => self.set_previews(enabled)?,
+            ManageAction::SetPreviewsWhen { when } => self.set_previews_when(when)?,
+            ManageAction::MakeMissingPreviews => self.make_missing_previews(),
+            ManageAction::SetMusicCovers { enabled } => self.set_music_covers(enabled)?,
             ManageAction::SetTmdbKey { key } => self.set_tmdb_key(&key).await?,
+            ManageAction::SetFanartKey { key } => self.set_fanart_key(&key).await?,
+            ManageAction::RemoveArtistPhoto { name } => self.remove_artist_photo(&name).await?,
             ManageAction::SetConversion { enabled } => self.set_conversion_enabled(enabled)?,
             ManageAction::SetConversionAtOnce { at_once } => {
                 self.set_conversion_at_once(at_once)?
@@ -183,8 +189,14 @@ impl Host {
         } else {
             None
         };
+        // The running host's own check of its folder (see `check_writable`).
+        let cannot_add_files = self.vault_path().is_some_and(|path| {
+            crate::drives::read_write_check(&self.config_path)
+                .is_some_and(|check| check.path == path && !check.writable)
+        });
         serde_json::json!({
             "status": status,
+            "cannotAddFiles": cannot_add_files,
             "devices": devices,
             "pairings": pairings,
             "drives": drives,

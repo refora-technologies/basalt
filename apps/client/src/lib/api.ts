@@ -350,6 +350,157 @@ export interface CollectionsResponse {
   collections?: Collections | null
 }
 
+/** One song, as its tags describe it. Mirrors `basalt_proto::msg::MusicTrack`. */
+export interface MusicTrack {
+  path: string
+  size: number
+  /** Unix seconds. */
+  mtime: number
+  title?: string | null
+  artist?: string | null
+  /** Who the album is by: groups a compilation into one album. */
+  albumArtist?: string | null
+  album?: string | null
+  track?: number | null
+  disc?: number | null
+  year?: number | null
+  genre?: string | null
+  durationMs?: number | null
+  /** The host has a cover for it: ask for its thumbnail. */
+  cover: boolean
+}
+
+export interface MusicResponse {
+  revision: number
+  /** The host is still reading the tags of songs it found. */
+  reading: boolean
+  /** Absent when the revision asked for is still current. */
+  tracks?: MusicTrack[] | null
+  /** The artists the host has a photo of, sent with the songs. From 1.6.3. */
+  artists?: ArtistPhoto[]
+}
+
+/** An artist the host has a photo of. Mirrors `basalt_proto::msg::ArtistPhoto`. */
+export interface ArtistPhoto {
+  name: string
+  /** Who took it and its licence, shown with it, when it asks for that. */
+  credit?: string | null
+}
+
+/** A playlist, kept on the host for a profile. Mirrors `basalt_proto::msg::Playlist`. */
+export interface Playlist {
+  id: string
+  name: string
+  /** Vault paths, in playing order. */
+  songs: string[]
+  /** Unix seconds. */
+  created: number
+  updated: number
+}
+
+/** What was playing, to carry on from any device. Mirrors `basalt_proto::msg::Listening`. */
+export interface Listening {
+  queue: string[]
+  index: number
+  /** Seconds into the song. */
+  position: number
+  shuffle: boolean
+  repeat: 'off' | 'all' | 'one'
+  /** What it played from, as named when it started: an album, a playlist. */
+  from: string
+  updated: number
+}
+
+export interface MusicMine {
+  playlists: Playlist[]
+  listening?: Listening | null
+}
+
+/** What one device plays. Mirrors `basalt_proto::msg::NowReport`. */
+export interface NowReport {
+  listening: Listening
+  playing: boolean
+  /** Seconds, when known. */
+  duration: number
+  /**
+   * When the song was at `listening.position`, on the host's clock (Unix ms),
+   * as the device worked it out to the millisecond. Without it, when the host
+   * heard.
+   */
+  clock?: number | null
+}
+
+/** Another of the profile's devices, playing. */
+export interface NowSession {
+  /** Its id, to send it a command. */
+  device: string
+  name: string
+  form?: 'phone' | 'tablet' | 'tv' | 'computer' | 'other' | null
+  report: NowReport
+  /** When it told, host Unix milliseconds: the song was at `position` then. */
+  at: number
+  /** The group it plays in sync in, if any. */
+  group?: string | null
+}
+
+/** Something one device asks of another. */
+export interface MusicCommand {
+  /** `load`, `link` and `unlink` are between devices playing in sync. */
+  action: 'play' | 'pause' | 'next' | 'previous' | 'seek' | 'stop' | 'load' | 'link' | 'unlink'
+  position: number
+  /** The name of the device that asked. */
+  from: string
+  /** Its id. */
+  fromDevice: string
+  /** For `load`: the queue and the second to play from. */
+  listening?: Listening | null
+  /** For `load` and `play`: when to start, on the host's clock (Unix ms). */
+  clock?: number | null
+}
+
+export interface MusicNowResponse {
+  /** The host's clock, Unix milliseconds. */
+  now: number
+  sessions: NowSession[]
+  commands: MusicCommand[]
+  /** The group this device plays in sync in, the same name for all in it; absent alone. */
+  group?: string | null
+  /** The device of the group this one keeps to; absent when it is this one, or alone. */
+  anchor?: string | null
+}
+
+/** How a film's timeline pictures are laid out. Mirrors `PreviewMeta`. */
+export interface PreviewMeta {
+  interval: number
+  columns: number
+  rows: number
+  tileWidth: number
+  tileHeight: number
+  count: number
+  sheets: number
+}
+
+export interface PreviewsResponse {
+  meta?: PreviewMeta | null
+  /** Being made now: ask again in a while. */
+  making: boolean
+}
+
+/** What a speed test measured. Mirrors `basalt_proto::msg::SpeedResult`. */
+export interface SpeedResult {
+  downMbps: number
+  upMbps: number
+  delayMs: number
+}
+
+/** Where a film's or an episode's intro and credits are. Mirrors `SegmentsResponse`. */
+export interface Segments {
+  /** Start and end of the intro, in seconds. */
+  intro?: [number, number] | null
+  /** Where the credits start, in seconds. */
+  credits?: number | null
+}
+
 /** Below this, a match is a guess worth showing the user. Mirrors the Rust. */
 export const CONFIDENT = 70
 
@@ -574,6 +725,30 @@ export const api = {
   /** Every video, song and photo on the drive, sorted by the host. */
   collections: (knownRevision: number) =>
     call<CollectionsResponse>('collections', { knownRevision }),
+  /** A film's timeline pictures; asking starts them. Throws on a host before 1.6.3. */
+  previews: (path: string) => call<PreviewsResponse>('previews', { path }),
+  /** About ten seconds of measuring. Throws on a host before 1.6.3. */
+  speedTest: () => call<SpeedResult>('speed_test'),
+  /** Intro and credits, as far as the host has found. Throws on a host before 1.6.3. */
+  segments: (path: string) => call<Segments>('segments', { path }),
+  /** Songs with tags. Throws on a host before 1.6.3, which does not know it. */
+  music: (knownRevision: number) => call<MusicResponse>('music', { knownRevision }),
+  /**
+   * The profile's playlists and listening; each part given replaces the
+   * host's. Throws without a profile, and on a host before 1.6.3.
+   */
+  musicMine: (request: { playlists?: Playlist[]; listening?: Listening }) =>
+    call<MusicMine>('music_mine', { request }),
+  /** What this device plays (or that it stopped), told; what the others play. */
+  musicNow: (asked: { report?: NowReport; stopped?: boolean }) => {
+    const request = { stopped: false, ...asked }
+    return call<MusicNowResponse>('music_now', { request })
+  },
+  /** Asks another of the profile's devices to pause, play, skip or stop. */
+  musicCommand: (device: string, action: MusicCommand['action'], position = 0, listening?: Listening, clock?: number) => {
+    const request = { device, action, position, listening, clock }
+    return call<void>('music_command', { request })
+  },
   /** The start of every media URL. A percent-encoded path goes on the end. */
   mediaBase: () => call<string>('media_base'),
   /** Poster bytes for one item, as a data URL the interface can hand to an
@@ -719,6 +894,13 @@ export async function onRemoved(handler: (message: string) => void): Promise<() 
  * them, and when a request finds this device's sign-in no longer stands.
  * Either way: ask again who is using this device.
  */
+/** Told when what the profile's other devices play changes. */
+export async function onMusicNow(handler: () => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen('basalt://music-now', () => handler())
+}
+
 export async function onProfilesChanged(handler: () => void): Promise<() => void> {
   const local = (): void => handler()
   window.addEventListener(SIGNED_OUT_EVENT, local)
@@ -1253,6 +1435,52 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
         scanning: false,
         collections: args?.knownRevision === 1 ? null : showcase.collections(),
       } as T
+    case 'music':
+      return {
+        revision: 1,
+        reading: false,
+        tracks: args?.knownRevision === 1 ? null : showcase.music(),
+      } as T
+    case 'previews':
+      return { making: false } as T
+    case 'speed_test':
+      await new Promise((resolve) => setTimeout(resolve, 3000))
+      return { downMbps: 412.6, upMbps: 188.2, delayMs: 3.4 } as T
+    // The browser preview: an intro early on, to see the button.
+    case 'segments':
+      return { intro: [4, 30] } as T
+    // `?remotemusic`: another of the profile's devices playing, to see how
+    // it is shown.
+    case 'music_now': {
+      const now = Date.now()
+      if (!new URLSearchParams(location.search).has('remotemusic')) return { now, sessions: [], commands: [] } as T
+      const songs = showcase.music().map((t) => t.path)
+      return {
+        now,
+        sessions: [
+          {
+            device: 'laptop',
+            name: 'Maya’s laptop',
+            form: 'computer',
+            at: now - 40_000,
+            report: {
+              listening: { queue: songs.slice(0, 6), index: 1, position: 30, shuffle: false, repeat: 'off', from: 'Northern Hours', updated: 0 },
+              playing: true,
+              duration: 214,
+            },
+          },
+        ],
+        commands: [],
+      } as T
+    }
+    case 'music_command':
+      return undefined as T
+    case 'music_mine': {
+      const request = (args?.request ?? {}) as { playlists?: Playlist[]; listening?: Listening }
+      if (request.playlists) mockMusicMine.playlists = request.playlists
+      if (request.listening) mockMusicMine.listening = request.listening
+      return mockMusicMine as T
+    }
     case 'make_dir':
     case 'rename_entry':
     case 'remove_entry':
@@ -1283,6 +1511,15 @@ const mockProfiles: ProfileView[] = [
     : []),
 ]
 const mockPins = showcase.pins()
+/** The browser preview's playlists and listening, as a host would keep them. */
+const mockMusicMine: MusicMine = {
+  playlists: [
+    { id: 'p-road', name: 'Road trip', songs: [], created: 0, updated: 0 },
+    { id: 'p-sunday', name: 'Sunday morning', songs: [], created: 0, updated: 0 },
+  ],
+  listening: null,
+}
+
 let mockProfileStars: Star[] = []
 /**
  * The preview's rules: `?private` for a private drive, or `?requireProfile`

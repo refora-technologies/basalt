@@ -35,14 +35,14 @@ import { Switch } from '@/components/Switch'
 import { filesEmptyLabel } from '@/lib/useVault'
 import { setShowHidden, useShowHidden } from '@/lib/showHidden'
 import { wrongHostText } from '@/lib/wrongHost'
-import { musicItem, type AppModel } from '@/App'
+import type { AppModel } from '@/App'
 import { HexMark } from '@/components/HexMark'
 import { PairingView } from '@/components/PairingView'
 import { Onboarding, markOnboarded, onboarded } from '@/components/Onboarding'
 import { LocalNetworkGate, useLocalNetwork } from './LocalNetworkGate'
 import { ProfileGate } from '@/components/ProfileGate'
 import { LibraryView } from '@/components/LibraryView'
-import { MusicList, PhotoGrid, VideoGrid } from '@/components/MediaViews'
+import { PhotoGrid, VideoGrid } from '@/components/MediaViews'
 import { PlayerOverlay } from '@/components/PlayerOverlay'
 import { ImageViewer } from '@/components/ImageViewer'
 import { PromptDialog } from '@/components/ui/PromptDialog'
@@ -78,6 +78,10 @@ import { remaining, type Resumable } from '@/components/ContinueWatching'
 import { useLongPress } from '@/lib/useLongPress'
 import { useBack } from './useBack'
 import { SectionPager, SectionTabs, useSectionLink, type Section } from './SectionPager'
+import { MusicSection, type MusicLayout } from '@/components/music/MusicSection'
+import { MusicBar, NowPlaying } from '@/components/music/NowPlaying'
+import { useMusicProps } from '@/components/music/useMusicActions'
+import { SpeedTest } from '@/components/SpeedTest'
 
 /** On a television: see `lib/remote.ts`. */
 const TV = isTv()
@@ -88,8 +92,8 @@ type LibrarySection = 'movies' | 'series' | 'videos' | 'music' | 'photos'
 const SECTIONS: Array<Section & { key: LibrarySection }> = [
   { key: 'movies', label: 'Movies', icon: Film },
   { key: 'series', label: 'TV Series', icon: Tv },
-  { key: 'videos', label: 'Videos', icon: Video },
   { key: 'music', label: 'Music', icon: Music },
+  { key: 'videos', label: 'Videos', icon: Video },
   { key: 'photos', label: 'Photos', icon: Images },
 ]
 
@@ -579,6 +583,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
           <TransferStrip model={model} onOpen={() => setTransfersOpen(true)} />
         </Rise>
 
+        <PhoneMusicBar model={model} layout={TV ? 'tv' : wide ? 'wide' : 'phone'} />
         {!wide && <BottomNav tab={tab} onTab={goTo} activeTransfers={active.length} attention={offered(update)} />}
         {/* On a television the lists run on to the screen's edge, as a
             TV's do: only what stays put keeps clear of what a set crops. */}
@@ -618,6 +623,8 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       <PhoneManagePanel open={managing} onClose={() => setManaging(false)} />
 
       <MobilePlayer model={model} />
+
+      <PhoneNowPlaying model={model} layout={TV ? 'tv' : wide ? 'wide' : 'phone'} />
 
       <ImageViewer
         photos={viewer?.photos ?? []}
@@ -1412,7 +1419,6 @@ function LibraryScreen({
     libraryScanning,
     mediaBase,
     setViewer,
-    setPlaying,
     query,
   } = model
   // A Continue watching card's ⋮ or long press: what it offers, in a sheet.
@@ -1523,14 +1529,7 @@ function LibraryScreen({
     )
   }
   if (section === 'music') {
-    return (
-      <MusicList
-        files={libraryFiles}
-        playing={playing?.id ?? null}
-        compact={!wide}
-        onPlay={(file) => setPlaying(musicItem(file))}
-      />
-    )
+    return <PhoneMusic model={model} layout={TV ? 'tv' : wide ? 'wide' : 'phone'} />
   }
   return (
     <VideoGrid
@@ -1545,6 +1544,23 @@ function LibraryScreen({
       onPlay={(file) => void playPath(file.path)}
     />
   )
+}
+
+// ---------------------------------------------------------------------------
+// Music
+// ---------------------------------------------------------------------------
+
+function PhoneMusic({ model, layout }: { model: AppModel; layout: MusicLayout }): React.JSX.Element {
+  return <MusicSection {...useMusicProps(model, layout, model.query)} />
+}
+
+/** While music plays: just above the tabs on a phone, along the bottom on a tablet or a TV. */
+function PhoneMusicBar({ model, layout }: { model: AppModel; layout: MusicLayout }): React.JSX.Element {
+  return <MusicBar {...useMusicProps(model, layout, '')} />
+}
+
+function PhoneNowPlaying({ model, layout }: { model: AppModel; layout: MusicLayout }): React.JSX.Element {
+  return <NowPlaying {...useMusicProps(model, layout, '')} />
 }
 
 // ---------------------------------------------------------------------------
@@ -1670,6 +1686,11 @@ function MoreScreen({
             <ArrowLeftRight size={15} />
             Change drive
           </button>
+          {model.connected && (
+            <div className="-mx-1 mt-3 border-t border-white/[0.06] pt-1">
+              <SpeedTest />
+            </div>
+          )}
         </Card>
 
         {onManage && (

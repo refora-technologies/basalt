@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-media-session-end"
+description = "Enables the media_session_end command without any pre-configured scope."
+commands.allow = ["media_session_end"]
+
+[[permission]]
+identifier = "deny-media-session-end"
+description = "Denies the media_session_end command without any pre-configured scope."
+commands.deny = ["media_session_end"]

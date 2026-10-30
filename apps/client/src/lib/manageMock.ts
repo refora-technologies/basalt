@@ -52,7 +52,16 @@ const sample: ManageView = {
       uncertain: 3,
       withArt: 240,
       posters: true,
+      previews: true,
+      previewsWhen: 'idle',
+      // `?making`: the host in the middle of making timeline pictures.
+      previewsNow:
+        typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('making')
+          ? { name: 'Severance S02E04', done: 0, total: 0 }
+          : null,
+      musicCovers: false,
       hasKey: false,
+      hasFanartKey: false,
       videos: 86,
       music: 1240,
       photos: 3912,
@@ -171,6 +180,8 @@ const sample: ManageView = {
   ],
   pairings: [{ id: 'r-1', deviceName: 'Sam’s phone', pin: '482915', secondsLeft: 104 }],
   drives: null,
+  // `?cantwrite`: a host that can read its folder but not add files to it.
+  cannotAddFiles: typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('cantwrite'),
   // `?link`: a profile from another drive asking to be let in.
   profileLinks:
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('link')
@@ -267,6 +278,34 @@ function apply(action: ManageAction): boolean {
     case 'setPosters':
       status.library.posters = action.enabled
       break
+    case 'setPreviews':
+      status.library.previews = action.enabled
+      break
+    case 'setPreviewsWhen':
+      status.library.previewsWhen = action.when
+      break
+    case 'makeMissingPreviews': {
+      // `?nonemissing` shows the answer when every film has them already.
+      const none = typeof location !== 'undefined' && new URLSearchParams(location.search).has('nonemissing')
+      const at = Math.floor(Date.now() / 1000)
+      status.library.previewsCheck = { checking: false, found: none ? 0 : 37, at }
+      status.library.previewsNow = none ? null : { name: 'Dune: Part Two (2024)', done: 2, total: 37 }
+      break
+    }
+    case 'setMusicCovers':
+      status.library.musicCovers = action.enabled
+      break
+    case 'removeArtistPhoto':
+      break
+    case 'setFanartKey': {
+      const key = action.key.trim()
+      // The preview turns away a key that is plainly not one, as fanart.tv would.
+      if (key !== '' && key.length < 20) {
+        throw new Error('The key was not accepted by fanart.tv. Check it there and paste it again')
+      }
+      status.library.hasFanartKey = key !== ''
+      break
+    }
     case 'setTmdbKey':
       status.library.hasKey = action.key.trim() !== ''
       break

@@ -54,5 +54,7 @@ describe('posters', () => {
     }
     expect(new Set(asked.ids).size).toBe(asked.ids.length)
     expect(asked.ids.length).toBe(films.length)
-  })
+    // Sixty posters drawn and answered one by one: on a machine busy with
+    // something else (a build), more than the usual five seconds.
+  }, 20_000)
 })

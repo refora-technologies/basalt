@@ -13,6 +13,8 @@ What the Basalt interface may ask of Android directly. Opening files and creatin
 - `allow-take-shared`
 - `allow-keep-alive`
 - `allow-let-go`
+- `allow-media-session`
+- `allow-media-session-end`
 - `allow-set-immersive`
 - `allow-set-pip`
 - `allow-local-network`
@@ -497,6 +499,58 @@ Enables the local_network command without any pre-configured scope.
 <td>
 
 Denies the local_network command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-media-session`
+
+</td>
+<td>
+
+Enables the media_session command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-media-session`
+
+</td>
+<td>
+
+Denies the media_session command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-media-session-end`
+
+</td>
+<td>
+
+Enables the media_session_end command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-media-session-end`
+
+</td>
+<td>
+
+Denies the media_session_end command without any pre-configured scope.
 
 </td>
 </tr>

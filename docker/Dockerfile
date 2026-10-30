@@ -47,10 +47,10 @@ RUN apt-get update \
 COPY --from=build /basalt-host /usr/local/bin/basalt-host
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
+# The host runs as the owner of the folders mounted under /media (see
+# entrypoint.sh), or as PUID and PGID when those are set.
 ENV BASALT_HOST_CONFIG=/config/host.json \
-    BASALT_CONTAINER=1 \
-    PUID=1000 \
-    PGID=1000
+    BASALT_CONTAINER=1
 
 # The host's identity and paired devices. Keep it: losing it means every
 # device pairs again.

@@ -1,0 +1,140 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+
+import { api, type ArtistPhoto, type MediaFile, type MusicTrack } from './api'
+import { ASK_AGAIN_AFTER, worthAskingAgain } from './retry'
+import { type Album, type Artist, type Song, albumsOf, artistsOf, isMusic, songFromFile, songOf, withPhotos } from './music'
+
+/**
+ * The music on the drive, as albums, artists and songs.
+ *
+ * The host reads the songs' tags and says when they change, the way it does
+ * for the collections; this fetches them then. A host before 1.6.3 has no
+ * tags to give, and refuses: the songs are then the collections' Music list,
+ * described from where each file is, as the app always did.
+ */
+export interface MusicState {
+  songs: Song[]
+  albums: Album[]
+  artists: Artist[]
+  /** The host is still reading tags: more may come. */
+  reading: boolean
+  loaded: boolean
+  /** A host before 1.6.3: songs come from the file list, without tags. */
+  untagged: boolean
+  refresh: () => void
+}
+
+/**
+ * `host` is the id of the host connected to, or null. `files` is the
+ * collections' Music list, used when the host cannot send tags.
+ */
+export function useMusic(host: string | null, files: MediaFile[]): MusicState {
+  const [tracks, setTracks] = useState<MusicTrack[] | null>(null)
+  /** The artists with photos, and the revision they came with: a new one is a new picture. */
+  const [photos, setPhotos] = useState<{ list: ArtistPhoto[]; version: number }>({ list: [], version: 0 })
+  const [reading, setReading] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [untagged, setUntagged] = useState(false)
+  const revision = useRef(0)
+  const inFlight = useRef<string | null>(null)
+  /** Tries again after a failure that passes: see `worthAskingAgain`. */
+  const tries = useRef(0)
+  const again = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const live = useRef(true)
+  const current = useRef(host)
+  current.current = host
+
+  useEffect(() => {
+    live.current = true
+    return () => {
+      live.current = false
+    }
+  }, [])
+
+  const load = useCallback(async () => {
+    const asked = current.current
+    if (!asked || inFlight.current === asked) return
+    inFlight.current = asked
+    try {
+      const response = await api.music(revision.current)
+      if (!live.current || current.current !== asked) return
+      revision.current = response.revision
+      setReading(response.reading)
+      // Nothing back means "you already have them", not "there are none".
+      if (response.tracks) {
+        setTracks(response.tracks)
+        setPhotos({ list: response.artists ?? [], version: response.revision })
+      }
+      tries.current = 0
+      setUntagged(false)
+      setLoaded(true)
+    } catch (e) {
+      if (!live.current || current.current !== asked) return
+      // A host restarting: asked again in a moment. Taken as "too old to
+      // send tags", the songs lost their names and covers until a restart.
+      const tried = tries.current
+      if (worthAskingAgain(e) && tried < ASK_AGAIN_AFTER.length) {
+        tries.current = tried + 1
+        again.current = setTimeout(() => {
+          if (current.current === asked) void load()
+        }, ASK_AGAIN_AFTER[tried])
+        return
+      }
+      setUntagged(true)
+      setLoaded(true)
+    } finally {
+      if (inFlight.current === asked) inFlight.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    // Another host, or none: the last drive's songs go.
+    revision.current = 0
+    inFlight.current = null
+    tries.current = 0
+    if (again.current) clearTimeout(again.current)
+    setTracks(null)
+    setPhotos({ list: [], version: 0 })
+    setLoaded(false)
+    setReading(false)
+    setUntagged(false)
+    if (host) void load()
+  }, [host, load])
+
+  // The collections changing is the host's word that the songs may have:
+  // the same announcement brings both.
+  useEffect(() => {
+    if (host) void load()
+  }, [files, host, load])
+
+  // While the host reads tags it has nothing to announce until it is done.
+  useEffect(() => {
+    if (!reading) return undefined
+    const timer = setInterval(() => void load(), 2_000)
+    return () => clearInterval(timer)
+  }, [reading, load])
+
+  // Recordings and voice notes are audio, not music: they stay in Files.
+  const songs = useMemo(
+    () =>
+      untagged || tracks === null
+        ? files.map(songFromFile).filter((song) => isMusic(song, false))
+        : tracks
+            .map((track) => ({ song: songOf(track), tagged: !!track.artist?.trim() && !!(track.album?.trim() || track.title?.trim()) }))
+            .filter(({ song, tagged }) => isMusic(song, tagged))
+            .map(({ song }) => song),
+    [untagged, tracks, files],
+  )
+  const albums = useMemo(() => albumsOf(songs), [songs])
+  const artists = useMemo(() => withPhotos(artistsOf(albums), photos.list, photos.version), [albums, photos])
+
+  return {
+    songs,
+    albums,
+    artists,
+    reading,
+    loaded,
+    untagged,
+    refresh: useCallback(() => void load(), [load]),
+  }
+}

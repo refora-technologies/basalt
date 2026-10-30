@@ -25,6 +25,7 @@ use tauri::{Emitter, Manager, State};
 mod linux_player;
 #[cfg(target_os = "linux")]
 mod linux_update;
+mod media_controls;
 #[cfg(target_os = "linux")]
 use linux_player::{
     linux_mpv_command, linux_mpv_destroy, linux_mpv_get_property, linux_mpv_init,
@@ -354,6 +355,10 @@ fn start_watching(client: &Arc<Basalt>, app: &tauri::AppHandle) {
             basalt_client::WatchNotice::ProfilesChanged => {
                 let _ = told.emit("basalt://profiles", ());
             }
+            // What the profile's other devices play changed: the window asks.
+            basalt_client::WatchNotice::MusicNow => {
+                let _ = told.emit("basalt://music-now", ());
+            }
             notice => {
                 if let basalt_client::WatchNotice::Removed(removed) = notice {
                     let _ = told.emit("basalt://removed", removed.to_string());
@@ -629,6 +634,67 @@ async fn collections(
     known_revision: u64,
 ) -> Answer<basalt_proto::msg::CollectionsResponse> {
     Ok(state.client.collections(known_revision).await?)
+}
+
+/// Every song on the drive with its tags, read by the host.
+#[tauri::command]
+async fn music(
+    state: State<'_, AppState>,
+    known_revision: u64,
+) -> Answer<basalt_proto::msg::MusicResponse> {
+    Ok(state.client.music(known_revision).await?)
+}
+
+/// The profile's playlists and where it was listening, kept on the host.
+#[tauri::command]
+async fn music_mine(
+    state: State<'_, AppState>,
+    request: basalt_proto::msg::MusicMineRequest,
+) -> Answer<basalt_proto::msg::MusicMine> {
+    Ok(state.client.music_mine(request).await?)
+}
+
+/// What this device plays, told to the host, and what the profile's other
+/// devices play, with what they asked of this one.
+#[tauri::command]
+async fn music_now(
+    state: State<'_, AppState>,
+    request: basalt_proto::msg::MusicNowRequest,
+) -> Answer<basalt_proto::msg::MusicNowResponse> {
+    Ok(state.client.music_now(request).await?)
+}
+
+/// Asks another of the profile's devices, playing, to do something.
+#[tauri::command]
+async fn music_command(
+    state: State<'_, AppState>,
+    request: basalt_proto::msg::MusicCommandRequest,
+) -> Answer<()> {
+    Ok(state.client.music_command(request).await?)
+}
+
+/// Whether a film's timeline pictures are made, and how they are laid out.
+#[tauri::command]
+async fn previews(
+    state: State<'_, AppState>,
+    path: String,
+) -> Answer<basalt_proto::msg::PreviewsResponse> {
+    Ok(state.client.previews(&path).await?)
+}
+
+/// Measures the connection to the host, for Settings.
+#[tauri::command]
+async fn speed_test(state: State<'_, AppState>) -> Answer<basalt_proto::msg::SpeedResult> {
+    Ok(state.client.speed_test().await?)
+}
+
+/// Where a film's or an episode's intro and credits are.
+#[tauri::command]
+async fn segments(
+    state: State<'_, AppState>,
+    path: String,
+) -> Answer<basalt_proto::msg::SegmentsResponse> {
+    Ok(state.client.segments(&path).await?)
 }
 
 /// The start of every media URL; a percent-encoded vault path goes on the end,
@@ -1480,6 +1546,16 @@ async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
     }
 }
 
+/// The folder a development copy keeps to, set by `BASALT_DEV_ISOLATED`:
+/// see `run`. Always none in a release build.
+fn dev_isolated() -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        std::env::var_os("BASALT_DEV_ISOLATED").map(PathBuf::from)
+    } else {
+        None
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Asked by the uninstaller when the app's data is deleted with it: the
@@ -1504,6 +1580,26 @@ pub fn run() {
         "--autoplay-policy=no-user-gesture-required",
     );
 
+    // A development copy run beside the Basalt installed on the same computer:
+    // its own settings, its own web storage, its own key (not in the TPM), its
+    // own device id and name, and the page open to Chrome's developer tools on
+    // a port. Debug builds only; `BASALT_DEV_ISOLATED` names its folder.
+    #[cfg(all(windows, debug_assertions))]
+    if let Some(folder) = dev_isolated() {
+        // Named as what it is, on the host's list of devices; a second copy
+        // beside the first by `BASALT_DEV_NAME`, on its own port by
+        // `BASALT_DEV_PORT` (9223 unless set).
+        let name = std::env::var("COMPUTERNAME").unwrap_or_default();
+        let which = std::env::var("BASALT_DEV_NAME").unwrap_or_else(|_| "development copy".into());
+        std::env::set_var("COMPUTERNAME", format!("{name} ({which})"));
+        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", folder.join("webview"));
+        let port = std::env::var("BASALT_DEV_PORT").unwrap_or_else(|_| "9223".into());
+        std::env::set_var(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            format!("--autoplay-policy=no-user-gesture-required --remote-debugging-port={port}"),
+        );
+    }
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
@@ -1520,7 +1616,10 @@ pub fn run() {
             #[cfg(mobile)]
             let store_path = app.path().app_data_dir()?.join("client.json");
             #[cfg(desktop)]
-            let store_path = basalt_client::store::default_path();
+            let store_path = match dev_isolated() {
+                Some(folder) => folder.join("client.json"),
+                None => basalt_client::store::default_path(),
+            };
             // With the device's lasting id, so a reinstall is the same device
             // on the host rather than another of the same name. On Android the
             // id comes from the Java side; on Windows the client asks itself.
@@ -1529,8 +1628,12 @@ pub fn run() {
                 use tauri_plugin_basalt_android::BasaltAndroidExt;
                 app.basalt_android().device_hint().ok()
             };
+            // A development copy is a device of its own: with this computer's
+            // id it stood in for the installed app on the host, and its key
+            // replaced the app's there.
             #[cfg(desktop)]
-            let hint: Option<String> = None;
+            let hint: Option<String> =
+                dev_isolated().map(|folder| format!("development copy {}", folder.display()));
             // The device's key goes in the phone's hardware key store there;
             // on Windows the client finds the TPM by itself.
             #[cfg(mobile)]
@@ -1538,10 +1641,14 @@ pub fn run() {
                 Some(Arc::new(PhoneKeyStore(app.handle().clone())));
             #[cfg(desktop)]
             let phone: Option<Arc<dyn basalt_client::keys::PhoneKeys>> = None;
-            let client = Arc::new(Basalt::open_as_this_device_with_keys(
+            let keys = match dev_isolated() {
+                Some(_) => basalt_client::keys::Policy::Software,
+                None => basalt_client::keys::Policy::Platform(phone),
+            };
+            let client = Arc::new(Basalt::open_as_this_device_with_policy(
                 store_path,
                 hint.as_deref(),
-                phone,
+                keys,
             )?);
 
             // Registered **before** anything else in this closure.
@@ -1676,6 +1783,8 @@ pub fn run() {
             linux_mpv_destroy,
             release_pointer,
             page_log,
+            media_controls::media_controls_show,
+            media_controls::media_controls_clear,
             app_version,
             check_update,
             release_notes,
@@ -1708,6 +1817,13 @@ pub fn run() {
             media_url,
             media_base,
             collections,
+            music,
+            music_mine,
+            music_now,
+            music_command,
+            segments,
+            speed_test,
+            previews,
             identity,
             profiles,
             manage,

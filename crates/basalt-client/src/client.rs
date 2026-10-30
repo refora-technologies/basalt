@@ -388,7 +388,7 @@ impl Basalt {
     /// The list a person picks from. Nothing here is trusted: a reply can claim
     /// anything, and the TLS pin decides the truth a moment later.
     pub async fn discover(&self) -> Result<Vec<basalt_net::discovery::Found>> {
-        Ok(basalt_net::discovery::scan(basalt_net::discovery::SCAN_WINDOW).await?)
+        Ok(basalt_net::discovery::scan_patiently(basalt_net::discovery::SCAN_WINDOW).await?)
     }
 
     /// The same list, ready for a person to pick from.
@@ -1654,11 +1654,135 @@ impl Basalt {
         lease.check(result)
     }
 
+    /// Every song on the drive with its tags, read by the host. A host
+    /// before 1.6.3 does not know the request and answers with an error.
+    pub async fn music(&self, known_revision: u64) -> Result<basalt_proto::msg::MusicResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.music(known_revision).await;
+        lease.check(result)
+    }
+
+    /// The profile's playlists and where it was listening, kept on the
+    /// host. Refused without a profile, and by a host before 1.6.3.
+    pub async fn music_mine(
+        &self,
+        request: basalt_proto::msg::MusicMineRequest,
+    ) -> Result<basalt_proto::msg::MusicMine> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.music_mine(&request).await;
+        lease.check(result)
+    }
+
+    /// What this device plays, told to the host (or that it stopped), and
+    /// what the profile's other devices play, with what they asked of this one.
+    pub async fn music_now(
+        &self,
+        request: basalt_proto::msg::MusicNowRequest,
+    ) -> Result<basalt_proto::msg::MusicNowResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.music_now(&request).await;
+        lease.check(result)
+    }
+
+    /// Asks another of the profile's devices, playing, to do something.
+    pub async fn music_command(
+        &self,
+        request: basalt_proto::msg::MusicCommandRequest,
+    ) -> Result<()> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.music_command(&request).await;
+        lease.check(result)
+    }
+
+    /// Whether a film's timeline pictures are made; asking starts them.
+    pub async fn previews(&self, path: &str) -> Result<basalt_proto::msg::PreviewsResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.previews(path).await;
+        lease.check(result)
+    }
+
+    /// One sheet of a film's timeline pictures, as JPEG.
+    pub async fn preview_sheet(&self, path: &str, index: u32) -> Result<Vec<u8>> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.preview_sheet(path, index).await;
+        lease.check(result)
+    }
+
+    /// Measures the connection to the host: a few round trips for the delay,
+    /// then about four seconds each way. Only for the person to read; nothing
+    /// is decided from it.
+    pub async fn speed_test(&self) -> Result<basalt_proto::msg::SpeedResult> {
+        use std::time::{Duration, Instant};
+        const CHUNK: u32 = 4 * 1024 * 1024;
+        const EACH_WAY: Duration = Duration::from_secs(4);
+
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result: Result<basalt_proto::msg::SpeedResult> = async {
+            let mut delays = Vec::new();
+            for _ in 0..5 {
+                let started = Instant::now();
+                lease.speed_down(0).await?;
+                delays.push(started.elapsed().as_secs_f64() * 1000.0);
+            }
+            delays.sort_by(f64::total_cmp);
+
+            let started = Instant::now();
+            let mut received = 0u64;
+            while started.elapsed() < EACH_WAY {
+                received += lease.speed_down(CHUNK).await? as u64;
+            }
+            let down_secs = started.elapsed().as_secs_f64();
+
+            let data = vec![0u8; CHUNK as usize];
+            let started = Instant::now();
+            let mut sent = 0u64;
+            while started.elapsed() < EACH_WAY {
+                lease.speed_up(&data).await?;
+                sent += data.len() as u64;
+            }
+            let up_secs = started.elapsed().as_secs_f64();
+
+            let mbps = |bytes: u64, secs: f64| bytes as f64 * 8.0 / secs.max(0.001) / 1_000_000.0;
+            Ok(basalt_proto::msg::SpeedResult {
+                down_mbps: mbps(received, down_secs),
+                up_mbps: mbps(sent, up_secs),
+                delay_ms: delays[delays.len() / 2],
+            })
+        }
+        .await;
+        lease.check(result)
+    }
+
+    /// Where a film's or an episode's intro and credits are, as far as the
+    /// host has found. A host before 1.6.3 answers with an error.
+    pub async fn segments(&self, path: &str) -> Result<basalt_proto::msg::SegmentsResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.segments(path).await;
+        lease.check(result)
+    }
+
     /// A preview image of a video or photo, made by the host. JPEG.
     pub async fn thumbnail(&self, path: &str, size: u32) -> Result<Vec<u8>> {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
-        let result = lease.thumbnail(path, size).await;
+        let result = lease.thumbnail(path, size, None).await;
+        lease.check(result)
+    }
+
+    /// An artist's photo, at a thumbnail's size. `path` is one of their songs:
+    /// a host from before 1.6.3 gives that song's cover instead.
+    pub async fn artist_photo(&self, path: &str, artist: &str, size: u32) -> Result<Vec<u8>> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.thumbnail(path, size, Some(artist)).await;
         lease.check(result)
     }
 
@@ -1861,6 +1985,7 @@ impl Basalt {
                 _ = profile_changes.changed() => return Ok(WatchEnd::ProfileChanged),
                 change = session.watch_next() => match change? {
                     Change::ProfilesChanged => on_notice(WatchNotice::ProfilesChanged),
+                    Change::MusicNow => on_notice(WatchNotice::MusicNow),
                     change => on_change(change),
                 },
             }
@@ -2533,6 +2658,8 @@ pub enum WatchNotice {
     /// The profiles, or the owner's rules about them, changed on the host:
     /// [`Basalt::identity`] says who may use this device now.
     ProfilesChanged,
+    /// What the profile's other devices play changed: [`Basalt::music_now`].
+    MusicNow,
 }
 
 /// Why one watch connection ended without failing.

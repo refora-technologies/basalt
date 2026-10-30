@@ -29,5 +29,9 @@
             android:name="app.basalt.android.KeepAliveService"
             android:exported="false"
             android:foregroundServiceType="dataSync|mediaPlayback" />
+        <!-- The music notification's buttons: see MediaNow. -->
+        <receiver
+            android:name="app.basalt.android.MediaNow$Buttons"
+            android:exported="false" />
     </application>
 </manifest>

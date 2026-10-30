@@ -126,6 +126,41 @@ pub async fn resolve(host: &str, default_port: u16) -> Result<SocketAddr> {
 /// tell which, so they are all tried. IPv4 first, because a host listens on
 /// IPv4 and names often come back with IPv6 first.
 pub async fn resolve_all(host: &str, default_port: u16) -> Result<Vec<SocketAddr>> {
+    match resolve_exactly(host, default_port).await {
+        Ok(found) => Ok(found),
+        // A computer's bare name ("LIVINGROOM") is found by Windows on its own
+        // network, but on Linux only as "LIVINGROOM.local", which every Windows,
+        // Mac and Linux machine answers for itself. Tried as that too.
+        Err(first) => match with_local(host) {
+            Some(local) => resolve_exactly(&local, default_port)
+                .await
+                .map_err(|_| first),
+            None => Err(first),
+        },
+    }
+}
+
+/// `name.local` for a bare computer name, with its port if it had one; None
+/// for an address, or a name with dots already.
+fn with_local(host: &str) -> Option<String> {
+    if host.starts_with('[') || host.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    let (name, port) = match host.rsplit_once(':') {
+        Some((name, port)) if has_explicit_port(host) => (name, Some(port)),
+        _ => (host, None),
+    };
+    let name = name.trim();
+    if name.is_empty() || name.contains('.') || name.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    Some(match port {
+        Some(port) => format!("{name}.local:{port}"),
+        None => format!("{name}.local"),
+    })
+}
+
+async fn resolve_exactly(host: &str, default_port: u16) -> Result<Vec<SocketAddr>> {
     let target = if host.parse::<std::net::Ipv6Addr>().is_ok() {
         // A bare IPv6 address needs brackets before a port can be appended.
         format!("[{host}]:{default_port}")
@@ -161,6 +196,34 @@ fn has_explicit_port(host: &str) -> bool {
     match host.rfind(']') {
         Some(bracket) => host[bracket..].contains(':'),
         None => host.matches(':').count() == 1,
+    }
+}
+
+#[cfg(test)]
+mod local_name_tests {
+    use super::with_local;
+
+    #[test]
+    fn a_bare_computer_name_is_also_tried_as_dot_local() {
+        assert_eq!(
+            with_local("LIVINGROOM").as_deref(),
+            Some("LIVINGROOM.local")
+        );
+        assert_eq!(
+            with_local("living-room-pc:7742").as_deref(),
+            Some("living-room-pc.local:7742")
+        );
+    }
+
+    #[test]
+    fn addresses_and_full_names_are_left_as_they_are() {
+        assert_eq!(with_local("192.168.1.90"), None);
+        assert_eq!(with_local("192.168.1.90:7742"), None);
+        assert_eq!(with_local("fst.local"), None);
+        assert_eq!(with_local("nas.example.com"), None);
+        assert_eq!(with_local("fe80::1"), None);
+        assert_eq!(with_local("[fe80::1]:7742"), None);
+        assert_eq!(with_local(""), None);
     }
 }
 

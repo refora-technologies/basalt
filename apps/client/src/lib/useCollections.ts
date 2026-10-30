@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type Collections, type MediaFile } from './api'
+import { ASK_AGAIN_AFTER, worthAskingAgain } from './retry'
 
 /**
  * Every video, song and photo on the drive, as the host sorted them.
@@ -32,6 +33,9 @@ export function useCollections(host: string | null): CollectionsState {
   const [unsupported, setUnsupported] = useState(false)
   const revision = useRef(0)
   const inFlight = useRef<string | null>(null)
+  /** Tries again after a failure that passes: see `worthAskingAgain`. */
+  const tries = useRef(0)
+  const again = useRef<ReturnType<typeof setTimeout> | null>(null)
   const live = useRef(true)
   const current = useRef(host)
   current.current = host
@@ -55,10 +59,20 @@ export function useCollections(host: string | null): CollectionsState {
       setScanning(response.scanning)
       // Nothing back means "you already have them", not "there are none".
       if (response.collections) setCollections(withLists(response.collections))
+      tries.current = 0
       setUnsupported(false)
       setLoaded(true)
-    } catch {
+    } catch (e) {
       if (!live.current || current.current !== asked) return
+      // A host restarting: asked again in a moment, and what was shown stays.
+      const tried = tries.current
+      if (worthAskingAgain(e) && tried < ASK_AGAIN_AFTER.length) {
+        tries.current = tried + 1
+        again.current = setTimeout(() => {
+          if (current.current === asked) void load()
+        }, ASK_AGAIN_AFTER[tried])
+        return
+      }
       // A host from before collections cannot answer: it refuses, or hangs
       // up. Either way the sections fall back to scanning for themselves,
       // and a later answer — once the host is updated — switches them back.
@@ -73,6 +87,8 @@ export function useCollections(host: string | null): CollectionsState {
     // Another host, or none: the last drive's lists and revision go.
     revision.current = 0
     inFlight.current = null
+    tries.current = 0
+    if (again.current) clearTimeout(again.current)
     setCollections(EMPTY)
     setLoaded(false)
     setScanning(false)

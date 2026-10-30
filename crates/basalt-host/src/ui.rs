@@ -37,6 +37,10 @@ pub struct VaultView {
     /// than leaving a stale gauge on screen and failing every request with a
     /// path error.
     pub available: bool,
+    /// Whether the host can add files to it. False when it can read the
+    /// folder but not write there (a Linux folder owned by another user):
+    /// uploads and changes are refused until that is fixed.
+    pub can_add_files: bool,
 }
 
 /// Everything the dashboard needs to draw itself once.
@@ -179,11 +183,23 @@ pub struct LibraryStatus {
     pub with_art: usize,
     /// Whether poster downloads are switched on.
     pub posters: bool,
+    /// Whether timeline pictures are made.
+    pub previews: bool,
+    /// When they are made.
+    pub previews_when: basalt_proto::msg::PreviewsWhen,
+    /// What the host is making timeline pictures for right now, if anything.
+    pub previews_now: Option<PreviewsNow>,
+    /// The last "make the missing ones": looking, or what it found.
+    pub previews_check: Option<PreviewsCheck>,
+    /// Whether album covers are looked up online.
+    pub music_covers: bool,
     /// Whether a TMDb key has been supplied at all.
     ///
     /// The key itself never leaves the host — the interface only needs to know
     /// whether one is set, so it can say so without ever displaying it.
     pub has_key: bool,
+    /// Whether a fanart.tv key has been supplied, the same way.
+    pub has_fanart_key: bool,
     /// Unix seconds of the last completed scan, zero if never.
     pub scanned_at: i64,
     /// Files in Videos, Music and Photos, found whether or not films are
@@ -191,6 +207,30 @@ pub struct LibraryStatus {
     pub videos: usize,
     pub music: usize,
     pub photos: usize,
+}
+
+/// Timeline pictures being made now.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewsNow {
+    /// The film or episode, as the library names it.
+    pub name: String,
+    /// Through a run of "make the missing ones": how many are done of how
+    /// many. Both zero for a single film (one just played, or found idle).
+    pub done: usize,
+    pub total: usize,
+}
+
+/// The last "make the missing ones", as pressed in a window.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewsCheck {
+    /// Still looking for films and episodes without them.
+    pub checking: bool,
+    /// How many it found without them, once it has looked.
+    pub found: usize,
+    /// Unix seconds: when it started looking, or when it finished.
+    pub at: i64,
 }
 
 /// A drive offered on the setup screen.
@@ -417,7 +457,13 @@ mod tests {
                 uncertain: 0,
                 with_art: 0,
                 posters: false,
+                previews: true,
+                previews_when: basalt_proto::msg::PreviewsWhen::Idle,
+                previews_now: None,
+                previews_check: None,
+                music_covers: false,
                 has_key: false,
+                has_fanart_key: false,
                 scanned_at: 0,
                 videos: 0,
                 music: 0,
@@ -502,7 +548,13 @@ mod tests {
             uncertain: 3,
             with_art: 1,
             posters: true,
+            previews: true,
+            previews_when: basalt_proto::msg::PreviewsWhen::Idle,
+            previews_now: None,
+            previews_check: None,
+            music_covers: false,
             has_key: true,
+            has_fanart_key: false,
             scanned_at: 4,
             videos: 5,
             music: 6,
@@ -513,10 +565,16 @@ mod tests {
             [
                 "enabled",
                 "films",
+                "hasFanartKey",
                 "hasKey",
                 "music",
+                "musicCovers",
                 "photos",
                 "posters",
+                "previews",
+                "previewsCheck",
+                "previewsNow",
+                "previewsWhen",
                 "scannedAt",
                 "scanning",
                 "series",
@@ -535,8 +593,12 @@ mod tests {
             free: 1,
             total: 2,
             available: true,
+            can_add_files: true,
         };
-        assert_eq!(keys(&vault), ["available", "free", "name", "path", "total"]);
+        assert_eq!(
+            keys(&vault),
+            ["available", "canAddFiles", "free", "name", "path", "total"]
+        );
     }
 
     #[test]

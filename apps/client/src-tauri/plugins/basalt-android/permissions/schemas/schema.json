@@ -499,6 +499,30 @@
           "markdownDescription": "Denies the local_network command without any pre-configured scope."
         },
         {
+          "description": "Enables the media_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-media-session",
+          "markdownDescription": "Enables the media_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the media_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-media-session",
+          "markdownDescription": "Denies the media_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the media_session_end command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-media-session-end",
+          "markdownDescription": "Enables the media_session_end command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the media_session_end command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-media-session-end",
+          "markdownDescription": "Denies the media_session_end command without any pre-configured scope."
+        },
+        {
           "description": "Enables the minimize command without any pre-configured scope.",
           "type": "string",
           "const": "allow-minimize",
@@ -931,10 +955,10 @@
           "markdownDescription": "Denies the take_shared command without any pre-configured scope."
         },
         {
-          "description": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-pip`\n- `allow-local-network`\n- `allow-request-local-network`\n- `allow-open-app-settings`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-subtitle-font`\n- `allow-mpv-destroy`",
+          "description": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-media-session`\n- `allow-media-session-end`\n- `allow-set-immersive`\n- `allow-set-pip`\n- `allow-local-network`\n- `allow-request-local-network`\n- `allow-open-app-settings`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-subtitle-font`\n- `allow-mpv-destroy`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-set-immersive`\n- `allow-set-pip`\n- `allow-local-network`\n- `allow-request-local-network`\n- `allow-open-app-settings`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-subtitle-font`\n- `allow-mpv-destroy`"
+          "markdownDescription": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-media-session`\n- `allow-media-session-end`\n- `allow-set-immersive`\n- `allow-set-pip`\n- `allow-local-network`\n- `allow-request-local-network`\n- `allow-open-app-settings`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-subtitle-font`\n- `allow-mpv-destroy`"
         }
       ]
     }

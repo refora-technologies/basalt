@@ -345,8 +345,33 @@ pub enum ManageAction {
     SetPosters {
         enabled: bool,
     },
+    /// Timeline pictures on or off.
+    SetPreviews {
+        enabled: bool,
+    },
+    /// When timeline pictures are made. From 1.6.3.
+    SetPreviewsWhen {
+        when: PreviewsWhen,
+    },
+    /// Timeline pictures for every film and episode that has none, made now,
+    /// one after another. From 1.6.3.
+    MakeMissingPreviews,
+    /// Album covers from the internet on or off.
+    SetMusicCovers {
+        enabled: bool,
+    },
     SetTmdbKey {
         key: String,
+    },
+    /// A fanart.tv key of the owner's own, for artist photos; empty removes
+    /// it. From 1.6.3.
+    SetFanartKey {
+        key: String,
+    },
+    /// An artist's photo taken down, as of somebody else of the same name;
+    /// none is looked for again. From 1.6.3.
+    RemoveArtistPhoto {
+        name: String,
     },
     SetConversion {
         enabled: bool,
@@ -423,6 +448,10 @@ impl ManageAction {
         match self {
             ManageAction::SetTmdbKey { key } if key.is_empty() => "removed the TMDb key".into(),
             ManageAction::SetTmdbKey { .. } => "set a TMDb key".into(),
+            ManageAction::SetFanartKey { key } if key.is_empty() => {
+                "removed the fanart.tv key".into()
+            }
+            ManageAction::SetFanartKey { .. } => "set a fanart.tv key".into(),
             other => format!("{other:?}"),
         }
     }
@@ -667,6 +696,10 @@ pub enum Change {
     /// ask again who may use this device and as whom. Only sent to a watch
     /// that asked for it.
     ProfilesChanged,
+    /// What the profile's devices are playing changed: ask again with
+    /// [`crate::ops::Op::MusicNow`]. Only sent to a watch that asked for it,
+    /// signed in to that profile.
+    MusicNow,
 }
 
 impl Change {
@@ -689,7 +722,10 @@ impl Change {
                 let (a, b) = (parent(from), parent(to));
                 if a == b { vec![a] } else { vec![a, b] }
             }
-            Change::Resynchronise | Change::LibraryChanged | Change::ProfilesChanged => Vec::new(),
+            Change::Resynchronise
+            | Change::LibraryChanged
+            | Change::ProfilesChanged
+            | Change::MusicNow => Vec::new(),
         }
     }
 }
@@ -702,6 +738,10 @@ pub struct WatchRequest {
     /// always sent, because a device from before it would not understand it.
     #[serde(default)]
     pub profiles: bool,
+    /// Also tell this device when what its profile's other devices are
+    /// playing changes, as [`Change::MusicNow`].
+    #[serde(default)]
+    pub music: bool,
 }
 
 /// One streamed frame on a watch connection.
@@ -821,6 +861,368 @@ pub struct MediaFile {
     pub width: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// Music
+// ---------------------------------------------------------------------------
+
+/// Asks for the songs on the drive with their tags.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicRequest {
+    /// Return no songs when the host's copy still matches this.
+    #[serde(default)]
+    pub known_revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicResponse {
+    /// Bumped whenever a song or its tags change.
+    pub revision: u64,
+    /// True while the host is still reading the tags of songs it found.
+    pub reading: bool,
+    /// Absent when `known_revision` already matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracks: Option<Vec<MusicTrack>>,
+    /// The artists the host has a photo of, sent with the songs. From 1.6.3.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artists: Vec<ArtistPhoto>,
+}
+
+/// An artist with a photo: asked for as a thumbnail with
+/// [`ThumbnailRequest::artist`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ArtistPhoto {
+    pub name: String,
+    /// Who took it and its licence, to show with it, when it asks for that.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit: Option<String>,
+}
+
+/// One song, as its tags describe it. Every tag may be missing: a file with
+/// none is still a song, shown by its file name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MusicTrack {
+    /// Vault-relative.
+    pub path: String,
+    pub size: u64,
+    /// Unix seconds.
+    pub mtime: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    /// Who the album is by, which groups a compilation into one album.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album_artist: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disc: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// A cover to ask for with a thumbnail of this file: in the file, or a
+    /// picture beside it in its folder.
+    pub cover: bool,
+}
+
+/// A profile's own music: its playlists and where it was listening. Kept on
+/// the host so they are the same on every device; a device used without a
+/// profile keeps its own, as it does its stars.
+///
+/// Each part present in a request replaces the host's copy; absent, it is
+/// only read.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicMineRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlists: Option<Vec<Playlist>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listening: Option<Listening>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MusicMine {
+    pub playlists: Vec<Playlist>,
+    /// Absent until something has been played.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listening: Option<Listening>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Playlist {
+    /// Made by the device that made the playlist; never reused.
+    pub id: String,
+    pub name: String,
+    /// The songs, vault-relative, in the order they play.
+    pub songs: Vec<String>,
+    /// Unix seconds.
+    pub created: i64,
+    pub updated: i64,
+}
+
+/// What was playing, so it carries on from any device.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Listening {
+    /// The songs queued, vault-relative, in playing order.
+    pub queue: Vec<String>,
+    /// Which of them was playing.
+    pub index: u32,
+    /// Seconds into it.
+    pub position: f64,
+    pub shuffle: bool,
+    /// `off`, `all` or `one`.
+    pub repeat: String,
+    /// What it was playing from, as the device that started it named it: an
+    /// album, an artist, a playlist, Liked Songs.
+    pub from: String,
+    /// Unix seconds.
+    pub updated: i64,
+}
+
+/// What this device is playing, for the profile's other devices to see, and
+/// a question: what are they playing? A device not signed in to a profile
+/// is answered with nothing; it keeps its music to itself.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicNowRequest {
+    /// What it plays now. Absent with `stopped` false: only asking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<NowReport>,
+    /// It has stopped playing: forgotten at once.
+    #[serde(default)]
+    pub stopped: bool,
+}
+
+/// What one device plays.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NowReport {
+    /// The queue, the song in it and the second it is at.
+    pub listening: Listening,
+    /// Playing rather than paused.
+    pub playing: bool,
+    /// The song's length in seconds, when known.
+    pub duration: f64,
+    /// When the song was at `listening.position`, on the host's clock in Unix
+    /// milliseconds, as the device worked it out. Devices playing in sync
+    /// need it to the millisecond; without it, the moment the host heard.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock: Option<i64>,
+}
+
+/// What the profile's other devices are playing, and what this one was asked
+/// to do.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MusicNowResponse {
+    /// The host's clock, in Unix milliseconds: a device works out where a
+    /// song is now from `at` with it, whatever its own clock says.
+    pub now: i64,
+    pub sessions: Vec<NowSession>,
+    /// Asked of this device since it last asked, oldest first.
+    pub commands: Vec<MusicCommand>,
+    /// The devices this one plays in sync with, as one group: its name,
+    /// the same for all of them. None when it plays on its own. From 1.6.3.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// The device of the group this one keeps to: the same one for all of
+    /// them, so they all keep to one. None when this is that one, or alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
+}
+
+/// One of the profile's devices, playing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NowSession {
+    /// The device's id, to send it a command.
+    pub device: String,
+    /// Its name, as the host lists it.
+    pub name: String,
+    /// What kind of device it said it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub form: Option<String>,
+    pub report: NowReport,
+    /// When it last told, on the host's clock, in Unix milliseconds: the
+    /// song's second was `report.listening.position` then.
+    pub at: i64,
+    /// The group it plays in sync in, if any: see [`MusicNowResponse::group`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+}
+
+/// Something one device asks another to do.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MusicCommand {
+    /// `play`, `pause`, `next`, `previous`, `seek`, `stop`; or, between
+    /// devices playing in sync, `load` (play `listening`, from its second),
+    /// `link` and `unlink`.
+    pub action: String,
+    /// For `seek`: where to, in seconds.
+    pub position: f64,
+    /// The name of the device that asked.
+    pub from: String,
+    /// Its id: the device to keep in sync with, for `link`.
+    pub from_device: String,
+    /// For `load`: the queue and the second to play from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listening: Option<Listening>,
+    /// For `load` and `play`: when to start, on the host's clock in Unix
+    /// milliseconds, so devices in sync start at the same moment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<i64>,
+}
+
+/// Asks another of the profile's devices, playing, to do something.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicCommandRequest {
+    /// The device asked, by its id from [`NowSession::device`].
+    pub device: String,
+    pub action: String,
+    #[serde(default)]
+    pub position: f64,
+    /// For `load`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listening: Option<Listening>,
+    /// For `load` and `play`: when to start, on the host's clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<i64>,
+}
+
+/// Asks where a film's or an episode's intro and credits are.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentsRequest {
+    /// Vault-relative.
+    pub path: String,
+}
+
+/// Where they are, as far as the host has found: nothing yet, for a file it
+/// has not looked at or found nothing in.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SegmentsResponse {
+    /// Start and end of the intro, in seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intro: Option<[f64; 2]>,
+    /// Where the credits start, in seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits: Option<f64>,
+}
+
+/// A speed test's requests, which are not JSON: a byte saying which way, and
+/// then either how much the host is to send (four bytes, little-endian), or
+/// the bytes the device sends, which the host throws away.
+///
+/// Nothing touches the drive: it measures the network between the two, over
+/// the same encrypted connection films and uploads use.
+pub mod speed_test {
+    /// The host sends `bytes` back.
+    pub const DOWN: u8 = 0;
+    /// The rest of the request is data to throw away.
+    pub const UP: u8 = 1;
+    /// The most the host sends for one request.
+    pub const MAX_DOWN: u32 = 16 * 1024 * 1024;
+
+    /// A request for the host to send `bytes`.
+    pub fn down(bytes: u32) -> Vec<u8> {
+        let mut out = vec![DOWN];
+        out.extend_from_slice(&bytes.min(MAX_DOWN).to_le_bytes());
+        out
+    }
+
+    /// A request carrying `data` up.
+    pub fn up(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(data.len() + 1);
+        out.push(UP);
+        out.extend_from_slice(data);
+        out
+    }
+}
+
+/// When a host makes a film's timeline pictures. However it is set, a film
+/// played for the first time gets them then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PreviewsWhen {
+    /// As soon as a film or episode arrives on the drive.
+    Arrive,
+    /// While nothing is being watched or converted.
+    #[default]
+    Idle,
+    /// Only when somebody first plays it.
+    Play,
+}
+
+/// Asks for a film's timeline pictures.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewsRequest {
+    /// Vault-relative.
+    pub path: String,
+}
+
+/// How a film's timeline pictures are laid out: picture `n` shows second
+/// `n * interval`, and is square `n % (columns * rows)` of sheet
+/// `n / (columns * rows)`, counted along the rows.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewMeta {
+    pub interval: f64,
+    pub columns: u32,
+    pub rows: u32,
+    pub tile_width: u32,
+    pub tile_height: u32,
+    pub count: u32,
+    pub sheets: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewsResponse {
+    /// Absent while they are being made, when they are switched off, or for
+    /// a file the host cannot make them for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<PreviewMeta>,
+    /// Being made now: worth asking again in a while.
+    #[serde(default)]
+    pub making: bool,
+}
+
+/// Asks for one sheet of a film's timeline pictures.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewSheetRequest {
+    pub path: String,
+    pub index: u32,
+}
+
+/// What a speed test measured.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeedResult {
+    /// From the host to this device, in megabits a second.
+    pub down_mbps: f64,
+    /// From this device to the host.
+    pub up_mbps: f64,
+    /// The time a request takes to come back, in milliseconds.
+    pub delay_ms: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1020,6 +1422,10 @@ pub struct ThumbnailRequest {
     /// format the device cannot show itself.
     #[serde(default)]
     pub size: u32,
+    /// The photo of this artist instead, from 1.6.3. `path` is one of their
+    /// songs, so a host from before shows that song's cover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
 }
 
 /// A film or a series. Episodes hang off the series.
@@ -1263,6 +1669,25 @@ pub struct ProgressResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn when_to_make_timeline_pictures_travels_as_a_word() {
+        let set: ManageAction =
+            serde_json::from_str(r#"{"do":"setPreviewsWhen","when":"arrive"}"#).unwrap();
+        assert!(matches!(
+            set,
+            ManageAction::SetPreviewsWhen {
+                when: PreviewsWhen::Arrive
+            }
+        ));
+        let all: ManageAction = serde_json::from_str(r#"{"do":"makeMissingPreviews"}"#).unwrap();
+        assert!(matches!(all, ManageAction::MakeMissingPreviews));
+        assert_eq!(
+            serde_json::to_string(&PreviewsWhen::Play).unwrap(),
+            r#""play""#
+        );
+        assert_eq!(PreviewsWhen::default(), PreviewsWhen::Idle);
+    }
 
     #[test]
     fn chunks_round_trip() {

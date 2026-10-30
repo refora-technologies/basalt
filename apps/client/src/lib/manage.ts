@@ -90,6 +90,25 @@ export interface LibrarySections {
   photos: boolean
 }
 
+/** When a host makes timeline pictures: as films arrive, while idle, or only when first played. */
+export type PreviewsWhen = 'arrive' | 'idle' | 'play'
+
+/** Timeline pictures being made now. `done` of `total` through "make the missing ones"; both 0 for one film. */
+export interface PreviewsNow {
+  name: string
+  done: number
+  total: number
+}
+
+/** The last "make the missing ones": still looking, or how many it found. */
+export interface PreviewsCheck {
+  checking: boolean
+  found: number
+  /** Unix seconds, on the host's clock. */
+  at: number
+}
+
+
 export interface ManagedHostStatus {
   hostId: string
   hostName: string
@@ -113,7 +132,19 @@ export interface ManagedHostStatus {
     uncertain: number
     withArt: number
     posters: boolean
+    /** Timeline pictures made. Absent from hosts before 1.6.3. */
+    previews?: boolean
+    /** When they are made. Absent from hosts before 1.6.3. */
+    previewsWhen?: PreviewsWhen
+    /** What they are being made for right now, if anything. */
+    previewsNow?: PreviewsNow | null
+    /** The last "make the missing ones". Absent from hosts before 1.6.3. */
+    previewsCheck?: PreviewsCheck | null
+    /** Album covers looked up online. Absent from hosts before 1.6.3. */
+    musicCovers?: boolean
     hasKey: boolean
+    /** A fanart.tv key is saved, for artist photos. Absent from hosts before 1.6.3. */
+    hasFanartKey?: boolean
     videos: number
     music: number
     photos: number
@@ -165,6 +196,11 @@ export interface ManageView {
   profileLinks?: ProfileLinkRequest[]
   /** Its version and updates. Absent from hosts before 1.5. */
   update?: HostUpdate
+  /**
+   * The host can read its folder but not add files to it, so uploads and
+   * changes are refused. Absent from hosts before 1.6.3.
+   */
+  cannotAddFiles?: boolean
 }
 
 /** Mirrors `basalt_host::updates::UpdateView`. */
@@ -199,7 +235,13 @@ export type ManageAction =
   | { do: 'setLibrary'; enabled: boolean }
   | { do: 'rescan' }
   | { do: 'setPosters'; enabled: boolean }
+  | { do: 'setPreviews'; enabled: boolean }
+  | { do: 'setPreviewsWhen'; when: PreviewsWhen }
+  | { do: 'makeMissingPreviews' }
+  | { do: 'setMusicCovers'; enabled: boolean }
   | { do: 'setTmdbKey'; key: string }
+  | { do: 'setFanartKey'; key: string }
+  | { do: 'removeArtistPhoto'; name: string }
   | { do: 'setConversion'; enabled: boolean }
   | { do: 'setConversionAtOnce'; atOnce: number | null }
   | { do: 'measureConversion' }

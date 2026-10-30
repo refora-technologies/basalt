@@ -2,6 +2,8 @@ package app.basalt.android
 
 import android.app.Activity
 import android.graphics.Color
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -33,6 +35,10 @@ class MpvPlayer(
   @Volatile private var started = false
   private var surface: SurfaceView? = null
   private var lastTime = 0L
+  // The newest clock held back by the four-a-second limit, sent when the limit
+  // allows: see `changed`.
+  private var heldTime: Any? = null
+  private val clock = Handler(Looper.getMainLooper())
 
   /**
    * Starts mpv, once for the life of the app, with the page's options — less
@@ -290,14 +296,40 @@ class MpvPlayer(
 
   // mpv's event thread ----------------------------------------------------
 
+  // Synchronised: mpv's thread reports, the main thread sends what was held.
+  @Synchronized
   private fun changed(name: String, data: Any?) {
     // The clock changes every frame. Four times a second is plenty for a
     // scrubber, and spares the bridge sixty messages a second.
+    //
+    // The last change held back is still sent, a moment later. Dropped, a
+    // seek's new time could be the one that never arrived: paused, or after a
+    // skip landing within a quarter second of the last report, the page kept
+    // the old time, and the next skip or the scrubber started from there.
     if (name == "time-pos") {
       val now = SystemClock.uptimeMillis()
-      if (now - lastTime < 250) return
+      val wait = 250 - (now - lastTime)
+      if (wait > 0) {
+        val first = heldTime == null
+        heldTime = data ?: JSONObject.NULL
+        if (first) clock.postDelayed({ sendHeldTime() }, wait)
+        return
+      }
+      heldTime = null
       lastTime = now
     }
+    send(name, data)
+  }
+
+  @Synchronized
+  private fun sendHeldTime() {
+    val held = heldTime ?: return
+    heldTime = null
+    lastTime = SystemClock.uptimeMillis()
+    send("time-pos", if (held == JSONObject.NULL) null else held)
+  }
+
+  private fun send(name: String, data: Any?) {
     val event = JSObject().put("event", "property-change").put("name", name)
     if (data == null) event.put("data", JSONObject.NULL) else event.put("data", data)
     emit(event)

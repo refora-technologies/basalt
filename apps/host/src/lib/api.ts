@@ -22,6 +22,30 @@ export interface VaultView {
   total: number
   /** False once the drive has been unplugged. */
   available: boolean
+  /**
+   * Whether the host can add files to it: false when it can read the folder
+   * but not write there, so uploads and changes are refused. Absent from
+   * hosts before 1.6.3.
+   */
+  canAddFiles?: boolean
+}
+
+/** When the host makes timeline pictures: as films arrive, while idle, or only when first played. */
+export type PreviewsWhen = 'arrive' | 'idle' | 'play'
+
+/** Timeline pictures being made now: `done` of `total` through "make the missing ones"; both 0 for one film. */
+export interface PreviewsNow {
+  name: string
+  done: number
+  total: number
+}
+
+/** The last "make the missing ones": still looking, or how many it found. */
+export interface PreviewsCheck {
+  checking: boolean
+  found: number
+  /** Unix seconds. */
+  at: number
 }
 
 /** How the media index is getting on. */
@@ -37,8 +61,20 @@ export interface LibraryStatus {
   withArt: number
   /** Whether poster downloads are switched on. */
   posters: boolean
+  /** Whether timeline pictures are made. */
+  previews?: boolean
+  /** When they are made. Absent from hosts before 1.6.3. */
+  previewsWhen?: PreviewsWhen
+  /** What they are being made for now, if anything. */
+  previewsNow?: PreviewsNow | null
+  /** The last "make the missing ones". Absent from hosts before 1.6.3. */
+  previewsCheck?: PreviewsCheck | null
+  /** Whether album covers are looked up online. */
+  musicCovers?: boolean
   /** Whether a TMDb key is set. The key itself never leaves the host. */
   hasKey: boolean
+  /** Whether a fanart.tv key is set, the same way. Absent from hosts before 1.6.3. */
+  hasFanartKey?: boolean
   /** Files in Videos, Music and Photos. */
   videos: number
   music: number
@@ -349,11 +385,20 @@ export const api = {
   rescanLibrary: (): Promise<HostStatus> => call('rescan_library'),
   setPosters: (enabled: boolean): Promise<HostStatus> =>
     call('set_posters', { enabled }),
+  setPreviews: (enabled: boolean): Promise<HostStatus> =>
+    call('set_previews', { enabled }),
+  setPreviewsWhen: (when: PreviewsWhen): Promise<HostStatus> =>
+    call('set_previews_when', { when }),
+  makeMissingPreviews: (): Promise<HostStatus> => call('make_missing_previews'),
+  setMusicCovers: (enabled: boolean): Promise<HostStatus> =>
+    call('set_music_covers', { enabled }),
   setConversion: (enabled: boolean): Promise<HostStatus> => call('set_conversion', { enabled }),
   setConversionAtOnce: (atOnce: number | null): Promise<HostStatus> =>
     call('set_conversion_at_once', { atOnce }),
   measureConversion: (): Promise<HostStatus> => call('measure_conversion'),
   setTmdbKey: (key: string): Promise<HostStatus> => call('set_tmdb_key', { key }),
+  /** Checked with fanart.tv first: refused with why when it does not take the key. */
+  setFanartKey: (key: string): Promise<HostStatus> => call('set_fanart_key', { key }),
   resetProfilePin: (id: string): Promise<HostStatus> => call('reset_profile_pin', { id }),
   removeProfile: (id: string): Promise<HostStatus> => call('remove_profile', { id }),
   /** A profile made here: its person chooses the PIN at their first sign-in. */
@@ -446,7 +491,13 @@ const sample: {
       uncertain: 0,
       withArt: 14,
       posters: true,
+      previews: true,
+      previewsWhen: 'idle',
+      // `?making`: in the middle of making timeline pictures.
+      previewsNow: previewFlag('making') ? { name: 'Severance S02E04', done: 0, total: 0 } : null,
+      musicCovers: false,
       hasKey: false,
+      hasFanartKey: false,
       scannedAt: Math.floor(Date.now() / 1000) - 3600,
       videos: 8,
       music: 24,
@@ -610,6 +661,11 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
             vault: { ...sample.status.vault, free: 0, total: 0, available: false },
           }
         }
+        // `?cantwrite`: the host can read its folder but not add to it (a
+        // Linux folder owned by another user).
+        if (previewFlag('cantwrite') && sample.status.vault) {
+          return { ...sample.status, vault: { ...sample.status.vault, canAddFiles: false } }
+        }
         return sample.status
       case 'list_drives':
         return sample.drives
@@ -745,6 +801,22 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
           if (sample.status.conversion.byHand === null) sample.status.conversion.limit = 2
         }, 3000)
         return sample.status
+      case 'set_music_covers':
+        sample.status.library.musicCovers = Boolean(args?.enabled)
+        return sample.status as T
+      case 'set_previews_when':
+        sample.status.library.previewsWhen = args?.when as PreviewsWhen
+        return sample.status
+      case 'make_missing_previews': {
+        // `?nonemissing` shows the answer when every film has them already.
+        const none = new URLSearchParams(location.search).has('nonemissing')
+        sample.status.library.previewsCheck = { checking: false, found: none ? 0 : 37, at: Math.floor(Date.now() / 1000) }
+        sample.status.library.previewsNow = none ? null : { name: 'Dune: Part Two (2024)', done: 2, total: 37 }
+        return sample.status
+      }
+      case 'set_previews':
+        sample.status.library.previews = Boolean(args?.enabled)
+        return sample.status as T
       case 'set_posters':
         sample.status.library.posters = Boolean(args?.enabled)
         sample.status.library.withArt = sample.status.library.posters
@@ -805,6 +877,15 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
       case 'set_tmdb_key':
         sample.status.library.hasKey = String(args?.key ?? '').trim().length > 0
         return sample.status
+      case 'set_fanart_key': {
+        const key = String(args?.key ?? '').trim()
+        // The preview turns away a key that is plainly not one, as fanart.tv would.
+        if (key !== '' && key.length < 20) {
+          throw new Error('The key was not accepted by fanart.tv. Check it there and paste it again')
+        }
+        sample.status.library.hasFanartKey = key.length > 0
+        return sample.status
+      }
       case 'build_info':
         return 'preview · not a real build'
       case 'app_version':
