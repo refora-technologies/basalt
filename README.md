@@ -307,6 +307,10 @@ On Linux, install the `.deb` or `.rpm` with your package manager, for example
 `sudo apt install ./Basalt-Client-Linux-amd64.deb`; it updates through it too.
 The AppImage needs no installing: make it executable and open it, and it
 replaces itself when there is a new version.
+It needs FUSE 2, which Ubuntu 24.04 and later leave out: if it does not open,
+`sudo apt install libfuse2t64` once. On the newest desktops, such as Ubuntu
+26.04, films in the AppImage may not show their picture yet; use the `.deb` or
+`.rpm` there.
 
 **Getting started:**
 
