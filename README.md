@@ -110,7 +110,8 @@ network, encrypted, and that is all it does.
   the device, so a copy of its settings can't open your drive.
 - **Private by default.** Files travel between your own devices and nowhere
   else, and nothing tracks what you open. The only requests that leave your network are
-  the update check, to GitHub, and poster lookups if you turn them on.
+  the update check, to GitHub, and, if you turn them on, poster lookups and
+  album covers and artist photos.
 - **Careful with what it keeps.** Profile PINs are stored only as slow, salted
   hashes, and repeated wrong guesses lock a profile for longer each time.
 
@@ -141,12 +142,29 @@ network, encrypted, and that is all it does.
   the laptop finishes on the phone, and episodes play on to the next one.
 - **Photos, music and home videos.** The host finds every photo, song and video
   on the drive, however deep, and sorts each into its own section. Photos are
-  laid out by month at their own shape with a viewer that zooms; music is a
-  track list by artist and album that plays on; videos show a picture from
-  inside them. Thumbnails are made once, on the host, and shared by every
-  device.
+  laid out by month at their own shape with a viewer that zooms; videos show a
+  picture from inside them. Thumbnails are made once, on the host, and shared
+  by every device. The pictures and sounds of installed programs, games and
+  projects stay in Files.
 - **Choose what devices show.** The host decides which sections appear on
   your devices. Hiding one only tidies the list; every file is still in Files.
+
+### Music in every room
+
+- **Albums, artists and playlists.** Songs are shown by their tags as albums
+  and artists, with Liked Songs and playlists that follow your profile. A song
+  without tags is named from its file, and recordings and voice notes stay out
+  of Music.
+- **Plays on while you browse,** with the keyboard's media keys, the lock
+  screen and the system's own controls, and a volume of its own.
+- **In step on several devices.** Play on two or more devices at once and they
+  start together and stay within a few hundredths of a second of each other,
+  so two speakers in one room sound as one. Any of them pauses, skips or
+  seeks for all, and another device can take the song over from the same
+  second.
+- **Covers and artist photos, if you want them,** from MusicBrainz, the Cover
+  Art Archive and Wikimedia Commons, crediting the photographer, with an
+  optional fanart.tv key for more.
 
 ### A real player
 
@@ -163,10 +181,14 @@ network, encrypted, and that is all it does.
   from one video to the next, found anywhere on the drive by the film's or
   episode's name or dropped onto the video, and nudged into sync when they
   drift.
+- **Skip intro, and a picture on the timeline.** Series skip their intros,
+  found from chapters or from the music a season's episodes share, and offer
+  the next episode at the credits. Moving along the timeline shows a picture of
+  that moment.
 - **Made for the keyboard.** Space to pause, arrow keys to seek and change
-  volume, `C` for subtitles, Shift+P and Shift+N for the previous and next
-  episode, and `,` and `.` to step one frame at a time. Pausing shows what is
-  playing and what comes next.
+  volume, Enter for full screen and Esc to leave it, `C` for subtitles, Shift+P
+  and Shift+N for the previous and next episode, and `,` and `.` to step one
+  frame at a time. Pausing shows what is playing and what comes next.
 
 ### Profiles for the household
 
