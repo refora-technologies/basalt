@@ -1,6 +1,6 @@
 [package]
 name = "basalt-client-shell"
-version = "1.6.2"
+version = "1.6.3"
 edition = "2021"
 description = "Basalt client shell: Windows, Linux and Android"
 rust-version = "1.82"
