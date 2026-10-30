@@ -276,7 +276,7 @@ has a signed `SHA256SUMS`; [SECURITY.md](SECURITY.md#signed-releases) says how.
 
 | Download | Install on |
 |---|---|
-| **[`Basalt-Host-Server-Linux-amd64.deb`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-amd64.deb)** | Debian 11 or later, Ubuntu 20.04 or later |
+| **[`Basalt-Host-Server-Linux-amd64.deb`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-amd64.deb)** | Debian 12 or later, Ubuntu 22.04 or later |
 | **[`Basalt-Host-Server-Linux-arm64.deb`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-arm64.deb)** | Raspberry Pi OS (64-bit) and other ARM boards |
 | **[`Basalt-Host-Server-Linux-x86_64.rpm`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-x86_64.rpm)**, **[`aarch64.rpm`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-aarch64.rpm)** | Fedora, Rocky and similar |
 | **[`Basalt-Host-Server-Linux-x86_64.tar.gz`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-x86_64.tar.gz)**, **[`aarch64.tar.gz`](https://github.com/refora-technologies/basalt/releases/latest/download/Basalt-Host-Server-Linux-aarch64.tar.gz)** | Anything else, installed by hand |
