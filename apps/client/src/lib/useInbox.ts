@@ -56,6 +56,10 @@ export function useInbox(
   const [acceptFromHome, setAcceptFromHomeState] = useState(() => localStorage.getItem(ACCEPT_KEY) === '1')
   const [folder, setFolderState] = useState(() => localStorage.getItem(FOLDER_KEY) ?? '')
   const seen = useRef(new Set<string>())
+  // The list as last drawn: whether an offer is new is asked of it at once,
+  // not inside a state update, which React runs later.
+  const itemsRef = useRef(items)
+  itemsRef.current = items
 
   useEffect(() => {
     setItems(load(key))
@@ -103,9 +107,13 @@ export function useInbox(
       try {
         for (const [n, file] of offer.files.entries()) {
           const id = `share-${offer.offer}-${n}`
-          transfersRef.current.start({ id, kind: 'download', name: file.name, path: file.path, total: file.size })
+          transfersRef.current.start({ id, kind: 'download', name: file.name, path: file.path || file.name, total: file.size })
           try {
-            const saved = await api.receiveFile(file.path, id, settings.current.folder || undefined)
+            const folder = settings.current.folder || undefined
+            // On the sending device: straight from it. On the drive: from the host.
+            const saved = offer.direct
+              ? await api.receiveDirect(offer.direct.endpoint, offer.offer, offer.direct.token, n, file.name, id, folder)
+              : await api.receiveFile(file.path, id, folder)
             transfersRef.current.finish(id)
             last = saved.shownAs
           } catch (e) {
@@ -116,7 +124,7 @@ export function useInbox(
         update(item.id, (i) => ({ ...i, state: 'done', savedAs: last, offer: undefined }))
         void answer(offer, 'done')
       } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e)
+        const reason = plainReason(e instanceof Error ? e.message : String(e))
         update(item.id, (i) => ({ ...i, state: 'failed', reason }))
         void answer(offer, 'failed', reason)
       }
@@ -132,21 +140,14 @@ export function useInbox(
         const body = message.kind === KIND.offer ? (message.body as OfferBody) : (message.body as HandoffBody).offer
         if (!body?.offer || !Array.isArray(body.files)) return
         const item = received(body, Date.now())
-        let fresh = false
-        setItems((list) => {
-          if (list.some((i) => i.id === item.id && i.direction === 'in')) return list
-          fresh = true
-          return kept([item, ...list])
-        })
+        if (itemsRef.current.some((i) => i.id === item.id && i.direction === 'in')) return
+        itemsRef.current = kept([item, ...itemsRef.current])
+        setItems((list) => (list.some((i) => i.id === item.id && i.direction === 'in') ? list : kept([item, ...list])))
         // Asked by one of my own devices to take it here, or a send this
         // person said needs no asking: taken at once.
         const myProfile = profileRef.current
         const handoff = message.kind === KIND.handoff
-        if (handoff || takesWithoutAsking(body, myProfile, settings.current.acceptFromHome)) {
-          queueMicrotask(() => {
-            if (fresh) void take(item)
-          })
-        }
+        if (handoff || takesWithoutAsking(body, myProfile, settings.current.acceptFromHome)) void take(item)
         return
       }
       if (message.kind === KIND.answer) setItems((list) => apply(list, message))
@@ -176,11 +177,20 @@ export function useInbox(
   const send = useCallback(async (files: ShareFile[], to: PresentDevice) => {
     const from = me()
     if (!from) throw new Error('Not connected to the host.')
-    const body: OfferBody = { offer: newOfferId(), files, from, to: partyOf(to) }
+    const offer = newOfferId()
+    // Files on this device go straight across: offered from here first, and
+    // the receiver told where to take them. Their sources stay here.
+    const local = files.filter((f) => f.source)
+    const direct = local.length > 0 ? await api.shareLocal(offer, files.map((f) => f.source ?? '')) : undefined
+    const told = files.map(({ source: _, ...rest }) => rest)
+    const body: OfferBody = { offer, files: told, from, to: partyOf(to), direct }
     const sent = await api.channelSend({ to: 'device', device: to.device }, KIND.offer, body, 0)
-    if (sent.delivered.length === 0) throw new Error(`${to.name} isn’t online.`)
+    if (sent.delivered.length === 0) {
+      if (direct) void api.withdrawLocal(offer).catch(() => {})
+      throw new Error(`${to.name} isn’t online.`)
+    }
     setItems((list) =>
-      kept([{ id: body.offer, direction: 'out', files, peer: body.to, state: 'waiting', at: Date.now() }, ...list]),
+      kept([{ id: body.offer, direction: 'out', files: told, peer: body.to, state: 'waiting', at: Date.now() }, ...list]),
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -246,4 +256,15 @@ function save(key: string, items: ShareItem[]): void {
   } catch {
     // Not kept: the Inbox starts empty next time.
   }
+}
+
+/** Why a share didn't arrive, as a person would say it rather than as the code does. */
+export function plainReason(raw: string): string {
+  const said = raw.replace(/^protocol:\s*/i, '').replace(/^the device that sent it said:\s*/i, '')
+  if (/FileNotFound|No item at|no such file|not found/i.test(said)) return 'It’s no longer on the device that sent it.'
+  if (/couldn.t reach|didn.t answer|timed out|refused/i.test(said)) return 'The two devices couldn’t reach each other on this Wi-Fi.'
+  if (/that isn.t offered/i.test(said)) return 'The device that sent it took it back.'
+  if (/cancelled/i.test(said)) return 'Cancelled.'
+  if (/stopped part-way/i.test(said)) return 'It stopped part-way.'
+  return said.charAt(0).toUpperCase() + said.slice(1)
 }

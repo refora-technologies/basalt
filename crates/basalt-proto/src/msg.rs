@@ -1225,6 +1225,86 @@ pub struct PresentDevice {
     pub last_seen: i64,
 }
 
+// ---------------------------------------------------------------------------
+// Files held on the host for a device that is away
+// ---------------------------------------------------------------------------
+
+/// Keeps files on the drive for a device that is away: the host locks a copy
+/// apart from the drive and offers it to that device when it comes online.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareHoldRequest {
+    /// Made by the sender; the offer's id.
+    pub id: String,
+    /// The device it is for.
+    pub to: String,
+    /// Kept after it is answered, until the sender deletes it.
+    #[serde(default)]
+    pub keep: bool,
+    /// Files on the drive, by their paths.
+    pub paths: Vec<String>,
+}
+
+/// Part of a file held for this device, as plain bytes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareReadRequest {
+    pub id: String,
+    pub file: usize,
+    pub offset: u64,
+    pub length: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareAnswerRequest {
+    pub id: String,
+    pub accepted: bool,
+}
+
+/// One held share, as its sender sees it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HeldShare {
+    pub id: String,
+    /// The device it is for, and its name.
+    pub to: String,
+    pub to_name: String,
+    pub files: Vec<HeldShareFile>,
+    pub created: i64,
+    pub keep: bool,
+    /// `waiting`, `accepted` or `declined`.
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HeldShareFile {
+    pub name: String,
+    pub size: u64,
+}
+
+/// What this profile has held, and the space held files take on the host.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ShareHeldResponse {
+    pub held: Vec<HeldShare>,
+    /// Bytes held for everyone, and how many shares.
+    pub used: u64,
+    pub count: usize,
+}
+
+/// `delete` a held share, or `move` its files into a folder on the drive.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareManageRequest {
+    pub action: String,
+    pub id: String,
+    /// For `move`: the folder on the drive, "" for its top.
+    #[serde(default)]
+    pub folder: String,
+}
+
 /// Asks where a film's or an episode's intro and credits are.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

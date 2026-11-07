@@ -870,6 +870,55 @@ impl Session {
         Ok(())
     }
 
+    /// Keeps files on the drive for a device that is away.
+    pub async fn share_hold(
+        &mut self,
+        request: &basalt_proto::msg::ShareHoldRequest,
+    ) -> Result<basalt_proto::msg::HeldShare> {
+        call_json(&mut self.stream, Op::ShareHold, request)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Part of a file held for this device, as plain bytes.
+    pub async fn share_read(
+        &mut self,
+        request: &basalt_proto::msg::ShareReadRequest,
+    ) -> Result<Vec<u8>> {
+        let body = serde_json::to_vec(request)
+            .map_err(|e| ClientError::Protocol(format!("could not encode the read: {e}")))?;
+        write_request(&mut self.stream, Op::ShareRead, &body).await?;
+        Ok(read_response(&mut self.stream).await?)
+    }
+
+    pub async fn share_answer(
+        &mut self,
+        request: &basalt_proto::msg::ShareAnswerRequest,
+    ) -> Result<()> {
+        let body = serde_json::to_vec(request)
+            .map_err(|e| ClientError::Protocol(format!("could not encode the answer: {e}")))?;
+        write_request(&mut self.stream, Op::ShareAnswer, &body).await?;
+        read_response(&mut self.stream).await?;
+        Ok(())
+    }
+
+    pub async fn share_held(&mut self) -> Result<basalt_proto::msg::ShareHeldResponse> {
+        call_json(&mut self.stream, Op::ShareHeld, &serde_json::json!({}))
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn share_manage(
+        &mut self,
+        request: &basalt_proto::msg::ShareManageRequest,
+    ) -> Result<()> {
+        let body = serde_json::to_vec(request)
+            .map_err(|e| ClientError::Protocol(format!("could not encode the change: {e}")))?;
+        write_request(&mut self.stream, Op::ShareManage, &body).await?;
+        read_response(&mut self.stream).await?;
+        Ok(())
+    }
+
     /// The host's devices, and who of them is online.
     pub async fn presence(&mut self) -> Result<basalt_proto::msg::PresenceResponse> {
         call_json(&mut self.stream, Op::Presence, &serde_json::json!({}))

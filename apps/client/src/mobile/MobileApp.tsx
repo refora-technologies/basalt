@@ -603,6 +603,15 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
                 setTransfersOpen(true)
               }}
               onDismiss={() => setShared([])}
+              onSend={
+                sharingHere
+                  ? () => {
+                      const files = shared
+                      setShared([])
+                      model.setSharing(files.map((f) => ({ name: f.name, size: Math.max(0, f.size), path: '', source: f.uri })))
+                    }
+                  : undefined
+              }
             />
         </Rise>
         <Rise show={offered(update) && tab !== 'more' && bannerGone !== update.release.version}>
@@ -1151,12 +1160,15 @@ function SharedBar({
   vaultName,
   onUpload,
   onDismiss,
+  onSend,
 }: {
   files: PhoneFile[]
   into: string
   vaultName: string
   onUpload: () => void
   onDismiss: () => void
+  /** To another of the host's devices, straight from this phone. */
+  onSend?: () => void
 }): React.JSX.Element {
   const where = into ? into.split('/').pop() : vaultName
   const what = files.length === 1 ? files[0]!.name : `${files.length} files`
@@ -1169,7 +1181,7 @@ function SharedBar({
         <div className="min-w-0 flex-1">
           <div className="truncate text-[14px] text-text">{what}</div>
           <div className="mt-0.5 text-[12px] leading-snug text-textFaint">
-            Shared from another app. Open the folder it belongs in, then upload.
+            Shared from another app. Open the folder it belongs in, then upload{onSend ? '. Or send it to a device.' : '.'}
           </div>
         </div>
       </div>
@@ -1180,6 +1192,15 @@ function SharedBar({
         >
           Not now
         </button>
+        {onSend && (
+          <button
+            onClick={onSend}
+            className="flex items-center gap-1.5 rounded-full border border-white/[0.16] px-3.5 py-2 text-[13px] text-text active:bg-white/[0.08]"
+          >
+            <Send size={14} />
+            Send
+          </button>
+        )}
         <button onClick={onUpload} className="rounded-full bg-basalt px-4 py-2 text-[13px] font-medium text-ink">
           Upload to {where}
         </button>

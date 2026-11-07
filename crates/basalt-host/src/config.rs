@@ -155,6 +155,11 @@ pub struct HostConfig {
     /// drive as themselves. Sealed when written down.
     #[serde(default, skip_serializing_if = "crate::sealed::Secret::is_empty")]
     pub household_key: crate::sealed::Secret,
+    /// The key that locks files held for someone away (see
+    /// `crate::share_store`), hex. Sealed when written down. Made the first
+    /// time a share is held; lost with this file, the held files with it.
+    #[serde(default, skip_serializing_if = "crate::sealed::Secret::is_empty")]
+    pub share_key: crate::sealed::Secret,
     /// Member statements made and not yet expired: see `crate::authority`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub issued: Vec<crate::authority::Issued>,
@@ -201,6 +206,7 @@ impl HostConfig {
             convert_measuring: false,
             devices: Vec::new(),
             household_key: Default::default(),
+            share_key: Default::default(),
             issued: Vec::new(),
             revoked: Default::default(),
             endorsement: None,
@@ -282,6 +288,7 @@ impl HostConfig {
         let mut config = self.clone();
         config.key_der.0 = crate::sealed::seal(&config.key_der.0);
         config.household_key.0 = crate::sealed::seal(&config.household_key.0);
+        config.share_key.0 = crate::sealed::seal(&config.share_key.0);
         for profile in &mut config.profiles {
             profile.person_key.0 = crate::sealed::seal(&profile.person_key.0);
         }
@@ -313,6 +320,9 @@ impl HostConfig {
             }
         };
         open_or_drop(&mut self.household_key);
+        // Not opening here (the file moved to another computer): the held
+        // files can't be read, and a new key starts over.
+        open_or_drop(&mut self.share_key);
         for profile in &mut self.profiles {
             open_or_drop(&mut profile.person_key);
         }

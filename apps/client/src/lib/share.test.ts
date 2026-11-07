@@ -104,3 +104,16 @@ describe('words', () => {
     expect(isProgram('notes.txt')).toBe(false)
   })
 })
+
+describe('why a share didn’t arrive', () => {
+  it('is said plainly', async () => {
+    const { plainReason } = await import('./useInbox')
+    expect(plainReason('protocol: the device that sent it said: java.io.FileNotFoundException: No item at content://x')).toBe(
+      'It’s no longer on the device that sent it.',
+    )
+    expect(plainReason("config: couldn't reach the device that sent it at 1.2.3.4:5")).toBe(
+      'The two devices couldn’t reach each other on this Wi-Fi.',
+    )
+    expect(plainReason('protocol: the device that sent it said: that isn’t offered'.replace('’', "'"))).toBe('The device that sent it took it back.')
+  })
+})

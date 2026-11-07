@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
-import { X } from 'lucide-react'
+import { Send, X } from 'lucide-react'
 
 import type { Inbox } from '@/lib/useInbox'
 import type { Presence } from '@/lib/usePresence'
@@ -110,7 +110,16 @@ export function OfferCard({ presence, inbox }: { presence: Presence; inbox: Inbo
 }
 
 /** The Inbox page: Received and Sent, each with what waits first. */
-export function InboxPage({ presence, inbox }: { presence: Presence; inbox: Inbox }): React.JSX.Element {
+export function InboxPage({
+  presence,
+  inbox,
+  onSendLocal,
+}: {
+  presence: Presence
+  inbox: Inbox
+  /** Picks files on this computer and opens the Share window for them. */
+  onSendLocal: () => void
+}): React.JSX.Element {
   const [page, setPage] = useState<'in' | 'out'>('in')
   const [answering, setAnswering] = useState<ShareItem | null>(null)
   const waiting = inbox.waiting.length
@@ -144,7 +153,19 @@ export function InboxPage({ presence, inbox }: { presence: Presence; inbox: Inbo
             ))}
           </div>
         </div>
-        <p className="mt-1 text-[12.5px] text-textFaint">
+        {page === 'out' && (
+          <button
+            onClick={onSendLocal}
+            className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 py-3 text-left hover:bg-white/[0.05]"
+          >
+            <Send size={17} className="shrink-0 text-textDim" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-[14px] text-text">Send from this computer</span>
+              <span className="block text-[12px] text-textFaint">Any file on this computer, straight to another device</span>
+            </span>
+          </button>
+        )}
+        <p className="mt-3 text-[12.5px] text-textFaint">
           {page === 'in'
             ? 'Files shared with this computer. They go to the folder chosen in Settings, Sharing.'
             : 'Files you shared from this computer, and what became of them.'}

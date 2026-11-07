@@ -13,8 +13,19 @@ import type { ChannelMessage, PresentDevice } from './api'
 export interface ShareFile {
   name: string
   size: number
-  /** Where it is on the drive. */
+  /** Where it is on the drive; empty for a file on the sending device. */
   path: string
+  /**
+   * A file on the sending device itself (a path, or a phone's content URI),
+   * sent straight across rather than from the drive. Only the sender knows it.
+   */
+  source?: string
+}
+
+/** Where to take an offer's files from when they are on the sending device. */
+export interface Direct {
+  endpoint: { addresses: string[]; port: number; key: string }
+  token: string
 }
 
 /** Who a share is from or for. */
@@ -32,6 +43,8 @@ export interface OfferBody {
   files: ShareFile[]
   from: Party
   to: Party
+  /** Files on the sending device: taken straight from it. */
+  direct?: Direct
 }
 
 /** `share.answer`: back to whoever sent the offer. */

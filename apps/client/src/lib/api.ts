@@ -807,6 +807,22 @@ export const api = {
    */
   notify: (tag: string, title: string, text: string, buttons: [string, string][] = []) =>
     call<void>('notify', { tag, title, text, buttons }),
+  /** Offers files on this device (paths, or a phone's content URIs) to another, straight across. */
+  shareLocal: (offer: string, sources: string[]) =>
+    call<{ endpoint: { addresses: string[]; port: number; key: string }; token: string }>('share_local', { offer, sources }),
+  withdrawLocal: (offer: string) => call<void>('withdraw_local', { offer }),
+  /** Files picked on this computer, with their sizes. */
+  localFiles: (paths: string[]) => call<{ source: string; name: string; size: number }[]>('local_files', { paths }),
+  /** Takes one file of an offer straight from the device that offers it. */
+  receiveDirect: (
+    endpoint: { addresses: string[]; port: number; key: string },
+    offer: string,
+    token: string,
+    file: number,
+    name: string,
+    id: string,
+    folder?: string,
+  ) => call<{ shownAs: string; path?: string; uri?: string }>('receive_direct', { endpoint, offer, token, file, name, id, folder: folder ?? null }),
   /** Where shared files land unless another folder is chosen. */
   defaultReceivedFolder: () => call<string>('default_received_folder'),
   /** The host's devices and who of them is online. Throws on a host before 1.6.4. */
@@ -1595,7 +1611,14 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     case 'channel_take':
       return [] as T
     case 'notify':
+    case 'withdraw_local':
       return undefined as T
+    case 'share_local':
+      return { endpoint: { addresses: ['127.0.0.1'], port: 1, key: '' }, token: '' } as T
+    case 'local_files':
+      return [] as T
+    case 'receive_direct':
+      return { shownAs: 'Downloads\Basalt\file' } as T
     case 'receive_file':
       return { shownAs: 'Downloads\Basalt\file' } as T
     case 'default_received_folder':

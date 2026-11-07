@@ -148,9 +148,11 @@ export function ShareChooser({
           <p className="mt-2 text-center text-[12px] leading-snug text-textFaint">
             {error ??
               (chosen.online
-                ? chosen.profile && chosen.profile === myProfile
-                  ? 'From the drive, straight to it. It arrives at once.'
-                  : `From the drive, straight to it. ${chosen.profileName ?? 'They'} ${chosen.profileName ? 'is' : 'are'} asked to accept.`
+                ? `${files.some((f) => f.source) ? 'Straight to it, on this Wi-Fi.' : 'From the drive, straight to it.'} ${
+                    chosen.profile && chosen.profile === myProfile
+                      ? 'It arrives at once.'
+                      : `${chosen.profileName ?? 'They'} ${chosen.profileName ? 'is' : 'are'} asked to accept.`
+                  }`
                 : 'Sending through the host, for a device that’s away, comes in the next test build.')}
           </p>
         </div>

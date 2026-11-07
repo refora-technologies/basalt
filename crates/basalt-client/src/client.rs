@@ -1687,6 +1687,94 @@ impl Basalt {
         lease.check(result)
     }
 
+    /// Keeps files on the drive for a device that is away: the host locks a
+    /// copy apart and offers it when that device comes online.
+    pub async fn share_hold(
+        &self,
+        request: basalt_proto::msg::ShareHoldRequest,
+    ) -> Result<basalt_proto::msg::HeldShare> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.share_hold(&request).await;
+        lease.check(result)
+    }
+
+    /// This device's answer to a share the host held for it.
+    pub async fn share_answer(&self, id: &str, accepted: bool) -> Result<()> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let request = basalt_proto::msg::ShareAnswerRequest {
+            id: id.to_string(),
+            accepted,
+        };
+        let result = lease.share_answer(&request).await;
+        lease.check(result)
+    }
+
+    /// What this profile has held on the host.
+    pub async fn share_held(&self) -> Result<basalt_proto::msg::ShareHeldResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.share_held().await;
+        lease.check(result)
+    }
+
+    pub async fn share_manage(&self, request: basalt_proto::msg::ShareManageRequest) -> Result<()> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.share_manage(&request).await;
+        lease.check(result)
+    }
+
+    /// Takes file `file` of a share held for this device into `out`, whole.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn download_held(
+        &self,
+        id: &str,
+        file: usize,
+        total: u64,
+        name: &str,
+        out: std::fs::File,
+        progress: Option<ProgressFn>,
+        cancel: Option<Cancel>,
+    ) -> Result<u64> {
+        use tokio::io::AsyncWriteExt;
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let mut out = tokio::fs::File::from_std(out);
+        let mut done = 0u64;
+        while done < total {
+            if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                return Err(ClientError::Cancelled);
+            }
+            let request = basalt_proto::msg::ShareReadRequest {
+                id: id.to_string(),
+                file,
+                offset: done,
+                length: HELD_PIECE,
+            };
+            let result = lease.share_read(&request).await;
+            let piece = lease.check(result)?;
+            if piece.is_empty() {
+                return Err(ClientError::Protocol("the held file ended early".into()));
+            }
+            out.write_all(&piece).await?;
+            done += piece.len() as u64;
+            self.count(piece.len() as u64);
+            if let Some(report) = &progress {
+                report(Progress {
+                    kind: TransferKind::Download,
+                    path: name.to_string(),
+                    transferred: done,
+                    total,
+                });
+            }
+        }
+        out.flush().await?;
+        out.sync_all().await?;
+        Ok(done)
+    }
+
     /// The host's devices, and who of them is online now.
     pub async fn presence(&self) -> Result<basalt_proto::msg::PresenceResponse> {
         let pool = self.pool().await?;
@@ -2686,6 +2774,9 @@ fn unix_now() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
+
+/// How much of a held file is asked for at a time.
+const HELD_PIECE: u32 = 4 * 1024 * 1024;
 
 /// How often a watching device tells the host it is still there: well inside
 /// the 90 seconds after which the host takes it as away.

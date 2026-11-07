@@ -1061,9 +1061,16 @@ async fn devices_see_who_is_online_and_pass_each_other_messages() {
     let phone_heard = Notices::default();
     let _laptop_watch = laptop.watch_with(|_| {}, laptop_heard.record());
     let phone_watch = phone.watch_with(|_| {}, phone_heard.record());
-    settle().await;
 
-    let seen = laptop.presence().await.expect("presence");
+    // Both watches open in their own time, later on a busy machine.
+    let mut seen = laptop.presence().await.expect("presence");
+    for _ in 0..200 {
+        if seen.devices.iter().filter(|d| d.online).count() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        seen = laptop.presence().await.expect("presence");
+    }
     assert_eq!(seen.devices.len(), 3, "every device of the host is listed");
     let me = seen.you.clone();
     let online: Vec<&str> = seen
@@ -1164,6 +1171,94 @@ async fn devices_see_who_is_online_and_pass_each_other_messages() {
         .await
         .expect_err("no such device");
     assert_eq!(err.kind(), "notfound", "got: {err}");
+}
+
+/// A file on the drive sent to a device that is away: the host keeps a
+/// locked copy apart, offers it when the device comes online, and lets only
+/// that device read it. Answered, it is gone.
+#[tokio::test]
+async fn a_share_waits_on_the_host_for_a_device_that_is_away() {
+    use basalt_proto::msg::ShareHoldRequest;
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let tablet = fixture.paired_client().await;
+    let stranger = fixture.paired_client().await;
+    let body: Vec<u8> = (0..5_000_000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::write(fixture.vault_path("films/Holiday.mkv"), &body).unwrap();
+
+    let seen = laptop.presence().await.expect("presence");
+    let me = seen.you.clone();
+    let tablet_id = {
+        let mine = tablet.presence().await.expect("presence");
+        mine.you
+    };
+    assert_ne!(me, tablet_id);
+
+    let held = laptop
+        .share_hold(ShareHoldRequest {
+            id: "share1".into(),
+            to: tablet_id.clone(),
+            keep: false,
+            paths: vec!["films/Holiday.mkv".into()],
+        })
+        .await
+        .expect("held for the tablet");
+    assert_eq!(held.files[0].size, body.len() as u64);
+    assert_eq!(
+        laptop.share_held().await.unwrap().held.len(),
+        1,
+        "the laptop sees what it sent"
+    );
+
+    // Nobody else reads it, not even the sender.
+    let out = || std::fs::File::create(fixture.dir.join("out")).unwrap();
+    assert!(
+        stranger
+            .download_held("share1", 0, body.len() as u64, "x", out(), None, None)
+            .await
+            .is_err()
+    );
+    assert!(
+        laptop
+            .download_held("share1", 0, body.len() as u64, "x", out(), None, None)
+            .await
+            .is_err()
+    );
+
+    // The tablet comes online: the offer comes down its watch.
+    let heard = Notices::default();
+    let _watch = tablet.watch_with(|_| {}, heard.record());
+    assert!(
+        heard
+            .wait_for(|n| n.starts_with("message share.offer")
+                && n.contains("Holiday.mkv")
+                && n.contains("\"held\":true"))
+            .await,
+        "the held share is offered when the tablet comes online"
+    );
+
+    let into = fixture.dir.join("received.mkv");
+    let got = tablet
+        .download_held(
+            "share1",
+            0,
+            body.len() as u64,
+            "Holiday.mkv",
+            std::fs::File::create(&into).unwrap(),
+            None,
+            None,
+        )
+        .await
+        .expect("the tablet takes it");
+    assert_eq!(got, body.len() as u64);
+    assert_eq!(std::fs::read(&into).unwrap(), body);
+
+    tablet.share_answer("share1", true).await.expect("answered");
+    assert!(
+        laptop.share_held().await.unwrap().held.is_empty(),
+        "answered and not kept: gone"
+    );
 }
 
 // ---------------------------------------------------------------------------

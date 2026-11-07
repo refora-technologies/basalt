@@ -134,6 +134,9 @@ struct AppState {
     /// here so one that comes while there is no page (on Android, the app
     /// swiped away and staying ready) is still there when it opens.
     channel: Mutex<std::collections::VecDeque<basalt_proto::msg::ChannelMessage>>,
+    /// This device's listener for files it offers from itself, started the
+    /// first time it offers one.
+    direct: tokio::sync::OnceCell<Arc<basalt_client::direct::DirectServer>>,
 }
 
 /// Messages kept for the page at most: past it, the oldest go.
@@ -824,6 +827,176 @@ fn free_name(dir: &std::path::Path, name: &str) -> PathBuf {
         .map(|n| dir.join(format!("{stem} ({n}){ext}")))
         .find(|p| !p.exists())
         .expect("a free name")
+}
+
+/// Opens a file this device offers: a path on a computer, a content URI on
+/// a phone.
+fn open_local(app: &tauri::AppHandle) -> basalt_client::direct::Opener {
+    #[cfg(target_os = "android")]
+    {
+        let app = app.clone();
+        Arc::new(move |source: &str| {
+            use tauri_plugin_basalt_android::BasaltAndroidExt;
+            let fd = app
+                .basalt_android()
+                .open_fd(source, "r")
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            Ok(owned_file(fd))
+        })
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Arc::new(|source: &str| std::fs::File::open(source))
+    }
+}
+
+/// Offers files on this device to another, straight across the Wi-Fi: where
+/// to take them from, and the secret that does. `sources` are paths, or a
+/// phone's content URIs.
+#[tauri::command]
+async fn share_local(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    offer: String,
+    sources: Vec<String>,
+) -> Answer<serde_json::Value> {
+    let server = state
+        .direct
+        .get_or_try_init(|| basalt_client::direct::DirectServer::start(open_local(&app)))
+        .await?;
+    let token = server.offer(&offer, sources);
+    Ok(serde_json::json!({ "endpoint": server.endpoint(), "token": token }))
+}
+
+/// Takes an offer back: nobody can take its files any more.
+#[tauri::command]
+fn withdraw_local(state: State<'_, AppState>, offer: String) {
+    if let Some(server) = state.direct.get() {
+        server.withdraw(&offer);
+    }
+}
+
+/// Files picked on this computer, with their names and sizes, to offer.
+#[tauri::command]
+fn local_files(paths: Vec<String>) -> Vec<serde_json::Value> {
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let meta = std::fs::metadata(&path).ok().filter(|m| m.is_file())?;
+            let name = std::path::Path::new(&path)
+                .file_name()?
+                .to_string_lossy()
+                .into_owned();
+            Some(serde_json::json!({ "source": path, "name": name, "size": meta.len() }))
+        })
+        .collect()
+}
+
+/// Takes one file of an offer from the device that offers it, straight
+/// across the Wi-Fi, into this device's received folder.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn receive_direct(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    endpoint: basalt_client::direct::Endpoint,
+    offer: String,
+    token: String,
+    file: usize,
+    name: String,
+    id: String,
+    folder: Option<String>,
+) -> Answer<Received> {
+    let cancel = Cancel::new();
+    state
+        .transfers
+        .lock()
+        .expect("transfers lock")
+        .insert(id.clone(), cancel.clone());
+    let report = progress_reporter(app.clone(), id.clone(), name.clone(), "download");
+    let safe = safe_local_name(&name);
+    #[cfg(target_os = "android")]
+    let outcome = {
+        let _ = folder;
+        use tauri_plugin_basalt_android::BasaltAndroidExt;
+        let handle = app.clone();
+        let wanted = safe.clone();
+        let created = tokio::task::spawn_blocking(move || {
+            handle.basalt_android().create_download(&wanted, "")
+        })
+        .await
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: e.to_string(),
+        })?
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t save to Downloads: {e}"),
+        })?;
+        let result = basalt_client::direct::fetch(
+            &endpoint,
+            &offer,
+            &token,
+            file,
+            &name,
+            owned_file(created.fd),
+            Some(report),
+            Some(cancel),
+        )
+        .await;
+        let ok = result.is_ok();
+        let handle = app.clone();
+        let uri = created.uri.clone();
+        let _ =
+            tokio::task::spawn_blocking(move || handle.basalt_android().finish_download(&uri, ok))
+                .await;
+        result.map(|_| Received {
+            shown_as: created.shown_as,
+            path: None,
+            uri: Some(created.uri),
+        })
+    };
+    #[cfg(not(target_os = "android"))]
+    let outcome = {
+        let dir = match folder.filter(|f| !f.trim().is_empty()) {
+            Some(folder) => PathBuf::from(folder),
+            None => received_folder(&app)?,
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t make the folder {}: {e}", dir.display()),
+        })?;
+        let local = free_name(&dir, &safe);
+        let out = std::fs::File::create(&local).map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t write {}: {e}", local.display()),
+        })?;
+        let result = basalt_client::direct::fetch(
+            &endpoint,
+            &offer,
+            &token,
+            file,
+            &name,
+            out,
+            Some(report),
+            Some(cancel),
+        )
+        .await;
+        if result.is_err() {
+            let _ = std::fs::remove_file(&local);
+        } else {
+            mark_downloaded(&local);
+        }
+        let shown = local.display().to_string();
+        result.map(|_| Received {
+            shown_as: shown.clone(),
+            path: Some(shown),
+            uri: None,
+        })
+    };
+    state.transfers.lock().expect("transfers lock").remove(&id);
+    Ok(outcome?)
 }
 
 /// The host's devices, and who of them is online now.
@@ -1861,6 +2034,7 @@ pub fn run() {
                 watch: Mutex::new(None),
                 external: Mutex::new(std::collections::HashSet::new()),
                 channel: Mutex::new(std::collections::VecDeque::new()),
+                direct: tokio::sync::OnceCell::new(),
             });
 
             // Feed the throughput trace from the one counter that sees every
@@ -2010,6 +2184,10 @@ pub fn run() {
             channel_send,
             channel_take,
             receive_file,
+            share_local,
+            withdraw_local,
+            local_files,
+            receive_direct,
             default_received_folder,
             segments,
             speed_test,

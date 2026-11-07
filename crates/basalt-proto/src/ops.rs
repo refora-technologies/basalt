@@ -173,6 +173,17 @@ pub enum Op {
     /// The host's devices and who of them is online: see
     /// [`crate::msg::PresenceResponse`]. From 1.6.4.
     Presence = 48,
+    /// Keeps files on the drive for a device that isn't online, locked, apart
+    /// from the drive: see [`crate::msg::ShareHoldRequest`]. From 1.6.4.
+    ShareHold = 49,
+    /// Part of a file held for this device: [`crate::msg::ShareReadRequest`].
+    ShareRead = 50,
+    /// This device's answer to a share held for it.
+    ShareAnswer = 51,
+    /// What this profile has held on the host, and the space held files take.
+    ShareHeld = 52,
+    /// Deletes a held share, or moves its files onto the drive.
+    ShareManage = 53,
 }
 
 impl Op {
@@ -181,7 +192,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::Presence as u8;
+    pub const LAST: u8 = Op::ShareManage as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -233,6 +244,11 @@ impl Op {
             46 => Op::MusicCommand,
             47 => Op::ChannelSend,
             48 => Op::Presence,
+            49 => Op::ShareHold,
+            50 => Op::ShareRead,
+            51 => Op::ShareAnswer,
+            52 => Op::ShareHeld,
+            53 => Op::ShareManage,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -423,6 +439,11 @@ mod tests {
             Op::MusicCommand,
             Op::ChannelSend,
             Op::Presence,
+            Op::ShareHold,
+            Op::ShareRead,
+            Op::ShareAnswer,
+            Op::ShareHeld,
+            Op::ShareManage,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

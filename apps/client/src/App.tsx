@@ -1936,7 +1936,17 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
             {nav === 'manage' ? (
               <ManageHost layout="desktop" onClose={() => setNav('files')} />
             ) : nav === 'inbox' ? (
-              <InboxPage presence={presence} inbox={inbox} />
+              <InboxPage
+                presence={presence}
+                inbox={inbox}
+                onSendLocal={() =>
+                  void pickFiles()
+                    .then((paths) => (paths.length > 0 ? api.localFiles(paths) : []))
+                    .then((files) => {
+                      if (files.length > 0) setSharing(files.map((f) => ({ name: f.name, size: f.size, path: '', source: f.source })))
+                    })
+                }
+              />
             ) : nav === 'settings' ? (
               <SettingsView
                 status={vault.status}

@@ -34,6 +34,7 @@ pub mod registry;
 pub mod sealed;
 pub mod server;
 pub mod setup;
+pub mod share_store;
 pub mod space;
 pub mod traffic;
 pub mod ui;

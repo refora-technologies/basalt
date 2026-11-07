@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronLeft } from 'lucide-react'
+import { ChevronLeft, Send } from 'lucide-react'
 
 import type { AppModel } from '@/App'
 import { Switch } from '@/components/Switch'
@@ -9,6 +9,7 @@ import type { ShareItem } from '@/lib/share'
 import { cn } from '@/lib/utils'
 import { Sheet } from './Sheet'
 import { useBack } from './useBack'
+import { android } from '@/lib/android'
 import { useAlwaysReady } from '@/lib/alwaysReady'
 
 /**
@@ -142,6 +143,26 @@ function InboxScreen({
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
+            {page === 'out' && (
+              <button
+                onClick={() =>
+                  void android.pickFiles('any').then((files) => {
+                    if (files.length === 0) return
+                    onClose()
+                    model.setSharing(files.map((f) => ({ name: f.name, size: Math.max(0, f.size), path: '', source: f.uri })))
+                  })
+                }
+                className="mx-3 mb-1 mt-1 flex w-[calc(100%-24px)] items-center gap-3 rounded-2xl bg-[#141416] px-3.5 py-3 text-left active:bg-white/[0.06]"
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-textDim">
+                  <Send size={16} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[14.5px] text-text">Send from this phone</span>
+                  <span className="block text-[12px] text-textFaint">Any file on this phone, to a device</span>
+                </span>
+              </button>
+            )}
             <InboxList inbox={inbox} presence={presence} direction={page} onAnswer={onAnswer} />
           </div>
         </motion.div>
