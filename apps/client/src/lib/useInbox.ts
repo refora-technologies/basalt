@@ -99,7 +99,7 @@ export function useInbox(
     setItems((list) => list.map((item) => (item.id === id ? change(item) : item)))
   }, [])
 
-  const answer = useCallback(async (offer: OfferBody, reply: AnswerBody['answer'], reason?: string) => {
+  const answer = useCallback(async (offer: OfferBody, reply: AnswerBody['answer'], reason?: string, unreachable?: boolean) => {
     // From a device nearby: told on the line it came by.
     if (offer.nearby) {
       if (reply !== 'accepted' && reply !== 'removed') await api.nearbyAnswer(offer.offer, reply).catch(() => {})
@@ -107,7 +107,7 @@ export function useInbox(
     }
     const by = me()
     if (!by) return
-    const body: AnswerBody = { offer: offer.offer, answer: reply, by, reason }
+    const body: AnswerBody = { offer: offer.offer, answer: reply, by, reason, ...(unreachable ? { unreachable } : {}) }
     await api.channelSend({ to: 'device', device: offer.from.device }, KIND.answer, body, OFFER_TTL_MS).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -145,8 +145,15 @@ export function useInbox(
         if (offer.held) void api.shareAnswer(offer.offer, true).catch(() => {})
       } catch (e) {
         const reason = plainReason(e instanceof Error ? e.message : String(e))
-        update(item.id, (i) => ({ ...i, state: 'failed', reason }))
-        void answer(offer, 'failed', reason)
+        // Straight across failed to reach it, on the same host: the sender
+        // is asked to send it through the host instead, and it comes again.
+        const through = !!offer.direct && !offer.nearby && reason === UNREACHABLE
+        update(item.id, (i) => ({
+          ...i,
+          state: through ? 'moving' : 'failed',
+          reason: through ? 'Couldn’t reach it directly: coming through the host' : reason,
+        }))
+        void answer(offer, 'failed', reason, through)
       }
     },
     [answer, update],
@@ -160,7 +167,17 @@ export function useInbox(
         const body = message.kind === KIND.offer ? (message.body as OfferBody) : (message.body as HandoffBody).offer
         if (!body?.offer || !Array.isArray(body.files)) return
         const item = received(body, Date.now())
-        if (itemsRef.current.some((i) => i.id === item.id && i.direction === 'in')) return
+        const before = itemsRef.current.find((i) => i.id === item.id && i.direction === 'in')
+        // Coming again through the host, after it couldn't come straight
+        // across: taken at once, as the first was.
+        if (before && body.held && before.state === 'moving' && before.offer?.direct) {
+          const again = { ...item, at: before.at }
+          itemsRef.current = kept([again, ...itemsRef.current.filter((i) => i !== before)])
+          setItems((list) => kept([again, ...list.filter((i) => !(i.id === item.id && i.direction === 'in'))]))
+          void take(again)
+          return
+        }
+        if (before) return
         itemsRef.current = kept([item, ...itemsRef.current])
         setItems((list) => (list.some((i) => i.id === item.id && i.direction === 'in') ? list : kept([item, ...list])))
         // Asked by one of my own devices to take it here, or a send this
@@ -170,7 +187,31 @@ export function useInbox(
         if (handoff || takesWithoutAsking(body, myProfile, settings.current.acceptFromHome)) void take(item)
         return
       }
-      if (message.kind === KIND.answer) setItems((list) => apply(list, message))
+      if (message.kind === KIND.answer) {
+        const said = message.body as AnswerBody
+        // It couldn't reach this device: the same files, through the host,
+        // under the same offer, for the same device.
+        const sent = itemsRef.current.find((i) => i.id === said.offer && i.direction === 'out')
+        if (said.unreachable && sent && sent.files.every((f) => f.source)) {
+          setItems((list) =>
+            list.map((i) => (i === sent ? { ...i, state: 'moving', reason: 'Couldn’t reach it directly: going through the host' } : i)),
+          )
+          void api
+            .shareHoldLocal(
+              sent.id,
+              sent.peer.device,
+              false,
+              sent.files.map((f) => ({ source: f.source!, name: f.name, size: f.size })),
+            )
+            .catch((e: unknown) =>
+              setItems((list) =>
+                list.map((i) => (i.id === sent.id && i.direction === 'out' ? { ...i, state: 'failed', reason: e instanceof Error ? e.message : String(e) } : i)),
+              ),
+            )
+          return
+        }
+        setItems((list) => apply(list, message))
+      }
     },
     [take],
   )
@@ -359,6 +400,9 @@ function save(key: string, items: ShareItem[]): void {
 }
 
 /** Why a share didn't arrive, as a person would say it rather than as the code does. */
+/** Why straight across failed, when it was the network between them. */
+const UNREACHABLE = 'The two devices couldn’t reach each other on this Wi-Fi.'
+
 export function plainReason(raw: string): string {
   const said = raw.replace(/^protocol:\s*/i, '').replace(/^the device that sent it said:\s*/i, '')
   if (/FileNotFound|No item at|no such file|not found/i.test(said)) return 'It’s no longer on the device that sent it.'

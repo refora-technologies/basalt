@@ -58,6 +58,11 @@ export interface AnswerBody {
   /** The device that answered, which is not always the one asked. */
   by: Party
   reason?: string
+  /**
+   * It couldn't reach the sending device (a computer's firewall, Wi-Fi that
+   * keeps devices apart): the sender sends it through the host instead.
+   */
+  unreachable?: boolean
 }
 
 /** `share.handoff`: "take this one here", to another of the receiver's devices. */
