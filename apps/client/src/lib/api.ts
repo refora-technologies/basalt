@@ -843,7 +843,9 @@ export const api = {
   /** `room`: bytes this sender may still keep there; `secure`: kept locked. Both absent from older hosts. */
   shareHeld: () => call<{ held: HeldShare[]; used: number; count: number; room?: number; secure?: boolean }>('share_held'),
   /** Deletes a kept share, or moves its files onto the drive (`folder`, "" for its top). */
-  shareManage: (action: 'delete' | 'move', id: string, folder = '') => call<void>('share_manage', { action, id, folder }),
+  /** `again`: a copy for device `to`, as share `again` (its new id). */
+  shareManage: (action: 'delete' | 'move' | 'again', id: string, folder = '', again?: { to: string; id: string; keep: boolean }) =>
+    call<void>('share_manage', { action, id, folder, to: again?.to ?? null, again: again?.id ?? null, keep: again?.keep ?? null }),
   /** Takes one file of a share the host kept for this device. */
   receiveHeld: (share: string, file: number, name: string, size: number, id: string, folder?: string) =>
     call<{ shownAs: string; path?: string; uri?: string }>('receive_held', { share, file, name, size, id, folder: folder ?? null }),

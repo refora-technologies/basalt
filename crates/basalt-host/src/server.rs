@@ -3862,7 +3862,12 @@ impl Host {
         })
         .await
         .map_err(join)??;
-        // Come back while it was being locked away: offered now.
+        self.offer_if_online(&held);
+        Ok(view_of(&held))
+    }
+
+    /// Its device came back while it was being kept: offered now.
+    fn offer_if_online(&self, held: &crate::share_store::Held) {
         let online = self
             .line
             .lock()
@@ -3878,7 +3883,72 @@ impl Host {
                 }
             }
         }
-        Ok(view_of(&held))
+    }
+
+    /// "Share again": a copy of a share kept here, for another device.
+    async fn share_again(
+        self: &Arc<Self>,
+        held: crate::share_store::Held,
+        profile: Option<&str>,
+        device: &str,
+        req: &basalt_proto::msg::ShareManageRequest,
+    ) -> Result<()> {
+        let to = self
+            .devices()
+            .into_iter()
+            .find(|d| d.key() == req.to)
+            .ok_or_else(|| HostError::NotFound("there is no such device on this host".into()))?;
+        let (secure, limit) = {
+            let config = self.config.lock().expect("config lock");
+            (
+                config.share_secure,
+                profile.and_then(|p| config.share_limits.of(p)),
+            )
+        };
+        if let Some(why) = self.share_refused(profile, device, held.bytes(), limit) {
+            return Err(HostError::Denied(why));
+        }
+        let places = if secure {
+            None
+        } else {
+            let vault = self.require_vault().await?;
+            if !vault.writable() {
+                return Err(HostError::Denied(
+                    "the drive can't take files, so the host can't keep this in its Basalt shares folder".into(),
+                ));
+            }
+            let owner = profile
+                .and_then(|p| self.profile_name(p))
+                .unwrap_or_else(|| held.from.name.clone());
+            let folder = shares_folder(&vault, &owner)?;
+            let mut places = Vec::new();
+            for file in &held.files {
+                let place = free_place(&vault, &folder, &file.name, &places)?;
+                places.push(place);
+            }
+            Some(places)
+        };
+        let to_party = crate::share_store::Party {
+            device: to.key().to_string(),
+            name: to.name.clone(),
+            profile: None,
+        };
+        let host = Arc::clone(self);
+        let (id, again_id, keep) = (held.id.clone(), req.again.clone(), req.keep);
+        let again = tokio::task::spawn_blocking(move || {
+            host.shares.as_ref().expect("held came from it").copy_for(
+                &id,
+                &again_id,
+                to_party,
+                keep,
+                places,
+                unix_ms(),
+            )
+        })
+        .await
+        .map_err(join)??;
+        self.offer_if_online(&again);
+        Ok(())
     }
 
     /// What waits on the share store for `device`, as offers it understands:
@@ -4186,7 +4256,7 @@ impl Host {
 
     /// Deletes a held share, or moves its files onto the drive, for whoever sent it.
     async fn manage_share(
-        &self,
+        self: &Arc<Self>,
         profile: Option<&str>,
         device: &str,
         writable: bool,
@@ -4210,6 +4280,7 @@ impl Host {
         }
         match req.action.as_str() {
             "delete" => store.delete(&req.id),
+            "again" => self.share_again(held, profile, device, &req).await,
             "move" => {
                 if !writable {
                     return Err(HostError::Denied(
@@ -4223,7 +4294,7 @@ impl Host {
                 }
                 store.delete(&req.id)
             }
-            _ => Err(HostError::BadRequest("delete or move".into())),
+            _ => Err(HostError::BadRequest("delete, move or again".into())),
         }
     }
 }

@@ -6,6 +6,7 @@ import { Switch } from './Switch'
 import { setShowHidden, useShowHidden } from '@/lib/showHidden'
 import { api, type KeyKind, type Status } from '@/lib/api'
 import type { Inbox } from '@/lib/useInbox'
+import type { Presence } from '@/lib/usePresence'
 import { useAlwaysReady } from '@/lib/alwaysReady'
 import { HeldList } from './share/Held'
 import {
@@ -70,9 +71,12 @@ export function SettingsView({
   onForget,
   onChangeDrive,
   inbox,
+  presence,
 }: {
   /** Sharing between the host's devices, on a host that passes shares. */
   inbox?: Inbox
+  /** Who is online, for sharing again. */
+  presence?: Presence
   status: Status | null
   space: [number, number] | null
   /** Unpairs from this vault; pairing with another starts from there. */
@@ -110,7 +114,7 @@ export function SettingsView({
           <About product="Basalt" />
         </Section>
 
-        {inbox && <SharingSection inbox={inbox} />}
+        {inbox && <SharingSection inbox={inbox} presence={presence} />}
 
         <Section icon={FolderOpen} title="Files" hint="What folders show">
           <Switch
@@ -279,7 +283,7 @@ function Note({ children }: { children: React.ReactNode }): React.JSX.Element {
 }
 
 /** Sharing: whether the home's other profiles ask first, and where files land. */
-function SharingSection({ inbox }: { inbox: Inbox }): React.JSX.Element {
+function SharingSection({ inbox, presence }: { inbox: Inbox; presence?: Presence }): React.JSX.Element {
   const [usual, setUsual] = useState('')
   const [alwaysReady, setAlwaysReady] = useAlwaysReady()
   useEffect(() => {
@@ -333,7 +337,7 @@ function SharingSection({ inbox }: { inbox: Inbox }): React.JSX.Element {
         </span>
       </div>
       <div className="px-4 pb-1 pt-2 text-[13px] text-textDim">Shared through host</div>
-      <HeldList />
+      <HeldList inbox={inbox} presence={presence} />
     </Section>
   )
 }

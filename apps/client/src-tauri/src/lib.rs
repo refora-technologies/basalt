@@ -1026,12 +1026,29 @@ async fn share_held(state: State<'_, AppState>) -> Answer<basalt_proto::msg::Sha
     Ok(state.client.share_held().await?)
 }
 
-/// Deletes a share kept on the host, or moves its files onto the drive.
+/// Deletes a share kept on the host, moves its files onto the drive, or
+/// shares it again with another device (`again`: the new share's id).
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
-async fn share_manage(state: State<'_, AppState>, action: String, id: String, folder: String) -> Answer<()> {
+async fn share_manage(
+    state: State<'_, AppState>,
+    action: String,
+    id: String,
+    folder: String,
+    to: Option<String>,
+    again: Option<String>,
+    keep: Option<bool>,
+) -> Answer<()> {
     Ok(state
         .client
-        .share_manage(basalt_proto::msg::ShareManageRequest { action, id, folder })
+        .share_manage(basalt_proto::msg::ShareManageRequest {
+            action,
+            id,
+            folder,
+            to: to.unwrap_or_default(),
+            again: again.unwrap_or_default(),
+            keep: keep.unwrap_or(false),
+        })
         .await?)
 }
 

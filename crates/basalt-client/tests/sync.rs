@@ -1423,6 +1423,82 @@ async fn a_removed_profiles_share_files_go_to_the_drive_or_away() {
     );
 }
 
+/// A share kept after its answer, shared again with another device: a copy
+/// of its own, offered to that device, which takes it as any other (D12).
+#[tokio::test]
+async fn a_kept_share_is_shared_again_with_another_device() {
+    use basalt_proto::msg::{ShareHoldRequest, ShareManageRequest};
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let tablet = fixture.paired_client().await;
+    let phone = fixture.paired_client().await;
+    let tablet_id = tablet.presence().await.expect("presence").you;
+    let phone_id = phone.presence().await.expect("presence").you;
+    let body: Vec<u8> = (0..1_500_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(fixture.vault_path("clip.mp4"), &body).unwrap();
+
+    laptop
+        .share_hold(ShareHoldRequest {
+            id: "first".into(),
+            to: tablet_id,
+            keep: true,
+            paths: vec!["clip.mp4".into()],
+        })
+        .await
+        .expect("held");
+    tablet.share_answer("first", true).await.expect("answered");
+    assert_eq!(
+        laptop.share_held().await.unwrap().held.len(),
+        1,
+        "kept after its answer"
+    );
+
+    // Only its sender shares it again.
+    let again = |by_id: &str| ShareManageRequest {
+        action: "again".into(),
+        id: "first".into(),
+        folder: String::new(),
+        to: phone_id.clone(),
+        again: by_id.into(),
+        keep: false,
+    };
+    assert!(tablet.share_manage(again("nope")).await.is_err());
+    laptop
+        .share_manage(again("second"))
+        .await
+        .expect("shared again");
+    let held = laptop.share_held().await.unwrap().held;
+    assert_eq!(held.len(), 2);
+    assert!(
+        held.iter()
+            .any(|h| h.id == "second" && h.to == phone_id && h.state == "waiting")
+    );
+
+    let heard = Notices::default();
+    let _watch = phone.watch_with(|_| {}, heard.record());
+    assert!(
+        heard
+            .wait_for(|n| n.starts_with("message share.offer") && n.contains("clip.mp4"))
+            .await,
+        "offered to the phone"
+    );
+    let into = fixture.dir.join("again.mp4");
+    phone
+        .download_held(
+            "second",
+            0,
+            body.len() as u64,
+            "clip.mp4",
+            std::fs::File::create(&into).unwrap(),
+            None,
+            None,
+        )
+        .await
+        .expect("the phone takes it");
+    assert_eq!(std::fs::read(&into).unwrap(), body);
+}
+
 // ---------------------------------------------------------------------------
 // Changing drive
 // ---------------------------------------------------------------------------

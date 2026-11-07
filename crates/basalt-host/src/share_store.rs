@@ -344,6 +344,90 @@ impl ShareStore {
         })
     }
 
+    /// A copy of share `id`, as share `new_id` for `to`: "Share again". Read
+    /// from the store and kept again, locked, or in plain at `places` (one
+    /// per file) when given. On a failure part-way nothing is kept.
+    pub fn copy_for(
+        &self,
+        id: &str,
+        new_id: &str,
+        to: Party,
+        keep: bool,
+        places: Option<Vec<PathBuf>>,
+        now: i64,
+    ) -> Result<Held> {
+        let held = self
+            .get(id)
+            .ok_or_else(|| HostError::NotFound("that share".into()))?;
+        if new_id.is_empty() || !new_id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(HostError::BadRequest("that is no share id".into()));
+        }
+        if self.get(new_id).is_some() || self.dir.join(new_id).exists() {
+            return Err(HostError::BadRequest("that share is already held".into()));
+        }
+        let mut listed: Vec<HeldFile> = Vec::new();
+        let folder = self.dir.join(new_id);
+        let undo = |listed: &[HeldFile]| {
+            for made in listed {
+                if let Some(path) = &made.plain {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&folder);
+        };
+        for (n, file) in held.files.iter().enumerate() {
+            let mut source = Reading {
+                store: self,
+                id,
+                n,
+                at: 0,
+            };
+            let made = match &places {
+                Some(places) => {
+                    let dest = places
+                        .get(n)
+                        .cloned()
+                        .ok_or_else(|| HostError::BadRequest("a place for every file".into()));
+                    dest.and_then(|dest| {
+                        copy_new(&mut source, &dest).map(|size| HeldFile {
+                            name: file.name.clone(),
+                            size,
+                            plain: Some(dest),
+                        })
+                    })
+                }
+                None => std::fs::create_dir_all(&folder)
+                    .map_err(HostError::from)
+                    .and_then(|()| {
+                        self.seal(new_id, n, &mut source, &folder.join(format!("{n}.bss")))
+                    })
+                    .map(|size| HeldFile {
+                        name: file.name.clone(),
+                        size,
+                        plain: None,
+                    }),
+            };
+            match made {
+                Ok(made) => listed.push(made),
+                Err(e) => {
+                    undo(&listed);
+                    return Err(e);
+                }
+            }
+        }
+        let again = Held {
+            id: new_id.to_string(),
+            from: held.from.clone(),
+            to,
+            files: listed,
+            created: now,
+            keep,
+            state: HeldState::Waiting,
+        };
+        self.change(|index| index.held.push(again.clone()))?;
+        Ok(again)
+    }
+
     /// Lets a share go without deleting what it kept in plain on the drive,
     /// which stays there as the drive's own: its locked files go.
     pub fn forget(&self, id: &str) -> Result<()> {
@@ -438,7 +522,7 @@ impl ShareStore {
         LessSafeKey::new(UnboundKey::from(okm))
     }
 
-    fn seal(&self, id: &str, n: usize, source: &mut std::fs::File, dest: &Path) -> Result<u64> {
+    fn seal(&self, id: &str, n: usize, source: &mut impl Read, dest: &Path) -> Result<u64> {
         let key = self.key(id, n);
         let mut out = std::io::BufWriter::new(std::fs::File::create(dest)?);
         out.write_all(MAGIC)?;
@@ -483,9 +567,29 @@ impl ShareStore {
     }
 }
 
+/// One held file, read from the start as plain bytes.
+struct Reading<'a> {
+    store: &'a ShareStore,
+    id: &'a str,
+    n: usize,
+    at: u64,
+}
+
+impl Read for Reading<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let piece = self
+            .store
+            .read(self.id, self.n, self.at, buffer.len().min(CHUNK))
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        buffer[..piece.len()].copy_from_slice(&piece);
+        self.at += piece.len() as u64;
+        Ok(piece.len())
+    }
+}
+
 /// Copies `source` to `dest`, which must not be there yet: written beside it
 /// and renamed, so nothing half-made shows.
-fn copy_new(source: &mut std::fs::File, dest: &Path) -> Result<u64> {
+fn copy_new(source: &mut impl Read, dest: &Path) -> Result<u64> {
     if dest.exists() {
         return Err(HostError::Exists(dest.display().to_string()));
     }
@@ -702,6 +806,60 @@ mod tests {
         assert!(
             !dir.join("drive").join("Basalt shares").exists(),
             "and the folders made for it, once empty"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_share_shared_again_is_its_own_copy() {
+        let dir = temp("again");
+        let store = ShareStore::open(dir.join("store"), [7; 32]).unwrap();
+        let body = sample(CHUNK * 2 + 5);
+        store
+            .hold(
+                "a1",
+                party("a", Some("maya")),
+                party("b", None),
+                true,
+                vec![("film.mkv".into(), source(&dir, "f", &body))],
+                1,
+            )
+            .unwrap();
+        let again = store
+            .copy_for("a1", "a2", party("c", None), false, None, 2)
+            .unwrap();
+        assert_eq!(again.to.device, "c");
+        assert_eq!(
+            again.from.profile.as_deref(),
+            Some("maya"),
+            "still from its sender"
+        );
+        assert_eq!(store.read("a2", 0, 0, body.len()).unwrap(), body);
+        store.delete("a1").unwrap();
+        assert_eq!(
+            store.read("a2", 0, 0, body.len()).unwrap(),
+            body,
+            "the copy stands on its own"
+        );
+        // In plain, at the place given.
+        let plain = dir.join("drive").join("film.mkv");
+        std::fs::create_dir_all(plain.parent().unwrap()).unwrap();
+        store
+            .copy_for(
+                "a2",
+                "a3",
+                party("d", None),
+                false,
+                Some(vec![plain.clone()]),
+                3,
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&plain).unwrap(), body);
+        assert!(
+            store
+                .copy_for("a2", "a3", party("d", None), false, None, 4)
+                .is_err(),
+            "an id once"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

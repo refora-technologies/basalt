@@ -1335,6 +1335,14 @@ pub struct ShareManageRequest {
     /// For `move`: the folder on the drive, "" for its top.
     #[serde(default)]
     pub folder: String,
+    /// For `again` (share again): the device it is for, the new share's id,
+    /// and whether it stays after its answer. From 1.6.4.
+    #[serde(default)]
+    pub to: String,
+    #[serde(default)]
+    pub again: String,
+    #[serde(default)]
+    pub keep: bool,
 }
 
 /// Asks where a film's or an episode's intro and credits are.

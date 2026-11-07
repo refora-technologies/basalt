@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { api, onChannel, type ChannelMessage, type PresentDevice } from './api'
+import { api, onChannel, type ChannelMessage, type HeldShare, type PresentDevice } from './api'
 import type { Presence } from './usePresence'
 import type { Transfers } from './useTransfers'
 import {
@@ -28,6 +28,8 @@ export interface Inbox {
   send: (files: ShareFile[], to: PresentDevice) => Promise<void>
   /** Keeps files on the drive on the host for a device that's away; `keep` past its answer. */
   sendThroughHost: (files: ShareFile[], to: PresentDevice, keep: boolean) => Promise<void>
+  /** "Share again": a copy of what the host keeps, for another device. */
+  shareAgain: (share: HeldShare, to: PresentDevice) => Promise<void>
   /** "Remove from the host once answered": the default for each send through it. */
   removeOnAnswer: boolean
   setRemoveOnAnswer: (on: boolean) => void
@@ -219,6 +221,18 @@ export function useInbox(
     )
   }, [])
 
+  const shareAgain = useCallback(
+    async (share: HeldShare, to: PresentDevice) => {
+      const offer = newOfferId()
+      await api.shareManage('again', share.id, '', { to: to.device, id: offer, keep: !removeOnAnswer })
+      const files: ShareFile[] = share.files.map((f) => ({ name: f.name, size: f.size, path: '' }))
+      setItems((list) =>
+        kept([{ id: offer, direction: 'out', files, peer: partyOf(to), state: 'waiting', at: Date.now(), reason: 'On the host until it’s taken' }, ...list]),
+      )
+    },
+    [removeOnAnswer],
+  )
+
   const accept = useCallback((item: ShareItem) => void take(item), [take])
 
   const decline = useCallback(
@@ -265,6 +279,7 @@ export function useInbox(
     waiting,
     send,
     sendThroughHost,
+    shareAgain,
     removeOnAnswer,
     setRemoveOnAnswer,
     accept,

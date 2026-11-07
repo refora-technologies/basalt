@@ -174,7 +174,7 @@ function InboxScreen({
 
 /** More's Sharing card: whether the home asks first, and where files land. */
 export function SharingCard({ model }: { model: AppModel }): React.JSX.Element {
-  const { inbox } = model
+  const { inbox, presence } = model
   const [alwaysReady, setAlwaysReady] = useAlwaysReady()
   const [heldOpen, setHeldOpen] = useState(false)
   return (
@@ -211,7 +211,7 @@ export function SharingCard({ model }: { model: AppModel }): React.JSX.Element {
       </button>
       <Sheet open={heldOpen} onClose={() => setHeldOpen(false)} title="Shared through host">
         <div className="pb-[calc(var(--inset-bottom,0px)+18px)]">
-          <HeldList />
+          <HeldList inbox={inbox} presence={presence} />
         </div>
       </Sheet>
     </div>

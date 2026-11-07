@@ -1954,6 +1954,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                 onForget={forgetVault}
                 onChangeDrive={() => setChangingDrive(true)}
                 inbox={presence.supported && presence.you !== '' ? inbox : undefined}
+                presence={presence}
               />
             ) : noDrive ? (
               <NoDrive
