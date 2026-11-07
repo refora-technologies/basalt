@@ -301,6 +301,20 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   // Managing the host is done from a phone or computer, not a television.
   const canManage = vault.status?.canManage === true && !TV
   const [managing, setManaging] = useState(false)
+  // Ready to receive: while connected to a host that keeps the line between
+  // devices, Android keeps the app running when it is left or the screen goes
+  // off, with a quiet notification, so its line to the host stays open. Not
+  // on a TV, which never receives files.
+  const ready = !TV && isAndroid() && model.connected && model.presence.supported && model.presence.you !== ''
+  useEffect(() => {
+    if (!ready) return undefined
+    void android.keepAlive('ready', 'Basalt', 'Ready to receive')
+    void api.stayRunning(true).catch(() => {})
+    return () => {
+      void android.letGo('ready')
+      void api.stayRunning(false).catch(() => {})
+    }
+  }, [ready])
   useEffect(() => {
     if (!canManage) setManaging(false)
   }, [canManage])

@@ -13,6 +13,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Ready to receive from this person's other devices on the Wi-Fi: a
+         line kept open to them, which has no daily limit, unlike data sync. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -28,7 +31,15 @@
         <service
             android:name="app.basalt.android.KeepAliveService"
             android:exported="false"
-            android:foregroundServiceType="dataSync|mediaPlayback" />
+            android:foregroundServiceType="dataSync|mediaPlayback|connectedDevice" />
+        <!-- Opens Basalt again in a fresh process, from one of its own: see Restart. -->
+        <activity
+            android:name="app.basalt.android.Restart"
+            android:exported="false"
+            android:process=":restart"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <!-- The music notification's buttons: see MediaNow. -->
         <receiver
             android:name="app.basalt.android.MediaNow$Buttons"

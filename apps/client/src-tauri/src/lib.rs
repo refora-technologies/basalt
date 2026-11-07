@@ -671,6 +671,18 @@ async fn music_now(
     Ok(state.client.music_now(request).await?)
 }
 
+/// Whether the app goes on running when its window closes: set while it is
+/// ready to receive, with Android's service keeping it going. Then the exit a
+/// closed window asks for is refused, and the line to the host, the heartbeat
+/// and anything moving carry on without a window. A window opened again finds
+/// them still there.
+static STAY_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+fn stay_running(on: bool) {
+    STAY_RUNNING.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// The host's devices, and who of them is online now.
 #[tauri::command]
 async fn presence(state: State<'_, AppState>) -> Answer<basalt_proto::msg::PresenceResponse> {
@@ -1870,9 +1882,22 @@ pub fn run() {
             upload_from_phone,
             download_to_phone,
             platform,
+            stay_running,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Basalt");
+        .build(tauri::generate_context!())
+        .expect("error while building Basalt")
+        .run(|_app, event| {
+            // The window closed by itself (on Android, the app swiped away),
+            // not quit on purpose: kept running while it should stay ready.
+            if let tauri::RunEvent::ExitRequested {
+                api, code: None, ..
+            } = event
+            {
+                if STAY_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
 
 #[cfg(test)]

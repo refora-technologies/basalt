@@ -787,6 +787,11 @@ export const api = {
     const request = { stopped: false, ...asked }
     return call<MusicNowResponse>('music_now', { request })
   },
+  /**
+   * Whether the app goes on running when its window closes: while it is ready
+   * to receive, the line to the host carries on without a window.
+   */
+  stayRunning: (on: boolean) => call<void>('stay_running', { on }),
   /** The host's devices and who of them is online. Throws on a host before 1.6.4. */
   presence: () => call<PresenceResponse>('presence'),
   /** Passes a message to another of the host's devices, or to a profile's. */
@@ -1554,6 +1559,8 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
         ],
       } as T
     }
+    case 'stay_running':
+      return undefined as T
     case 'channel_send':
       return { id: 'mock', delivered: [], waiting: false } as T
     case 'music_mine': {

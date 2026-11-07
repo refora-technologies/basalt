@@ -41,6 +41,9 @@ async function plugin<T>(command: string, args?: Record<string, unknown>): Promi
   return invoke<T>(`plugin:basalt-android|${command}`, args ?? {})
 }
 
+/** Why the app keeps running in the background. */
+export type KeepReason = 'transfer' | 'playback' | 'music' | 'ready'
+
 export const android = {
   /** Photos and videos, or any files, from the phone's own picker. */
   pickFiles: async (kind: 'any' | 'media' | 'image' | 'video' | 'audio' | 'subtitle' = 'any') =>
@@ -73,11 +76,13 @@ export const android = {
   /**
    * Keeps the app running with the screen off, with a notification: a
    * transfer, a film handed to another player (`playback`), or music, whose
-   * notification is the media player (see `systemMedia`).
+   * notification is the media player (see `systemMedia`); or being `ready`
+   * to receive from the person's other devices, which keeps the line to the
+   * host open, quietly.
    */
-  keepAlive: (reason: 'transfer' | 'playback' | 'music', title: string, text: string, progress = -1) =>
+  keepAlive: (reason: KeepReason, title: string, text: string, progress = -1) =>
     plugin<void>('keep_alive', { reason, title, text, progress }),
-  letGo: (reason: 'transfer' | 'playback' | 'music') => plugin<void>('let_go', { reason }),
+  letGo: (reason: KeepReason) => plugin<void>('let_go', { reason }),
   requestNotifications: () => plugin<{ granted: boolean }>('request_notifications'),
 
   setImmersive: (on: boolean) => plugin<void>('set_immersive', { on }),
