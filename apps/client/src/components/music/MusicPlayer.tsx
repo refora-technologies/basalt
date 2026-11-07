@@ -6,6 +6,7 @@ import {
   inTauri,
   onChannel,
   onMusicNow,
+  onPresence,
   type Listening,
   type MusicCommand,
   type MusicGroup,
@@ -279,6 +280,8 @@ export function MusicPlayer({
 
 
   const clockSamples = useRef<ClockSample[]>([])
+  /** When each device was last steered from here, on the host's clock. */
+  const steeredAt = useRef(new Map<string, number>())
   const exchange = useCallback(async (request: { report?: NowReport; stopped?: boolean }) => {
     const asked = whoRef.current
     if (!asked || unknown.current) return
@@ -295,7 +298,16 @@ export function MusicPlayer({
       const offset = bestOffset(clockSamples.current, back) ?? answer.now - back
       offsetRef.current = offset
       setHostOffset((was) => (Math.abs(was - offset) < 1 ? was : offset))
-      setOthers(answer.sessions)
+      // A device just steered from here shows what it was asked at once; a
+      // word from it older than that is not taken over it (F4: the button
+      // flipped back, then forward again).
+      setOthers((shown) =>
+        answer.sessions.map((s) => {
+          const asked = steeredAt.current.get(s.device)
+          if (asked === undefined || s.at >= asked) return s
+          return shown.find((o) => o.device === s.device) ?? s
+        }),
+      )
       // The devices in sync with this one, and the one all of them keep to,
       // as the host keeps them: however many there are, each knows all the
       // others. Just after joining or leaving, the host may not have heard
@@ -700,17 +712,24 @@ export function MusicPlayer({
   function steerBefore(session: NowSession, action: MusicCommand['action'], position = 0): void {
     {
         // Shown at once; the device's own next report puts it right.
-        if (action === 'play' || action === 'pause') {
+        if (action === 'play' || action === 'pause' || action === 'seek') {
+          const now = Date.now() + hostOffset
+          steeredAt.current.set(session.device, now)
           setOthers((list) =>
             list.map((s) =>
               s.device === session.device
                 ? {
                     ...s,
-                    at: Date.now() + hostOffset,
+                    at: now,
                     report: {
                       ...s.report,
-                      playing: action === 'play',
-                      listening: { ...s.report.listening, position: livePosition(s, hostOffset, Date.now()) },
+                      playing: action === 'seek' ? s.report.playing : action === 'play',
+                      // From this moment: the second counts on from now, not from its last word.
+                      clock: now,
+                      listening: {
+                        ...s.report.listening,
+                        position: action === 'seek' ? position : livePosition(s, hostOffset, Date.now()),
+                      },
                     },
                   }
                 : s,
@@ -1000,6 +1019,26 @@ export function MusicPlayer({
     setOthers([])
     unknown.current = false
     if (who) tell()
+  }, [who, tell])
+  // Asked again when it may have missed something (F3): back in front, and
+  // when a device comes or goes (this one's own connection back included).
+  useEffect(() => {
+    if (!who) return undefined
+    const back = (): void => {
+      if (document.visibilityState === 'visible') tell()
+    }
+    document.addEventListener('visibilitychange', back)
+    let stop: (() => void) | null = null
+    let gone = false
+    void onPresence(() => tell()).then((unlisten) => {
+      if (gone) unlisten()
+      else stop = unlisten
+    })
+    return () => {
+      document.removeEventListener('visibilitychange', back)
+      gone = true
+      stop?.()
+    }
   }, [who, tell])
 
   // Told when something changes on the profile's other devices.
