@@ -188,6 +188,9 @@ pub enum Op {
     /// kept apart, never on the drive, until a `ShareHold` takes it. Binary,
     /// as `WriteChunk`: a stage id, an offset, the bytes. From 1.6.4.
     ShareStage = 54,
+    /// Devices playing together: start, join, change or leave a group whose
+    /// state the host keeps; see [`crate::msg::MusicGroupRequest`]. From 1.6.4.
+    MusicGroup = 55,
 }
 
 impl Op {
@@ -196,7 +199,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::ShareStage as u8;
+    pub const LAST: u8 = Op::MusicGroup as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -254,6 +257,7 @@ impl Op {
             52 => Op::ShareHeld,
             53 => Op::ShareManage,
             54 => Op::ShareStage,
+            55 => Op::MusicGroup,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -450,6 +454,7 @@ mod tests {
             Op::ShareHeld,
             Op::ShareManage,
             Op::ShareStage,
+            Op::MusicGroup,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

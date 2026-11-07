@@ -1143,6 +1143,74 @@ pub struct MusicCommandRequest {
     pub clock: Option<i64>,
 }
 
+/// One device of a group playing together.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GroupMember {
+    pub device: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub form: Option<String>,
+}
+
+/// Devices of a profile playing one song together, as the host keeps it:
+/// every member plays this. From 1.6.4.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MusicGroup {
+    pub id: String,
+    pub members: Vec<GroupMember>,
+    /// The queue, the song in it, and the second it is at, at `at`.
+    pub listening: Listening,
+    pub playing: bool,
+    /// When the song is at `listening.position`, on the host's clock in Unix
+    /// milliseconds. A little ahead after a change: every member acts then.
+    pub at: i64,
+    /// Moves on with every change: a change asked "as of" an older one (two
+    /// devices whose song ended at once) is refused.
+    pub version: u64,
+}
+
+/// Asks the host about a group playing together. `action`:
+/// - `view`: the group this device is in;
+/// - `start`: play together with device `with` (its group, or a new one from
+///   what it plays); `playing` true starts it if it was paused;
+/// - `set`: a change to group `group` (this device's own, left empty):
+///   another song (`listening`, played unless `playing` is false), a seek
+///   (`position`), play or pause (`playing`); `expect` refuses it if the
+///   group has moved on from that version;
+/// - `leave`: this device plays on its own;
+/// - `end`: the group ends for all its members ("Play here").
+///
+/// A change takes effect `lead_ms` from now (at most 3 s), on all of them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MusicGroupRequest {
+    pub action: String,
+    pub group: String,
+    pub with: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listening: Option<Listening>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playing: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expect: Option<u64>,
+    pub lead_ms: i64,
+}
+
+/// The group, after what was asked; None when this device is in none. Its
+/// members hear of every change too, as a `music.group` channel message.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MusicGroupResponse {
+    /// The host's clock, Unix milliseconds.
+    pub now: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<MusicGroup>,
+}
+
 // ---------------------------------------------------------------------------
 // Between devices: messages and who is online
 // ---------------------------------------------------------------------------

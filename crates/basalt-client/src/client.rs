@@ -1858,6 +1858,18 @@ impl Basalt {
     }
 
     /// Asks another of the profile's devices, playing, to do something.
+    /// Asks about a group of devices playing together: see
+    /// [`basalt_proto::msg::MusicGroupRequest`].
+    pub async fn music_group(
+        &self,
+        request: basalt_proto::msg::MusicGroupRequest,
+    ) -> Result<basalt_proto::msg::MusicGroupResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.music_group(&request).await;
+        lease.check(result)
+    }
+
     pub async fn music_command(
         &self,
         request: basalt_proto::msg::MusicCommandRequest,

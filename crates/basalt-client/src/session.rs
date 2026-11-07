@@ -858,6 +858,16 @@ impl Session {
     }
 
     /// Asks another of the profile's devices to pause, play, skip or stop.
+    /// Asks about a group of devices playing together.
+    pub async fn music_group(
+        &mut self,
+        request: &basalt_proto::msg::MusicGroupRequest,
+    ) -> Result<basalt_proto::msg::MusicGroupResponse> {
+        call_json(&mut self.stream, Op::MusicGroup, request)
+            .await
+            .map_err(Into::into)
+    }
+
     pub async fn music_command(
         &mut self,
         request: &basalt_proto::msg::MusicCommandRequest,

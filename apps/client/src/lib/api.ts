@@ -456,6 +456,37 @@ export interface ChannelSendResponse {
 
 /** One of the host's devices, and whether it is online now. */
 /** A share kept on the host for a device that's away, as its sender sees it. */
+/** One device of a group playing together. */
+export interface GroupMember {
+  device: string
+  name: string
+  form?: string
+}
+
+/** Devices playing one song together, as the host keeps it: every member plays this. */
+export interface MusicGroup {
+  id: string
+  members: GroupMember[]
+  /** The queue, the song and the second it is at, at `at`. */
+  listening: Listening
+  playing: boolean
+  /** When the song is at `listening.position`, on the host's clock (ms). Ahead after a change. */
+  at: number
+  version: number
+}
+
+export interface MusicGroupRequest {
+  action: 'view' | 'start' | 'set' | 'leave' | 'end'
+  group?: string
+  with?: string
+  listening?: Listening
+  position?: number
+  playing?: boolean
+  /** Refused if the group has moved on from this version. */
+  expect?: number
+  leadMs?: number
+}
+
 export interface HeldShare {
   id: string
   to: string
@@ -862,6 +893,8 @@ export const api = {
     return call<ChannelSendResponse>('channel_send', { request })
   },
   /** Asks another of the profile's devices to pause, play, skip or stop. */
+  /** Devices playing together: see `MusicGroupRequest` in basalt-proto. Refused (`unsupported`) by hosts before 1.6.4. */
+  musicGroup: (request: MusicGroupRequest) => call<{ now: number; group?: MusicGroup }>('music_group', { request }),
   musicCommand: (device: string, action: MusicCommand['action'], position = 0, listening?: Listening, clock?: number) => {
     const request = { device, action, position, listening, clock }
     return call<void>('music_command', { request })
@@ -1627,6 +1660,8 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     }
     case 'music_command':
       return undefined as T
+    case 'music_group':
+      return { now: Date.now() } as T
     // The page preview's household: this laptop, a phone and a tablet of the
     // same profile, and Sam's phone.
     case 'presence': {

@@ -1600,6 +1600,140 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     out
 }
 
+/// Two of a profile's devices playing together: the host keeps the group's
+/// state, every member hears every change, stamped a moment ahead, and one
+/// gone off the network leaves it (1.6.4).
+#[tokio::test]
+async fn a_profiles_devices_play_together_by_the_hosts_state() {
+    use basalt_proto::msg::{Listening, MusicGroupRequest, MusicNowRequest, NowReport};
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let maya = laptop
+        .create_profile("Maya", "2468", 0, true)
+        .await
+        .expect("a profile");
+    let phone = fixture.paired_client().await;
+    phone
+        .sign_in_profile(&maya.id, "2468", true)
+        .await
+        .expect("the phone signs in as Maya");
+    let laptop_id = laptop.presence().await.expect("presence").you;
+
+    // Both online, each listening down its watch.
+    let at_laptop = Notices::default();
+    let laptop_watch = laptop.watch_with(|_| {}, at_laptop.record());
+    let at_phone = Notices::default();
+    let _phone_watch = phone.watch_with(|_| {}, at_phone.record());
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while phone
+        .presence()
+        .await
+        .unwrap()
+        .devices
+        .iter()
+        .filter(|d| d.online)
+        .count()
+        < 2
+    {
+        assert!(std::time::Instant::now() < deadline, "both online");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // The laptop plays, paused at 40 s.
+    laptop
+        .music_now(MusicNowRequest {
+            report: Some(NowReport {
+                listening: Listening {
+                    queue: vec!["Music/a.mp3".into(), "Music/b.mp3".into()],
+                    index: 0,
+                    position: 40.0,
+                    ..Listening::default()
+                },
+                playing: false,
+                duration: 200.0,
+                clock: None,
+            }),
+            stopped: false,
+        })
+        .await
+        .unwrap();
+
+    // "Play on both" from the phone: a group of the two, playing both (F7).
+    let started = phone
+        .music_group(MusicGroupRequest {
+            action: "start".into(),
+            with: laptop_id.clone(),
+            playing: Some(true),
+            lead_ms: 800,
+            ..MusicGroupRequest::default()
+        })
+        .await
+        .expect("a group");
+    let group = started.group.expect("the phone is in it");
+    assert_eq!(group.members.len(), 2);
+    assert!(group.playing);
+    assert_eq!(group.listening.position, 40.0);
+    assert!(group.at >= started.now + 700, "stamped a moment ahead");
+    assert!(
+        at_laptop
+            .wait_for(|n| n.starts_with("message music.group") && n.contains("\"playing\":true"))
+            .await,
+        "the laptop hears it and plays too"
+    );
+
+    // The laptop pauses the group: the phone hears it.
+    let paused = laptop
+        .music_group(MusicGroupRequest {
+            action: "set".into(),
+            playing: Some(false),
+            lead_ms: 300,
+            ..MusicGroupRequest::default()
+        })
+        .await
+        .unwrap()
+        .group
+        .unwrap();
+    assert!(!paused.playing);
+    assert_eq!(paused.version, group.version + 1);
+    assert!(
+        at_phone
+            .wait_for(|n| n.starts_with("message music.group")
+                && n.contains(&format!("\"version\":{}", paused.version)))
+            .await,
+        "the phone hears the pause"
+    );
+    // Asked as of an older version: refused.
+    assert!(
+        phone
+            .music_group(MusicGroupRequest {
+                action: "set".into(),
+                expect: Some(group.version),
+                position: Some(0.0),
+                ..MusicGroupRequest::default()
+            })
+            .await
+            .is_err()
+    );
+
+    // The laptop goes away: the phone is on its own again.
+    drop(laptop_watch);
+    assert!(
+        at_phone
+            .wait_for(|n| n.starts_with("message music.group") && n.contains("\"group\":null"))
+            .await,
+        "the group ends with the laptop gone"
+    );
+    let seen = phone
+        .music_group(MusicGroupRequest {
+            action: "view".into(),
+            ..MusicGroupRequest::default()
+        })
+        .await
+        .unwrap();
+    assert!(seen.group.is_none());
+}
+
 // ---------------------------------------------------------------------------
 // Changing drive
 // ---------------------------------------------------------------------------

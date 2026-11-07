@@ -1253,6 +1253,15 @@ async fn music_command(
     Ok(state.client.music_command(request).await?)
 }
 
+/// Asks about a group of the profile's devices playing together.
+#[tauri::command]
+async fn music_group(
+    state: State<'_, AppState>,
+    request: basalt_proto::msg::MusicGroupRequest,
+) -> Answer<basalt_proto::msg::MusicGroupResponse> {
+    Ok(state.client.music_group(request).await?)
+}
+
 /// Whether a film's timeline pictures are made, and how they are laid out.
 #[tauri::command]
 async fn previews(
@@ -2410,6 +2419,7 @@ pub fn run() {
             music_mine,
             music_now,
             music_command,
+            music_group,
             presence,
             channel_send,
             channel_take,

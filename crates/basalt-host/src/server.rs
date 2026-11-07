@@ -62,6 +62,8 @@ pub struct Host {
     /// What each profile's devices are playing now, and what they ask of
     /// each other.
     music_live: std::sync::Mutex<crate::music_now::Live>,
+    /// Devices playing together, each group's state: see `crate::music_groups`.
+    music_groups: std::sync::Mutex<crate::music_groups::Groups>,
     /// A profile whose devices' music changed, for their watches to say so.
     music_changes: tokio::sync::broadcast::Sender<String>,
     /// Who is online, and the messages devices pass each other.
@@ -330,6 +332,7 @@ impl Host {
             access_changes: tokio::sync::broadcast::Sender::new(16),
             profile_changes: tokio::sync::broadcast::Sender::new(16),
             music_live: std::sync::Mutex::new(crate::music_now::Live::default()),
+            music_groups: std::sync::Mutex::new(crate::music_groups::Groups::default()),
             music_changes: tokio::sync::broadcast::Sender::new(64),
             line: std::sync::Mutex::new(crate::channel::Line::default()),
             line_events: tokio::sync::broadcast::Sender::new(256),
@@ -3692,6 +3695,7 @@ impl Drop for OnLine {
             .close(&self.device, unix_ms());
         if gone {
             let _ = self.host.line_events.send(LineEvent::Presence);
+            self.host.keep_groups_online();
         }
     }
 }
@@ -4160,6 +4164,101 @@ impl Host {
             }
         }
         self.remove_profile(id)
+    }
+
+    /// Does what a device asked of a group playing together, and tells
+    /// every member what it is now (and those no longer in it that they
+    /// aren't). Answers the group as the asking device sees it after.
+    pub fn music_group(
+        &self,
+        profile: &str,
+        me: basalt_proto::msg::GroupMember,
+        asked: &basalt_proto::msg::MusicGroupRequest,
+    ) -> Result<Option<basalt_proto::msg::MusicGroup>> {
+        let now = unix_ms();
+        let there = (asked.action == "start")
+            .then(|| {
+                self.music_live
+                    .lock()
+                    .expect("music lock")
+                    .playing_now(profile, &asked.with, now)
+            })
+            .flatten()
+            .map(|(name, form, listening, playing)| {
+                (
+                    basalt_proto::msg::GroupMember {
+                        device: asked.with.clone(),
+                        name,
+                        form,
+                    },
+                    listening,
+                    playing,
+                )
+            });
+        let device = me.device.clone();
+        let changed = self
+            .music_groups
+            .lock()
+            .expect("groups lock")
+            .ask(profile, me, asked, there, now)
+            .map_err(|why| HostError::NotFound(why.into()))?;
+        let mine = self.music_groups.lock().expect("groups lock").of(&device);
+        self.tell_group(&changed);
+        if asked.action != "view" {
+            let _ = self.music_changes.send(profile.to_string());
+        }
+        Ok(mine)
+    }
+
+    /// Tells a group's members what it is now, and those who left it that
+    /// they're on their own: a `music.group` message down each one's watch.
+    fn tell_group(&self, changed: &crate::music_groups::Changed) {
+        let host_name = self.config.lock().expect("config lock").host_name.clone();
+        let send = |to: &str, body: serde_json::Value| {
+            let message = basalt_proto::msg::ChannelMessage {
+                id: format!("group-{}-{to}", unix_ms()),
+                from_device: format!("host-{}", self.identity.host_id),
+                from_name: host_name.clone(),
+                from_profile: None,
+                to: basalt_proto::msg::Address::Device {
+                    device: to.to_string(),
+                },
+                kind: "music.group".into(),
+                body,
+                sent: unix_ms(),
+                expires: unix_ms(),
+            };
+            let _ = self.line_events.send(LineEvent::Message {
+                to: to.to_string(),
+                message: Box::new(message),
+            });
+        };
+        if let Some(group) = &changed.group {
+            let body = serde_json::json!({ "now": unix_ms(), "group": group });
+            for member in &group.members {
+                send(&member.device, body.clone());
+            }
+        }
+        for device in &changed.left {
+            send(
+                device,
+                serde_json::json!({ "now": unix_ms(), "group": null }),
+            );
+        }
+    }
+
+    /// Devices gone away leave their groups; the others are told.
+    fn keep_groups_online(&self) {
+        let changes = {
+            let line = self.line.lock().expect("line lock");
+            self.music_groups
+                .lock()
+                .expect("groups lock")
+                .keep_online(|d| line.is_online(d))
+        };
+        for changed in &changes {
+            self.tell_group(changed);
+        }
     }
 
     /// Kept apart and locked (on), or in plain in "Basalt shares" on the
@@ -4706,6 +4805,7 @@ pub async fn serve(server: BoundServer) -> Result<()> {
                 let changed = host.line.lock().expect("line lock").sweep(unix_ms());
                 if changed {
                     let _ = host.line_events.send(LineEvent::Presence);
+                    host.keep_groups_online();
                 }
             }
         });
@@ -5902,7 +6002,17 @@ where
                     req.stopped,
                     now,
                 );
-                let sessions = live.others(&profile, &device.device_id, now);
+                let mut sessions = live.others(&profile, &device.device_id, now);
+                // Devices playing together as the host keeps them (1.6.4):
+                // each session says its group, for "Laptop +2".
+                {
+                    let groups = host.music_groups.lock().expect("groups lock");
+                    for session in &mut sessions {
+                        if let Some(group) = groups.of(&session.device) {
+                            session.group = Some(group.id);
+                        }
+                    }
+                }
                 let (group, anchor) = live.group_of(&profile, &device.device_id);
                 let answer = basalt_proto::msg::MusicNowResponse {
                     now,
@@ -5917,6 +6027,32 @@ where
                 let _ = host.music_changes.send(profile);
             }
             reply(stream, &answer).await?;
+        }
+
+        Op::MusicGroup => {
+            let req: basalt_proto::msg::MusicGroupRequest = decode(payload)?;
+            host.check_profile(session)?;
+            let profile = session.profile.clone().map(|(id, _)| id).ok_or_else(|| {
+                HostError::Denied("music is shared between a profile's devices only".into())
+            })?;
+            let device = session.device.clone().ok_or(HostError::Unauthenticated)?;
+            let me = basalt_proto::msg::GroupMember {
+                device: device.key().to_string(),
+                name: device.name.clone(),
+                form: device
+                    .form
+                    .and_then(|f| serde_json::to_value(f).ok())
+                    .and_then(|v| v.as_str().map(str::to_string)),
+            };
+            let group = host.music_group(&profile, me, &req)?;
+            reply(
+                stream,
+                &basalt_proto::msg::MusicGroupResponse {
+                    now: unix_ms(),
+                    group,
+                },
+            )
+            .await?;
         }
 
         Op::MusicCommand => {

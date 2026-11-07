@@ -27,6 +27,7 @@ pub mod firewall;
 pub mod links;
 pub mod manage;
 pub mod media;
+pub mod music_groups;
 pub mod music_now;
 pub mod profiles;
 pub mod rates;
