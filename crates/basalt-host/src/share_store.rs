@@ -350,6 +350,14 @@ impl ShareStore {
             for file in &held.files {
                 if let Some(path) = &file.plain {
                     let _ = std::fs::remove_file(path);
+                    // Its profile's folder, and "Basalt shares", once empty:
+                    // `remove_dir` takes only an empty folder.
+                    if let Some(folder) = path.parent() {
+                        let _ = std::fs::remove_dir(folder);
+                        if let Some(shares) = folder.parent() {
+                            let _ = std::fs::remove_dir(shares);
+                        }
+                    }
                 }
             }
         }
@@ -682,6 +690,10 @@ mod tests {
         assert_eq!(std::fs::read(&on_drive).unwrap(), body, "left as it was");
         store.answered("p1", true).unwrap();
         assert!(!on_drive.exists(), "its copy goes with it");
+        assert!(
+            !dir.join("drive").join("Basalt shares").exists(),
+            "and the folders made for it, once empty"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

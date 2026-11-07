@@ -85,6 +85,7 @@ export function SharingSettings({
       <ActionRow
         icon={<Trash2 size={14} className="text-danger" />}
         title="Clear share files"
+        danger
         detail={sharedSaid(sharing)}
         disabled={sharing.count === 0}
         onClick={onClear}
