@@ -1052,7 +1052,13 @@ async fn share_hold_local(
                 .await
                 .map_err(|e| std::io::Error::other(e.to_string()))
                 .and_then(|opened| opened)
-                .map_err(basalt_client::ClientError::from)?
+                // About this device's file, not the host: said as such.
+                .map_err(|e| {
+                    basalt_client::ClientError::Config(format!(
+                        "{} couldn't be opened on this device: {e}",
+                        file.name
+                    ))
+                })?
         };
         let told = app.clone();
         let offer = id.clone();
