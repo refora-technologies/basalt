@@ -40,6 +40,9 @@ struct Group {
 pub struct Changed {
     pub group: Option<MusicGroup>,
     pub left: Vec<String>,
+    /// The group was ended ("Play here" elsewhere): its members stop, rather
+    /// than play on alone.
+    pub ended: bool,
 }
 
 impl Groups {
@@ -66,7 +69,7 @@ impl Groups {
         match asked.action.as_str() {
             "view" => Ok(Changed {
                 group: self.of(&device.device),
-                left: Vec::new(),
+                ..Changed::default()
             }),
             // Play together with another device: its group, or a new one
             // from what it plays. `playing` true starts both, even if it
@@ -113,6 +116,7 @@ impl Groups {
                 Ok(Changed {
                     group: Some(group.state.clone()),
                     left,
+                    ended: false,
                 })
             }
             "leave" => Ok(self.leave(&device.device)),
@@ -124,6 +128,7 @@ impl Groups {
                 Ok(Changed {
                     group: None,
                     left: gone.state.members.into_iter().map(|m| m.device).collect(),
+                    ended: true,
                 })
             }
             // A change to the group, by one of its members or another of the
@@ -154,7 +159,7 @@ impl Groups {
                 state.version += 1;
                 Ok(Changed {
                     group: Some(state.clone()),
-                    left: Vec::new(),
+                    ..Changed::default()
                 })
             }
             _ => Err("there is no such thing to ask of a group"),
@@ -207,12 +212,17 @@ impl Groups {
         if group.state.members.len() < 2 {
             let gone = self.groups.remove(&id).expect("just found");
             left.extend(gone.state.members.into_iter().map(|m| m.device));
-            return Changed { group: None, left };
+            return Changed {
+                group: None,
+                left,
+                ended: false,
+            };
         }
         group.state.version += 1;
         Changed {
             group: Some(group.state.clone()),
             left,
+            ended: false,
         }
     }
 
@@ -426,6 +436,7 @@ mod tests {
             .unwrap();
         assert_eq!(ended.group, None);
         assert_eq!(ended.left, ["laptop", "phone"]);
+        assert!(ended.ended, "they stop, not play on alone");
         assert!(groups.of("laptop").is_none());
     }
 

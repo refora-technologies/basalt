@@ -4242,7 +4242,7 @@ impl Host {
         for device in &changed.left {
             send(
                 device,
-                serde_json::json!({ "now": unix_ms(), "group": null }),
+                serde_json::json!({ "now": unix_ms(), "group": null, "ended": changed.ended }),
             );
         }
     }

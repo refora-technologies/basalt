@@ -474,10 +474,14 @@ function RemoteBar({
   const at = livePosition(session, player.hostOffset, now)
   const total = session.report.duration
   const fraction = total > 0 ? Math.min(1, at / total) : 0
+  // Devices playing together show as one: "Laptop +2" (D27).
+  const together = session.group ? player.others.filter((s) => s.group === session.group).length : 1
+  const named = together > 1 ? `${session.name} +${together - 1}` : session.name
+  const join = together > 1 ? 'Join' : 'Play on both'
   const where = (
     <span className="flex min-w-0 items-center gap-1 text-basalt">
       <DeviceIcon form={session.form} size={12} />
-      <span className="truncate">Playing on {session.name}</span>
+      <span className="truncate">Playing on {named}</span>
     </span>
   )
 
@@ -518,7 +522,7 @@ function RemoteBar({
                 onClick={() => player.playBoth(session)}
                 className="my-2 flex-1 rounded-full border border-white/[0.16] py-2 text-[13px] text-text"
               >
-                Play on both
+                {join}
               </button>
             </motion.div>
           )}
@@ -583,7 +587,7 @@ function RemoteBar({
           onClick={() => player.playBoth(session)}
           className="rounded-full px-3 py-1.5 text-[12px] text-textDim transition-colors hover:bg-white/[0.06] hover:text-text"
         >
-          Play on both
+          {join}
         </button>
         <button
           type="button"
@@ -654,6 +658,31 @@ function Scrubber({ compact }: { compact?: boolean }): React.JSX.Element {
   const player = useMusicPlayer()
   const clock = useMusicClock()
   const [held, setHeld] = useState<number | null>(null)
+  const heldRef = useRef(held)
+  heldRef.current = held
+  /** The place let go of: moved there, and the line follows the song again. */
+  const commit = (): void => {
+    const to = heldRef.current
+    heldRef.current = null
+    setHeld(null)
+    if (to !== null) player?.seek(to)
+  }
+  const commitRef = useRef(commit)
+  commitRef.current = commit
+  // Let go anywhere: a mouse released off the line, or a touch the system
+  // took back as a scroll (pointercancel) never reached the line itself, and
+  // left the timeline frozen at the held place (F12).
+  const holding = held !== null
+  useEffect(() => {
+    if (!holding) return undefined
+    const letGo = (): void => commitRef.current()
+    window.addEventListener('pointerup', letGo)
+    window.addEventListener('pointercancel', letGo)
+    return () => {
+      window.removeEventListener('pointerup', letGo)
+      window.removeEventListener('pointercancel', letGo)
+    }
+  }, [holding])
   const at = held ?? clock.position
   const total = clock.duration
   // Not known until the song has opened: a light along the line meanwhile.
@@ -684,14 +713,10 @@ function Scrubber({ compact }: { compact?: boolean }): React.JSX.Element {
         value={Math.min(at, total || 1)}
         aria-label="Position in the song"
         onChange={(e) => setHeld(Number(e.target.value))}
-        onPointerUp={() => {
-          if (held !== null) player?.seek(held)
-          setHeld(null)
-        }}
-        onKeyUp={() => {
-          if (held !== null) player?.seek(held)
-          setHeld(null)
-        }}
+        onPointerUp={commit}
+        onPointerCancel={commit}
+        onKeyUp={commit}
+        onBlur={commit}
         className="music-range w-full"
         style={{ ['--fill' as string]: `${total > 0 ? (at / total) * 100 : 0}%` }}
       />
