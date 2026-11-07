@@ -346,6 +346,13 @@ async fn look(port: u16, window: Duration) -> Result<Vec<SocketAddr>> {
             for target in targets {
                 let _ = udp.send_to(&query, target).await;
             }
+            // Broadcasts are dropped on some Wi-Fi (a phone's chip, a router
+            // keeping devices apart): every neighbour asked directly too, once.
+            if asked == 0 {
+                for neighbour in neighbours() {
+                    let _ = udp.send_to(&query, SocketAddr::new(neighbour, port)).await;
+                }
+            }
             asked += 1;
         }
         match tokio::time::timeout(Duration::from_millis(500), udp.recv_from(&mut buffer)).await {
@@ -400,6 +407,24 @@ async fn collect_more(
         }
     }
     found
+}
+
+/// Every other address of each local IPv4 network, taken as a /24.
+fn neighbours() -> Vec<IpAddr> {
+    let mut all = Vec::new();
+    for ip in basalt_net::discovery::local_addresses() {
+        let IpAddr::V4(v4) = ip else { continue };
+        if v4.is_loopback() || v4.is_link_local() {
+            continue;
+        }
+        let [a, b, c, mine] = v4.octets();
+        for d in 1..=254u8 {
+            if d != mine {
+                all.push(IpAddr::V4(Ipv4Addr::new(a, b, c, d)));
+            }
+        }
+    }
+    all
 }
 
 /// Each local IPv4 network's broadcast address, taken as a /24: Wi-Fi that
