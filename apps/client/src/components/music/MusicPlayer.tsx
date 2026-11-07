@@ -15,6 +15,7 @@ import {
   type NowSession,
 } from '@/lib/api'
 import { groupPosition, groupSong, isHostGroup, stepFor } from '@/lib/musicGroup'
+import { syncLog } from '@/lib/syncLog'
 import {
   MusicClockContext,
   MusicPlayerContext,
@@ -396,6 +397,11 @@ export function MusicPlayer({
     const music = latest.current
     const now = Date.now()
     const step = stepFor(next, { song: music.current, playing: !music.paused || holdingRef.current, position: positionNow() }, offsetRef.current, now)
+    syncLog(
+      `group ${next.id} v${next.version} ${next.playing ? 'playing' : 'paused'} song ${next.listening.index + 1} at ${next.listening.position.toFixed(2)} s, ` +
+        `${next.at - offsetRef.current - now} ms ahead, ${next.members.length} devices; here: ${step.do}` +
+        (step.do === 'playAt' || step.do === 'open' ? ` from ${step.from.toFixed(2)} s` : ''),
+    )
     gaps.current = []
     checkLanding.current = false
     setRate(1)
@@ -455,6 +461,7 @@ export function MusicPlayer({
       const answer = await api.musicGroup(request)
       const back = Date.now()
       groupsOk.current = true
+      if (request.action !== 'view') syncLog(`asked ${describeAsk(request)}: done in ${back - sent} ms`)
       clockSamples.current = [
         ...clockSamples.current.slice(-19),
         { offset: answer.now - (sent + back) / 2, took: back - sent, at: back },
@@ -464,6 +471,7 @@ export function MusicPlayer({
       return true
     } catch (e) {
       if (e instanceof ApiError && (e.kind === 'unsupported' || e.kind === 'incompatible')) groupsOk.current = false
+      syncLog(`asked ${describeAsk(request)}: refused (${e instanceof Error ? e.message : String(e)})`)
       return false
     }
   }, [])
@@ -955,6 +963,10 @@ export function MusicPlayer({
         before: gaps.current,
       })
       if (step.do === 'load') return
+      syncLog(
+        `check: ${((theirs - mine.position) * 1000).toFixed(0)} ms behind the group` +
+          (step.do === 'seek' ? `, seek to ${step.to.toFixed(2)} s (lead ${step.lead.toFixed(2)} s)` : `, speed ${step.rate}`),
+      )
       checkLanding.current = false
       lead.current = step.lead
       gaps.current = [...gaps.current.slice(-4), theirs - mine.position]
@@ -1261,6 +1273,17 @@ export function MusicPlayer({
       </MusicClockContext.Provider>
     </MusicPlayerContext.Provider>
   )
+}
+
+/** A request to the group, in a few words, for the sync log. */
+function describeAsk(request: MusicGroupRequest): string {
+  const parts: string[] = [request.action]
+  if (request.listening) parts.push(`song ${request.listening.index + 1}`)
+  if (request.position !== undefined) parts.push(`seek ${request.position.toFixed(2)} s`)
+  if (request.playing !== undefined) parts.push(request.playing ? 'play' : 'pause')
+  if (request.expect !== undefined) parts.push(`as of v${request.expect}`)
+  if (request.leadMs) parts.push(`${request.leadMs} ms ahead`)
+  return parts.join(' ')
 }
 
 /**

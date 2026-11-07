@@ -9,6 +9,7 @@ import type { Inbox } from '@/lib/useInbox'
 import type { Presence } from '@/lib/usePresence'
 import { useAlwaysReady } from '@/lib/alwaysReady'
 import { HeldList } from './share/Held'
+import { SyncLogPanel } from './music/SyncLog'
 import {
   audioDevices,
   savedAudioDevice,
@@ -136,6 +137,7 @@ export function SettingsView({
             <span className="text-textDim">Automatic</span> follows your computer’s
             sound setting.
           </Note>
+          <SyncLogPanel />
         </Section>
 
         <Section icon={Wifi} title="Connection" hint="Between this computer and the host">

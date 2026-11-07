@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, Send } from 'lucide-react'
 
 import type { AppModel } from '@/App'
 import { Switch } from '@/components/Switch'
+import { SyncLogPanel } from '@/components/music/SyncLog'
 import { InboxList, ReceivePrompt, ShareChooser } from '@/components/share/Share'
 import { HeldList } from '@/components/share/Held'
 import type { ShareItem } from '@/lib/share'
@@ -209,6 +210,8 @@ export function SharingCard({ model }: { model: AppModel }): React.JSX.Element {
         <span className="text-[15px] text-text">Shared through host</span>
         <ChevronRight size={16} className="text-textFaint" />
       </button>
+      <div className="px-4 pb-1 pt-3 font-mono text-[10.5px] uppercase tracking-[0.18em] text-textFaint">Music together</div>
+      <SyncLogPanel phone />
       <Sheet open={heldOpen} onClose={() => setHeldOpen(false)} title="Shared through host">
         <div className="pb-[calc(var(--inset-bottom,0px)+18px)]">
           <HeldList inbox={inbox} presence={presence} />
