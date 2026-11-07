@@ -870,6 +870,23 @@ impl Session {
         Ok(())
     }
 
+    /// The host's devices, and who of them is online.
+    pub async fn presence(&mut self) -> Result<basalt_proto::msg::PresenceResponse> {
+        call_json(&mut self.stream, Op::Presence, &serde_json::json!({}))
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Passes a message to another of the host's devices, or a profile's.
+    pub async fn channel_send(
+        &mut self,
+        request: &basalt_proto::msg::ChannelSendRequest,
+    ) -> Result<basalt_proto::msg::ChannelSendResponse> {
+        call_json(&mut self.stream, Op::ChannelSend, request)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Whether a film's timeline pictures are made, and how they are laid out.
     pub async fn previews(&mut self, path: &str) -> Result<basalt_proto::msg::PreviewsResponse> {
         call_json(
@@ -1133,6 +1150,7 @@ impl Session {
             &serde_json::to_vec(&WatchRequest {
                 profiles: true,
                 music: true,
+                channel: true,
             })
             .map_err(|e| ClientError::Protocol(e.to_string()))?,
         )

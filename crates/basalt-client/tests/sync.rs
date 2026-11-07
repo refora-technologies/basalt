@@ -960,6 +960,10 @@ impl Notices {
                 basalt_client::WatchNotice::AccessChanged => "access".to_string(),
                 basalt_client::WatchNotice::ProfilesChanged => "profiles".to_string(),
                 basalt_client::WatchNotice::MusicNow => "music".to_string(),
+                basalt_client::WatchNotice::Channel(m) => {
+                    format!("message {} from {}: {}", m.kind, m.from_device, m.body)
+                }
+                basalt_client::WatchNotice::PresenceChanged => "presence".to_string(),
             };
             inner.lock().expect("notices lock").push(said);
         }
@@ -1035,6 +1039,131 @@ async fn a_watching_device_hears_at_once_that_its_access_changed_or_it_was_remov
         "the pairing is dropped here"
     );
     assert!(!client.is_connected());
+}
+
+// ---------------------------------------------------------------------------
+// The line between devices
+// ---------------------------------------------------------------------------
+
+/// Three devices of one host: who is online follows their watches, a message
+/// reaches a device online at once, and one sent to a device away waits for
+/// it and arrives when it comes back.
+#[tokio::test]
+async fn devices_see_who_is_online_and_pass_each_other_messages() {
+    use basalt_proto::msg::{Address, ChannelSendRequest};
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let phone = fixture.paired_client().await;
+    let tablet = fixture.paired_client().await;
+
+    let laptop_heard = Notices::default();
+    let phone_heard = Notices::default();
+    let _laptop_watch = laptop.watch_with(|_| {}, laptop_heard.record());
+    let phone_watch = phone.watch_with(|_| {}, phone_heard.record());
+    settle().await;
+
+    let seen = laptop.presence().await.expect("presence");
+    assert_eq!(seen.devices.len(), 3, "every device of the host is listed");
+    let me = seen.you.clone();
+    let online: Vec<&str> = seen
+        .devices
+        .iter()
+        .filter(|d| d.online)
+        .map(|d| d.device.as_str())
+        .collect();
+    assert_eq!(online.len(), 2, "the two watching are online: {online:?}");
+    assert!(online.contains(&me.as_str()));
+    let tablet_id = seen
+        .devices
+        .iter()
+        .find(|d| !d.online)
+        .map(|d| d.device.clone())
+        .expect("the tablet, not watching, is offline");
+    let phone_id = online
+        .iter()
+        .find(|d| **d != me)
+        .map(|d| d.to_string())
+        .expect("the phone");
+
+    // To the phone, online: it arrives down its watch.
+    let sent = laptop
+        .channel_send(ChannelSendRequest {
+            to: Address::Device {
+                device: phone_id.clone(),
+            },
+            kind: "offer".into(),
+            body: serde_json::json!({ "name": "Holiday.mkv" }),
+            ttl_ms: 60_000,
+        })
+        .await
+        .expect("sent");
+    assert_eq!(sent.delivered, vec![phone_id.clone()]);
+    assert!(!sent.waiting);
+    assert!(
+        phone_heard
+            .wait_for(|n| n.starts_with("message offer from") && n.contains("Holiday.mkv"))
+            .await,
+        "the phone hears the offer"
+    );
+
+    // To the tablet, away: it waits, and comes with the tablet.
+    let waiting = laptop
+        .channel_send(ChannelSendRequest {
+            to: Address::Device {
+                device: tablet_id.clone(),
+            },
+            kind: "offer".into(),
+            body: serde_json::json!({ "name": "Recipes.pdf" }),
+            ttl_ms: 60_000,
+        })
+        .await
+        .expect("sent");
+    assert!(waiting.delivered.is_empty() && waiting.waiting);
+    let tablet_heard = Notices::default();
+    let _tablet_watch = tablet.watch_with(|_| {}, tablet_heard.record());
+    assert!(
+        tablet_heard.wait_for(|n| n.contains("Recipes.pdf")).await,
+        "the tablet gets what waited for it"
+    );
+    assert!(
+        laptop_heard.wait_for(|n| n == "presence").await,
+        "the laptop hears someone came online"
+    );
+
+    // The phone stops watching: it is offline.
+    drop(phone_watch);
+    let mut gone = false;
+    for _ in 0..100 {
+        let now = laptop.presence().await.expect("presence");
+        if now
+            .devices
+            .iter()
+            .any(|d| d.device == phone_id && !d.online && d.last_seen > 0)
+        {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        gone,
+        "a device whose watch closed is offline, last seen just now"
+    );
+
+    // Nothing to an address the host doesn't have.
+    let err = laptop
+        .channel_send(ChannelSendRequest {
+            to: Address::Device {
+                device: "nobody".into(),
+            },
+            kind: "offer".into(),
+            body: serde_json::Value::Null,
+            ttl_ms: 0,
+        })
+        .await
+        .expect_err("no such device");
+    assert_eq!(err.kind(), "notfound", "got: {err}");
 }
 
 // ---------------------------------------------------------------------------

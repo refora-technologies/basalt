@@ -359,6 +359,13 @@ fn start_watching(client: &Arc<Basalt>, app: &tauri::AppHandle) {
             basalt_client::WatchNotice::MusicNow => {
                 let _ = told.emit("basalt://music-now", ());
             }
+            // A message from another of the host's devices, and who is online.
+            basalt_client::WatchNotice::Channel(message) => {
+                let _ = told.emit("basalt://channel", message);
+            }
+            basalt_client::WatchNotice::PresenceChanged => {
+                let _ = told.emit("basalt://presence", ());
+            }
             notice => {
                 if let basalt_client::WatchNotice::Removed(removed) = notice {
                     let _ = told.emit("basalt://removed", removed.to_string());
@@ -662,6 +669,21 @@ async fn music_now(
     request: basalt_proto::msg::MusicNowRequest,
 ) -> Answer<basalt_proto::msg::MusicNowResponse> {
     Ok(state.client.music_now(request).await?)
+}
+
+/// The host's devices, and who of them is online now.
+#[tauri::command]
+async fn presence(state: State<'_, AppState>) -> Answer<basalt_proto::msg::PresenceResponse> {
+    Ok(state.client.presence().await?)
+}
+
+/// Passes a message to another of the host's devices, or a profile's.
+#[tauri::command]
+async fn channel_send(
+    state: State<'_, AppState>,
+    request: basalt_proto::msg::ChannelSendRequest,
+) -> Answer<basalt_proto::msg::ChannelSendResponse> {
+    Ok(state.client.channel_send(request).await?)
 }
 
 /// Asks another of the profile's devices, playing, to do something.
@@ -1821,6 +1843,8 @@ pub fn run() {
             music_mine,
             music_now,
             music_command,
+            presence,
+            channel_send,
             segments,
             speed_test,
             previews,

@@ -700,6 +700,13 @@ pub enum Change {
     /// [`crate::ops::Op::MusicNow`]. Only sent to a watch that asked for it,
     /// signed in to that profile.
     MusicNow,
+    /// A message for this device from another of the host's devices: see
+    /// [`ChannelMessage`]. Only sent to a watch that asked for the channel.
+    Channel { message: ChannelMessage },
+    /// A device came online or went: ask again with
+    /// [`crate::ops::Op::Presence`]. Only sent to a watch that asked for the
+    /// channel.
+    PresenceChanged,
 }
 
 impl Change {
@@ -725,7 +732,9 @@ impl Change {
             Change::Resynchronise
             | Change::LibraryChanged
             | Change::ProfilesChanged
-            | Change::MusicNow => Vec::new(),
+            | Change::MusicNow
+            | Change::Channel { .. }
+            | Change::PresenceChanged => Vec::new(),
         }
     }
 }
@@ -742,6 +751,11 @@ pub struct WatchRequest {
     /// playing changes, as [`Change::MusicNow`].
     #[serde(default)]
     pub music: bool,
+    /// Also be this device's line for messages from the host's other devices,
+    /// as [`Change::Channel`], and count it as online while the watch is
+    /// open, told to others as [`Change::PresenceChanged`]. From 1.6.4.
+    #[serde(default)]
+    pub channel: bool,
 }
 
 /// One streamed frame on a watch connection.
@@ -1103,6 +1117,112 @@ pub struct MusicCommandRequest {
     /// For `load` and `play`: when to start, on the host's clock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clock: Option<i64>,
+}
+
+// ---------------------------------------------------------------------------
+// Between devices: messages and who is online
+// ---------------------------------------------------------------------------
+
+/// Whom a message is for: one device, or every device of one profile.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "to", rename_all = "camelCase")]
+pub enum Address {
+    /// One device, by its id from [`PresentDevice::device`].
+    Device { device: String },
+    /// Every device signed in to a profile, by the profile's id: those online
+    /// now, and those that come online before the message expires.
+    Profile { profile: String },
+}
+
+/// Asks the host to pass a message to another of its devices.
+///
+/// The host relays it and keeps it for a device not online until it expires;
+/// it does not read `body`. Only a device signed in to this host may send.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelSendRequest {
+    pub to: Address,
+    /// What it is, for the receiving app: `offer`, `answer`, `music`...
+    pub kind: String,
+    #[serde(default)]
+    pub body: serde_json::Value,
+    /// How long it is worth delivering, in milliseconds: 0 for now or never.
+    /// The host holds it at most [`CHANNEL_MAX_TTL_MS`].
+    #[serde(default)]
+    pub ttl_ms: i64,
+}
+
+/// The longest a message waits on the host for a device to come online.
+pub const CHANNEL_MAX_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+/// The largest `body` the host passes on, serialised: messages are small;
+/// files go by transfers.
+pub const CHANNEL_MAX_BODY_BYTES: usize = 32 * 1024;
+
+/// What became of a message the moment it was sent.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ChannelSendResponse {
+    /// Its id, which answers to it name.
+    pub id: String,
+    /// The devices it reached at once.
+    pub delivered: Vec<String>,
+    /// Kept for devices not online, until it expires.
+    pub waiting: bool,
+}
+
+/// A message, as its receiver gets it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMessage {
+    /// Made by the host, unique on it.
+    pub id: String,
+    /// The device that sent it, and the name the host knows it by.
+    pub from_device: String,
+    pub from_name: String,
+    /// The profile it was signed in to, when it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_profile: Option<String>,
+    pub to: Address,
+    pub kind: String,
+    #[serde(default)]
+    pub body: serde_json::Value,
+    /// When the host took it, and until when it is worth anything, in the
+    /// host's Unix milliseconds.
+    pub sent: i64,
+    pub expires: i64,
+}
+
+/// Who is on this host, and who of them is online now.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PresenceResponse {
+    /// The host's clock, Unix milliseconds.
+    pub now: i64,
+    pub devices: Vec<PresentDevice>,
+    /// The id this device is known by, to tell itself apart in the list.
+    pub you: String,
+}
+
+/// One of the host's devices.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PresentDevice {
+    pub device: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub form: Option<String>,
+    /// The profile it is signed in to, and that profile's name and colour.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_color: Option<u32>,
+    /// Has its line to the host open now.
+    pub online: bool,
+    /// When it was last online, Unix milliseconds; 0 if never since the host
+    /// started.
+    pub last_seen: i64,
 }
 
 /// Asks where a film's or an episode's intro and credits are.

@@ -1687,6 +1687,27 @@ impl Basalt {
         lease.check(result)
     }
 
+    /// The host's devices, and who of them is online now.
+    pub async fn presence(&self) -> Result<basalt_proto::msg::PresenceResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.presence().await;
+        lease.check(result)
+    }
+
+    /// Passes a message to another of the host's devices, or to every device
+    /// of a profile: at once to those online, kept for the rest until it
+    /// expires.
+    pub async fn channel_send(
+        &self,
+        request: basalt_proto::msg::ChannelSendRequest,
+    ) -> Result<basalt_proto::msg::ChannelSendResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.channel_send(&request).await;
+        lease.check(result)
+    }
+
     /// Asks another of the profile's devices, playing, to do something.
     pub async fn music_command(
         &self,
@@ -1986,6 +2007,8 @@ impl Basalt {
                 change = session.watch_next() => match change? {
                     Change::ProfilesChanged => on_notice(WatchNotice::ProfilesChanged),
                     Change::MusicNow => on_notice(WatchNotice::MusicNow),
+                    Change::Channel { message } => on_notice(WatchNotice::Channel(message)),
+                    Change::PresenceChanged => on_notice(WatchNotice::PresenceChanged),
                     change => on_change(change),
                 },
             }
@@ -2660,6 +2683,10 @@ pub enum WatchNotice {
     ProfilesChanged,
     /// What the profile's other devices play changed: [`Basalt::music_now`].
     MusicNow,
+    /// A message for this device from another of the host's devices.
+    Channel(basalt_proto::msg::ChannelMessage),
+    /// A device came online or went: [`Basalt::presence`].
+    PresenceChanged,
 }
 
 /// Why one watch connection ended without failing.

@@ -23,6 +23,7 @@ import {
   Scissors,
   Search,
   SlidersHorizontal,
+  Smartphone,
   Star,
   Trash2,
   Tv,
@@ -74,6 +75,8 @@ import { handheldWord, isAndroid, isTv } from '@/lib/platform'
 import { offerPlay } from '@/lib/playMove'
 import { offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
 import { ActionSheet, Sheet } from './Sheet'
+import { YourDevices } from '@/components/YourDevices'
+import { ownDevices } from '@/lib/usePresence'
 import { remaining, type Resumable } from '@/components/ContinueWatching'
 import { useLongPress } from '@/lib/useLongPress'
 import { useBack } from './useBack'
@@ -1593,9 +1596,17 @@ function MoreScreen({
     await identity.reloadProfiles()
     await identity.refresh()
   }
+  // The profile's devices, with who is online.
+  const mine = ownDevices(model.presence)
+  const [devicesOpen, setDevicesOpen] = useState(false)
 
   return (
     <div className="h-full overflow-y-auto px-4 pb-10">
+      <Sheet open={devicesOpen} onClose={() => setDevicesOpen(false)} title="Your devices">
+        <div className="px-4 pb-6">
+          <YourDevices devices={mine} you={model.presence.you} />
+        </div>
+      </Sheet>
       <div className="mx-auto max-w-[560px] space-y-3 pt-1">
         {identity.supported && (
           <Card>
@@ -1621,6 +1632,17 @@ function MoreScreen({
                 </div>
               </div>
             </div>
+            {profile && mine.length > 1 && (
+              <button
+                onClick={() => setDevicesOpen(true)}
+                className="mt-3.5 flex w-full items-center gap-2.5 rounded-xl bg-white/[0.05] px-3 py-2.5 text-left active:bg-white/[0.09]"
+              >
+                <Smartphone size={16} className="shrink-0 text-textDim" />
+                <span className="flex-1 text-[14px] text-text">Your devices</span>
+                <span className="font-mono text-[11.5px] text-textFaint">{mine.filter((d) => d.online).length} online</span>
+                <ChevronRight size={15} className="shrink-0 text-textFaint" />
+              </button>
+            )}
             <div className="mt-3.5 flex gap-2">
               {profile ? (
                 <>

@@ -64,6 +64,11 @@ pub struct Host {
     music_live: std::sync::Mutex<crate::music_now::Live>,
     /// A profile whose devices' music changed, for their watches to say so.
     music_changes: tokio::sync::broadcast::Sender<String>,
+    /// Who is online, and the messages devices pass each other.
+    line: std::sync::Mutex<crate::channel::Line>,
+    /// A message for a device online now, or a device come or gone, for the
+    /// watches to pass on: see [`stream_changes`].
+    line_events: tokio::sync::broadcast::Sender<LineEvent>,
     /// The household's key, and the member statements made and taken back.
     authority: std::sync::Mutex<crate::authority::Authority>,
     /// This host's public key, as an owner's endorsement names it.
@@ -303,6 +308,8 @@ impl Host {
             profile_changes: tokio::sync::broadcast::Sender::new(16),
             music_live: std::sync::Mutex::new(crate::music_now::Live::default()),
             music_changes: tokio::sync::broadcast::Sender::new(64),
+            line: std::sync::Mutex::new(crate::channel::Line::default()),
+            line_events: tokio::sync::broadcast::Sender::new(256),
             authority: std::sync::Mutex::new(authority),
             host_key,
             drive_lost: std::sync::atomic::AtomicBool::new(drive_lost),
@@ -3493,6 +3500,8 @@ impl Host {
                 let mut authority = self.authority.lock().expect("authority lock");
                 authority.revoke_device(&key);
                 authority.drop_endorsement_by(&key);
+                // Nothing more waits for it on the line.
+                self.line.lock().expect("line lock").forget_device(&key);
             }
             removed
         };
@@ -3603,6 +3612,146 @@ fn load_stars(path: &std::path::Path) -> std::collections::HashMap<String, Vec<S
 }
 
 /// The time in Unix milliseconds, for what changes within a second.
+/// What the line tells the watches: see [`Host::line_events`].
+#[derive(Debug, Clone)]
+enum LineEvent {
+    /// For this device.
+    Message {
+        to: String,
+        message: Box<basalt_proto::msg::ChannelMessage>,
+    },
+    /// Somebody came online or went.
+    Presence,
+}
+
+/// A device online for as long as this lives: a watch with the channel.
+struct OnLine {
+    host: Arc<Host>,
+    device: String,
+    /// What waited for it, to send down the watch first.
+    waiting: Vec<basalt_proto::msg::ChannelMessage>,
+}
+
+impl OnLine {
+    fn open(host: &Arc<Host>, device: String, profile: Option<String>) -> Self {
+        let (came, waiting) =
+            host.line
+                .lock()
+                .expect("line lock")
+                .open(&device, profile.as_deref(), unix_ms());
+        if came {
+            let _ = host.line_events.send(LineEvent::Presence);
+        }
+        Self {
+            host: host.clone(),
+            device,
+            waiting,
+        }
+    }
+}
+
+impl Drop for OnLine {
+    fn drop(&mut self) {
+        let gone = self
+            .host
+            .line
+            .lock()
+            .expect("line lock")
+            .close(&self.device, unix_ms());
+        if gone {
+            let _ = self.host.line_events.send(LineEvent::Presence);
+        }
+    }
+}
+
+impl Host {
+    /// Every device of the host, who is online, and what each is signed in to.
+    fn presence(&self, you: String) -> basalt_proto::msg::PresenceResponse {
+        let devices = self.devices();
+        let book = self.profiles.lock().expect("profiles lock");
+        let line = self.line.lock().expect("line lock");
+        let mut listed: Vec<basalt_proto::msg::PresentDevice> = devices
+            .iter()
+            .map(|d| {
+                let key = d.key().to_string();
+                // Online: the profile it is signed in to now. Away: the one it
+                // last signed in to and is still signed in to, so a device of
+                // Maya's off for the night is still listed as hers.
+                let profile = line.profile_of(&key).map(str::to_string).or_else(|| {
+                    book.tokens()
+                        .iter()
+                        .filter(|t| t.device_key == key)
+                        .max_by_key(|t| t.last_used)
+                        .map(|t| t.profile_id.clone())
+                });
+                let named = profile
+                    .as_deref()
+                    .and_then(|id| book.profiles().iter().find(|p| p.id == id));
+                basalt_proto::msg::PresentDevice {
+                    online: line.is_online(&key),
+                    last_seen: line.last_seen(&key),
+                    device: key,
+                    name: d.name.clone(),
+                    form: d
+                        .form
+                        .and_then(|f| serde_json::to_value(f).ok())
+                        .and_then(|v| v.as_str().map(str::to_string)),
+                    profile_name: named.map(|p| p.name.clone()),
+                    profile_color: named.map(|p| u32::from(p.color)),
+                    profile,
+                }
+            })
+            .collect();
+        // Online first, then by name: the order a list of targets is read in.
+        listed.sort_by(|a, b| b.online.cmp(&a.online).then_with(|| a.name.cmp(&b.name)));
+        basalt_proto::msg::PresenceResponse {
+            now: unix_ms(),
+            devices: listed,
+            you,
+        }
+    }
+
+    /// Passes a message on: at once to the devices online, kept for the rest.
+    fn channel_send(
+        &self,
+        from: &crate::channel::Sender,
+        asked: basalt_proto::msg::ChannelSendRequest,
+    ) -> Result<basalt_proto::msg::ChannelSendResponse> {
+        let devices: Vec<String> = self.devices().iter().map(|d| d.key().to_string()).collect();
+        let profiles: Vec<String> = self
+            .profiles
+            .lock()
+            .expect("profiles lock")
+            .profiles()
+            .iter()
+            .map(|p| p.id.clone())
+            .collect();
+        let sent = self
+            .line
+            .lock()
+            .expect("line lock")
+            .send(
+                from,
+                asked,
+                |d| devices.iter().any(|known| known == d),
+                |p| profiles.iter().any(|known| known == p),
+                unix_ms(),
+            )
+            .map_err(|why| HostError::NotFound(why.into()))?;
+        for to in &sent.now {
+            let _ = self.line_events.send(LineEvent::Message {
+                to: to.clone(),
+                message: Box::new(sent.message.clone()),
+            });
+        }
+        Ok(basalt_proto::msg::ChannelSendResponse {
+            id: sent.message.id,
+            delivered: sent.now,
+            waiting: sent.waiting,
+        })
+    }
+}
+
 pub(crate) fn unix_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3701,7 +3850,9 @@ impl Batch {
             | Change::Modified { .. }
             | Change::LibraryChanged
             | Change::ProfilesChanged
-            | Change::MusicNow => {}
+            | Change::MusicNow
+            | Change::Channel { .. }
+            | Change::PresenceChanged => {}
         }
     }
 }
@@ -4692,7 +4843,15 @@ where
         // for as long as the client wants it and writes a response per change.
         Op::Watch => {
             let request: WatchRequest = decode(payload).unwrap_or_default();
-            stream_changes(stream, host, session, request.profiles, request.music).await?;
+            stream_changes(
+                stream,
+                host,
+                session,
+                request.profiles,
+                request.music,
+                request.channel,
+            )
+            .await?;
         }
 
         Op::Library => {
@@ -5055,6 +5214,29 @@ where
             write_ok(stream, &[]).await?;
         }
 
+        Op::Presence => {
+            host.check_profile(session)?;
+            let you = session
+                .device
+                .as_ref()
+                .map(|d| d.key().to_string())
+                .ok_or(HostError::Unauthenticated)?;
+            reply(stream, &host.presence(you)).await?;
+        }
+
+        Op::ChannelSend => {
+            let req: basalt_proto::msg::ChannelSendRequest = decode(payload)?;
+            host.check_profile(session)?;
+            let device = session.device.as_ref().ok_or(HostError::Unauthenticated)?;
+            let from = crate::channel::Sender {
+                device: device.key().to_string(),
+                name: device.name.clone(),
+                profile: session.profile.as_ref().map(|(id, _)| id.clone()),
+            };
+            let answer = host.channel_send(&from, req)?;
+            reply(stream, &answer).await?;
+        }
+
         Op::MusicMine => {
             let req: basalt_proto::msg::MusicMineRequest = decode(payload).unwrap_or_default();
             // A device on its own keeps its playlists itself, as it does stars.
@@ -5143,12 +5325,40 @@ async fn stream_changes<S>(
     session: &mut Session,
     profiles: bool,
     music: bool,
+    channel: bool,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let device = session.device_key();
     let mut access_changes = host.access_changes.subscribe();
+    // Online while this watch is open, and its messages come down it: the
+    // ones waiting first, then each as it is sent.
+    let mut line_events = host.line_events.subscribe();
+    let mut hang_up = [0u8; 64];
+    let on_line = match (channel, session.device.as_ref()) {
+        (true, Some(d)) => Some(OnLine::open(
+            host,
+            d.key().to_string(),
+            session.profile.as_ref().map(|(id, _)| id.clone()),
+        )),
+        _ => None,
+    };
+    if let Some(on_line) = &on_line {
+        for message in on_line.waiting.clone() {
+            if reply(
+                stream,
+                &WatchEvent {
+                    change: Change::Channel { message },
+                },
+            )
+            .await
+            .is_err()
+            {
+                return Ok(());
+            }
+        }
+    }
     let mut profile_changes = host.profile_changes.subscribe();
     let mut music_changes = host.music_changes.subscribe();
     // Told only for the profile this watch acts for.
@@ -5209,6 +5419,37 @@ where
                 }
                 let told = WatchEvent { change: basalt_proto::msg::Change::MusicNow };
                 if reply(stream, &told).await.is_err() {
+                    return Ok(());
+                }
+                continue;
+            }
+            // The device sends nothing more on a watch, so anything read is
+            // it hanging up: noticed now, not at the next change, so it is
+            // offline the moment it closes.
+            closed = tokio::io::AsyncReadExt::read(stream, &mut hang_up) => {
+                match closed {
+                    Ok(0) | Err(_) => return Ok(()),
+                    Ok(_) => continue,
+                }
+            }
+            told = line_events.recv(), if on_line.is_some() => {
+                let change = match told {
+                    Ok(LineEvent::Message { to, message }) => {
+                        if on_line.as_ref().is_none_or(|l| l.device != to) {
+                            continue;
+                        }
+                        Change::Channel { message: *message }
+                    }
+                    // Missed some: who is online is asked again. A message
+                    // missed is the sender's to try again; its answer never
+                    // comes.
+                    Ok(LineEvent::Presence)
+                    | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        Change::PresenceChanged
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+                };
+                if reply(stream, &WatchEvent { change }).await.is_err() {
                     return Ok(());
                 }
                 continue;

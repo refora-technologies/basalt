@@ -167,6 +167,12 @@ pub enum Op {
     /// Asks another of the profile's devices to pause, play, skip or stop:
     /// see [`crate::msg::MusicCommandRequest`].
     MusicCommand = 46,
+    /// Passes a message to another of the host's devices, or a profile's:
+    /// see [`crate::msg::ChannelSendRequest`]. From 1.6.4.
+    ChannelSend = 47,
+    /// The host's devices and who of them is online: see
+    /// [`crate::msg::PresenceResponse`]. From 1.6.4.
+    Presence = 48,
 }
 
 impl Op {
@@ -175,7 +181,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::MusicCommand as u8;
+    pub const LAST: u8 = Op::Presence as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -225,6 +231,8 @@ impl Op {
             44 => Op::PreviewSheet,
             45 => Op::MusicNow,
             46 => Op::MusicCommand,
+            47 => Op::ChannelSend,
+            48 => Op::Presence,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -413,6 +421,8 @@ mod tests {
             Op::PreviewSheet,
             Op::MusicNow,
             Op::MusicCommand,
+            Op::ChannelSend,
+            Op::Presence,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

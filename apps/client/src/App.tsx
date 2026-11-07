@@ -92,6 +92,7 @@ import { MusicSection } from '@/components/music/MusicSection'
 import { MusicBar, NowPlaying } from '@/components/music/NowPlaying'
 import { MusicBridge, SystemMedia, useMusicProps } from '@/components/music/useMusicActions'
 import { useMusicMine } from '@/lib/useMusicMine'
+import { ownDevices, usePresence } from '@/lib/usePresence'
 import { entriesToMedia, isMediaFile, nextEpisodes } from '@/lib/media'
 import type { MediaItem } from '@/lib/mockMedia'
 import {
@@ -195,6 +196,11 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
   // playlists and Continue listening.
   const music = useMusic(settled, collections.collections.music)
   const musicMine = useMusicMine(vault.status?.hostId, profileId, settled !== null)
+  // Who of the host's devices is online: the profile's own devices, and later
+  // the places a file can be shared to.
+  const presence = usePresence(
+    settled !== null && vault.status?.hostId ? `${vault.status.hostId}/${profileId ?? ''}` : null,
+  )
   // Only for a host too old to sort the drive itself.
   const needsScan =
     collections.unsupported && (nav === 'recent' || LIBRARY_KEYS.includes(nav))
@@ -1387,6 +1393,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     collections,
     music,
     musicMine,
+    presence,
     mediaBase,
     needsScan,
     scan,
@@ -1753,6 +1760,8 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                       await identity.refresh()
                     })
                   },
+                  devices: ownDevices(model.presence),
+                  you: model.presence.you,
                 }
               : undefined
           }

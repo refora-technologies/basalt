@@ -68,7 +68,8 @@ function rustCommands(source: string): Map<string, string[]> {
         return { ident: ident!.trim(), type: rest.join(':') }
       })
       // Tauri injects these; the interface never passes them.
-      .filter((p) => !/State\s*<|AppHandle|Window|Webview|Channel/.test(p.type))
+      // (Tauri's `Channel<T>`, not a type that merely starts with the word.)
+      .filter((p) => !/State\s*<|AppHandle|Window|Webview|Channel\s*</.test(p.type))
       .map((p) => p.ident)
 
     commands.set(name!, params)

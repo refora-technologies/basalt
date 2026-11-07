@@ -21,6 +21,8 @@ import {
 import { UpdateCard } from './UpdateCard'
 import { cn, formatBytes } from '@/lib/utils'
 import { Avatar } from './ProfileGate'
+import { YourDevices } from './YourDevices'
+import type { PresentDevice } from '@/lib/api'
 
 export type NavKey =
   | 'files'
@@ -281,6 +283,9 @@ export interface WhoProps {
   onSignIn: () => void
   onSwitch: () => void
   onSignOut: () => void
+  /** This profile's devices, with who is online; empty on an older host. */
+  devices: PresentDevice[]
+  you: string
 }
 
 /**
@@ -290,7 +295,8 @@ export interface WhoProps {
  * avatar and name, or the device on its own. The menu opens upwards, the only
  * way there is room for it.
  */
-function WhoChip({ profile, onSignIn, onSwitch, onSignOut }: WhoProps): React.JSX.Element {
+function WhoChip({ profile, onSignIn, onSwitch, onSignOut, devices, you }: WhoProps): React.JSX.Element {
+  const online = devices.filter((d) => d.online && d.device !== you).length
   const [open, setOpen] = useState(false)
   const choose = (action: () => void) => () => {
     setOpen(false)
@@ -317,7 +323,11 @@ function WhoChip({ profile, onSignIn, onSwitch, onSignOut }: WhoProps): React.JS
             {profile ? profile.name : 'This device'}
           </span>
           <span className="block truncate font-mono text-[9.5px] text-textFaint">
-            {profile ? 'profile' : 'not signed in'}
+            {profile
+              ? online > 0
+                ? `${online + 1} devices online`
+                : 'profile'
+              : 'not signed in'}
           </span>
         </span>
         <ChevronsUpDown size={13} className="shrink-0 text-textFaint" />
@@ -335,6 +345,14 @@ function WhoChip({ profile, onSignIn, onSwitch, onSignOut }: WhoProps): React.JS
               style={{ transformOrigin: 'bottom left' }}
               className="absolute bottom-full left-0 right-0 z-40 mb-1.5 overflow-hidden rounded-lg border border-white/10 bg-panel2 p-1 shadow-lift"
             >
+              {profile && devices.length > 1 && (
+                <div className="mb-1 border-b border-white/[0.06] pb-1">
+                  <div className="px-2.5 pb-0.5 pt-1.5 font-mono text-[9.5px] uppercase tracking-[0.16em] text-textFaint">
+                    Your devices
+                  </div>
+                  <YourDevices devices={devices} you={you} compact />
+                </div>
+              )}
               {profile ? (
                 <>
                   <WhoItem icon={Repeat} label="Switch profile" onClick={choose(onSwitch)} />

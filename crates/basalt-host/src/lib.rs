@@ -18,6 +18,7 @@
 pub mod announce;
 pub mod authority;
 pub mod autostart;
+pub mod channel;
 pub mod config;
 pub mod convert;
 pub mod drives;

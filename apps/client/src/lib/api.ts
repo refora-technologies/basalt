@@ -431,6 +431,49 @@ export interface NowReport {
 }
 
 /** Another of the profile's devices, playing. */
+/** Whom a message is for: one device, or every device of a profile. */
+export type Address = { to: 'device'; device: string } | { to: 'profile'; profile: string }
+
+/** A message from another of the host's devices. */
+export interface ChannelMessage {
+  id: string
+  fromDevice: string
+  fromName: string
+  fromProfile?: string
+  to: Address
+  kind: string
+  body: unknown
+  /** Host Unix milliseconds. */
+  sent: number
+  expires: number
+}
+
+export interface ChannelSendResponse {
+  id: string
+  delivered: string[]
+  waiting: boolean
+}
+
+/** One of the host's devices, and whether it is online now. */
+export interface PresentDevice {
+  device: string
+  name: string
+  form?: 'phone' | 'tablet' | 'tv' | 'computer' | 'other'
+  profile?: string
+  profileName?: string
+  profileColor?: number
+  online: boolean
+  /** Host Unix milliseconds; 0 if not since the host started. */
+  lastSeen: number
+}
+
+export interface PresenceResponse {
+  now: number
+  devices: PresentDevice[]
+  /** This device's id in the list. */
+  you: string
+}
+
 export interface NowSession {
   /** Its id, to send it a command. */
   device: string
@@ -744,6 +787,13 @@ export const api = {
     const request = { stopped: false, ...asked }
     return call<MusicNowResponse>('music_now', { request })
   },
+  /** The host's devices and who of them is online. Throws on a host before 1.6.4. */
+  presence: () => call<PresenceResponse>('presence'),
+  /** Passes a message to another of the host's devices, or to a profile's. */
+  channelSend: (to: Address, kind: string, body: unknown, ttlMs = 0) => {
+    const request = { to, kind, body, ttlMs }
+    return call<ChannelSendResponse>('channel_send', { request })
+  },
   /** Asks another of the profile's devices to pause, play, skip or stop. */
   musicCommand: (device: string, action: MusicCommand['action'], position = 0, listening?: Listening, clock?: number) => {
     const request = { device, action, position, listening, clock }
@@ -894,6 +944,20 @@ export async function onRemoved(handler: (message: string) => void): Promise<() 
  * them, and when a request finds this device's sign-in no longer stands.
  * Either way: ask again who is using this device.
  */
+/** Told when a device of the host comes online or goes. */
+export async function onPresence(handler: () => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen('basalt://presence', () => handler())
+}
+
+/** Each message from another of the host's devices, as it comes. */
+export async function onChannel(handler: (message: ChannelMessage) => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<ChannelMessage>('basalt://channel', (event) => handler(event.payload))
+}
+
 /** Told when what the profile's other devices play changes. */
 export async function onMusicNow(handler: () => void): Promise<() => void> {
   if (!inTauri()) return () => {}
@@ -1475,6 +1539,23 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     }
     case 'music_command':
       return undefined as T
+    // The page preview's household: this laptop, a phone and a tablet of the
+    // same profile, and Sam's phone.
+    case 'presence': {
+      const now = Date.now()
+      return {
+        now,
+        you: 'this-laptop',
+        devices: [
+          { device: 'this-laptop', name: 'Maya’s laptop', form: 'computer', profile: 'maya', profileName: 'Maya', profileColor: 2, online: true, lastSeen: now },
+          { device: 'maya-phone', name: 'Pixel 8', form: 'phone', profile: 'maya', profileName: 'Maya', profileColor: 2, online: true, lastSeen: now },
+          { device: 'sam-phone', name: 'Sam’s phone', form: 'phone', profile: 'sam', profileName: 'Sam', profileColor: 5, online: true, lastSeen: now },
+          { device: 'maya-tablet', name: 'Galaxy Tab', form: 'tablet', online: false, lastSeen: now - 3 * 3600_000 },
+        ],
+      } as T
+    }
+    case 'channel_send':
+      return { id: 'mock', delivered: [], waiting: false } as T
     case 'music_mine': {
       const request = (args?.request ?? {}) as { playlists?: Playlist[]; listening?: Listening }
       if (request.playlists) mockMusicMine.playlists = request.playlists
