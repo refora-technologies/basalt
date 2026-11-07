@@ -28,6 +28,7 @@ import type { NowSession } from '@/lib/api'
 import { livePosition, songOf as remoteSong } from '@/lib/musicNow'
 import { upNext } from '@/lib/queue'
 import { cn } from '@/lib/utils'
+import { isMobileShell } from '@/lib/platform'
 
 import { Cover } from './Cover'
 import type { MusicLayout } from './MusicSection'
@@ -211,7 +212,9 @@ function BarHere({
         <IconButton label="Queue" onClick={() => player.setExpanded(true)}>
           <ListMusic size={17} />
         </IconButton>
-        {layout === 'wide' && <Volume />}
+        {/* Phones and tablets, any way up: their own buttons set the volume,
+            as in the film player; never a slider of ours (F15, D28). */}
+        {layout === 'wide' && !isMobileShell() && <Volume />}
         {/* Put away: the music stops, and Continue listening keeps where it was. */}
         <IconButton label="Close the player" onClick={player.stop}>
           <X size={17} />
