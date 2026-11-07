@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronLeft, ChevronRight, Send } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Hash, Send } from 'lucide-react'
+import { ReceiveWithCode } from '@/components/share/Nearby'
 
 import type { AppModel } from '@/App'
 import { Switch } from '@/components/Switch'
@@ -92,7 +93,12 @@ function InboxScreen({
 }): React.JSX.Element {
   const { presence, inbox } = model
   const [page, setPage] = useState<'in' | 'out'>('in')
+  const [byCode, setByCode] = useState(false)
   useBack(open, () => {
+    if (byCode) {
+      setByCode(false)
+      return true
+    }
     onClose()
     return true
   })
@@ -145,6 +151,26 @@ function InboxScreen({
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
+            {page === 'in' &&
+              (byCode ? (
+                <div className="mx-3 mb-2 mt-1 rounded-2xl bg-[#141416] py-3">
+                  <div className="px-5 pb-1 text-[15px] font-semibold text-text">Receive with a code</div>
+                  <ReceiveWithCode inbox={inbox} phone onClose={() => setByCode(false)} />
+                </div>
+              ) : (
+                <button
+                  onClick={() => setByCode(true)}
+                  className="mx-3 mb-1 mt-1 flex w-[calc(100%-24px)] items-center gap-3 rounded-2xl bg-[#141416] px-3.5 py-3 text-left active:bg-white/[0.06]"
+                >
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-textDim">
+                    <Hash size={16} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[14.5px] text-text">Receive with a code</span>
+                    <span className="block text-[12px] text-textFaint">From a device not on this host, on the same Wi-Fi</span>
+                  </span>
+                </button>
+              ))}
             {page === 'out' && (
               <button
                 onClick={() =>

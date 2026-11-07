@@ -5,6 +5,7 @@ import {
   FileText,
   Film,
   HardDrive,
+  Hash,
   Image,
   Laptop,
   Monitor,
@@ -17,6 +18,7 @@ import {
 } from 'lucide-react'
 
 import { api, onShareSending, type PresentDevice } from '@/lib/api'
+import { SendWithCode } from './Nearby'
 import type { Presence } from '@/lib/usePresence'
 import { seenLine } from '@/lib/usePresence'
 import type { Inbox } from '@/lib/useInbox'
@@ -78,6 +80,9 @@ export function ShareChooser({
     }
   }, [busy, onDrive])
   const nobody = targets.mine.length + targets.home.length + targets.loose.length === 0
+  // To a device not on this host, nearby, by a code (05): files on this device only.
+  const [byCode, setByCode] = useState(false)
+  const onThisDevice = files.length > 0 && files.every((f) => f.source)
   // What the host can keep now, asked once a device that's away is chosen.
   const [host, setHost] = useState<{ room?: number; secure?: boolean } | null>(null)
   const away = chosen !== null && !chosen.online
@@ -142,8 +147,13 @@ export function ShareChooser({
         </span>
       </div>
 
+      {byCode ? (
+        <div className="min-h-0 flex-1 overflow-y-auto pb-1 pt-2">
+          <SendWithCode files={files} onDone={() => onDone('')} />
+        </div>
+      ) : (
       <div className="min-h-0 flex-1 overflow-y-auto pb-1">
-        {nobody && (
+        {nobody && !onThisDevice && (
           <p className="px-5 py-6 text-[13px] leading-relaxed text-textFaint">
             No other devices on this host yet. Pair another phone or computer, and it shows here.
           </p>
@@ -170,9 +180,27 @@ export function ShareChooser({
           </div>
         ))}
         {targets.loose.map((d) => row(d))}
+        {onThisDevice && (
+          <>
+            <Section>Nearby</Section>
+            <button
+              onClick={() => setByCode(true)}
+              className="flex w-full items-center gap-3 px-5 py-2.5 text-left hover:bg-white/[0.03] active:bg-white/[0.05]"
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-textDim">
+                <Hash size={17} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[14px] text-text">Send with a code</span>
+                <span className="block text-[12px] text-textFaint">To a device not on this host, on the same Wi-Fi</span>
+              </span>
+            </button>
+          </>
+        )}
       </div>
+      )}
 
-      {chosen && (
+      {chosen && !byCode && (
         <div className="border-t border-white/[0.06] px-5 pt-3.5">
           {chosen.online ? (
             <button

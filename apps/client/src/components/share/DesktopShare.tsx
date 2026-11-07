@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Send, X } from 'lucide-react'
+import { Hash, Send, X } from 'lucide-react'
 
 import type { Inbox } from '@/lib/useInbox'
 import type { Presence } from '@/lib/usePresence'
 import type { ShareFile, ShareItem } from '@/lib/share'
 import { cn } from '@/lib/utils'
 import { InboxList, ReceivePrompt, ShareChooser } from './Share'
+import { ReceiveWithCode } from './Nearby'
 
 /** The Share window, over the files. */
 export function ShareDialog({
@@ -122,6 +123,7 @@ export function InboxPage({
 }): React.JSX.Element {
   const [page, setPage] = useState<'in' | 'out'>('in')
   const [answering, setAnswering] = useState<ShareItem | null>(null)
+  const [byCode, setByCode] = useState(false)
   const waiting = inbox.waiting.length
   return (
     <div className="h-full overflow-y-auto px-8 py-6">
@@ -153,6 +155,24 @@ export function InboxPage({
             ))}
           </div>
         </div>
+        {page === 'in' &&
+          (byCode ? (
+            <div className="mt-4 rounded-2xl border border-white/[0.07] bg-white/[0.03] py-4">
+              <div className="px-5 pb-1 text-[14px] font-semibold text-text">Receive with a code</div>
+              <ReceiveWithCode inbox={inbox} onClose={() => setByCode(false)} />
+            </div>
+          ) : (
+            <button
+              onClick={() => setByCode(true)}
+              className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 py-3 text-left hover:bg-white/[0.05]"
+            >
+              <Hash size={17} className="shrink-0 text-textDim" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-[14px] text-text">Receive with a code</span>
+                <span className="block text-[12px] text-textFaint">From a device not on this host, on the same Wi-Fi</span>
+              </span>
+            </button>
+          ))}
         {page === 'out' && (
           <button
             onClick={onSendLocal}

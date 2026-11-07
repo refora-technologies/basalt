@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { api, onChannel, type ChannelMessage, type HeldShare, type PresentDevice } from './api'
+import { api, onChannel, type ChannelMessage, type HeldShare, type NearbyOffer, type PresentDevice } from './api'
 import type { Presence } from './usePresence'
 import type { Transfers } from './useTransfers'
 import {
   KIND,
   OFFER_TTL_MS,
   apply,
+  isProgram,
   kept,
   newOfferId,
   partyOf,
@@ -28,6 +29,8 @@ export interface Inbox {
   send: (files: ShareFile[], to: PresentDevice) => Promise<void>
   /** Keeps files on the drive on the host for a device that's away; `keep` past its answer. */
   sendThroughHost: (files: ShareFile[], to: PresentDevice, keep: boolean) => Promise<void>
+  /** What a device nearby offers by a code: in Received, and taken at once (typing the code was the consent), unless it's a program. */
+  takeNearby: (offer: NearbyOffer) => ShareItem
   /** "Share again": a copy of what the host keeps, for another device. */
   shareAgain: (share: HeldShare, to: PresentDevice) => Promise<void>
   /** "Remove from the host once answered": the default for each send through it. */
@@ -97,6 +100,11 @@ export function useInbox(
   }, [])
 
   const answer = useCallback(async (offer: OfferBody, reply: AnswerBody['answer'], reason?: string) => {
+    // From a device nearby: told on the line it came by.
+    if (offer.nearby) {
+      if (reply !== 'accepted' && reply !== 'removed') await api.nearbyAnswer(offer.offer, reply).catch(() => {})
+      return
+    }
     const by = me()
     if (!by) return
     const body: AnswerBody = { offer: offer.offer, answer: reply, by, reason }
@@ -244,6 +252,26 @@ export function useInbox(
     [removeOnAnswer],
   )
 
+  const takeNearby = useCallback(
+    (nearby: NearbyOffer): ShareItem => {
+      const body: OfferBody = {
+        offer: nearby.offer,
+        files: nearby.files.map((f) => ({ name: f.name, size: f.size, path: '' })),
+        from: { device: `nearby-${nearby.offer}`, name: nearby.from, form: nearby.form },
+        to: { device: '', name: '' },
+        direct: { endpoint: nearby.endpoint, token: nearby.token },
+        nearby: true,
+      }
+      const item = received(body, Date.now())
+      itemsRef.current = kept([item, ...itemsRef.current.filter((i) => i.id !== item.id)])
+      setItems((list) => kept([item, ...list.filter((i) => i.id !== item.id)]))
+      // Typing the code was the consent; a program still asks first.
+      if (!body.files.some((f) => isProgram(f.name))) void take(item)
+      return item
+    },
+    [take],
+  )
+
   const accept = useCallback((item: ShareItem) => void take(item), [take])
 
   const decline = useCallback(
@@ -290,6 +318,7 @@ export function useInbox(
     waiting,
     send,
     sendThroughHost,
+    takeNearby,
     shareAgain,
     removeOnAnswer,
     setRemoveOnAnswer,

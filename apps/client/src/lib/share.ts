@@ -47,6 +47,8 @@ export interface OfferBody {
   direct?: Direct
   /** Kept on the host for this device while it was away: taken from there. */
   held?: boolean
+  /** From a device nearby, by a code: answered on the line it came by, not the host's. */
+  nearby?: boolean
 }
 
 /** `share.answer`: back to whoever sent the offer. */

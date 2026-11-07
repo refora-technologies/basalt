@@ -487,6 +487,23 @@ export interface MusicGroupRequest {
   leadMs?: number
 }
 
+/** What a device nearby offers, once its code was typed here. */
+export interface NearbyOffer {
+  from: string
+  form?: 'phone' | 'computer' | 'tablet' | 'tv'
+  files: { name: string; size: number }[]
+  endpoint: { addresses: string[]; port: number; key: string }
+  offer: string
+  token: string
+}
+
+/** What happens while sending with a code. */
+export type NearbyEvent =
+  | { kind: 'connected'; to: string }
+  | { kind: 'wrongCode'; left: number }
+  | { kind: 'spent' }
+  | { kind: 'answered'; to: string; answer: string }
+
 export interface HeldShare {
   id: string
   to: string
@@ -866,6 +883,15 @@ export const api = {
     folder?: string,
   ) => call<{ shownAs: string; path?: string; uri?: string }>('receive_direct', { endpoint, offer, token, file, name, id, folder: folder ?? null }),
   /** Keeps files on the drive on the host, locked, for a device that's away. */
+  /** Sends files on this device to one nearby by a code: answers the code; `onNearby` says what happens. */
+  nearbySend: (offer: string, files: { source: string; name: string; size: number }[]) =>
+    call<string>('nearby_send', { offer, files }),
+  /** Stops sending with a code. */
+  nearbyStop: () => call<void>('nearby_stop'),
+  /** Finds the device sending with `code` on this Wi-Fi: what it offers. */
+  nearbyReceive: (code: string) => call<NearbyOffer>('nearby_receive', { code }),
+  /** Tells the device that sent with a code how it ended. */
+  nearbyAnswer: (offer: string, answer: 'done' | 'declined' | 'failed') => call<void>('nearby_answer', { offer, answer }),
   /** Files on this device, uploaded to the host and kept for `to`; `onShareSending` says how far. */
   shareHoldLocal: (id: string, to: string, keep: boolean, files: { source: string; name: string; size: number }[]) =>
     call<HeldShare>('share_hold_local', { id, to, keep, files }),
@@ -1063,6 +1089,13 @@ export async function onPresence(handler: () => void): Promise<() => void> {
   if (!inTauri()) return () => {}
   const { listen } = await import('@tauri-apps/api/event')
   return listen('basalt://presence', () => handler())
+}
+
+/** What happens while sending with a code, as it happens. */
+export async function onNearby(handler: (said: { offer: string; event: NearbyEvent }) => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<{ offer: string; event: NearbyEvent }>('basalt://nearby', (e) => handler(e.payload))
 }
 
 /** How far files on this device have gone up to the host, for a share kept there. */
@@ -1662,6 +1695,13 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return undefined as T
     case 'music_group':
       return { now: Date.now() } as T
+    case 'nearby_send':
+      return '482915' as T
+    case 'nearby_stop':
+    case 'nearby_answer':
+      return undefined as T
+    case 'nearby_receive':
+      throw new ApiError('notfound', 'no device sending with a code was found on this Wi-Fi')
     // The page preview's household: this laptop, a phone and a tablet of the
     // same profile, and Sam's phone.
     case 'presence': {

@@ -137,6 +137,11 @@ struct AppState {
     /// This device's listener for files it offers from itself, started the
     /// first time it offers one.
     direct: tokio::sync::OnceCell<Arc<basalt_client::direct::DirectServer>>,
+    /// Sending with a code to a device nearby, while it waits: its offer, and
+    /// what answers receivers.
+    nearby: Mutex<Option<(String, basalt_client::nearby::NearbySender)>>,
+    /// Receiving with a code: the line back to each sender, until done.
+    nearby_links: Mutex<std::collections::HashMap<String, basalt_client::nearby::NearbyLink>>,
 }
 
 /// Messages kept for the page at most: past it, the oldest go.
@@ -867,6 +872,115 @@ async fn share_local(
         .await?;
     let token = server.offer(&offer, sources);
     Ok(serde_json::json!({ "endpoint": server.endpoint(), "token": token }))
+}
+
+/// Sends files on this device to a device nearby by a code: offered
+/// straight across, answered for whoever types the code. Answers the code;
+/// what happens comes as `basalt://nearby` events.
+#[tauri::command]
+async fn nearby_send(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    offer: String,
+    files: Vec<LocalFile>,
+) -> Answer<String> {
+    use tauri::Emitter;
+    let server = state
+        .direct
+        .get_or_try_init(|| basalt_client::direct::DirectServer::start(open_local(&app)))
+        .await?;
+    let token = server.offer(&offer, files.iter().map(|f| f.source.clone()).collect());
+    let offered = basalt_client::nearby::NearbyOffer {
+        from: state.client.device_name().to_string(),
+        form: Some(
+            if cfg!(target_os = "android") {
+                "phone"
+            } else {
+                "computer"
+            }
+            .to_string(),
+        ),
+        files: files
+            .iter()
+            .map(|f| basalt_client::nearby::NearbyFile {
+                name: f.name.clone(),
+                size: f.size,
+            })
+            .collect(),
+        endpoint: server.endpoint(),
+        offer: offer.clone(),
+        token,
+    };
+    let code = basalt_client::nearby::new_code();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let sender = basalt_client::nearby::NearbySender::start(
+        &code,
+        offered,
+        tx,
+        basalt_client::nearby::NEARBY_PORT,
+    )
+    .await?;
+    // One at a time: a code started again replaces the last.
+    let before = state
+        .nearby
+        .lock()
+        .expect("nearby lock")
+        .replace((offer.clone(), sender));
+    if let Some((old, _)) = before {
+        server.withdraw(&old);
+    }
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let _ = app.emit(
+                "basalt://nearby",
+                serde_json::json!({ "offer": offer, "event": event }),
+            );
+        }
+    });
+    Ok(code)
+}
+
+/// Stops sending with a code: nobody can take it any more.
+#[tauri::command]
+fn nearby_stop(state: State<'_, AppState>) {
+    if let Some((offer, sender)) = state.nearby.lock().expect("nearby lock").take() {
+        drop(sender);
+        if let Some(server) = state.direct.get() {
+            server.withdraw(&offer);
+        }
+    }
+}
+
+/// Finds the device sending with `code` on this Wi-Fi and answers what it
+/// offers; its files are then taken with `receive_direct`.
+#[tauri::command]
+async fn nearby_receive(
+    state: State<'_, AppState>,
+    code: String,
+) -> Answer<basalt_client::nearby::NearbyOffer> {
+    let name = state.client.device_name().to_string();
+    let (offer, link) =
+        basalt_client::nearby::receive(&code, &name, basalt_client::nearby::NEARBY_PORT).await?;
+    state
+        .nearby_links
+        .lock()
+        .expect("nearby lock")
+        .insert(offer.offer.clone(), link);
+    Ok(offer)
+}
+
+/// Tells the device that sent with a code how it ended: done, declined or failed.
+#[tauri::command]
+async fn nearby_answer(state: State<'_, AppState>, offer: String, answer: String) -> Answer<()> {
+    let link = state
+        .nearby_links
+        .lock()
+        .expect("nearby lock")
+        .remove(&offer);
+    if let Some(link) = link {
+        link.answer(&answer).await?;
+    }
+    Ok(())
 }
 
 /// Takes an offer back: nobody can take its files any more.
@@ -2274,6 +2388,8 @@ pub fn run() {
                 external: Mutex::new(std::collections::HashSet::new()),
                 channel: Mutex::new(std::collections::VecDeque::new()),
                 direct: tokio::sync::OnceCell::new(),
+                nearby: Mutex::new(None),
+                nearby_links: Mutex::new(std::collections::HashMap::new()),
             });
 
             // Feed the throughput trace from the one counter that sees every
@@ -2430,6 +2546,10 @@ pub fn run() {
             receive_direct,
             share_hold,
             share_hold_local,
+            nearby_send,
+            nearby_stop,
+            nearby_receive,
+            nearby_answer,
             share_answer,
             share_held,
             share_manage,
