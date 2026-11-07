@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { AlertTriangle, FolderOpen, HardDrive, Pencil, Repeat } from 'lucide-react'
 import type { DeviceView, HostStatus } from '@/lib/api'
 import { cn, formatBytes, formatRate } from '@/lib/utils'
+import { shareBytesOnDrive } from './SharingSettings'
 import { HexMark } from './HexMark'
 import { Pill } from './ui/Group'
 
@@ -144,6 +145,9 @@ function Drive({
   const vault = status.vault
   if (!vault) return null
   const used = vault.total > 0 ? (vault.total - vault.free) / vault.total : 0
+  // Share files on the drive's disk, shown apart within what's used.
+  const shareBytes = Math.min(shareBytesOnDrive(status.sharing), vault.total - vault.free)
+  const shares = vault.total > 0 ? shareBytes / vault.total : 0
 
   return (
     <div className="flex shrink-0 flex-col border-t border-line px-6 py-5 min-[860px]:w-[330px] min-[860px]:border-l min-[860px]:border-t-0">
@@ -191,18 +195,32 @@ function Drive({
           )}
           {vault.total > 0 ? (
             <>
-              <div className="mt-4 h-[6px] w-full overflow-hidden rounded-full bg-ink2">
+              <div className="mt-4 flex h-[6px] w-full overflow-hidden rounded-full bg-ink2">
                 <motion.div
-                  className="h-full rounded-full bg-basaltDeep"
+                  className="h-full bg-basaltDeep"
                   initial={{ width: 0 }}
-                  animate={{ width: `${Math.round(used * 100)}%` }}
+                  animate={{ width: `${(used - shares) * 100}%` }}
                   transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
                 />
+                {shares > 0 && (
+                  <motion.div
+                    className="h-full bg-white/45"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${Math.max(shares * 100, 0.8)}%` }}
+                    transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+                  />
+                )}
               </div>
               <div className="tnum mt-2 flex items-baseline justify-between font-mono text-[11px]">
                 <span className="text-textDim">{formatBytes(vault.free)} free</span>
                 <span className="text-textFaint">of {formatBytes(vault.total)}</span>
               </div>
+              {shareBytes > 0 && (
+                <div className="tnum mt-1 flex items-center gap-1.5 font-mono text-[10.5px] text-textFaint">
+                  <span className="h-[6px] w-[6px] rounded-full bg-white/45" />
+                  {formatBytes(shareBytes)} of it share files
+                </div>
+              )}
             </>
           ) : (
             // Some USB enclosures decline to report a size; the gauge would lie.

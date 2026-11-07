@@ -21,6 +21,7 @@ import { cn, formatBytes } from '@/lib/utils'
 import { Card, Fact, Group, Pill, Presence, Row, Rows, Toggle, useLayout } from './parts'
 import { Surface } from './Surface'
 import type { Tools } from './tools'
+import { shareBytesOnDrive } from './Sharing'
 
 const PLATFORM: Record<string, string> = {
   windows: 'Windows',
@@ -41,6 +42,7 @@ export function HostHero(tools: Tools): React.JSX.Element {
   const [choosing, setChoosing] = useState(false)
   const online = view.devices.filter((d) => d.online).length
   const vault = status.vault
+  const shareBytes = vault ? Math.min(shareBytesOnDrive(status.sharing), vault.total - vault.free) : 0
 
   const rename = (): void =>
     prompt({
@@ -132,14 +134,18 @@ export function HostHero(tools: Tools): React.JSX.Element {
           {vault.available ? (
             vault.total > 0 && (
               <>
-                <div className="mt-3.5 h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
+                <div className="mt-3.5 flex h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
                   <div
-                    className="h-full rounded-full bg-basaltDeep"
-                    style={{ width: `${((vault.total - vault.free) / vault.total) * 100}%` }}
+                    className="h-full bg-basaltDeep"
+                    style={{ width: `${((vault.total - vault.free - shareBytes) / vault.total) * 100}%` }}
                   />
+                  {shareBytes > 0 && (
+                    <div className="h-full bg-white/45" style={{ width: `${Math.max((shareBytes / vault.total) * 100, 0.8)}%` }} />
+                  )}
                 </div>
                 <div className="tnum mt-2 font-mono text-[11.5px] text-textFaint">
                   {formatBytes(vault.free)} free of {formatBytes(vault.total)}
+                  {shareBytes > 0 && <> · {formatBytes(shareBytes)} share files</>}
                 </div>
                 {view.cannotAddFiles && (
                   <p

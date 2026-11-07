@@ -119,6 +119,21 @@ const sample: ManageView = {
     },
     endorsement: { by: 'Maya’s phone', until: now() + 86400 * 26 },
     platform: 'windows',
+    sharing: {
+      available: true,
+      secure: true,
+      limitsOn: false,
+      newProfileLimit: 20 * 1024 ** 3,
+      profiles: [
+        { id: 'p1', name: 'Maya', color: 0, used: 12.4 * 1024 ** 3, limit: null },
+        { id: 'p2', name: 'Sam', color: 1, used: 31 * 1024 ** 3, limit: null },
+      ],
+      used: 43.4 * 1024 ** 3,
+      locked: 43.4 * 1024 ** 3,
+      count: 14,
+      from: 2,
+      sameDisk: true,
+    },
   },
   devices: [
     {
@@ -294,6 +309,31 @@ function apply(action: ManageAction): boolean {
     }
     case 'setMusicCovers':
       status.library.musicCovers = action.enabled
+      break
+    case 'setShareSecure':
+      if (status.sharing) status.sharing.secure = action.secure
+      break
+    case 'setShareLimits':
+      if (status.sharing) {
+        const sharing = status.sharing
+        if (action.on !== undefined) sharing.limitsOn = action.on
+        if (action.newProfile !== undefined) sharing.newProfileLimit = action.newProfile
+        if (action.profile !== undefined) {
+          sharing.profiles = sharing.profiles.map((p) => (p.id === action.profile ? { ...p, limit: action.limit ?? null } : p))
+        }
+      }
+      break
+    case 'clearShares':
+      if (status.sharing) {
+        status.sharing = {
+          ...status.sharing,
+          used: 0,
+          locked: 0,
+          count: 0,
+          from: 0,
+          profiles: status.sharing.profiles.map((p) => ({ ...p, used: 0 })),
+        }
+      }
       break
     case 'removeArtistPhoto':
       break

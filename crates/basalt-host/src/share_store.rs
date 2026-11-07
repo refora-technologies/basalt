@@ -47,6 +47,10 @@ pub struct Party {
 pub struct HeldFile {
     pub name: String,
     pub size: u64,
+    /// Where it is on the drive, in plain, when the host keeps shares there
+    /// (secure mode off). None: locked in the store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plain: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,9 +134,62 @@ impl ShareStore {
         for (n, (name, mut source)) in files.into_iter().enumerate() {
             let sealed = folder.join(format!("{n}.bss"));
             match self.seal(id, n, &mut source, &sealed) {
-                Ok(size) => listed.push(HeldFile { name, size }),
+                Ok(size) => listed.push(HeldFile {
+                    name,
+                    size,
+                    plain: None,
+                }),
                 Err(e) => {
                     let _ = std::fs::remove_dir_all(&folder);
+                    return Err(e);
+                }
+            }
+        }
+        let held = Held {
+            id: id.to_string(),
+            from,
+            to,
+            files: listed,
+            created: now,
+            keep,
+            state: HeldState::Waiting,
+        };
+        self.change(|index| index.held.push(held.clone()))?;
+        Ok(held)
+    }
+
+    /// Keeps a share in plain on the drive (secure mode off): each file
+    /// copied from its source to the place chosen for it, which must not be
+    /// there yet. On a failure part-way nothing is kept.
+    pub fn hold_plain(
+        &self,
+        id: &str,
+        from: Party,
+        to: Party,
+        keep: bool,
+        files: Vec<(String, std::fs::File, PathBuf)>,
+        now: i64,
+    ) -> Result<Held> {
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(HostError::BadRequest("that is no share id".into()));
+        }
+        if self.get(id).is_some() {
+            return Err(HostError::BadRequest("that share is already held".into()));
+        }
+        let mut listed: Vec<HeldFile> = Vec::new();
+        for (name, mut source, dest) in files {
+            match copy_new(&mut source, &dest) {
+                Ok(size) => listed.push(HeldFile {
+                    name,
+                    size,
+                    plain: Some(dest),
+                }),
+                Err(e) => {
+                    for made in &listed {
+                        if let Some(path) = &made.plain {
+                            let _ = std::fs::remove_file(path);
+                        }
+                    }
                     return Err(e);
                 }
             }
@@ -153,14 +210,28 @@ impl ShareStore {
     /// Reads `length` plain bytes of file `n` of share `id` from `offset`:
     /// fewer at its end.
     pub fn read(&self, id: &str, n: usize, offset: u64, length: usize) -> Result<Vec<u8>> {
-        let size = self
+        let file = self
             .get(id)
-            .and_then(|h| h.files.get(n).map(|f| f.size))
+            .and_then(|h| h.files.get(n).cloned())
             .ok_or_else(|| HostError::NotFound("that share".into()))?;
+        let size = file.size;
         if offset >= size {
             return Ok(Vec::new());
         }
         let end = size.min(offset + length as u64);
+        if let Some(path) = &file.plain {
+            let mut plain = std::fs::File::open(path).map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    HostError::NotFound("it is no longer in the Basalt shares folder".into())
+                }
+                _ => e.into(),
+            })?;
+            plain.seek(SeekFrom::Start(offset))?;
+            let mut out = vec![0u8; (end - offset) as usize];
+            let got = read_full(&mut plain, &mut out)?;
+            out.truncate(got);
+            return Ok(out);
+        }
         let mut file = std::fs::File::open(self.dir.join(id).join(format!("{n}.bss")))?;
         let key = self.key(id, n);
         let chunks = size.div_ceil(CHUNK as u64).max(1);
@@ -222,6 +293,11 @@ impl ShareStore {
             .cloned()
     }
 
+    /// Every share held.
+    pub fn all(&self) -> Vec<Held> {
+        self.index.lock().expect("store lock").held.clone()
+    }
+
     /// What waits for `device`, oldest first.
     pub fn waiting_for(&self, device: &str) -> Vec<Held> {
         let index = self.index.lock().expect("store lock");
@@ -269,6 +345,14 @@ impl ShareStore {
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
+        // A plain share's copies on the drive are its own, made for it.
+        if let Some(held) = self.get(id) {
+            for file in &held.files {
+                if let Some(path) = &file.plain {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
         if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()) {
             let _ = std::fs::remove_dir_all(self.dir.join(id));
         }
@@ -306,6 +390,24 @@ impl ShareStore {
             total += h.bytes();
         }
         (total, index.held.len(), by)
+    }
+
+    /// Bytes locked in the store itself, not counting shares kept in plain
+    /// on the drive: what the host's own folder holds.
+    pub fn locked_bytes(&self) -> u64 {
+        let index = self.index.lock().expect("store lock");
+        index
+            .held
+            .iter()
+            .flat_map(|h| &h.files)
+            .filter(|f| f.plain.is_none())
+            .map(|f| f.size)
+            .sum()
+    }
+
+    /// Where the store keeps its files.
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     fn key(&self, id: &str, n: usize) -> LessSafeKey {
@@ -361,6 +463,34 @@ impl ShareStore {
         std::fs::write(&part, bytes)?;
         std::fs::rename(&part, self.dir.join("index.json"))?;
         Ok(())
+    }
+}
+
+/// Copies `source` to `dest`, which must not be there yet: written beside it
+/// and renamed, so nothing half-made shows.
+fn copy_new(source: &mut std::fs::File, dest: &Path) -> Result<u64> {
+    if dest.exists() {
+        return Err(HostError::Exists(dest.display().to_string()));
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let part = dest.with_extension("basalt-part");
+    let copied = (|| -> Result<u64> {
+        let mut out = std::fs::File::create(&part)?;
+        let size = std::io::copy(source, &mut out)?;
+        out.sync_all()?;
+        Ok(size)
+    })();
+    match copied {
+        Ok(size) => {
+            std::fs::rename(&part, dest)?;
+            Ok(size)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&part);
+            Err(e)
+        }
     }
 }
 
@@ -507,6 +637,51 @@ mod tests {
         raw[20] ^= 1;
         std::fs::write(&path, raw).unwrap();
         assert!(store.read("s3", 0, 0, 100).is_err(), "a changed byte");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn with_secure_mode_off_a_share_is_kept_in_plain_and_goes_with_it() {
+        let dir = temp("plain");
+        let store = ShareStore::open(dir.join("store"), [7; 32]).unwrap();
+        let body = sample(CHUNK + 33);
+        let on_drive = dir
+            .join("drive")
+            .join("Basalt shares")
+            .join("Maya")
+            .join("a.bin");
+        let held = store
+            .hold_plain(
+                "p1",
+                party("a", Some("maya")),
+                party("b", None),
+                false,
+                vec![("a.bin".into(), source(&dir, "a", &body), on_drive.clone())],
+                1,
+            )
+            .unwrap();
+        assert_eq!(held.bytes(), body.len() as u64);
+        assert_eq!(
+            std::fs::read(&on_drive).unwrap(),
+            body,
+            "plain, where it was put"
+        );
+        assert_eq!(store.read("p1", 0, 10, 20).unwrap(), body[10..30]);
+        assert_eq!(store.usage().0, body.len() as u64);
+        assert_eq!(store.locked_bytes(), 0, "nothing in the store's own folder");
+        // Never over a file already there.
+        let again = store.hold_plain(
+            "p2",
+            party("a", Some("maya")),
+            party("b", None),
+            false,
+            vec![("a.bin".into(), source(&dir, "a2", b"x"), on_drive.clone())],
+            2,
+        );
+        assert!(again.is_err());
+        assert_eq!(std::fs::read(&on_drive).unwrap(), body, "left as it was");
+        store.answered("p1", true).unwrap();
+        assert!(!on_drive.exists(), "its copy goes with it");
         let _ = std::fs::remove_dir_all(dir);
     }
 

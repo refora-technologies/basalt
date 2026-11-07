@@ -1261,6 +1261,105 @@ async fn a_share_waits_on_the_host_for_a_device_that_is_away() {
     );
 }
 
+/// The host's rules for what it keeps for someone away: a profile's limit
+/// refuses a share that doesn't fit, and says so before it is sent; with
+/// secure mode off a share goes in plain into "Basalt shares" on the drive;
+/// "Clear share files" removes everything and tells the sender.
+#[tokio::test]
+async fn the_host_limits_keeps_in_plain_and_clears_what_it_holds() {
+    use basalt_proto::msg::ShareHoldRequest;
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let maya = laptop
+        .create_profile("Maya", "2468", 0, true)
+        .await
+        .expect("a profile");
+    let tablet = fixture.paired_client().await;
+    let tablet_id = tablet.presence().await.expect("presence").you;
+    std::fs::write(fixture.vault_path("big.bin"), vec![7u8; 3_000_000]).unwrap();
+    std::fs::write(fixture.vault_path("small.txt"), b"a small note").unwrap();
+    let hold = |id: &str, path: &str| ShareHoldRequest {
+        id: id.into(),
+        to: tablet_id.clone(),
+        keep: false,
+        paths: vec![path.into()],
+    };
+
+    // A limit of 2 MB for Maya: the big file doesn't fit, and she is told.
+    fixture
+        .host
+        .set_share_limits(Some(true), None, Some((maya.id.clone(), Some(2_000_000))))
+        .unwrap();
+    let room = laptop
+        .share_held()
+        .await
+        .unwrap()
+        .room
+        .expect("the room said");
+    assert_eq!(room, 2_000_000, "all of the limit, before anything is kept");
+    let refused = laptop.share_hold(hold("big1", "big.bin")).await;
+    let why = refused.expect_err("over the limit").to_string();
+    assert!(why.contains("more than this profile may keep"), "{why}");
+    laptop
+        .share_hold(hold("small1", "small.txt"))
+        .await
+        .expect("a small one fits");
+    let view = fixture.host.sharing_view();
+    let mine = view.profiles.iter().find(|p| p.id == maya.id).unwrap();
+    assert_eq!(mine.used, 12);
+    assert_eq!((view.count, view.used, view.locked), (1, 12, 12));
+
+    // Secure mode off: in plain, in Maya's folder of "Basalt shares".
+    fixture
+        .host
+        .set_share_limits(Some(false), None, None)
+        .unwrap();
+    fixture.host.set_share_secure(false).unwrap();
+    assert_eq!(laptop.share_held().await.unwrap().secure, Some(false));
+    laptop
+        .share_hold(hold("big2", "big.bin"))
+        .await
+        .expect("no limit now");
+    let plain = fixture.vault_path("Basalt shares/Maya/big.bin");
+    assert_eq!(std::fs::read(&plain).unwrap(), vec![7u8; 3_000_000]);
+    let view = fixture.host.sharing_view();
+    assert_eq!(
+        (view.count, view.locked),
+        (2, 12),
+        "the plain one isn't locked away"
+    );
+
+    // The tablet still takes it the same way.
+    let into = fixture.dir.join("plain.bin");
+    let got = tablet
+        .download_held(
+            "big2",
+            0,
+            3_000_000,
+            "big.bin",
+            std::fs::File::create(&into).unwrap(),
+            None,
+            None,
+        )
+        .await
+        .expect("the tablet takes the plain one");
+    assert_eq!(got, 3_000_000);
+
+    // Cleared: all gone, the plain copy too, and the laptop is told.
+    let heard = Notices::default();
+    let _watch = laptop.watch_with(|_| {}, heard.record());
+    assert_eq!(fixture.host.clear_shares().unwrap(), 2);
+    assert!(!plain.exists(), "its copy on the drive goes with it");
+    assert_eq!(fixture.host.sharing_view().count, 0);
+    assert!(
+        heard
+            .wait_for(|n| n.starts_with("message share.answer") && n.contains("removed"))
+            .await,
+        "the sender hears the host removed what was waiting"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Changing drive
 // ---------------------------------------------------------------------------

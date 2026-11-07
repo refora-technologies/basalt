@@ -81,6 +81,14 @@ describe('answers to a share sent', () => {
     expect(done[0]!.takenOn).toBe('Sam laptop')
   })
 
+  it('say when the host removed one still waiting, as no device taking it', () => {
+    const host = { device: 'host-1', name: 'FST' }
+    const removed = apply([sent], answer({ offer: 'o1', answer: 'removed', by: host, reason: 'Removed by the host' }))
+    expect(removed[0]!.state).toBe('failed')
+    expect(removed[0]!.reason).toBe('Removed by the host')
+    expect(removed[0]!.takenOn).toBeUndefined()
+  })
+
   it('never take it backwards, and leave other shares alone', () => {
     const done = apply([sent], answer({ offer: 'o1', answer: 'done', by: offer.to }))
     expect(apply(done, answer({ offer: 'o1', answer: 'accepted', by: offer.to }))[0]!.state).toBe('done')

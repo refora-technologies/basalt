@@ -178,6 +178,35 @@ export interface HostStatus {
   platform: 'windows' | 'linux' | 'macos' | 'other'
   /** Running with no screen: never true for this window's own host. */
   headless: boolean
+  /** Files kept for someone away, and the rules for them. From 1.6.4. */
+  sharing?: SharingView
+}
+
+/** Sharing between devices: sizes only, never names. */
+export interface SharingView {
+  available: boolean
+  /** Kept apart and locked; off: in "Basalt shares" on the drive. */
+  secure: boolean
+  limitsOn: boolean
+  newProfileLimit: number
+  profiles: SharingProfile[]
+  /** Bytes kept for everyone; `locked` of them in the host's own folder. */
+  used: number
+  locked: number
+  count: number
+  /** Profiles (and devices on their own) they're from. */
+  from: number
+  /** The host's own folder is on the drive's disk. */
+  sameDisk: boolean
+}
+
+export interface SharingProfile {
+  id: string
+  name: string
+  color: number
+  used: number
+  /** Its own limit; null when it has the general one. */
+  limit: number | null
 }
 
 /** What a machine was measured to manage. */
@@ -392,6 +421,16 @@ export const api = {
   makeMissingPreviews: (): Promise<HostStatus> => call('make_missing_previews'),
   setMusicCovers: (enabled: boolean): Promise<HostStatus> =>
     call('set_music_covers', { enabled }),
+  setShareSecure: (secure: boolean): Promise<HostStatus> => call('set_share_secure', { secure }),
+  /** Each left out stays as it is; `limit` null puts a profile back on the general one. */
+  setShareLimits: (change: { on?: boolean; newProfile?: number; profile?: string; limit?: number | null }): Promise<HostStatus> =>
+    call('set_share_limits', {
+      on: change.on ?? null,
+      newProfile: change.newProfile ?? null,
+      profile: change.profile ?? null,
+      limit: change.limit ?? null,
+    }),
+  clearShares: (): Promise<HostStatus> => call('clear_shares'),
   setConversion: (enabled: boolean): Promise<HostStatus> => call('set_conversion', { enabled }),
   setConversionAtOnce: (atOnce: number | null): Promise<HostStatus> =>
     call('set_conversion_at_once', { atOnce }),
@@ -549,6 +588,21 @@ const sample: {
         ? 'linux'
         : 'windows',
     headless: false,
+    sharing: {
+      available: true,
+      secure: true,
+      limitsOn: false,
+      newProfileLimit: 20 * 1024 ** 3,
+      profiles: [
+        { id: 'p1', name: 'Maya', color: 0, used: 12.4 * 1024 ** 3, limit: null },
+        { id: 'p2', name: 'Sam', color: 1, used: 31 * 1024 ** 3, limit: 50 * 1024 ** 3 },
+      ],
+      used: 43.4 * 1024 ** 3,
+      locked: 43.4 * 1024 ** 3,
+      count: 14,
+      from: 2,
+      sameDisk: true,
+    },
   },
   devices: [
     {
@@ -803,6 +857,34 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
         return sample.status
       case 'set_music_covers':
         sample.status.library.musicCovers = Boolean(args?.enabled)
+        return sample.status as T
+      case 'set_share_secure':
+        if (sample.status.sharing) sample.status.sharing.secure = Boolean(args?.secure)
+        return sample.status as T
+      case 'set_share_limits': {
+        const sharing = sample.status.sharing
+        if (sharing) {
+          if (typeof args?.on === 'boolean') sharing.limitsOn = args.on
+          if (typeof args?.newProfile === 'number') sharing.newProfileLimit = args.newProfile
+          if (typeof args?.profile === 'string') {
+            sharing.profiles = sharing.profiles.map((p) =>
+              p.id === args.profile ? { ...p, limit: typeof args.limit === 'number' ? args.limit : null } : p,
+            )
+          }
+        }
+        return sample.status as T
+      }
+      case 'clear_shares':
+        if (sample.status.sharing) {
+          sample.status.sharing = {
+            ...sample.status.sharing,
+            used: 0,
+            locked: 0,
+            count: 0,
+            from: 0,
+            profiles: sample.status.sharing.profiles.map((p) => ({ ...p, used: 0 })),
+          }
+        }
         return sample.status as T
       case 'set_previews_when':
         sample.status.library.previewsWhen = args?.when as PreviewsWhen

@@ -160,6 +160,14 @@ pub struct HostConfig {
     /// time a share is held; lost with this file, the held files with it.
     #[serde(default, skip_serializing_if = "crate::sealed::Secret::is_empty")]
     pub share_key: crate::sealed::Secret,
+    /// Files sent through this host for someone away are kept apart from the
+    /// drive and locked (on, as it starts), or put in plain in a "Basalt
+    /// shares" folder on the drive, one per profile (off). From 1.6.4.
+    #[serde(default = "default_true")]
+    pub share_secure: bool,
+    /// How much each profile may keep here for someone away. Off as it starts.
+    #[serde(default)]
+    pub share_limits: ShareLimits,
     /// Member statements made and not yet expired: see `crate::authority`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub issued: Vec<crate::authority::Issued>,
@@ -169,6 +177,40 @@ pub struct HostConfig {
     /// An owner's device vouching for this host's key, the newest there is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endorsement: Option<crate::authority::Endorsement>,
+}
+
+/// The most each profile may keep on the host for someone away (D13).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareLimits {
+    pub on: bool,
+    /// Bytes, for a profile not set on its own: new profiles too.
+    pub new_profile: u64,
+    /// Bytes, by profile id, for those set on their own.
+    #[serde(default)]
+    pub profiles: std::collections::BTreeMap<String, u64>,
+}
+
+impl Default for ShareLimits {
+    fn default() -> Self {
+        Self {
+            on: false,
+            new_profile: 20 * 1024 * 1024 * 1024,
+            profiles: Default::default(),
+        }
+    }
+}
+
+impl ShareLimits {
+    /// What `profile` may keep, when limits are on.
+    pub fn of(&self, profile: &str) -> Option<u64> {
+        self.on.then(|| {
+            self.profiles
+                .get(profile)
+                .copied()
+                .unwrap_or(self.new_profile)
+        })
+    }
 }
 
 impl HostConfig {
@@ -207,6 +249,8 @@ impl HostConfig {
             devices: Vec::new(),
             household_key: Default::default(),
             share_key: Default::default(),
+            share_secure: true,
+            share_limits: ShareLimits::default(),
             issued: Vec::new(),
             revoked: Default::default(),
             endorsement: None,

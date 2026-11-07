@@ -12,6 +12,7 @@ import { AboutHost, HostHero, Joining } from './Host'
 import { ConversionGroup, LibraryGroup, SectionsGroup } from './Media'
 import { LayoutContext, type Layout } from './parts'
 import { Profiles } from './Profiles'
+import { SharingGroup } from './Sharing'
 import type { Tools } from './tools'
 import { UpdatesGroup } from './Updates'
 
@@ -153,6 +154,7 @@ function PhoneBody({ tools }: { tools: Tools }): React.JSX.Element {
       )}
       <Devices {...tools} />
       <Profiles {...tools} />
+      <SharingGroup {...tools} />
       <Joining {...tools} />
       <LibraryGroup {...tools} />
       <SectionsGroup {...tools} />
@@ -181,6 +183,7 @@ function DesktopBody({ tools }: { tools: Tools }): React.JSX.Element {
     <>
       <Devices {...tools} />
       <Profiles {...tools} />
+      <SharingGroup {...tools} />
       <Joining {...tools} />
     </>
   )

@@ -341,6 +341,36 @@ async fn set_posters(state: State<'_, AppState>, enabled: bool) -> Answer<HostSt
     status(state).await
 }
 
+/// Files sent through the host for someone away: kept apart and locked, or
+/// in "Basalt shares" on the drive.
+#[tauri::command]
+async fn set_share_secure(state: State<'_, AppState>, secure: bool) -> Answer<HostStatus> {
+    state.host.set_share_secure(secure)?;
+    status(state).await
+}
+
+/// Limits on what each profile keeps on the host: each left out stays.
+#[tauri::command]
+async fn set_share_limits(
+    state: State<'_, AppState>,
+    on: Option<bool>,
+    new_profile: Option<u64>,
+    profile: Option<String>,
+    limit: Option<u64>,
+) -> Answer<HostStatus> {
+    state
+        .host
+        .set_share_limits(on, new_profile, profile.map(|p| (p, limit)))?;
+    status(state).await
+}
+
+/// Every file kept for someone away, deleted.
+#[tauri::command]
+async fn clear_shares(state: State<'_, AppState>) -> Answer<HostStatus> {
+    state.host.clear_shares()?;
+    status(state).await
+}
+
 /// Album covers from the internet on or off.
 #[tauri::command]
 async fn set_music_covers(state: State<'_, AppState>, enabled: bool) -> Answer<HostStatus> {
@@ -1119,6 +1149,9 @@ pub fn run() {
             set_previews_when,
             make_missing_previews,
             set_music_covers,
+            set_share_secure,
+            set_share_limits,
+            clear_shares,
             set_conversion,
             set_conversion_at_once,
             measure_conversion,

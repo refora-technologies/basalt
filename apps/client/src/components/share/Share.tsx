@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Check,
   Download,
@@ -16,7 +16,7 @@ import {
   X,
 } from 'lucide-react'
 
-import type { PresentDevice } from '@/lib/api'
+import { api, type PresentDevice } from '@/lib/api'
 import type { Presence } from '@/lib/usePresence'
 import { seenLine } from '@/lib/usePresence'
 import type { Inbox } from '@/lib/useInbox'
@@ -58,6 +58,21 @@ export function ShareChooser({
   const myProfile = presence.devices.find((d) => d.device === presence.you)?.profile
   const onDrive = files.every((f) => !f.source)
   const nobody = targets.mine.length + targets.home.length + targets.loose.length === 0
+  // What the host can keep now, asked once a device that's away is chosen.
+  const [host, setHost] = useState<{ room?: number; secure?: boolean } | null>(null)
+  const away = chosen !== null && !chosen.online
+  useEffect(() => {
+    if (!away || !onDrive) return
+    let live = true
+    api
+      .shareHeld()
+      .then((answer) => live && setHost({ room: answer.room, secure: answer.secure }))
+      .catch(() => live && setHost({}))
+    return () => {
+      live = false
+    }
+  }, [away, onDrive])
+  const noRoom = host?.room !== undefined && totalOf(files) > host.room
 
   const send = async (): Promise<void> => {
     if (!chosen) return
@@ -147,6 +162,10 @@ export function ShareChooser({
             >
               {busy ? 'Sending…' : `Send to ${calledOf({ device: chosen.device, name: chosen.name, form: chosen.form, profile: chosen.profile, profileName: chosen.profileName }, myProfile)}`}
             </button>
+          ) : onDrive && noRoom ? (
+            <button disabled className="w-full rounded-full bg-white/[0.06] py-3 text-[14px] font-semibold text-textFaint">
+              Send through host
+            </button>
           ) : onDrive ? (
             <button
               disabled={busy}
@@ -168,8 +187,10 @@ export function ShareChooser({
                       ? 'It arrives at once.'
                       : `${chosen.profileName ?? 'They'} ${chosen.profileName ? 'is' : 'are'} asked to accept.`
                   }`
-                : onDrive
-                  ? `${chosen.name} isn’t online. The host keeps it, locked, and delivers it when it’s back.`
+                : onDrive && noRoom
+                  ? `${chosen.name} isn’t online, and the host hasn’t room to keep this for it: ${formatBytes(host?.room ?? 0)} left for you.`
+                  : onDrive
+                  ? `${chosen.name} isn’t online. The host keeps it${host?.secure === false ? ' in its Basalt shares folder' : ', locked,'} and delivers it when it’s back.`
                   : 'A file on this device goes only straight to a device that’s online, for now.')}
           </p>
           {!chosen.online && onDrive && (

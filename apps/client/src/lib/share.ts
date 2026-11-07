@@ -52,7 +52,7 @@ export interface OfferBody {
 /** `share.answer`: back to whoever sent the offer. */
 export interface AnswerBody {
   offer: string
-  answer: 'accepted' | 'declined' | 'done' | 'failed'
+  answer: 'accepted' | 'declined' | 'done' | 'failed' | 'removed'
   /** The device that answered, which is not always the one asked. */
   by: Party
   reason?: string
@@ -194,7 +194,8 @@ export function apply(items: ShareItem[], message: ChannelMessage): ShareItem[] 
         body.answer === 'accepted' ? 'moving' : body.answer === 'done' ? 'done' : body.answer === 'declined' ? 'declined' : 'failed'
       // An answer never takes a share backwards: a late "accepted" after "done" stays done.
       if (rank(state) < rank(item.state)) return item
-      const takenOn = body.by.device !== item.peer.device ? body.by.name : item.takenOn
+      // The host removed it before it was taken ("Clear share files"): no device took it.
+      const takenOn = body.answer === 'removed' ? item.takenOn : body.by.device !== item.peer.device ? body.by.name : item.takenOn
       return { ...item, state, takenOn, reason: body.reason ?? item.reason }
     })
   }

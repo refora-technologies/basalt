@@ -20,6 +20,7 @@ import { AddProfileDialog } from './components/AddProfileDialog'
 import { Setup } from './components/Setup'
 import { TitleBar } from './components/TitleBar'
 import { Machine } from './components/Machine'
+import { SharingSettings, clearQuestion } from './components/SharingSettings'
 import { Group } from './components/ui/Group'
 import { HexMark } from './components/HexMark'
 import { PromptDialog, type PromptRequest } from './components/ui/PromptDialog'
@@ -48,6 +49,7 @@ export function App(): React.JSX.Element {
   const [message, setMessage] = useState<MessageRequest | null>(null)
   // Turning the PIN off is asked about first, as Manage host on a phone asks.
   const [askNoPin, setAskNoPin] = useState(false)
+  const [askClear, setAskClear] = useState(false)
   const [adding, setAdding] = useState(false)
   /** Why the last change to the profile rules was refused. */
   const [rulesError, setRulesError] = useState<string | null>(null)
@@ -415,6 +417,22 @@ export function App(): React.JSX.Element {
                         void api.setSections(sections).then(apply)
                       }}
                     />
+                    <SharingSettings
+                      status={current}
+                      onSecure={(secure) => {
+                        void api.setShareSecure(secure).then(apply)
+                      }}
+                      onLimits={(on) => {
+                        void api.setShareLimits({ on }).then(apply)
+                      }}
+                      onNewProfileLimit={(bytes) => {
+                        void api.setShareLimits({ newProfile: bytes }).then(apply)
+                      }}
+                      onProfileLimit={(profile, limit) => {
+                        void api.setShareLimits({ profile, limit }).then(apply)
+                      }}
+                      onClear={() => setAskClear(true)}
+                    />
                   </div>
                 </div>
               </div>
@@ -440,6 +458,22 @@ export function App(): React.JSX.Element {
         onAnswer={(yes) => {
           setAskNoPin(false)
           if (yes) setRequirePin(false)
+        }}
+      />
+      <ConfirmDialog
+        request={
+          askClear && current?.sharing
+            ? { ...clearQuestion(current.sharing), confirmLabel: 'Clear share files', danger: true }
+            : null
+        }
+        onAnswer={(yes) => {
+          setAskClear(false)
+          if (yes) {
+            void api
+              .clearShares()
+              .then(apply)
+              .catch((e: unknown) => setMessage({ title: 'Share files weren’t cleared', message: reason(e) }))
+          }
         }}
       />
       {current && (

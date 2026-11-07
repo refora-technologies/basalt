@@ -115,6 +115,16 @@ impl Host {
             ManageAction::DenyProfileLink { id } => {
                 self.deny_profile_link(&id);
             }
+            ManageAction::SetShareSecure { secure } => self.set_share_secure(secure)?,
+            ManageAction::SetShareLimits {
+                on,
+                new_profile,
+                profile,
+                limit,
+            } => self.set_share_limits(on, new_profile, profile.map(|p| (p, limit)))?,
+            ManageAction::ClearShares => {
+                self.clear_shares()?;
+            }
         }
         let mut view = self.view(drives, by).await;
         if let Some(folders) = folders {

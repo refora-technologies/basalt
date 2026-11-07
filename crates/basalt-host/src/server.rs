@@ -3165,6 +3165,7 @@ impl Host {
             endorsement: self.endorsement_view(),
             platform: crate::ui::platform(),
             headless: self.is_headless(),
+            sharing: self.sharing_view(),
         }
     }
 
@@ -3707,6 +3708,42 @@ fn held_margin(total: u64) -> u64 {
     (total / 20).min(2 * 1024 * 1024 * 1024)
 }
 
+/// Where shares are kept on the drive with secure mode off, one folder per
+/// profile inside.
+pub const SHARES_FOLDER: &str = "Basalt shares";
+
+/// A place on the drive for `name` in `folder` that nothing has, nor any of
+/// `taken`: "name (1).ext" and on when it has.
+fn free_place(
+    vault: &crate::vault::Vault,
+    folder: &str,
+    name: &str,
+    taken: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf> {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.to_string(), String::new()),
+    };
+    let mut count = 0;
+    loop {
+        let named = if count == 0 {
+            name.to_string()
+        } else {
+            format!("{stem} ({count}){ext}")
+        };
+        let rel = if folder.is_empty() {
+            named
+        } else {
+            format!("{folder}/{named}")
+        };
+        let place = vault.resolve_new(&rel)?;
+        if !place.exists() && !taken.contains(&place) {
+            return Ok(place);
+        }
+        count += 1;
+    }
+}
+
 impl Host {
     /// Locks a copy of files on the drive into the share store, for a device
     /// that is away, and offers it to that device at once if it came back
@@ -3744,47 +3781,81 @@ impl Host {
             let name = path.rsplit('/').next().unwrap_or(path).to_string();
             files.push((name, real));
         }
-        // Room for it, and to spare.
-        let (free, size) = match crate::space::for_path(
-            self.config_path
-                .parent()
-                .unwrap_or(std::path::Path::new(".")),
-        ) {
-            // A disk that won't say: not refused for it.
-            (0, 0) => (u64::MAX, 0),
-            known => known,
+        let (secure, limit) = {
+            let config = self.config.lock().expect("config lock");
+            (
+                config.share_secure,
+                profile.as_deref().and_then(|p| config.share_limits.of(p)),
+            )
         };
-        if total.saturating_add(held_margin(size)) > free {
-            return Err(HostError::Denied(
-                "not enough space on the host to keep this for someone offline".into(),
-            ));
+        if let Some(why) = self.share_refused(profile.as_deref(), from.key(), total, limit) {
+            return Err(HostError::Denied(why));
         }
         let from_party = crate::share_store::Party {
             device: from.key().to_string(),
             name: from.name.clone(),
-            profile,
+            profile: profile.clone(),
         };
         let to_party = crate::share_store::Party {
             device: to.key().to_string(),
             name: to.name.clone(),
             profile: None,
         };
+        // Secure mode off: in plain, in the sender's own folder of "Basalt
+        // shares" on the drive.
+        let mut places = Vec::new();
+        if !secure {
+            if !vault.writable() {
+                return Err(HostError::Denied(
+                    "the drive can't take files, so the host can't keep this in its Basalt shares folder".into(),
+                ));
+            }
+            let owner = profile
+                .as_deref()
+                .and_then(|p| self.profile_name(p))
+                .unwrap_or_else(|| from.name.clone());
+            let owner = if crate::vault::name_problem(&owner).is_some() {
+                "Shared".to_string()
+            } else {
+                owner
+            };
+            let folder = format!("{SHARES_FOLDER}/{owner}");
+            for level in [SHARES_FOLDER.to_string(), folder.clone()] {
+                if vault.resolve(&level).is_err() {
+                    vault.mkdir(&level)?;
+                }
+            }
+            for (name, _) in &files {
+                let mut place = free_place(&vault, &folder, name, &places)?;
+                // Two files of one name in a share: the second beside the first.
+                while places.contains(&place) {
+                    place = free_place(&vault, &folder, &format!("1 {name}"), &places)?;
+                }
+                places.push(place);
+            }
+        }
         let id = req.id.clone();
         let keep = req.keep;
         let host = Arc::clone(self);
         let held = tokio::task::spawn_blocking(move || {
-            let opened: std::io::Result<Vec<(String, std::fs::File)>> = files
-                .into_iter()
-                .map(|(name, path)| std::fs::File::open(path).map(|f| (name, f)))
-                .collect();
-            host.shares.as_ref().expect("checked above").hold(
-                &id,
-                from_party,
-                to_party,
-                keep,
-                opened?,
-                unix_ms(),
-            )
+            let store = host.shares.as_ref().expect("checked above");
+            if secure {
+                let opened: std::io::Result<Vec<(String, std::fs::File)>> = files
+                    .into_iter()
+                    .map(|(name, path)| std::fs::File::open(path).map(|f| (name, f)))
+                    .collect();
+                store.hold(&id, from_party, to_party, keep, opened?, unix_ms())
+            } else {
+                let opened: std::io::Result<Vec<(String, std::fs::File, std::path::PathBuf)>> =
+                    files
+                        .into_iter()
+                        .zip(places)
+                        .map(|((name, path), place)| {
+                            std::fs::File::open(path).map(|f| (name, f, place))
+                        })
+                        .collect();
+                store.hold_plain(&id, from_party, to_party, keep, opened?, unix_ms())
+            }
         })
         .await
         .map_err(join)??;
@@ -3863,6 +3934,198 @@ impl Host {
             held: store.sent_by(profile, device).iter().map(view_of).collect(),
             used,
             count,
+            room: Some(self.share_room(profile, device)),
+            secure: Some(self.config.lock().expect("config lock").share_secure),
+        }
+    }
+
+    /// A profile's name, by its id.
+    fn profile_name(&self, id: &str) -> Option<String> {
+        self.profiles
+            .lock()
+            .expect("profiles lock")
+            .find(id)
+            .map(|p| p.name.clone())
+    }
+
+    /// Bytes `profile` (or `device`, on its own) may still send through the
+    /// host now: the space where it would go, less a margin, and what is left
+    /// of its limit.
+    fn share_room(&self, profile: Option<&str>, device: &str) -> u64 {
+        let (secure, limit) = {
+            let config = self.config.lock().expect("config lock");
+            (
+                config.share_secure,
+                profile.and_then(|p| config.share_limits.of(p)),
+            )
+        };
+        let place = if secure {
+            self.shares.as_ref().map(|s| s.dir().to_path_buf())
+        } else {
+            self.vault_path()
+        };
+        let mut room = match place.map(|w| crate::space::for_path(&w)) {
+            // A disk that won't say: not refused for it.
+            None | Some((0, 0)) => u64::MAX,
+            Some((free, size)) => free.saturating_sub(held_margin(size)),
+        };
+        if let (Some(limit), Some(store)) = (limit, self.shares.as_ref()) {
+            let used = store
+                .usage()
+                .2
+                .get(profile.unwrap_or(device))
+                .copied()
+                .unwrap_or(0);
+            room = room.min(limit.saturating_sub(used));
+        }
+        room
+    }
+
+    /// Why a share of `total` bytes can't be kept now, if it can't.
+    fn share_refused(
+        &self,
+        profile: Option<&str>,
+        device: &str,
+        total: u64,
+        limit: Option<u64>,
+    ) -> Option<String> {
+        if total <= self.share_room(profile, device) {
+            return None;
+        }
+        let used = self
+            .shares
+            .as_ref()
+            .and_then(|s| s.usage().2.get(profile.unwrap_or(device)).copied())
+            .unwrap_or(0);
+        match limit {
+            Some(limit) if used.saturating_add(total) > limit => Some(format!(
+                "that's more than this profile may keep on the host ({} of {} used)",
+                crate::ui::bytes_said(used),
+                crate::ui::bytes_said(limit)
+            )),
+            _ => Some("not enough space on the host to keep this for someone offline".into()),
+        }
+    }
+
+    /// Kept apart and locked (on), or in plain in "Basalt shares" on the
+    /// drive (off). Shares already held stay as they are.
+    pub fn set_share_secure(&self, secure: bool) -> Result<()> {
+        self.config.lock().expect("config lock").share_secure = secure;
+        self.persist()
+    }
+
+    /// Limits on or off, the limit for profiles not set on their own, and
+    /// one profile's own (None: back to the general one).
+    pub fn set_share_limits(
+        &self,
+        on: Option<bool>,
+        new_profile: Option<u64>,
+        profile: Option<(String, Option<u64>)>,
+    ) -> Result<()> {
+        {
+            let mut config = self.config.lock().expect("config lock");
+            let limits = &mut config.share_limits;
+            if let Some(on) = on {
+                limits.on = on;
+            }
+            if let Some(bytes) = new_profile {
+                limits.new_profile = bytes;
+            }
+            if let Some((id, bytes)) = profile {
+                match bytes {
+                    Some(bytes) => {
+                        limits.profiles.insert(id, bytes);
+                    }
+                    None => {
+                        limits.profiles.remove(&id);
+                    }
+                }
+            }
+        }
+        self.persist()
+    }
+
+    /// Every share held, deleted: "Clear share files". Their senders are
+    /// told, so a share still waiting says it was removed by the host.
+    pub fn clear_shares(&self) -> Result<usize> {
+        let Some(store) = self.shares.as_ref() else {
+            return Ok(0);
+        };
+        let held = store.all();
+        let cleared = store.clear()?;
+        self.tell_removed(&held);
+        Ok(cleared)
+    }
+
+    /// Tells the senders of shares still waiting that the host removed them.
+    fn tell_removed(&self, held: &[crate::share_store::Held]) {
+        let host = crate::channel::Sender {
+            device: format!("host-{}", self.identity.host_id),
+            name: self.config.lock().expect("config lock").host_name.clone(),
+            profile: None,
+        };
+        for share in held
+            .iter()
+            .filter(|h| h.state == crate::share_store::HeldState::Waiting)
+        {
+            let _ = self.channel_send(
+                &host,
+                basalt_proto::msg::ChannelSendRequest {
+                    to: basalt_proto::msg::Address::Device {
+                        device: share.from.device.clone(),
+                    },
+                    kind: "share.answer".into(),
+                    body: serde_json::json!({
+                        "offer": share.id,
+                        "answer": "removed",
+                        "by": { "device": host.device, "name": host.name },
+                        "reason": "Removed by the host",
+                    }),
+                    ttl_ms: basalt_proto::msg::CHANNEL_MAX_TTL_MS,
+                },
+            );
+        }
+    }
+
+    /// Sharing between devices, as the host's window and Manage host show it.
+    pub fn sharing_view(&self) -> crate::ui::SharingView {
+        let (secure, limits) = {
+            let config = self.config.lock().expect("config lock");
+            (config.share_secure, config.share_limits.clone())
+        };
+        let (used, count, by) = self.shares.as_ref().map(|s| s.usage()).unwrap_or_default();
+        let locked = self.shares.as_ref().map(|s| s.locked_bytes()).unwrap_or(0);
+        // The store on the drive's own disk: its files take from the drive's
+        // free space, so the drive's bar shows them.
+        let same_disk = match (self.shares.as_ref(), self.vault_path()) {
+            (Some(store), Some(vault)) => crate::space::same_disk(store.dir(), &vault),
+            _ => false,
+        };
+        let profiles = self
+            .profiles
+            .lock()
+            .expect("profiles lock")
+            .profiles()
+            .iter()
+            .map(|p| crate::ui::SharingProfile {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                color: p.color,
+                used: by.get(&p.id).copied().unwrap_or(0),
+                limit: limits.profiles.get(&p.id).copied(),
+            })
+            .collect::<Vec<_>>();
+        crate::ui::SharingView {
+            available: self.shares.is_some(),
+            secure,
+            limits_on: limits.on,
+            new_profile_limit: limits.new_profile,
+            profiles,
+            used,
+            locked,
+            count,
+            from: by.len(),
+            same_disk,
         }
     }
 
@@ -3900,27 +4163,7 @@ impl Host {
                 }
                 let vault = self.require_vault().await?;
                 for (n, file) in held.files.iter().enumerate() {
-                    let rel = if req.folder.is_empty() {
-                        file.name.clone()
-                    } else {
-                        format!("{}/{}", req.folder, file.name)
-                    };
-                    let mut dest = vault.resolve_new(&rel)?;
-                    let mut count = 1;
-                    while dest.exists() {
-                        let (stem, ext) = match file.name.rsplit_once('.') {
-                            Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
-                            _ => (file.name.clone(), String::new()),
-                        };
-                        let named = format!("{stem} ({count}){ext}");
-                        let rel = if req.folder.is_empty() {
-                            named
-                        } else {
-                            format!("{}/{named}", req.folder)
-                        };
-                        dest = vault.resolve_new(&rel)?;
-                        count += 1;
-                    }
+                    let dest = free_place(&vault, &req.folder, &file.name, &[])?;
                     store.unlock_into(&req.id, n, &dest)?;
                 }
                 store.delete(&req.id)

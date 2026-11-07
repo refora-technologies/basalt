@@ -439,6 +439,26 @@ pub enum ManageAction {
     DenyProfileLink {
         id: String,
     },
+    /// Files sent through the host for someone away: kept apart and locked
+    /// (on), or in "Basalt shares" on the drive (off). From 1.6.4.
+    SetShareSecure {
+        secure: bool,
+    },
+    /// Limits on what each profile keeps here: on or off, the general limit,
+    /// and one profile's own (`limit` None: back to the general one). Each
+    /// left out stays as it is. From 1.6.4.
+    SetShareLimits {
+        #[serde(default)]
+        on: Option<bool>,
+        #[serde(default)]
+        new_profile: Option<u64>,
+        #[serde(default)]
+        profile: Option<String>,
+        #[serde(default)]
+        limit: Option<u64>,
+    },
+    /// Every file kept for someone away, deleted. From 1.6.4.
+    ClearShares,
 }
 
 impl ManageAction {
@@ -1292,6 +1312,14 @@ pub struct ShareHeldResponse {
     /// Bytes held for everyone, and how many shares.
     pub used: u64,
     pub count: usize,
+    /// Bytes this sender may still send through the host now: space left
+    /// (less a margin) and its profile's limit. None from hosts before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room: Option<u64>,
+    /// Kept apart and locked (true), or in plain in "Basalt shares" on the
+    /// drive. None from hosts before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secure: Option<bool>,
 }
 
 /// `delete` a held share, or `move` its files into a folder on the drive.

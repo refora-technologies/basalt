@@ -23,6 +23,42 @@ pub fn for_path(path: &Path) -> (u64, u64) {
     }
 }
 
+/// Whether two paths are on one disk, so space taken at one is taken at the
+/// other. False when either can't be told.
+pub fn same_disk(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(a), std::fs::metadata(b)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev(),
+            _ => false,
+        }
+    }
+    #[cfg(windows)]
+    {
+        // The volume a path is on: its drive letter or share, after the
+        // path is made whole.
+        fn volume(path: &Path) -> Option<String> {
+            let whole = std::fs::canonicalize(path).ok()?;
+            match whole.components().next()? {
+                std::path::Component::Prefix(prefix) => {
+                    Some(prefix.as_os_str().to_string_lossy().to_lowercase())
+                }
+                _ => None,
+            }
+        }
+        match (volume(a), volume(b)) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
 #[cfg(unix)]
 fn unix_space(path: &Path) -> Option<(u64, u64)> {
     use std::os::unix::ffi::OsStrExt;

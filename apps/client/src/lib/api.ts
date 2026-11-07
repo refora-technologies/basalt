@@ -840,7 +840,8 @@ export const api = {
   /** This device's answer to a share the host kept for it. */
   shareAnswer: (id: string, accepted: boolean) => call<void>('share_answer', { id, accepted }),
   /** What this profile has kept on the host, and the space kept files take. */
-  shareHeld: () => call<{ held: HeldShare[]; used: number; count: number }>('share_held'),
+  /** `room`: bytes this sender may still keep there; `secure`: kept locked. Both absent from older hosts. */
+  shareHeld: () => call<{ held: HeldShare[]; used: number; count: number; room?: number; secure?: boolean }>('share_held'),
   /** Deletes a kept share, or moves its files onto the drive (`folder`, "" for its top). */
   shareManage: (action: 'delete' | 'move', id: string, folder = '') => call<void>('share_manage', { action, id, folder }),
   /** Takes one file of a share the host kept for this device. */
