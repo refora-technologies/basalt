@@ -26,6 +26,8 @@ mod linux_player;
 #[cfg(target_os = "linux")]
 mod linux_update;
 mod media_controls;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod tray;
 #[cfg(target_os = "linux")]
 use linux_player::{
     linux_mpv_command, linux_mpv_destroy, linux_mpv_get_property, linux_mpv_init,
@@ -128,7 +130,14 @@ struct AppState {
     /// would push Continue watching minutes past where anybody has watched.
     /// Only paths in here contribute that estimate.
     external: Mutex<std::collections::HashSet<String>>,
+    /// Messages from the host's other devices not yet taken by the page: kept
+    /// here so one that comes while there is no page (on Android, the app
+    /// swiped away and staying ready) is still there when it opens.
+    channel: Mutex<std::collections::VecDeque<basalt_proto::msg::ChannelMessage>>,
 }
+
+/// Messages kept for the page at most: past it, the oldest go.
+const CHANNEL_KEPT: usize = 200;
 
 impl AppState {
     /// Starts the media proxy the first time something needs a URL.
@@ -361,6 +370,13 @@ fn start_watching(client: &Arc<Basalt>, app: &tauri::AppHandle) {
             }
             // A message from another of the host's devices, and who is online.
             basalt_client::WatchNotice::Channel(message) => {
+                if let Some(state) = told.try_state::<AppState>() {
+                    let mut kept = state.channel.lock().expect("channel lock");
+                    kept.push_back(message.clone());
+                    while kept.len() > CHANNEL_KEPT {
+                        kept.pop_front();
+                    }
+                }
                 let _ = told.emit("basalt://channel", message);
             }
             basalt_client::WatchNotice::PresenceChanged => {
@@ -681,6 +697,133 @@ static STAY_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 #[tauri::command]
 fn stay_running(on: bool) {
     STAY_RUNNING.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A notification from the system, with up to two buttons: see `tray::notify`.
+#[tauri::command]
+fn notify(
+    app: tauri::AppHandle,
+    tag: String,
+    title: String,
+    text: String,
+    buttons: Vec<(String, String)>,
+) {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    tray::notify(&app, tag, &title, &text, &buttons);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = (app, tag, title, text, buttons);
+}
+
+/// The messages from other devices the page has not taken yet, now handed
+/// over: at start, and as each one is told (`basalt://channel`).
+#[tauri::command]
+fn channel_take(state: State<'_, AppState>) -> Vec<basalt_proto::msg::ChannelMessage> {
+    state
+        .channel
+        .lock()
+        .expect("channel lock")
+        .drain(..)
+        .collect()
+}
+
+/// Where a file shared with this device landed.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Received {
+    /// Where somebody would look for it: a folder and a name.
+    shown_as: String,
+    /// On a computer, the file itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    /// On a phone, what opens or shares it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uri: Option<String>,
+}
+
+/// Takes a file shared with this device from the drive into its received
+/// folder: a computer's Downloads\Basalt unless another is chosen, a phone's
+/// Download/Basalt. Never over a file already there: a second copy is
+/// "name (1).ext".
+#[tauri::command]
+async fn receive_file(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    remote: String,
+    id: String,
+    folder: Option<String>,
+) -> Answer<Received> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = folder;
+        let saved = download_to_phone(app, state, remote, id).await?;
+        Ok(Received {
+            shown_as: saved.shown_as,
+            path: None,
+            uri: Some(saved.uri),
+        })
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let dir = match folder.filter(|f| !f.trim().is_empty()) {
+            Some(folder) => PathBuf::from(folder),
+            None => received_folder(&app)?,
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t make the folder {}: {e}", dir.display()),
+        })?;
+        let local = free_name(&dir, &safe_local_name(&remote));
+        let shown_as = local.display().to_string();
+        download(app, state, remote, shown_as.clone(), id).await?;
+        Ok(Received {
+            shown_as: shown_as.clone(),
+            path: Some(shown_as),
+            uri: None,
+        })
+    }
+}
+
+/// The folder shared files land in unless another is chosen.
+#[cfg(not(target_os = "android"))]
+fn received_folder(app: &tauri::AppHandle) -> Answer<PathBuf> {
+    app.path()
+        .download_dir()
+        .map(|d| d.join("Basalt"))
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t find the Downloads folder: {e}"),
+        })
+}
+
+/// The received folder, for Settings to show.
+#[tauri::command]
+fn default_received_folder(app: tauri::AppHandle) -> Answer<String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        Ok("Download/Basalt".into())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(received_folder(&app)?.display().to_string())
+    }
+}
+
+/// `name` in `dir`, or "name (1).ext", "name (2).ext"... whichever is free.
+#[cfg(not(target_os = "android"))]
+fn free_name(dir: &std::path::Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    (1..)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|p| !p.exists())
+        .expect("a free name")
 }
 
 /// The host's devices, and who of them is online now.
@@ -1704,12 +1847,20 @@ pub fn run() {
                 });
             }
 
+            // The tray icon, so closing the window can leave Basalt ready.
+
+            #[cfg(windows)]
+            if let Err(e) = tray::install(app.handle()) {
+                eprintln!("basalt: no tray icon: {e}");
+            }
+
             app.manage(AppState {
                 client: Arc::clone(&client),
                 proxy: tokio::sync::Mutex::new(None),
                 transfers: Mutex::new(HashMap::new()),
                 watch: Mutex::new(None),
                 external: Mutex::new(std::collections::HashSet::new()),
+                channel: Mutex::new(std::collections::VecDeque::new()),
             });
 
             // Feed the throughput trace from the one counter that sees every
@@ -1857,6 +2008,9 @@ pub fn run() {
             music_command,
             presence,
             channel_send,
+            channel_take,
+            receive_file,
+            default_received_folder,
             segments,
             speed_test,
             previews,
@@ -1883,7 +2037,25 @@ pub fn run() {
             download_to_phone,
             platform,
             stay_running,
+            notify,
         ])
+        // Closed while it should stay ready, with an icon in the tray to come
+        // back by: hidden, not closed. The line to the host, shares and
+        // transfers go on.
+        .on_window_event(|window, event| {
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main"
+                    && tray::installed()
+                    && STAY_RUNNING.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            let _ = (window, event);
+        })
         .build(tauri::generate_context!())
         .expect("error while building Basalt")
         .run(|_app, event| {
@@ -1903,6 +2075,30 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{is_program, safe_local_name};
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn a_received_file_never_replaces_one_already_there() {
+        let dir = std::env::temp_dir().join(format!("basalt-free-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            super::free_name(&dir, "Holiday.mkv"),
+            dir.join("Holiday.mkv")
+        );
+        std::fs::write(dir.join("Holiday.mkv"), b"x").unwrap();
+        assert_eq!(
+            super::free_name(&dir, "Holiday.mkv"),
+            dir.join("Holiday (1).mkv")
+        );
+        std::fs::write(dir.join("Holiday (1).mkv"), b"x").unwrap();
+        assert_eq!(
+            super::free_name(&dir, "Holiday.mkv"),
+            dir.join("Holiday (2).mkv")
+        );
+        std::fs::write(dir.join("README"), b"x").unwrap();
+        assert_eq!(super::free_name(&dir, "README"), dir.join("README (1)"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     // The attack these guard: a file on the drive named to climb out of the
     // folder it is saved in, or a program dressed as a photo.

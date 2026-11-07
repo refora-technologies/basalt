@@ -14,6 +14,7 @@ import {
   FolderOpen,
   FolderPlus,
   Images,
+  Inbox,
   Library,
   Loader2,
   MoreHorizontal,
@@ -22,6 +23,7 @@ import {
   Plus,
   Scissors,
   Search,
+  Send,
   SlidersHorizontal,
   Smartphone,
   Star,
@@ -77,6 +79,8 @@ import { offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/update
 import { ActionSheet, Sheet } from './Sheet'
 import { YourDevices } from '@/components/YourDevices'
 import { ownDevices } from '@/lib/usePresence'
+import { PhoneShare, SharingCard } from './PhoneShare'
+import { useAlwaysReady } from '@/lib/alwaysReady'
 import { remaining, type Resumable } from '@/components/ContinueWatching'
 import { useLongPress } from '@/lib/useLongPress'
 import { useBack } from './useBack'
@@ -305,7 +309,13 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   // devices, Android keeps the app running when it is left or the screen goes
   // off, with a quiet notification, so its line to the host stays open. Not
   // on a TV, which never receives files.
-  const ready = !TV && isAndroid() && model.connected && model.presence.supported && model.presence.you !== ''
+  // Sharing with the host's other devices: not on a TV, and only on a host
+  // that passes shares.
+  const sharingHere = !TV && model.presence.supported && model.presence.you !== ''
+  const [inboxOpen, setInboxOpen] = useState(false)
+  const [alwaysReady] = useAlwaysReady()
+  const ready =
+    alwaysReady && !TV && isAndroid() && model.connected && model.presence.supported && model.presence.you !== ''
   useEffect(() => {
     if (!ready) return undefined
     void android.keepAlive('ready', 'Basalt', 'Ready to receive')
@@ -442,6 +452,16 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
             onClose={() => setSelected(new Set())}
             onSelectAll={() => setSelected(new Set(entries.map((e) => e.id)))}
             onDownload={() => void model.downloadMany(chosen)}
+            onShare={
+              sharingHere && chosen.some((e) => e.kind === 'file')
+                ? () => {
+                    model.setSharing(
+                      chosen.filter((e) => e.kind === 'file').map((e) => ({ name: e.name, size: e.size, path: e.id })),
+                    )
+                    setSelected(new Set())
+                  }
+                : undefined
+            }
             onCut={writable ? () => {
               actions.cut(chosen.map((e) => e.id))
               setSelected(new Set())
@@ -467,6 +487,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
             }}
             query={query}
             onQuery={setQuery}
+            onInbox={sharingHere ? () => setInboxOpen(true) : undefined}
           />
         )}
 
@@ -636,6 +657,8 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       />
 
       <TransfersSheet model={model} open={transfersOpen} onClose={() => setTransfersOpen(false)} />
+
+      {sharingHere && <PhoneShare model={model} inboxOpen={inboxOpen} onCloseInbox={() => setInboxOpen(false)} />}
 
       <PhoneManagePanel open={managing} onClose={() => setManaging(false)} />
 
@@ -812,6 +835,7 @@ function TopBar({
   onCloseSearch,
   query,
   onQuery,
+  onInbox,
 }: {
   model: AppModel
   tab: Tab
@@ -820,9 +844,12 @@ function TopBar({
   onCloseSearch: () => void
   query: string
   onQuery: (query: string) => void
+  /** Opens the Inbox; none where there is no Inbox. */
+  onInbox?: () => void
 }): React.JSX.Element {
   const { vault } = model
   const inFolder = tab === 'files' && vault.dir !== ''
+  const waiting = model.inbox.waiting.length
   const title =
     tab === 'files'
       ? inFolder
@@ -869,6 +896,18 @@ function TopBar({
       <h1 className="min-w-0 flex-1 truncate px-1 text-[20px] font-semibold tracking-tight text-text">
         {title}
       </h1>
+      {onInbox && (
+        <IconButton label={waiting > 0 ? `Inbox, ${waiting} waiting` : 'Inbox'} onClick={onInbox}>
+          <span className="relative">
+            <Inbox size={21} />
+            {waiting > 0 && (
+              <span className="absolute -right-2 -top-1.5 min-w-[16px] rounded-full bg-white px-1 text-center font-mono text-[10px] font-bold leading-[16px] text-black">
+                {waiting}
+              </span>
+            )}
+          </span>
+        </IconButton>
+      )}
       {tab !== 'more' && (
         <IconButton label="Search" onClick={onSearch}>
           <Search size={20} />
@@ -883,6 +922,7 @@ function SelectionBar({
   onClose,
   onSelectAll,
   onDownload,
+  onShare,
   onCut,
   onCopy,
   onDelete,
@@ -892,6 +932,8 @@ function SelectionBar({
   onClose: () => void
   onSelectAll: () => void
   onDownload: () => void
+  /** To another of the host's devices; none where there is nobody to share with. */
+  onShare?: () => void
   onCut?: () => void
   onCopy: () => void
   onDelete?: () => void
@@ -909,6 +951,11 @@ function SelectionBar({
       <IconButton label="Download" onClick={onDownload}>
         <Download size={20} />
       </IconButton>
+      {onShare && (
+        <IconButton label="Share" onClick={onShare}>
+          <Send size={20} />
+        </IconButton>
+      )}
       {onCut && (
         <IconButton label="Move" onClick={onCut}>
           <Scissors size={20} />
@@ -1728,6 +1775,8 @@ function MoreScreen({
             </div>
           )}
         </Card>
+
+        {!isTv() && model.presence.supported && model.presence.you !== '' && <SharingCard model={model} />}
 
         {onManage && (
           <Card onClick={onManage}>

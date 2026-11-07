@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
-  FolderOpen, HardDrive, Info, Laptop, Shield, Volume2, Wifi } from 'lucide-react'
+  FolderOpen, HardDrive, Info, Laptop, Send, Shield, Volume2, Wifi } from 'lucide-react'
 import { Switch } from './Switch'
 import { setShowHidden, useShowHidden } from '@/lib/showHidden'
-import type { KeyKind, Status } from '@/lib/api'
+import { api, type KeyKind, type Status } from '@/lib/api'
+import type { Inbox } from '@/lib/useInbox'
+import { useAlwaysReady } from '@/lib/alwaysReady'
 import {
   audioDevices,
   savedAudioDevice,
@@ -66,7 +68,10 @@ export function SettingsView({
   space,
   onForget,
   onChangeDrive,
+  inbox,
 }: {
+  /** Sharing between the host's devices, on a host that passes shares. */
+  inbox?: Inbox
   status: Status | null
   space: [number, number] | null
   /** Unpairs from this vault; pairing with another starts from there. */
@@ -103,6 +108,8 @@ export function SettingsView({
         <Section icon={Info} title="About" hint="Basalt, by Refora Technologies">
           <About product="Basalt" />
         </Section>
+
+        {inbox && <SharingSection inbox={inbox} />}
 
         <Section icon={FolderOpen} title="Files" hint="What folders show">
           <Switch
@@ -267,5 +274,56 @@ function Action({
 function Note({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
     <div className="px-4 py-2.5 text-[11px] leading-relaxed text-textFaint">{children}</div>
+  )
+}
+
+/** Sharing: whether the home's other profiles ask first, and where files land. */
+function SharingSection({ inbox }: { inbox: Inbox }): React.JSX.Element {
+  const [usual, setUsual] = useState('')
+  const [alwaysReady, setAlwaysReady] = useAlwaysReady()
+  useEffect(() => {
+    void api
+      .defaultReceivedFolder()
+      .then(setUsual)
+      .catch(() => {})
+  }, [])
+  const choose = async (): Promise<void> => {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const picked = await open({ directory: true, multiple: false, title: 'Where shared files go' })
+    if (typeof picked === 'string') inbox.setFolder(picked)
+  }
+  return (
+    <Section icon={Send} title="Sharing" hint="Between your devices and this home">
+      <Switch
+        label="Always ready to receive"
+        description="When you close Basalt, a small part keeps running in the tray, to receive files and tell you when something comes. Quit it from the tray icon."
+        checked={alwaysReady}
+        onChange={setAlwaysReady}
+        className="rounded-none px-4 py-2.5"
+      />
+      <Switch
+        label="Accept files from this home without asking"
+        description="From the other profiles on this host. Your own devices never ask."
+        checked={inbox.acceptFromHome}
+        onChange={inbox.setAcceptFromHome}
+        className="rounded-none px-4 py-2.5"
+      />
+      <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+        <span className="min-w-0">
+          <span className="block text-[13px] text-textDim">Received files go to</span>
+          <span className="block truncate font-mono text-[12px] text-text">{inbox.folder || usual || '…'}</span>
+        </span>
+        <span className="flex shrink-0 gap-2">
+          {inbox.folder && (
+            <button onClick={() => inbox.setFolder('')} className="rounded-md px-2.5 py-1.5 text-[12px] text-textDim hover:bg-white/[0.05] hover:text-text">
+              Usual folder
+            </button>
+          )}
+          <button onClick={() => void choose()} className="rounded-md border border-white/10 px-2.5 py-1.5 text-[12px] text-text hover:bg-white/[0.05]">
+            Change…
+          </button>
+        </span>
+      </div>
+    </Section>
   )
 }

@@ -792,6 +792,23 @@ export const api = {
    * to receive, the line to the host carries on without a window.
    */
   stayRunning: (on: boolean) => call<void>('stay_running', { on }),
+  /** Messages from other devices that came while the page wasn't there to hear them, now handed over. */
+  channelTake: () => call<ChannelMessage[]>('channel_take'),
+  /**
+   * Takes a file shared with this device from the drive into its received
+   * folder (`folder`, or the usual one), never over a file already there.
+   */
+  receiveFile: (remote: string, id: string, folder?: string) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('receive_file', { remote, id, folder: folder ?? null }),
+  /**
+   * A notification from the system, with up to two buttons (label, action).
+   * What is pressed comes back by `onNotification`, with `tag`. On a computer;
+   * nothing elsewhere for now.
+   */
+  notify: (tag: string, title: string, text: string, buttons: [string, string][] = []) =>
+    call<void>('notify', { tag, title, text, buttons }),
+  /** Where shared files land unless another folder is chosen. */
+  defaultReceivedFolder: () => call<string>('default_received_folder'),
   /** The host's devices and who of them is online. Throws on a host before 1.6.4. */
   presence: () => call<PresenceResponse>('presence'),
   /** Passes a message to another of the host's devices, or to a profile's. */
@@ -949,6 +966,20 @@ export async function onRemoved(handler: (message: string) => void): Promise<() 
  * them, and when a request finds this device's sign-in no longer stands.
  * Either way: ask again who is using this device.
  */
+/** A notification pressed: its tag, and the button's action (null for the notification itself). */
+export async function onNotification(handler: (pressed: { tag: string; action: string | null }) => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<{ tag: string; action: string | null }>('basalt://notification', (event) => handler(event.payload))
+}
+
+/** The tray asking for a page of the window (`inbox`). */
+export async function onOpenPage(handler: (page: string) => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<string>('basalt://open', (event) => handler(event.payload))
+}
+
 /** Told when a device of the host comes online or goes. */
 export async function onPresence(handler: () => void): Promise<() => void> {
   if (!inTauri()) return () => {}
@@ -1561,6 +1592,14 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     }
     case 'stay_running':
       return undefined as T
+    case 'channel_take':
+      return [] as T
+    case 'notify':
+      return undefined as T
+    case 'receive_file':
+      return { shownAs: 'Downloads\Basalt\file' } as T
+    case 'default_received_folder':
+      return 'C:\Users\You\Downloads\Basalt' as T
     case 'channel_send':
       return { id: 'mock', delivered: [], waiting: false } as T
     case 'music_mine': {

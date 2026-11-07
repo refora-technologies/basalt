@@ -7,6 +7,7 @@ import {
   ChevronsUpDown,
   HardDrive,
   Image,
+  Inbox,
   Laptop,
   LogOut,
   Repeat,
@@ -35,6 +36,7 @@ export type NavKey =
   | 'photos'
   | 'settings'
   | 'manage'
+  | 'inbox'
 
 const NAV: { key: NavKey; label: string; icon: typeof FolderOpen }[] = [
   { key: 'files', label: 'Files', icon: FolderOpen },
@@ -66,7 +68,10 @@ export function Sidebar({
   who,
   onChangeDrive,
   canManage,
+  inbox,
 }: {
+  /** The Inbox, on a host that passes shares between devices: how many wait for an answer. */
+  inbox?: { waiting: number }
   /** The host lets this device manage it: "Manage host" is offered. */
   canManage?: boolean
   /** Library sections the host's owner has chosen not to show. */
@@ -104,6 +109,16 @@ export function Sidebar({
             onNavigate={onNavigate}
           />
         ))}
+        {inbox && (
+          <NavItem
+            navKey="inbox"
+            label="Inbox"
+            icon={Inbox}
+            active={active}
+            onNavigate={onNavigate}
+            count={inbox.waiting}
+          />
+        )}
       </nav>
 
       {LIBRARY.some((item) => !hidden?.has(item.key)) && <SectionLabel>Library</SectionLabel>}
@@ -171,12 +186,15 @@ function NavItem({
   icon: Icon,
   active,
   onNavigate,
+  count = 0,
 }: {
   navKey: NavKey
   label: string
   icon: typeof FolderOpen
   active: NavKey
   onNavigate: (key: NavKey) => void
+  /** Waiting for this person, shown as a count. */
+  count?: number
 }): React.JSX.Element {
   const isActive = active === navKey
 
@@ -202,6 +220,11 @@ function NavItem({
       )}
       <Icon size={18} className="relative z-10" />
       <span className="relative z-10">{label}</span>
+      {count > 0 && (
+        <span className="relative z-10 ml-auto rounded-full bg-white px-1.5 font-mono text-[10.5px] font-semibold leading-[17px] text-black">
+          {count}
+        </span>
+      )}
     </button>
   )
 }

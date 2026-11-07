@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Scissors,
   Search,
+  Send,
   SquarePen,
   Star,
   Trash2,
@@ -93,6 +94,11 @@ import { MusicBar, NowPlaying } from '@/components/music/NowPlaying'
 import { MusicBridge, SystemMedia, useMusicProps } from '@/components/music/useMusicActions'
 import { useMusicMine } from '@/lib/useMusicMine'
 import { ownDevices, usePresence } from '@/lib/usePresence'
+import { useInbox } from '@/lib/useInbox'
+import type { ShareFile } from '@/lib/share'
+import { InboxPage, OfferCard, ShareDialog, ShareSaid } from '@/components/share/DesktopShare'
+import { useAlwaysReady } from '@/lib/alwaysReady'
+import { useShareNotifications } from '@/components/share/notifications'
 import { entriesToMedia, isMediaFile, nextEpisodes } from '@/lib/media'
 import type { MediaItem } from '@/lib/mockMedia'
 import {
@@ -114,6 +120,7 @@ const MEDIA_KEYS: NavKey[] = ['movies', 'series']
 
 const TITLES: Record<NavKey, string> = {
   files: 'Files',
+  inbox: 'Inbox',
   recent: 'Recent',
   starred: 'Starred',
   movies: 'Movies',
@@ -145,6 +152,8 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
   const [playing, setPlaying] = useState<MediaItem | null>(null)
   /** The photo viewer: the photos it steps through, and which one is open. */
   const [viewer, setViewer] = useState<{ photos: MediaFile[]; index: number } | null>(null)
+  /** Files being shared: the Share sheet is open for them. */
+  const [sharing, setSharing] = useState<ShareFile[] | null>(null)
   const viewingIndex = viewer?.index ?? null
   const [view, setView] = useState<ViewMode>('details')
   const [sortField, setSortField] = useState<SortField>('name')
@@ -200,6 +209,13 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
   // the places a file can be shared to.
   const presence = usePresence(
     settled !== null && vault.status?.hostId ? `${vault.status.hostId}/${profileId ?? ''}` : null,
+  )
+  // Shares coming in and going out, kept on this device per host and profile.
+  const inbox = useInbox(
+    settled !== null && vault.status?.hostId ? `${vault.status.hostId}/${profileId ?? ''}` : null,
+    presence,
+    transfers,
+    profileId ?? undefined,
   )
   // Only for a host too old to sort the drive itself.
   const needsScan =
@@ -1004,6 +1020,17 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         run: () => void downloadMany(chosen),
       })
 
+      // To another of the host's devices: one of this person's, or someone
+      // else's in the home. Files for now; a folder is a later build.
+      const shareable = chosen.filter((e) => e.kind === 'file')
+      if (!tv && presence.supported && presence.you !== '') items.push({
+        id: 'share',
+        label: many ? `Share ${shareable.length} files…` : 'Share…',
+        icon: Send,
+        disabled: shareable.length === 0,
+        run: () => setSharing(shareable.map((e) => ({ name: e.name, size: e.size, path: e.id }))),
+      })
+
       if (writable && !tv) {
         items.push(
           {
@@ -1090,6 +1117,8 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
       actions,
       askRename,
       stars,
+      presence.supported,
+      presence.you,
     ],
   )
 
@@ -1155,7 +1184,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         setPaletteOpen((v) => !v)
         return
       }
-      if (typing || nav === 'settings' || nav === 'manage' || prompt) return
+      if (typing || nav === 'settings' || nav === 'manage' || nav === 'inbox' || prompt) return
 
       const chosen = entries.filter((en) => selected.has(en.id))
 
@@ -1394,6 +1423,9 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     music,
     musicMine,
     presence,
+    inbox,
+    sharing,
+    setSharing,
     mediaBase,
     needsScan,
     scan,
@@ -1510,6 +1542,16 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
     }
   }
   const [introducing, setIntroducing] = useState(() => !onboarded())
+  const { presence, inbox, sharing, setSharing } = model
+  const [shareSaid, setShareSaid] = useState<string | null>(null)
+  // Always ready: closing the window keeps Basalt in the tray, its line to
+  // the host open, so shares still reach it.
+  const [alwaysReady] = useAlwaysReady()
+  const keepRunning = alwaysReady && presence.supported && presence.you !== ''
+  useEffect(() => {
+    void api.stayRunning(keepRunning).catch(() => {})
+  }, [keepRunning])
+  useShareNotifications(inbox, presence, model.setNav)
   const {
     vault,
     transfers,
@@ -1766,6 +1808,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
               : undefined
           }
           hidden={hiddenSections}
+          inbox={presence.supported && presence.you !== '' ? { waiting: inbox.waiting.length } : undefined}
           canManage={canManage}
           active={nav}
           onNavigate={setNav}
@@ -1777,7 +1820,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
         />
 
         <main className="flex min-w-0 min-h-0 flex-1 flex-col">
-          {nav !== 'settings' && nav !== 'manage' && (
+          {nav !== 'settings' && nav !== 'manage' && nav !== 'inbox' && (
             <div className="drag flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
               {nav === 'files' ? (
                 <Breadcrumbs
@@ -1892,12 +1935,15 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
           >
             {nav === 'manage' ? (
               <ManageHost layout="desktop" onClose={() => setNav('files')} />
+            ) : nav === 'inbox' ? (
+              <InboxPage presence={presence} inbox={inbox} />
             ) : nav === 'settings' ? (
               <SettingsView
                 status={vault.status}
                 space={vault.space}
                 onForget={forgetVault}
                 onChangeDrive={() => setChangingDrive(true)}
+                inbox={presence.supported && presence.you !== '' ? inbox : undefined}
               />
             ) : noDrive ? (
               <NoDrive
@@ -1997,7 +2043,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
             <DropOverlay active={dropActive && nav === 'files'} dir={dropInto ?? vault.dir} />
           </motion.div>
 
-          {nav !== 'settings' && nav !== 'manage' && !isLibrary && !isMedia && (
+          {nav !== 'settings' && nav !== 'manage' && nav !== 'inbox' && !isLibrary && !isMedia && (
             <StatusBar
               total={entries.length}
               filtered={query.trim().length > 0}
@@ -2032,6 +2078,16 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <ShareDialog
+        files={sharing}
+        presence={presence}
+        inbox={inbox}
+        onClose={() => setSharing(null)}
+        onSaid={setShareSaid}
+      />
+      <OfferCard presence={presence} inbox={inbox} />
+      <ShareSaid said={shareSaid} onGone={() => setShareSaid(null)} />
 
       <CommandPalette
         open={paletteOpen}
