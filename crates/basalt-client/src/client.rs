@@ -2000,9 +2000,26 @@ impl Basalt {
         }
         session.watch_begin().await?;
 
+        // Every so often, "still here": a watch can stay open with nobody
+        // behind it (a phone Android froze), so the host counts a device as
+        // online only while it hears from it. Asked on another connection;
+        // a host from before 1.6.4 doesn't know the question, and is asked no
+        // more.
+        let mut still_here = tokio::time::interval(STILL_HERE_EVERY);
+        still_here.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        still_here.tick().await;
+        let mut host_knows = true;
+
         loop {
             tokio::select! {
                 _ = stop.notified() => return Ok(WatchEnd::Stopped),
+                _ = still_here.tick(), if host_knows => {
+                    if let Err(e) = self.presence().await
+                        && matches!(e.kind(), "unsupported" | "incompatible")
+                    {
+                        host_knows = false;
+                    }
+                }
                 _ = profile_changes.changed() => return Ok(WatchEnd::ProfileChanged),
                 change = session.watch_next() => match change? {
                     Change::ProfilesChanged => on_notice(WatchNotice::ProfilesChanged),
@@ -2669,6 +2686,10 @@ fn unix_now() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
+
+/// How often a watching device tells the host it is still there: well inside
+/// the 90 seconds after which the host takes it as away.
+const STILL_HERE_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// What a watch says besides changes to the drive.
 #[derive(Debug)]

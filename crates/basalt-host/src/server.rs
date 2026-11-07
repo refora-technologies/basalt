@@ -3664,7 +3664,28 @@ impl Drop for OnLine {
     }
 }
 
+/// How often devices not heard from lately are looked for.
+const LINE_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl Host {
+    /// `device` said it is still there: see [`crate::channel::Line::heard`].
+    fn heard(&self, device: &str) {
+        let back = self
+            .line
+            .lock()
+            .expect("line lock")
+            .heard(device, unix_ms());
+        if let Some(waiting) = back {
+            let _ = self.line_events.send(LineEvent::Presence);
+            for message in waiting {
+                let _ = self.line_events.send(LineEvent::Message {
+                    to: device.to_string(),
+                    message: Box::new(message),
+                });
+            }
+        }
+    }
+
     /// Every device of the host, who is online, and what each is signed in to.
     fn presence(&self, you: String) -> basalt_proto::msg::PresenceResponse {
         let devices = self.devices();
@@ -3985,6 +4006,21 @@ pub async fn serve(server: BoundServer) -> Result<()> {
     host.keep_library_current();
     // And keep serving the drive through it being unplugged and plugged back.
     host.keep_drive_attached();
+    // Devices whose watch stays open with nobody behind it (a phone Android
+    // froze, one gone from the Wi-Fi) are taken as away, and the others told.
+    {
+        let host = Arc::clone(&host);
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(LINE_SWEEP_EVERY);
+            loop {
+                every.tick().await;
+                let changed = host.line.lock().expect("line lock").sweep(unix_ms());
+                if changed {
+                    let _ = host.line_events.send(LineEvent::Presence);
+                }
+            }
+        });
+    }
     // What this machine can convert video with, found now rather than on
     // the first film somebody's phone cannot play: it takes a few seconds.
     {
@@ -5221,6 +5257,10 @@ where
                 .as_ref()
                 .map(|d| d.key().to_string())
                 .ok_or(HostError::Unauthenticated)?;
+            // Asking is also saying it is still there: the app asks every
+            // 30 seconds while it runs. Back after being taken as away, what
+            // waited for it comes down its watch.
+            host.heard(&you);
             reply(stream, &host.presence(you)).await?;
         }
 

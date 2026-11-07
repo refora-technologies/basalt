@@ -24,6 +24,11 @@ const MAX_WAITING_PER_DEVICE: usize = 64;
 const MAX_WAITING_FOR_PROFILES: usize = 256;
 /// The longest a kind's name may be.
 const MAX_KIND_CHARS: usize = 40;
+/// A device with its watch open but not heard from for this long is taken
+/// as away: a phone Android froze, or one that left the Wi-Fi without its
+/// connection closing, keeps the watch open with nobody behind it. The app
+/// says it is there every 30 seconds (see [`Line::heard`]).
+pub const LIVE_MS: i64 = 90_000;
 
 /// Who sends.
 #[derive(Debug, Clone)]
@@ -49,6 +54,10 @@ struct Online {
     /// reconnects.
     watches: u32,
     profile: Option<String>,
+    /// When it last said it was there, host milliseconds.
+    heard: i64,
+    /// Counted as online: its watch is open and it was heard lately.
+    live: bool,
 }
 
 /// A message for a profile, and the devices that have had it.
@@ -79,12 +88,52 @@ impl Line {
         now: i64,
     ) -> (bool, Vec<ChannelMessage>) {
         let entry = self.online.entry(device.to_string()).or_default();
-        let came = entry.watches == 0;
+        let came = !entry.live;
         entry.watches += 1;
         entry.profile = profile.map(str::to_string);
+        entry.heard = now;
+        entry.live = true;
         self.seen.insert(device.to_string(), now);
-        self.forget_expired(now);
+        (came, self.take_waiting(device, profile, now))
+    }
 
+    /// `device` said it is still there. When it had been taken as away, it is
+    /// back: what waited for it meanwhile, handed over. None when it was
+    /// online all along, or has no watch open (it is not on the line).
+    pub fn heard(&mut self, device: &str, now: i64) -> Option<Vec<ChannelMessage>> {
+        let entry = self.online.get_mut(device)?;
+        entry.heard = now;
+        self.seen.insert(device.to_string(), now);
+        if entry.live {
+            return None;
+        }
+        entry.live = true;
+        let profile = entry.profile.clone();
+        Some(self.take_waiting(device, profile.as_deref(), now))
+    }
+
+    /// Devices not heard from for [`LIVE_MS`] are taken as away. Whether any
+    /// were, for the others to be told.
+    pub fn sweep(&mut self, now: i64) -> bool {
+        let mut changed = false;
+        for (device, entry) in self.online.iter_mut() {
+            if entry.live && now - entry.heard >= LIVE_MS {
+                entry.live = false;
+                self.seen.insert(device.clone(), entry.heard);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// What waited for `device`, signed in to `profile`, oldest first.
+    fn take_waiting(
+        &mut self,
+        device: &str,
+        profile: Option<&str>,
+        now: i64,
+    ) -> Vec<ChannelMessage> {
+        self.forget_expired(now);
         let mut waiting: Vec<ChannelMessage> = self
             .for_device
             .remove(device)
@@ -101,7 +150,7 @@ impl Line {
             }
         }
         waiting.sort_by_key(|m| m.sent);
-        (came, waiting)
+        waiting
     }
 
     /// A watch for `device` closed. Whether it has gone offline.
@@ -110,16 +159,19 @@ impl Line {
             return false;
         };
         entry.watches = entry.watches.saturating_sub(1);
-        self.seen.insert(device.to_string(), now);
         if entry.watches == 0 {
+            let was_live = entry.live;
+            if was_live {
+                self.seen.insert(device.to_string(), now);
+            }
             self.online.remove(device);
-            return true;
+            return was_live;
         }
         false
     }
 
     pub fn is_online(&self, device: &str) -> bool {
-        self.online.contains_key(device)
+        self.online.get(device).is_some_and(|o| o.live)
     }
 
     /// The profile an online device is signed in to.
@@ -209,7 +261,9 @@ impl Line {
                     .online
                     .iter()
                     .filter(|(d, o)| {
-                        o.profile.as_deref() == Some(profile.as_str()) && **d != from.device
+                        o.live
+                            && o.profile.as_deref() == Some(profile.as_str())
+                            && **d != from.device
                     })
                     .map(|(d, _)| d.clone())
                     .collect();
@@ -424,6 +478,54 @@ mod tests {
             .send(&from, to_device("tv", i64::MAX), ANY, ANY, 0)
             .unwrap();
         assert_eq!(long.message.expires, CHANNEL_MAX_TTL_MS);
+    }
+
+    #[test]
+    fn a_device_not_heard_from_is_away_until_it_is_again() {
+        let mut line = Line::default();
+        line.open("phone", Some("maya"), 0);
+        assert!(!line.sweep(LIVE_MS - 1), "heard lately enough");
+        assert!(
+            line.heard("phone", 30_000).is_none(),
+            "online all along: nothing to hand over"
+        );
+        assert!(!line.sweep(30_000 + LIVE_MS - 1));
+        assert!(
+            line.sweep(30_000 + LIVE_MS),
+            "silent too long: away, though its watch is open"
+        );
+        assert!(!line.is_online("phone"));
+        assert_eq!(line.last_seen("phone"), 30_000, "last seen when last heard");
+        assert!(!line.sweep(30_000 + LIVE_MS + 1), "told once");
+
+        // Meanwhile a message comes for it: it waits, as for any device away.
+        let sent = line
+            .send(
+                &me("laptop", Some("maya")),
+                to_device("phone", 600_000),
+                ANY,
+                ANY,
+                200_000,
+            )
+            .unwrap();
+        assert!(sent.now.is_empty() && sent.waiting);
+        let back = line.heard("phone", 210_000).expect("back: what waited");
+        assert_eq!(back.len(), 1);
+        assert!(line.is_online("phone"));
+        // Closing now tells the others it went.
+        assert!(line.close("phone", 220_000));
+    }
+
+    #[test]
+    fn a_device_already_away_going_is_not_told_again() {
+        let mut line = Line::default();
+        line.open("phone", None, 0);
+        assert!(line.sweep(LIVE_MS));
+        assert!(!line.close("phone", LIVE_MS + 5), "already taken as away");
+        assert!(
+            line.heard("phone", LIVE_MS + 6).is_none(),
+            "no watch: not on the line"
+        );
     }
 
     #[test]
