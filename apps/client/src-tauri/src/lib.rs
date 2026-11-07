@@ -1010,7 +1010,79 @@ async fn share_hold(
 ) -> Answer<basalt_proto::msg::HeldShare> {
     Ok(state
         .client
-        .share_hold(basalt_proto::msg::ShareHoldRequest { id, to, keep, paths })
+        .share_hold(basalt_proto::msg::ShareHoldRequest {
+            id,
+            to,
+            keep,
+            paths,
+            staged: Vec::new(),
+        })
+        .await?)
+}
+
+/// A file on this device to keep on the host for a device that is away.
+#[derive(serde::Deserialize)]
+struct LocalFile {
+    source: String,
+    name: String,
+    size: u64,
+}
+
+/// Keeps files on this device on the host for a device that is away: each
+/// uploaded first (`basalt://share-sending` says how far), then kept there.
+#[tauri::command]
+async fn share_hold_local(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    to: String,
+    keep: bool,
+    files: Vec<LocalFile>,
+) -> Answer<basalt_proto::msg::HeldShare> {
+    use tauri::Emitter;
+    let open = open_local(&app);
+    let total: u64 = files.iter().map(|f| f.size).sum();
+    let mut before = 0u64;
+    let mut staged = Vec::new();
+    for file in &files {
+        let source = {
+            let open = Arc::clone(&open);
+            let at = file.source.clone();
+            tokio::task::spawn_blocking(move || open(&at))
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))
+                .and_then(|opened| opened)
+                .map_err(basalt_client::ClientError::from)?
+        };
+        let told = app.clone();
+        let offer = id.clone();
+        let from = before;
+        let progress: basalt_client::client::ProgressFn = Arc::new(move |p| {
+            let _ = told.emit(
+                "basalt://share-sending",
+                serde_json::json!({ "offer": offer, "done": from + p.transferred, "total": total }),
+            );
+        });
+        let stage = state
+            .client
+            .stage_for_share(source, file.size, &file.name, Some(progress), None)
+            .await?;
+        before += file.size;
+        staged.push(basalt_proto::msg::StagedFile {
+            stage,
+            name: file.name.clone(),
+            size: file.size,
+        });
+    }
+    Ok(state
+        .client
+        .share_hold(basalt_proto::msg::ShareHoldRequest {
+            id,
+            to,
+            keep,
+            paths: Vec::new(),
+            staged,
+        })
         .await?)
 }
 
@@ -1067,7 +1139,11 @@ async fn receive_held(
     folder: Option<String>,
 ) -> Answer<Received> {
     let cancel = Cancel::new();
-    state.transfers.lock().expect("transfers lock").insert(id.clone(), cancel.clone());
+    state
+        .transfers
+        .lock()
+        .expect("transfers lock")
+        .insert(id.clone(), cancel.clone());
     let report = progress_reporter(app.clone(), id.clone(), name.clone(), "download");
     let safe = safe_local_name(&name);
     #[cfg(target_os = "android")]
@@ -1076,19 +1152,41 @@ async fn receive_held(
         use tauri_plugin_basalt_android::BasaltAndroidExt;
         let handle = app.clone();
         let wanted = safe.clone();
-        let created = tokio::task::spawn_blocking(move || handle.basalt_android().create_download(&wanted, ""))
-            .await
-            .map_err(|e| UiError { kind: "error".into(), message: e.to_string() })?
-            .map_err(|e| UiError { kind: "error".into(), message: format!("couldn’t save to Downloads: {e}") })?;
+        let created = tokio::task::spawn_blocking(move || {
+            handle.basalt_android().create_download(&wanted, "")
+        })
+        .await
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: e.to_string(),
+        })?
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t save to Downloads: {e}"),
+        })?;
         let result = state
             .client
-            .download_held(&share, file, size, &name, owned_file(created.fd), Some(report), Some(cancel))
+            .download_held(
+                &share,
+                file,
+                size,
+                &name,
+                owned_file(created.fd),
+                Some(report),
+                Some(cancel),
+            )
             .await;
         let ok = result.is_ok();
         let handle = app.clone();
         let uri = created.uri.clone();
-        let _ = tokio::task::spawn_blocking(move || handle.basalt_android().finish_download(&uri, ok)).await;
-        result.map(|_| Received { shown_as: created.shown_as, path: None, uri: Some(created.uri) })
+        let _ =
+            tokio::task::spawn_blocking(move || handle.basalt_android().finish_download(&uri, ok))
+                .await;
+        result.map(|_| Received {
+            shown_as: created.shown_as,
+            path: None,
+            uri: Some(created.uri),
+        })
     };
     #[cfg(not(target_os = "android"))]
     let outcome = {
@@ -1115,7 +1213,11 @@ async fn receive_held(
             mark_downloaded(&local);
         }
         let shown = local.display().to_string();
-        result.map(|_| Received { shown_as: shown.clone(), path: Some(shown), uri: None })
+        result.map(|_| Received {
+            shown_as: shown.clone(),
+            path: Some(shown),
+            uri: None,
+        })
     };
     state.transfers.lock().expect("transfers lock").remove(&id);
     Ok(outcome?)
@@ -2311,6 +2413,7 @@ pub fn run() {
             local_files,
             receive_direct,
             share_hold,
+            share_hold_local,
             share_answer,
             share_held,
             share_manage,

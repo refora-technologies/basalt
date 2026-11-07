@@ -1267,6 +1267,20 @@ pub struct ShareHoldRequest {
     pub keep: bool,
     /// Files on the drive, by their paths.
     pub paths: Vec<String>,
+    /// Files from the sending device, uploaded first with `ShareStage`.
+    /// From 1.6.4.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub staged: Vec<StagedFile>,
+}
+
+/// A file uploaded with `ShareStage` for a share: its stage id (hex), name
+/// and size, which the host checks against what came.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedFile {
+    pub stage: String,
+    pub name: String,
+    pub size: u64,
 }
 
 /// Part of a file held for this device, as plain bytes.

@@ -208,14 +208,25 @@ export function useInbox(
   }, [])
 
   const sendThroughHost = useCallback(async (files: ShareFile[], to: PresentDevice, keep: boolean) => {
-    if (files.some((f) => !f.path)) throw new Error('Only files on the drive can wait on the host for now.')
     const offer = newOfferId()
-    await api.shareHold(
-      offer,
-      to.device,
-      keep,
-      files.map((f) => f.path),
-    )
+    if (files.every((f) => f.source)) {
+      // On this device: up to the host first, then kept there.
+      await api.shareHoldLocal(
+        offer,
+        to.device,
+        keep,
+        files.map((f) => ({ source: f.source!, name: f.name, size: f.size })),
+      )
+    } else if (files.every((f) => !f.source)) {
+      await api.shareHold(
+        offer,
+        to.device,
+        keep,
+        files.map((f) => f.path),
+      )
+    } else {
+      throw new Error('Send files from the drive and from this device apart.')
+    }
     setItems((list) =>
       kept([{ id: offer, direction: 'out', files, peer: partyOf(to), state: 'waiting', at: Date.now(), reason: 'On the host until it’s back' }, ...list]),
     )

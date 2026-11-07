@@ -3775,7 +3775,8 @@ impl Host {
         if !store_ok {
             return Err(HostError::Unavailable("this host can't hold files".into()));
         }
-        if req.paths.is_empty() || req.paths.len() > 500 {
+        let count = req.paths.len() + req.staged.len();
+        if count == 0 || count > 500 {
             return Err(HostError::BadRequest(
                 "a share holds from 1 to 500 files".into(),
             ));
@@ -3798,6 +3799,27 @@ impl Host {
             let name = path.rsplit('/').next().unwrap_or(path).to_string();
             files.push((name, real));
         }
+        // Uploaded from the sending device first: whole, and named as a file
+        // may be.
+        let store = self.shares.as_ref().expect("checked above");
+        for staged in &req.staged {
+            let (path, len) = store
+                .staged(&staged.stage)
+                .ok_or_else(|| HostError::NotFound(format!("{} wasn't uploaded", staged.name)))?;
+            if len != staged.size {
+                return Err(HostError::BadRequest(format!(
+                    "{} came in part: {len} of {} bytes",
+                    staged.name, staged.size
+                )));
+            }
+            if let Some(why) = crate::vault::name_problem(&staged.name) {
+                return Err(HostError::BadRequest(format!("{}: {why}", staged.name)));
+            }
+            total += len;
+            files.push((staged.name.clone(), path));
+        }
+        // Uploaded already: counted against the room once.
+        let staged_total: u64 = req.staged.iter().map(|s| s.size).sum();
         let (secure, limit) = {
             let config = self.config.lock().expect("config lock");
             (
@@ -3805,7 +3827,12 @@ impl Host {
                 profile.as_deref().and_then(|p| config.share_limits.of(p)),
             )
         };
-        if let Some(why) = self.share_refused(profile.as_deref(), from.key(), total, limit) {
+        if let Some(why) = self.share_refused(
+            profile.as_deref(),
+            from.key(),
+            total.saturating_sub(staged_total),
+            limit,
+        ) {
             return Err(HostError::Denied(why));
         }
         let from_party = crate::share_store::Party {
@@ -3862,6 +3889,9 @@ impl Host {
         })
         .await
         .map_err(join)??;
+        for staged in &req.staged {
+            store.unstage(&staged.stage);
+        }
         self.offer_if_online(&held);
         Ok(view_of(&held))
     }
@@ -5930,6 +5960,32 @@ where
             let profile = session.profile.as_ref().map(|(id, _)| id.clone());
             let held = host.hold_share(&device, profile, req).await?;
             reply(stream, &held).await?;
+        }
+
+        Op::ShareStage => {
+            host.check_profile(session)?;
+            let device = session.device.clone().ok_or(HostError::Unauthenticated)?;
+            let profile = session.profile.as_ref().map(|(id, _)| id.clone());
+            let (stage, offset, data) = basalt_proto::msg::decode_chunk(payload)?;
+            let store = host
+                .shares
+                .as_ref()
+                .ok_or_else(|| HostError::Unavailable("this host can't hold files".into()))?;
+            // Never more than could be kept: an upload that fills the disk is
+            // refused as it comes, not after.
+            let room = host
+                .share_room(profile.as_deref(), device.key())
+                .saturating_sub(store.staged_bytes());
+            if data.len() as u64 > room {
+                return Err(HostError::Denied(
+                    "not enough space on the host to keep this for someone offline".into(),
+                ));
+            }
+            store.stage_write(&stage, offset, data)?;
+            if let Some(key) = session.device_key() {
+                host.traffic.received(&key, data.len() as u64);
+            }
+            write_ok(stream, &[]).await?;
         }
 
         Op::ShareRead => {

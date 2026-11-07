@@ -835,6 +835,9 @@ export const api = {
     folder?: string,
   ) => call<{ shownAs: string; path?: string; uri?: string }>('receive_direct', { endpoint, offer, token, file, name, id, folder: folder ?? null }),
   /** Keeps files on the drive on the host, locked, for a device that's away. */
+  /** Files on this device, uploaded to the host and kept for `to`; `onShareSending` says how far. */
+  shareHoldLocal: (id: string, to: string, keep: boolean, files: { source: string; name: string; size: number }[]) =>
+    call<HeldShare>('share_hold_local', { id, to, keep, files }),
   shareHold: (id: string, to: string, keep: boolean, paths: string[]) =>
     call<HeldShare>('share_hold', { id, to, keep, paths }),
   /** This device's answer to a share the host kept for it. */
@@ -1027,6 +1030,13 @@ export async function onPresence(handler: () => void): Promise<() => void> {
   if (!inTauri()) return () => {}
   const { listen } = await import('@tauri-apps/api/event')
   return listen('basalt://presence', () => handler())
+}
+
+/** How far files on this device have gone up to the host, for a share kept there. */
+export async function onShareSending(handler: (sending: { offer: string; done: number; total: number }) => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<{ offer: string; done: number; total: number }>('basalt://share-sending', (e) => handler(e.payload))
 }
 
 /** Each message from another of the host's devices, as it comes. */

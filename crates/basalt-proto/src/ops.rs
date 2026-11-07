@@ -184,6 +184,10 @@ pub enum Op {
     ShareHeld = 52,
     /// Deletes a held share, or moves its files onto the drive.
     ShareManage = 53,
+    /// Part of a file on this device, uploaded to be held for someone away:
+    /// kept apart, never on the drive, until a `ShareHold` takes it. Binary,
+    /// as `WriteChunk`: a stage id, an offset, the bytes. From 1.6.4.
+    ShareStage = 54,
 }
 
 impl Op {
@@ -192,7 +196,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::ShareManage as u8;
+    pub const LAST: u8 = Op::ShareStage as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -249,6 +253,7 @@ impl Op {
             51 => Op::ShareAnswer,
             52 => Op::ShareHeld,
             53 => Op::ShareManage,
+            54 => Op::ShareStage,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -444,6 +449,7 @@ mod tests {
             Op::ShareAnswer,
             Op::ShareHeld,
             Op::ShareManage,
+            Op::ShareStage,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

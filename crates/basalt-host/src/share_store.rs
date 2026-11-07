@@ -28,6 +28,11 @@ use crate::error::{HostError, Result};
 
 /// Plain bytes per chunk.
 pub const CHUNK: usize = 1024 * 1024;
+/// Where files uploaded for a share wait to be kept: in the store's folder,
+/// never on the drive. Not a share id, which is letters and digits only.
+const STAGING: &str = ".incoming";
+/// An upload for a share left unfinished this long is given up.
+const STAGED_LASTS: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 const TAG: usize = 16;
 const MAGIC: &[u8; 4] = b"BSS1";
 const SEALED_CHUNK: u64 = (4 + CHUNK + TAG) as u64;
@@ -99,6 +104,20 @@ impl ShareStore {
     /// The store in `dir`, locked with `master`, as it was left.
     pub fn open(dir: PathBuf, master: [u8; 32]) -> Result<Self> {
         std::fs::create_dir_all(&dir)?;
+        // Uploads for a share never finished, from a day ago and more.
+        if let Ok(entries) = std::fs::read_dir(dir.join(STAGING)) {
+            for entry in entries.flatten() {
+                let old = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > STAGED_LASTS);
+                if old {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
         let index = match std::fs::read(dir.join("index.json")) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Index::default(),
@@ -511,6 +530,61 @@ impl ShareStore {
         &self.dir
     }
 
+    /// Writes `data` at `offset` of the file being uploaded as `stage`: in
+    /// order, so `offset` is what came before. Answers its length after.
+    pub fn stage_write(&self, stage: &[u8; 16], offset: u64, data: &[u8]) -> Result<u64> {
+        let path = self.staged_path(stage);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        let have = file.metadata()?.len();
+        if offset != have {
+            return Err(HostError::BadRequest(format!(
+                "that part starts at {offset}, and {have} bytes came before it"
+            )));
+        }
+        file.write_all(data)?;
+        Ok(have + data.len() as u64)
+    }
+
+    /// The file uploaded as `stage` (hex), and its length, if there is one.
+    pub fn staged(&self, stage: &str) -> Option<(PathBuf, u64)> {
+        let bytes: [u8; 16] = basalt_proto::hex::decode(stage).ok()?.try_into().ok()?;
+        let path = self.staged_path(&bytes);
+        let len = std::fs::metadata(&path).ok()?.len();
+        Some((path, len))
+    }
+
+    /// Done with an upload: it was kept, or is given up.
+    pub fn unstage(&self, stage: &str) {
+        if let Some((path, _)) = self.staged(stage) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Bytes uploaded and not yet kept.
+    pub fn staged_bytes(&self) -> u64 {
+        std::fs::read_dir(self.dir.join(STAGING))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|e| e.metadata().ok())
+                    .map(|m| m.len())
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    fn staged_path(&self, stage: &[u8; 16]) -> PathBuf {
+        self.dir
+            .join(STAGING)
+            .join(format!("{}.part", basalt_proto::hex::encode(stage)))
+    }
+
     fn key(&self, id: &str, n: usize) -> LessSafeKey {
         let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, b"basalt/share/v1");
         let prk = salt.extract(&self.master);
@@ -807,6 +881,25 @@ mod tests {
             !dir.join("drive").join("Basalt shares").exists(),
             "and the folders made for it, once empty"
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_upload_for_a_share_comes_in_order_and_goes_when_done() {
+        let dir = temp("stage");
+        let store = ShareStore::open(dir.join("store"), [7; 32]).unwrap();
+        let stage = [9u8; 16];
+        let hex = basalt_proto::hex::encode(&stage);
+        assert_eq!(store.stage_write(&stage, 0, b"hello ").unwrap(), 6);
+        assert!(store.stage_write(&stage, 2, b"x").is_err(), "out of order");
+        assert_eq!(store.stage_write(&stage, 6, b"world").unwrap(), 11);
+        let (path, len) = store.staged(&hex).unwrap();
+        assert_eq!(len, 11);
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello world");
+        assert_eq!(store.staged_bytes(), 11);
+        assert!(store.staged("not hex").is_none());
+        store.unstage(&hex);
+        assert!(store.staged(&hex).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 

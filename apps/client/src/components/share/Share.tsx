@@ -16,7 +16,7 @@ import {
   X,
 } from 'lucide-react'
 
-import { api, type PresentDevice } from '@/lib/api'
+import { api, onShareSending, type PresentDevice } from '@/lib/api'
 import type { Presence } from '@/lib/usePresence'
 import { seenLine } from '@/lib/usePresence'
 import type { Inbox } from '@/lib/useInbox'
@@ -57,12 +57,32 @@ export function ShareChooser({
   const [removeIfAnswered, setRemoveIfAnswered] = useState(inbox.removeOnAnswer)
   const myProfile = presence.devices.find((d) => d.device === presence.you)?.profile
   const onDrive = files.every((f) => !f.source)
+  // All on the drive, or all on this device (uploaded to the host first).
+  const holdable = onDrive || files.every((f) => f.source)
+  // How far files on this device have gone up to the host.
+  const [upPart, setUpPart] = useState<number | null>(null)
+  useEffect(() => {
+    if (!busy || onDrive) {
+      setUpPart(null)
+      return
+    }
+    let gone = false
+    let stop: (() => void) | null = null
+    void onShareSending((s) => setUpPart(s.total > 0 ? s.done / s.total : null)).then((unlisten) => {
+      if (gone) unlisten()
+      else stop = unlisten
+    })
+    return () => {
+      gone = true
+      stop?.()
+    }
+  }, [busy, onDrive])
   const nobody = targets.mine.length + targets.home.length + targets.loose.length === 0
   // What the host can keep now, asked once a device that's away is chosen.
   const [host, setHost] = useState<{ room?: number; secure?: boolean } | null>(null)
   const away = chosen !== null && !chosen.online
   useEffect(() => {
-    if (!away || !onDrive) return
+    if (!away || !holdable) return
     let live = true
     api
       .shareHeld()
@@ -71,7 +91,7 @@ export function ShareChooser({
     return () => {
       live = false
     }
-  }, [away, onDrive])
+  }, [away, holdable])
   const noRoom = host?.room !== undefined && totalOf(files) > host.room
 
   const send = async (): Promise<void> => {
@@ -162,17 +182,21 @@ export function ShareChooser({
             >
               {busy ? 'Sending…' : `Send to ${calledOf({ device: chosen.device, name: chosen.name, form: chosen.form, profile: chosen.profile, profileName: chosen.profileName }, myProfile)}`}
             </button>
-          ) : onDrive && noRoom ? (
+          ) : holdable && noRoom ? (
             <button disabled className="w-full rounded-full bg-white/[0.06] py-3 text-[14px] font-semibold text-textFaint">
               Send through host
             </button>
-          ) : onDrive ? (
+          ) : holdable ? (
             <button
               disabled={busy}
               onClick={() => void send()}
               className="w-full rounded-full bg-white py-3 text-[14px] font-semibold text-black transition-transform active:scale-[0.98] disabled:opacity-60"
             >
-              {busy ? 'Keeping it on the host…' : 'Send through host'}
+              {busy
+                ? upPart !== null && upPart < 1
+                  ? `Sending to the host… ${Math.floor(upPart * 100)}%`
+                  : 'Keeping it on the host…'
+                : 'Send through host'}
             </button>
           ) : (
             <button disabled className="w-full rounded-full bg-white/[0.06] py-3 text-[14px] font-semibold text-textFaint">
@@ -187,13 +211,13 @@ export function ShareChooser({
                       ? 'It arrives at once.'
                       : `${chosen.profileName ?? 'They'} ${chosen.profileName ? 'is' : 'are'} asked to accept.`
                   }`
-                : onDrive && noRoom
+                : holdable && noRoom
                   ? `${chosen.name} isn’t online, and the host hasn’t room to keep this for it: ${formatBytes(host?.room ?? 0)} left for you.`
-                  : onDrive
+                  : holdable
                   ? `${chosen.name} isn’t online. The host keeps it${host?.secure === false ? ' in its Basalt shares folder' : ', locked,'} and delivers it when it’s back.`
-                  : 'A file on this device goes only straight to a device that’s online, for now.')}
+                  : 'Send files from the drive and from this device apart.')}
           </p>
-          {!chosen.online && onDrive && (
+          {!chosen.online && holdable && (
             <label className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-white/[0.04] px-3 py-2.5 text-[12.5px] text-textDim">
               <span>Remove it from the host once it’s answered</span>
               <input

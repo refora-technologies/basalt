@@ -1726,6 +1726,67 @@ impl Basalt {
         lease.check(result)
     }
 
+    /// Uploads a file on this device to the host, to be held for someone
+    /// away: answers its stage id, for [`ShareHoldRequest::staged`]. Read
+    /// from `source` to its end, `total` bytes as said.
+    ///
+    /// [`ShareHoldRequest::staged`]: basalt_proto::msg::ShareHoldRequest
+    pub async fn stage_for_share(
+        &self,
+        source: std::fs::File,
+        total: u64,
+        name: &str,
+        progress: Option<ProgressFn>,
+        cancel: Option<Cancel>,
+    ) -> Result<String> {
+        use tokio::io::AsyncReadExt;
+        let mut stage = [0u8; 16];
+        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut stage)
+            .map_err(|_| ClientError::Protocol("no random numbers to name the upload".into()))?;
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let mut source = tokio::fs::File::from_std(source);
+        let mut buffer = vec![0u8; HELD_PIECE as usize];
+        let mut done = 0u64;
+        loop {
+            if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                return Err(ClientError::Cancelled);
+            }
+            let mut filled = 0;
+            while filled < buffer.len() {
+                let n = source.read(&mut buffer[filled..]).await?;
+                if n == 0 {
+                    break;
+                }
+                filled += n;
+            }
+            if filled == 0 && done > 0 {
+                break;
+            }
+            let result = lease.share_stage(&stage, done, &buffer[..filled]).await;
+            lease.check(result)?;
+            done += filled as u64;
+            self.count(filled as u64);
+            if let Some(report) = &progress {
+                report(Progress {
+                    kind: TransferKind::Upload,
+                    path: name.to_string(),
+                    transferred: done,
+                    total,
+                });
+            }
+            if filled < buffer.len() {
+                break;
+            }
+        }
+        if done != total {
+            return Err(ClientError::Protocol(format!(
+                "{name} changed while it was sent: {done} of {total} bytes"
+            )));
+        }
+        Ok(basalt_proto::hex::encode(&stage))
+    }
+
     /// Takes file `file` of a share held for this device into `out`, whole.
     #[allow(clippy::too_many_arguments)]
     pub async fn download_held(

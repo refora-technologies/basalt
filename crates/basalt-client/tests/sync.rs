@@ -1201,6 +1201,7 @@ async fn a_share_waits_on_the_host_for_a_device_that_is_away() {
             to: tablet_id.clone(),
             keep: false,
             paths: vec!["films/Holiday.mkv".into()],
+            staged: Vec::new(),
         })
         .await
         .expect("held for the tablet");
@@ -1284,6 +1285,7 @@ async fn the_host_limits_keeps_in_plain_and_clears_what_it_holds() {
         to: tablet_id.clone(),
         keep: false,
         paths: vec![path.into()],
+        staged: Vec::new(),
     };
 
     // A limit of 2 MB for Maya: the big file doesn't fit, and she is told.
@@ -1376,6 +1378,7 @@ async fn a_removed_profiles_share_files_go_to_the_drive_or_away() {
         to: tablet_id.clone(),
         keep: false,
         paths: vec!["note.txt".into()],
+        staged: Vec::new(),
     };
 
     // Maya's, locked: moved onto the drive as she goes.
@@ -1444,6 +1447,7 @@ async fn a_kept_share_is_shared_again_with_another_device() {
             to: tablet_id,
             keep: true,
             paths: vec!["clip.mp4".into()],
+            staged: Vec::new(),
         })
         .await
         .expect("held");
@@ -1497,6 +1501,103 @@ async fn a_kept_share_is_shared_again_with_another_device() {
         .await
         .expect("the phone takes it");
     assert_eq!(std::fs::read(&into).unwrap(), body);
+}
+
+/// A file only on the sending device, for a device that is away: uploaded
+/// to the host, kept there apart from the drive, and taken by the device
+/// when it is back. Nothing of it is ever on the drive.
+#[tokio::test]
+async fn a_file_on_this_device_waits_on_the_host_for_one_that_is_away() {
+    use basalt_proto::msg::{ShareHoldRequest, StagedFile};
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let tablet = fixture.paired_client().await;
+    let tablet_id = tablet.presence().await.expect("presence").you;
+    // Over one upload piece, so it takes more than one.
+    let body: Vec<u8> = (0..9_000_000u32).map(|i| (i % 241) as u8).collect();
+    let local = fixture.dir.join("on-the-laptop.mov");
+    std::fs::write(&local, &body).unwrap();
+
+    let stage = laptop
+        .stage_for_share(
+            std::fs::File::open(&local).unwrap(),
+            body.len() as u64,
+            "Beach.mov",
+            None,
+            None,
+        )
+        .await
+        .expect("uploaded");
+    // Said wrong, it isn't kept.
+    let wrong = laptop
+        .share_hold(ShareHoldRequest {
+            id: "local0".into(),
+            to: tablet_id.clone(),
+            keep: false,
+            paths: Vec::new(),
+            staged: vec![StagedFile {
+                stage: stage.clone(),
+                name: "Beach.mov".into(),
+                size: 5,
+            }],
+        })
+        .await;
+    assert!(wrong.is_err(), "a size that isn't what came");
+    let held = laptop
+        .share_hold(ShareHoldRequest {
+            id: "local1".into(),
+            to: tablet_id,
+            keep: false,
+            paths: Vec::new(),
+            staged: vec![StagedFile {
+                stage: stage.clone(),
+                name: "Beach.mov".into(),
+                size: body.len() as u64,
+            }],
+        })
+        .await
+        .expect("held from the upload");
+    assert_eq!(held.files[0].name, "Beach.mov");
+    assert_eq!(fixture.host.sharing_view().locked, body.len() as u64);
+
+    let into = fixture.dir.join("taken.mov");
+    tablet
+        .download_held(
+            "local1",
+            0,
+            body.len() as u64,
+            "Beach.mov",
+            std::fs::File::create(&into).unwrap(),
+            None,
+            None,
+        )
+        .await
+        .expect("the tablet takes it");
+    assert_eq!(std::fs::read(&into).unwrap(), body);
+    assert!(
+        walk(&fixture.vault_path(""))
+            .iter()
+            .all(|p| !p.ends_with("Beach.mov")),
+        "never on the drive"
+    );
+}
+
+/// Every file under `dir`.
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(at) = todo.pop() {
+        for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                todo.push(path);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

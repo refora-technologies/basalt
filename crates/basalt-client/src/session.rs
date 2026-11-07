@@ -880,6 +880,14 @@ impl Session {
             .map_err(Into::into)
     }
 
+    /// Part of a file uploaded to be held for someone away.
+    pub async fn share_stage(&mut self, stage: &[u8; 16], offset: u64, data: &[u8]) -> Result<()> {
+        let payload = basalt_proto::msg::encode_chunk(stage, offset, data);
+        write_request(&mut self.stream, Op::ShareStage, &payload).await?;
+        read_response(&mut self.stream).await?;
+        Ok(())
+    }
+
     /// Part of a file held for this device, as plain bytes.
     pub async fn share_read(
         &mut self,
