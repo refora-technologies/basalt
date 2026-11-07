@@ -7,6 +7,7 @@ import { setShowHidden, useShowHidden } from '@/lib/showHidden'
 import { api, type KeyKind, type Status } from '@/lib/api'
 import type { Inbox } from '@/lib/useInbox'
 import { useAlwaysReady } from '@/lib/alwaysReady'
+import { HeldList } from './share/Held'
 import {
   audioDevices,
   savedAudioDevice,
@@ -308,6 +309,13 @@ function SharingSection({ inbox }: { inbox: Inbox }): React.JSX.Element {
         onChange={inbox.setAcceptFromHome}
         className="rounded-none px-4 py-2.5"
       />
+      <Switch
+        label="Remove from the host once answered"
+        description="When someone accepts or declines what you sent through the host. You can change it for one send."
+        checked={inbox.removeOnAnswer}
+        onChange={inbox.setRemoveOnAnswer}
+        className="rounded-none px-4 py-2.5"
+      />
       <div className="flex items-center justify-between gap-4 px-4 py-2.5">
         <span className="min-w-0">
           <span className="block text-[13px] text-textDim">Received files go to</span>
@@ -324,6 +332,8 @@ function SharingSection({ inbox }: { inbox: Inbox }): React.JSX.Element {
           </button>
         </span>
       </div>
+      <div className="px-4 pb-1 pt-2 text-[13px] text-textDim">Shared through host</div>
+      <HeldList />
     </Section>
   )
 }

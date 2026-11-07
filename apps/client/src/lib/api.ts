@@ -455,6 +455,17 @@ export interface ChannelSendResponse {
 }
 
 /** One of the host's devices, and whether it is online now. */
+/** A share kept on the host for a device that's away, as its sender sees it. */
+export interface HeldShare {
+  id: string
+  to: string
+  toName: string
+  files: { name: string; size: number }[]
+  created: number
+  keep: boolean
+  state: 'waiting' | 'accepted' | 'declined'
+}
+
 export interface PresentDevice {
   device: string
   name: string
@@ -823,6 +834,18 @@ export const api = {
     id: string,
     folder?: string,
   ) => call<{ shownAs: string; path?: string; uri?: string }>('receive_direct', { endpoint, offer, token, file, name, id, folder: folder ?? null }),
+  /** Keeps files on the drive on the host, locked, for a device that's away. */
+  shareHold: (id: string, to: string, keep: boolean, paths: string[]) =>
+    call<HeldShare>('share_hold', { id, to, keep, paths }),
+  /** This device's answer to a share the host kept for it. */
+  shareAnswer: (id: string, accepted: boolean) => call<void>('share_answer', { id, accepted }),
+  /** What this profile has kept on the host, and the space kept files take. */
+  shareHeld: () => call<{ held: HeldShare[]; used: number; count: number }>('share_held'),
+  /** Deletes a kept share, or moves its files onto the drive (`folder`, "" for its top). */
+  shareManage: (action: 'delete' | 'move', id: string, folder = '') => call<void>('share_manage', { action, id, folder }),
+  /** Takes one file of a share the host kept for this device. */
+  receiveHeld: (share: string, file: number, name: string, size: number, id: string, folder?: string) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('receive_held', { share, file, name, size, id, folder: folder ?? null }),
   /** Where shared files land unless another folder is chosen. */
   defaultReceivedFolder: () => call<string>('default_received_folder'),
   /** The host's devices and who of them is online. Throws on a host before 1.6.4. */
@@ -1612,7 +1635,15 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return [] as T
     case 'notify':
     case 'withdraw_local':
+    case 'share_answer':
+    case 'share_manage':
       return undefined as T
+    case 'share_held':
+      return { held: [], used: 0, count: 0 } as T
+    case 'share_hold':
+      return { id: 'mock', to: '', toName: '', files: [], created: 0, keep: false, state: 'waiting' } as T
+    case 'receive_held':
+      return { shownAs: 'Downloads\Basalt\file' } as T
     case 'share_local':
       return { endpoint: { addresses: ['127.0.0.1'], port: 1, key: '' }, token: '' } as T
     case 'local_files':

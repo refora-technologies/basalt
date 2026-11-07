@@ -54,7 +54,9 @@ export function ShareChooser({
   const [chosen, setChosen] = useState<PresentDevice | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [removeIfAnswered, setRemoveIfAnswered] = useState(inbox.removeOnAnswer)
   const myProfile = presence.devices.find((d) => d.device === presence.you)?.profile
+  const onDrive = files.every((f) => !f.source)
   const nobody = targets.mine.length + targets.home.length + targets.loose.length === 0
 
   const send = async (): Promise<void> => {
@@ -62,6 +64,11 @@ export function ShareChooser({
     setBusy(true)
     setError(null)
     try {
+      if (!chosen.online) {
+        await inbox.sendThroughHost(files, chosen, !removeIfAnswered)
+        onDone(`On the host for ${chosen.name}. It arrives when it’s back.`)
+        return
+      }
       await inbox.send(files, chosen)
       const who = calledOf({ device: chosen.device, name: chosen.name, form: chosen.form, profile: chosen.profile, profileName: chosen.profileName }, myProfile)
       onDone(chosen.profile && chosen.profile === myProfile ? `Sent to ${who}.` : `Sent. ${chosen.profileName ?? chosen.name} is asked to accept.`)
@@ -140,6 +147,14 @@ export function ShareChooser({
             >
               {busy ? 'Sending…' : `Send to ${calledOf({ device: chosen.device, name: chosen.name, form: chosen.form, profile: chosen.profile, profileName: chosen.profileName }, myProfile)}`}
             </button>
+          ) : onDrive ? (
+            <button
+              disabled={busy}
+              onClick={() => void send()}
+              className="w-full rounded-full bg-white py-3 text-[14px] font-semibold text-black transition-transform active:scale-[0.98] disabled:opacity-60"
+            >
+              {busy ? 'Keeping it on the host…' : 'Send through host'}
+            </button>
           ) : (
             <button disabled className="w-full rounded-full bg-white/[0.06] py-3 text-[14px] font-semibold text-textFaint">
               Not online
@@ -153,8 +168,21 @@ export function ShareChooser({
                       ? 'It arrives at once.'
                       : `${chosen.profileName ?? 'They'} ${chosen.profileName ? 'is' : 'are'} asked to accept.`
                   }`
-                : 'Sending through the host, for a device that’s away, comes in the next test build.')}
+                : onDrive
+                  ? `${chosen.name} isn’t online. The host keeps it, locked, and delivers it when it’s back.`
+                  : 'A file on this device goes only straight to a device that’s online, for now.')}
           </p>
+          {!chosen.online && onDrive && (
+            <label className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-white/[0.04] px-3 py-2.5 text-[12.5px] text-textDim">
+              <span>If they decline, remove it from the host</span>
+              <input
+                type="checkbox"
+                checked={removeIfAnswered}
+                onChange={(e) => setRemoveIfAnswered(e.target.checked)}
+                className="h-4 w-4 accent-white"
+              />
+            </label>
+          )}
         </div>
       )}
     </div>

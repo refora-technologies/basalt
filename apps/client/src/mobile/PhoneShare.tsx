@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronLeft, Send } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Send } from 'lucide-react'
 
 import type { AppModel } from '@/App'
 import { Switch } from '@/components/Switch'
 import { InboxList, ReceivePrompt, ShareChooser } from '@/components/share/Share'
+import { HeldList } from '@/components/share/Held'
 import type { ShareItem } from '@/lib/share'
 import { cn } from '@/lib/utils'
 import { Sheet } from './Sheet'
@@ -175,6 +176,7 @@ function InboxScreen({
 export function SharingCard({ model }: { model: AppModel }): React.JSX.Element {
   const { inbox } = model
   const [alwaysReady, setAlwaysReady] = useAlwaysReady()
+  const [heldOpen, setHeldOpen] = useState(false)
   return (
     <div className="rounded-2xl border border-white/[0.07] bg-[#141416] py-1">
       <div className="px-4 pb-1 pt-2.5 font-mono text-[10.5px] uppercase tracking-[0.18em] text-textFaint">Sharing</div>
@@ -192,10 +194,26 @@ export function SharingCard({ model }: { model: AppModel }): React.JSX.Element {
         onChange={inbox.setAcceptFromHome}
         className="px-4"
       />
+      <Switch
+        label="Remove from the host once answered"
+        description="When someone accepts or declines what you sent through the host. You can change it for one send."
+        checked={inbox.removeOnAnswer}
+        onChange={inbox.setRemoveOnAnswer}
+        className="px-4"
+      />
       <div className="px-4 py-2.5">
         <div className="text-[15px] text-text">Received files go to</div>
         <div className="font-mono text-[12px] text-textFaint">Download/Basalt</div>
       </div>
+      <button onClick={() => setHeldOpen(true)} className="flex w-full items-center justify-between px-4 py-2.5 text-left active:bg-white/[0.05]">
+        <span className="text-[15px] text-text">Shared through host</span>
+        <ChevronRight size={16} className="text-textFaint" />
+      </button>
+      <Sheet open={heldOpen} onClose={() => setHeldOpen(false)} title="Shared through host">
+        <div className="pb-[calc(var(--inset-bottom,0px)+18px)]">
+          <HeldList />
+        </div>
+      </Sheet>
     </div>
   )
 }

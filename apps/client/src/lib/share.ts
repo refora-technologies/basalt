@@ -45,6 +45,8 @@ export interface OfferBody {
   to: Party
   /** Files on the sending device: taken straight from it. */
   direct?: Direct
+  /** Kept on the host for this device while it was away: taken from there. */
+  held?: boolean
 }
 
 /** `share.answer`: back to whoever sent the offer. */

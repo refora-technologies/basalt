@@ -999,6 +999,111 @@ async fn receive_direct(
     Ok(outcome?)
 }
 
+/// Keeps files on the drive on the host for a device that is away.
+#[tauri::command]
+async fn share_hold(
+    state: State<'_, AppState>,
+    id: String,
+    to: String,
+    keep: bool,
+    paths: Vec<String>,
+) -> Answer<basalt_proto::msg::HeldShare> {
+    Ok(state
+        .client
+        .share_hold(basalt_proto::msg::ShareHoldRequest { id, to, keep, paths })
+        .await?)
+}
+
+/// This device's answer to a share the host kept for it.
+#[tauri::command]
+async fn share_answer(state: State<'_, AppState>, id: String, accepted: bool) -> Answer<()> {
+    Ok(state.client.share_answer(&id, accepted).await?)
+}
+
+/// What this profile has kept on the host.
+#[tauri::command]
+async fn share_held(state: State<'_, AppState>) -> Answer<basalt_proto::msg::ShareHeldResponse> {
+    Ok(state.client.share_held().await?)
+}
+
+/// Deletes a share kept on the host, or moves its files onto the drive.
+#[tauri::command]
+async fn share_manage(state: State<'_, AppState>, action: String, id: String, folder: String) -> Answer<()> {
+    Ok(state
+        .client
+        .share_manage(basalt_proto::msg::ShareManageRequest { action, id, folder })
+        .await?)
+}
+
+/// Takes one file of a share the host kept for this device into its
+/// received folder.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn receive_held(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    share: String,
+    file: usize,
+    name: String,
+    size: u64,
+    id: String,
+    folder: Option<String>,
+) -> Answer<Received> {
+    let cancel = Cancel::new();
+    state.transfers.lock().expect("transfers lock").insert(id.clone(), cancel.clone());
+    let report = progress_reporter(app.clone(), id.clone(), name.clone(), "download");
+    let safe = safe_local_name(&name);
+    #[cfg(target_os = "android")]
+    let outcome = {
+        let _ = folder;
+        use tauri_plugin_basalt_android::BasaltAndroidExt;
+        let handle = app.clone();
+        let wanted = safe.clone();
+        let created = tokio::task::spawn_blocking(move || handle.basalt_android().create_download(&wanted, ""))
+            .await
+            .map_err(|e| UiError { kind: "error".into(), message: e.to_string() })?
+            .map_err(|e| UiError { kind: "error".into(), message: format!("couldn’t save to Downloads: {e}") })?;
+        let result = state
+            .client
+            .download_held(&share, file, size, &name, owned_file(created.fd), Some(report), Some(cancel))
+            .await;
+        let ok = result.is_ok();
+        let handle = app.clone();
+        let uri = created.uri.clone();
+        let _ = tokio::task::spawn_blocking(move || handle.basalt_android().finish_download(&uri, ok)).await;
+        result.map(|_| Received { shown_as: created.shown_as, path: None, uri: Some(created.uri) })
+    };
+    #[cfg(not(target_os = "android"))]
+    let outcome = {
+        let dir = match folder.filter(|f| !f.trim().is_empty()) {
+            Some(folder) => PathBuf::from(folder),
+            None => received_folder(&app)?,
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t make the folder {}: {e}", dir.display()),
+        })?;
+        let local = free_name(&dir, &safe);
+        let out = std::fs::File::create(&local).map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t write {}: {e}", local.display()),
+        })?;
+        let result = state
+            .client
+            .download_held(&share, file, size, &name, out, Some(report), Some(cancel))
+            .await;
+        if result.is_err() {
+            let _ = std::fs::remove_file(&local);
+        } else {
+            mark_downloaded(&local);
+        }
+        let shown = local.display().to_string();
+        result.map(|_| Received { shown_as: shown.clone(), path: Some(shown), uri: None })
+    };
+    state.transfers.lock().expect("transfers lock").remove(&id);
+    Ok(outcome?)
+}
+
 /// The host's devices, and who of them is online now.
 #[tauri::command]
 async fn presence(state: State<'_, AppState>) -> Answer<basalt_proto::msg::PresenceResponse> {
@@ -2188,6 +2293,11 @@ pub fn run() {
             withdraw_local,
             local_files,
             receive_direct,
+            share_hold,
+            share_answer,
+            share_held,
+            share_manage,
+            receive_held,
             default_received_folder,
             segments,
             speed_test,

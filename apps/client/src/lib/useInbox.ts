@@ -26,6 +26,11 @@ export interface Inbox {
   waiting: ShareItem[]
   /** Sends files on the drive to one device. Throws when it can't be reached. */
   send: (files: ShareFile[], to: PresentDevice) => Promise<void>
+  /** Keeps files on the drive on the host for a device that's away; `keep` past its answer. */
+  sendThroughHost: (files: ShareFile[], to: PresentDevice, keep: boolean) => Promise<void>
+  /** "Remove from the host once answered": the default for each send through it. */
+  removeOnAnswer: boolean
+  setRemoveOnAnswer: (on: boolean) => void
   accept: (item: ShareItem) => void
   decline: (item: ShareItem) => void
   /** "Accept on another device": that one of mine takes it instead. */
@@ -55,6 +60,7 @@ export function useInbox(
   const [items, setItems] = useState<ShareItem[]>(() => load(key))
   const [acceptFromHome, setAcceptFromHomeState] = useState(() => localStorage.getItem(ACCEPT_KEY) === '1')
   const [folder, setFolderState] = useState(() => localStorage.getItem(FOLDER_KEY) ?? '')
+  const [removeOnAnswer, setRemoveOnAnswerState] = useState(() => localStorage.getItem(REMOVE_KEY) !== '0')
   const seen = useRef(new Set<string>())
   // The list as last drawn: whether an offer is new is asked of it at once,
   // not inside a state update, which React runs later.
@@ -111,9 +117,11 @@ export function useInbox(
           try {
             const folder = settings.current.folder || undefined
             // On the sending device: straight from it. On the drive: from the host.
-            const saved = offer.direct
-              ? await api.receiveDirect(offer.direct.endpoint, offer.offer, offer.direct.token, n, file.name, id, folder)
-              : await api.receiveFile(file.path, id, folder)
+            const saved = offer.held
+              ? await api.receiveHeld(offer.offer, n, file.name, file.size, id, folder)
+              : offer.direct
+                ? await api.receiveDirect(offer.direct.endpoint, offer.offer, offer.direct.token, n, file.name, id, folder)
+                : await api.receiveFile(file.path, id, folder)
             transfersRef.current.finish(id)
             last = saved.shownAs
           } catch (e) {
@@ -123,6 +131,8 @@ export function useInbox(
         }
         update(item.id, (i) => ({ ...i, state: 'done', savedAs: last, offer: undefined }))
         void answer(offer, 'done')
+        // Kept on the host for this device: told it arrived, so it can go.
+        if (offer.held) void api.shareAnswer(offer.offer, true).catch(() => {})
       } catch (e) {
         const reason = plainReason(e instanceof Error ? e.message : String(e))
         update(item.id, (i) => ({ ...i, state: 'failed', reason }))
@@ -195,11 +205,26 @@ export function useInbox(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const sendThroughHost = useCallback(async (files: ShareFile[], to: PresentDevice, keep: boolean) => {
+    if (files.some((f) => !f.path)) throw new Error('Only files on the drive can wait on the host for now.')
+    const offer = newOfferId()
+    await api.shareHold(
+      offer,
+      to.device,
+      keep,
+      files.map((f) => f.path),
+    )
+    setItems((list) =>
+      kept([{ id: offer, direction: 'out', files, peer: partyOf(to), state: 'waiting', at: Date.now(), reason: 'On the host until it’s back' }, ...list]),
+    )
+  }, [])
+
   const accept = useCallback((item: ShareItem) => void take(item), [take])
 
   const decline = useCallback(
     (item: ShareItem) => {
       if (item.offer) void answer(item.offer, 'declined')
+      if (item.offer?.held) void api.shareAnswer(item.offer.offer, false).catch(() => {})
       update(item.id, (i) => ({ ...i, state: 'declined', offer: undefined }))
     },
     [answer, update],
@@ -224,6 +249,10 @@ export function useInbox(
     setAcceptFromHomeState(on)
     localStorage.setItem(ACCEPT_KEY, on ? '1' : '0')
   }, [])
+  const setRemoveOnAnswer = useCallback((on: boolean) => {
+    setRemoveOnAnswerState(on)
+    localStorage.setItem(REMOVE_KEY, on ? '1' : '0')
+  }, [])
   const setFolder = useCallback((next: string) => {
     setFolderState(next)
     localStorage.setItem(FOLDER_KEY, next)
@@ -231,11 +260,27 @@ export function useInbox(
 
   const waiting = useMemo(() => items.filter((i) => i.direction === 'in' && i.state === 'waiting' && i.offer), [items])
 
-  return { items, waiting, send, accept, decline, acceptOn, forget, acceptFromHome, setAcceptFromHome, folder, setFolder }
+  return {
+    items,
+    waiting,
+    send,
+    sendThroughHost,
+    removeOnAnswer,
+    setRemoveOnAnswer,
+    accept,
+    decline,
+    acceptOn,
+    forget,
+    acceptFromHome,
+    setAcceptFromHome,
+    folder,
+    setFolder,
+  }
 }
 
 const ACCEPT_KEY = 'basalt.share.acceptFromHome'
 const FOLDER_KEY = 'basalt.share.folder'
+const REMOVE_KEY = 'basalt.share.removeOnAnswer'
 
 function load(key: string | null): ShareItem[] {
   if (!key) return []
