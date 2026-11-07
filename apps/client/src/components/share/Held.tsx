@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { FolderInput, HardDrive, Send, Trash2 } from 'lucide-react'
 
-import { api, type HeldShare, type PresentDevice } from '@/lib/api'
+import { api, onChannel, type HeldShare, type PresentDevice } from '@/lib/api'
 import type { Inbox } from '@/lib/useInbox'
 import type { Presence } from '@/lib/usePresence'
-import { targetsOf } from '@/lib/share'
+import { KIND, targetsOf } from '@/lib/share'
 import { formatBytes } from '@/lib/utils'
 
 /**
@@ -46,6 +46,22 @@ export function HeldList({
   }, [onChanged])
   useEffect(() => {
     void load()
+  }, [load])
+  // An answer to something sent: what the host keeps may have changed.
+  useEffect(() => {
+    let gone = false
+    let stop: (() => void) | null = null
+    void onChannel((message) => {
+      // A moment later: the host forgets it as the answer reaches it too.
+      if (message.kind === KIND.answer) setTimeout(() => void load(), 1_000)
+    }).then((unlisten) => {
+      if (gone) unlisten()
+      else stop = unlisten
+    })
+    return () => {
+      gone = true
+      stop?.()
+    }
   }, [load])
 
   const act = async (action: 'delete' | 'move', share: HeldShare): Promise<void> => {

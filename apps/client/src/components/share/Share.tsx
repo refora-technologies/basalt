@@ -195,7 +195,7 @@ export function ShareChooser({
           </p>
           {!chosen.online && onDrive && (
             <label className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-white/[0.04] px-3 py-2.5 text-[12.5px] text-textDim">
-              <span>If they decline, remove it from the host</span>
+              <span>Remove it from the host once it’s answered</span>
               <input
                 type="checkbox"
                 checked={removeIfAnswered}
