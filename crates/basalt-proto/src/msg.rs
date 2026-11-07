@@ -389,6 +389,10 @@ pub enum ManageAction {
     },
     RemoveProfile {
         id: String,
+        /// What becomes of its share files on the host: `move` onto the
+        /// drive (as before 1.6.4 left out), or `delete`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shares: Option<String>,
     },
     ResetProfilePin {
         id: String,

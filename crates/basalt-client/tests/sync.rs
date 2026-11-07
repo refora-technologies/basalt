@@ -1360,6 +1360,69 @@ async fn the_host_limits_keeps_in_plain_and_clears_what_it_holds() {
     );
 }
 
+/// Removing a profile that keeps files on the host for someone away: they
+/// are moved onto the drive, into "Basalt shares/<name>", or deleted (D14).
+#[tokio::test]
+async fn a_removed_profiles_share_files_go_to_the_drive_or_away() {
+    use basalt_proto::msg::ShareHoldRequest;
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let tablet = fixture.paired_client().await;
+    let tablet_id = tablet.presence().await.expect("presence").you;
+    std::fs::write(fixture.vault_path("note.txt"), b"for the tablet").unwrap();
+    let hold = |id: &str| ShareHoldRequest {
+        id: id.into(),
+        to: tablet_id.clone(),
+        keep: false,
+        paths: vec!["note.txt".into()],
+    };
+
+    // Maya's, locked: moved onto the drive as she goes.
+    let maya = laptop
+        .create_profile("Maya", "2468", 0, true)
+        .await
+        .expect("a profile");
+    laptop.share_hold(hold("m1")).await.expect("held");
+    assert!(
+        fixture
+            .host
+            .remove_profile_and_shares(&maya.id, true)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        std::fs::read(fixture.vault_path("Basalt shares/Maya/note.txt")).unwrap(),
+        b"for the tablet",
+        "unlocked onto the drive"
+    );
+    assert_eq!(
+        fixture.host.sharing_view().count,
+        0,
+        "and no longer on the host"
+    );
+
+    // Sam's: deleted with him.
+    let sam = laptop
+        .create_profile("Sam", "1357", 1, true)
+        .await
+        .expect("another profile");
+    laptop.share_hold(hold("s1")).await.expect("held");
+    assert_eq!(fixture.host.sharing_view().count, 1);
+    assert!(
+        fixture
+            .host
+            .remove_profile_and_shares(&sam.id, false)
+            .await
+            .unwrap()
+    );
+    assert_eq!(fixture.host.sharing_view().count, 0);
+    assert!(
+        !fixture.vault_path("Basalt shares/Sam").exists(),
+        "nothing of Sam's put on the drive"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Changing drive
 // ---------------------------------------------------------------------------

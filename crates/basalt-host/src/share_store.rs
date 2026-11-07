@@ -344,6 +344,15 @@ impl ShareStore {
         })
     }
 
+    /// Lets a share go without deleting what it kept in plain on the drive,
+    /// which stays there as the drive's own: its locked files go.
+    pub fn forget(&self, id: &str) -> Result<()> {
+        if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            let _ = std::fs::remove_dir_all(self.dir.join(id));
+        }
+        self.change(|index| index.held.retain(|h| h.id != id))
+    }
+
     pub fn delete(&self, id: &str) -> Result<()> {
         // A plain share's copies on the drive are its own, made for it.
         if let Some(held) = self.get(id) {

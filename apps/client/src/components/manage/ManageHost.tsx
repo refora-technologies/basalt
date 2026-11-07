@@ -27,14 +27,14 @@ import { UpdatesGroup } from './Updates'
  */
 export function ManageHost({ layout, onClose }: { layout: Layout; onClose: () => void }): React.JSX.Element {
   const m = useManage()
-  const { confirm, dialog } = useConfirm()
+  const { confirm, choose, dialog } = useConfirm()
   const [prompt, setPrompt] = useState<PromptRequest | null>(null)
   const view = m.view
   // Older hosts say "does not", newer ones "doesn’t".
   const lost = m.error !== null && /(does not|doesn[’']t) manage this host/i.test(m.error)
 
   const tools: Tools | null = view
-    ? { m, view, confirm, prompt: setPrompt, leave: onClose }
+    ? { m, view, confirm, choose, prompt: setPrompt, leave: onClose }
     : null
 
   const body = lost ? (

@@ -1,4 +1,4 @@
-import type { ConfirmRequest } from '@/components/ui/ConfirmDialog'
+import type { Choice, ConfirmRequest } from '@/components/ui/ConfirmDialog'
 import type { PromptRequest } from '@/components/ui/PromptDialog'
 import type { Manage, ManageView } from '@/lib/manage'
 
@@ -7,6 +7,8 @@ export interface Tools {
   m: Manage
   view: ManageView
   confirm: (request: ConfirmRequest) => Promise<boolean>
+  /** A question with two ways to go ahead. */
+  choose: (request: ConfirmRequest) => Promise<Choice>
   prompt: (request: PromptRequest) => void
   /** This device no longer manages the host: the screen closes. */
   leave: () => void

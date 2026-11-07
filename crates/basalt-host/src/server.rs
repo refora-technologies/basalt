@@ -3712,6 +3712,23 @@ fn held_margin(total: u64) -> u64 {
 /// profile inside.
 pub const SHARES_FOLDER: &str = "Basalt shares";
 
+/// "Basalt shares/<owner>" on the drive, made if it isn't there: where
+/// shares are kept in plain, and where a removed profile's are moved.
+fn shares_folder(vault: &crate::vault::Vault, owner: &str) -> Result<String> {
+    let owner = if crate::vault::name_problem(owner).is_some() {
+        "Shared"
+    } else {
+        owner
+    };
+    let folder = format!("{SHARES_FOLDER}/{owner}");
+    for level in [SHARES_FOLDER.to_string(), folder.clone()] {
+        if vault.resolve(&level).is_err() {
+            vault.mkdir(&level)?;
+        }
+    }
+    Ok(folder)
+}
+
 /// A place on the drive for `name` in `folder` that nothing has, nor any of
 /// `taken`: "name (1).ext" and on when it has.
 fn free_place(
@@ -3814,23 +3831,9 @@ impl Host {
                 .as_deref()
                 .and_then(|p| self.profile_name(p))
                 .unwrap_or_else(|| from.name.clone());
-            let owner = if crate::vault::name_problem(&owner).is_some() {
-                "Shared".to_string()
-            } else {
-                owner
-            };
-            let folder = format!("{SHARES_FOLDER}/{owner}");
-            for level in [SHARES_FOLDER.to_string(), folder.clone()] {
-                if vault.resolve(&level).is_err() {
-                    vault.mkdir(&level)?;
-                }
-            }
+            let folder = shares_folder(&vault, &owner)?;
             for (name, _) in &files {
-                let mut place = free_place(&vault, &folder, name, &places)?;
-                // Two files of one name in a share: the second beside the first.
-                while places.contains(&place) {
-                    place = free_place(&vault, &folder, &format!("1 {name}"), &places)?;
-                }
+                let place = free_place(&vault, &folder, name, &places)?;
                 places.push(place);
             }
         }
@@ -4005,6 +4008,58 @@ impl Host {
             )),
             _ => Some("not enough space on the host to keep this for someone offline".into()),
         }
+    }
+
+    /// Removes a profile, and first what it keeps on the host for someone
+    /// away (D14): moved into "Basalt shares/<name>" on the drive (`move`),
+    /// or deleted. Either way the shares are gone from the host, so their
+    /// offers end (D19).
+    pub async fn remove_profile_and_shares(
+        self: &Arc<Self>,
+        id: &str,
+        move_to_drive: bool,
+    ) -> Result<bool> {
+        let held: Vec<crate::share_store::Held> = self
+            .shares
+            .as_ref()
+            .map(|store| {
+                store
+                    .all()
+                    .into_iter()
+                    .filter(|h| h.from.profile.as_deref() == Some(id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !held.is_empty() {
+            let store = self.shares.as_ref().expect("held came from it");
+            if move_to_drive {
+                let vault = self.require_vault().await?;
+                if !vault.writable() {
+                    return Err(HostError::Denied(
+                        "the drive can't take files, so its share files can't be moved there"
+                            .into(),
+                    ));
+                }
+                let name = self.profile_name(id).unwrap_or_else(|| "Shared".into());
+                let folder = shares_folder(&vault, &name)?;
+                for share in &held {
+                    for (n, file) in share.files.iter().enumerate() {
+                        // Kept in plain already: it is on the drive as it is.
+                        if file.plain.is_some() {
+                            continue;
+                        }
+                        let dest = free_place(&vault, &folder, &file.name, &[])?;
+                        store.unlock_into(&share.id, n, &dest)?;
+                    }
+                    store.forget(&share.id)?;
+                }
+            } else {
+                for share in &held {
+                    store.delete(&share.id)?;
+                }
+            }
+        }
+        self.remove_profile(id)
     }
 
     /// Kept apart and locked (on), or in plain in "Basalt shares" on the

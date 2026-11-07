@@ -69,8 +69,9 @@ impl Host {
             }
             ManageAction::SetSections { sections } => self.set_sections(sections).await?,
             ManageAction::AddProfile { name, color } => self.add_profile(&name, color)?,
-            ManageAction::RemoveProfile { id } => {
-                self.remove_profile(&id)?;
+            ManageAction::RemoveProfile { id, shares } => {
+                self.remove_profile_and_shares(&id, shares.as_deref() != Some("delete"))
+                    .await?;
             }
             ManageAction::ResetProfilePin { id } => {
                 self.reset_profile_pin(&id)?;

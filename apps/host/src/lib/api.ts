@@ -439,7 +439,9 @@ export const api = {
   /** Checked with fanart.tv first: refused with why when it does not take the key. */
   setFanartKey: (key: string): Promise<HostStatus> => call('set_fanart_key', { key }),
   resetProfilePin: (id: string): Promise<HostStatus> => call('reset_profile_pin', { id }),
-  removeProfile: (id: string): Promise<HostStatus> => call('remove_profile', { id }),
+  /** `shares`: what becomes of its files kept for someone away; moved onto the drive unless "delete". */
+  removeProfile: (id: string, shares?: 'move' | 'delete'): Promise<HostStatus> =>
+    call('remove_profile', { id, shares: shares ?? null }),
   /** A profile made here: its person chooses the PIN at their first sign-in. */
   addProfile: (name: string, color: number): Promise<HostStatus> =>
     call('add_profile', { name, color }),

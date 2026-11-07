@@ -264,7 +264,7 @@ export type ManageAction =
   | { do: 'measureConversion' }
   | { do: 'setSections'; sections: LibrarySections }
   | { do: 'addProfile'; name: string; color: number }
-  | { do: 'removeProfile'; id: string }
+  | { do: 'removeProfile'; id: string; shares?: 'move' | 'delete' }
   | { do: 'resetProfilePin'; id: string }
   | { do: 'setRequireProfile'; require: boolean }
   | { do: 'setOwnerAddsProfiles'; ownerOnly: boolean }

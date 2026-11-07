@@ -418,9 +418,17 @@ async fn reset_profile_pin(state: State<'_, AppState>, id: String) -> Answer<Hos
     status(state).await
 }
 
+/// Removed, with its share files moved onto the drive or, `shares` "delete", deleted.
 #[tauri::command]
-async fn remove_profile(state: State<'_, AppState>, id: String) -> Answer<HostStatus> {
-    state.host.remove_profile(&id)?;
+async fn remove_profile(
+    state: State<'_, AppState>,
+    id: String,
+    shares: Option<String>,
+) -> Answer<HostStatus> {
+    state
+        .host
+        .remove_profile_and_shares(&id, shares.as_deref() != Some("delete"))
+        .await?;
     status(state).await
 }
 
