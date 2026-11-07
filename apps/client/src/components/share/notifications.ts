@@ -12,7 +12,11 @@ import type { NavKey } from '@/components/Sidebar'
  * in it, and a file that arrived by itself. Pressed, the window comes back.
  */
 export function useShareNotifications(inbox: Inbox, presence: Presence, setNav: (nav: NavKey) => void): void {
-  const told = useRef(new Set<string>())
+  // Each share's state when last looked at, and when this page started: a
+  // share already there when it loaded (from before a reload, or another
+  // day) is never told again; only what comes, or changes, while it runs.
+  const seen = useRef(new Map<string, string>())
+  const started = useRef(Date.now())
   const inboxRef = useRef(inbox)
   inboxRef.current = inbox
   const myProfile = presence.devices.find((d) => d.device === presence.you)?.profile
@@ -23,9 +27,10 @@ export function useShareNotifications(inbox: Inbox, presence: Presence, setNav: 
     // corner can't be seen.
     for (const item of inbox.items) {
       if (item.direction !== 'in') continue
-      const key = `${item.id}:${item.state}`
-      if (told.current.has(key)) continue
-      told.current.add(key)
+      const before = seen.current.get(item.id)
+      seen.current.set(item.id, item.state)
+      if (before === item.state) continue
+      if (before === undefined && item.at < started.current) continue
       const from = calledOf(item.peer, myProfile)
       if (item.state === 'waiting' && item.offer) {
         void api
