@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
-  FolderOpen, HardDrive, Info, Laptop, Send, Shield, Volume2, Wifi } from 'lucide-react'
+  FolderOpen, HardDrive, Info, Laptop, Radio, Send, Shield, Volume2, Wifi } from 'lucide-react'
+import type { Nearby } from '@/lib/useNearby'
+import { NearbySwitches } from '@/components/share/Nearby'
 import { Switch } from './Switch'
 import { setShowHidden, useShowHidden } from '@/lib/showHidden'
 import { api, type KeyKind, type Status } from '@/lib/api'
@@ -73,9 +75,12 @@ export function SettingsView({
   onChangeDrive,
   inbox,
   presence,
+  nearby,
 }: {
   /** Sharing between the host's devices, on a host that passes shares. */
   inbox?: Inbox
+  /** Sharing with devices nearby, without a host. */
+  nearby?: Nearby
   /** Who is online, for sharing again. */
   presence?: Presence
   status: Status | null
@@ -116,6 +121,11 @@ export function SettingsView({
         </Section>
 
         {inbox && <SharingSection inbox={inbox} presence={presence} />}
+        {nearby && (
+          <Section icon={Radio} title="Nearby" hint="Devices on this Wi-Fi that aren’t on your host">
+            <NearbySwitches nearby={nearby} className="rounded-none px-4 py-2.5" />
+          </Section>
+        )}
 
         <Section icon={FolderOpen} title="Files" hint="What folders show">
           <Switch

@@ -487,22 +487,42 @@ export interface MusicGroupRequest {
   leadMs?: number
 }
 
-/** What a device nearby offers, once its code was typed here. */
-export interface NearbyOffer {
-  from: string
+/** A device as devices nearby see it: its name, kind and short id ("K7QM"). */
+export interface NearbyMe {
+  id: string
+  name: string
   form?: 'phone' | 'computer' | 'tablet' | 'tv'
-  files: { name: string; size: number }[]
+}
+
+/** A device nearby, ready to receive. */
+export interface NearbyDevice extends NearbyMe {
+  address: string
+  port: number
+  key: string
+  /** It asks for a code every time. */
+  code: boolean
+}
+
+/** Where to take files from a device nearby, once agreed. */
+export interface NearbyTake {
   endpoint: { addresses: string[]; port: number; key: string }
   offer: string
   token: string
 }
 
-/** What happens while sending with a code. */
-export type NearbyEvent =
-  | { kind: 'connected'; to: string }
-  | { kind: 'wrongCode'; left: number }
-  | { kind: 'spent' }
-  | { kind: 'answered'; to: string; answer: string }
+/** What happens on this device while it is ready for nearby shares. */
+export type NearbyReadyEvent =
+  | { kind: 'offer'; ask: string; from: NearbyMe; files: { name: string; size: number }[]; code: boolean }
+  | { kind: 'code'; ask: string; code: string }
+  | { kind: 'wrongCode'; ask: string; left: number }
+  | { kind: 'take'; ask: string; take: NearbyTake }
+  | { kind: 'gone'; ask: string; why: string }
+
+/** What a device nearby said to an offer. */
+export type NearbySaid = { kind: 'accepted' } | { kind: 'declined' } | { kind: 'code' }
+
+/** What came of a code typed for a device nearby. */
+export type NearbyCodeSaid = { kind: 'right' } | { kind: 'wrong'; left: number }
 
 export interface HeldShare {
   id: string
@@ -882,19 +902,27 @@ export const api = {
     id: string,
     folder?: string,
   ) => call<{ shownAs: string; path?: string; uri?: string }>('receive_direct', { endpoint, offer, token, file, name, id, folder: folder ?? null }),
-  /** Keeps files on the drive on the host, locked, for a device that's away. */
-  /** Sends files on this device to one nearby by a code: answers the code; `onNearby` says what happens. */
-  nearbySend: (offer: string, files: { source: string; name: string; size: number }[]) =>
-    call<string>('nearby_send', { offer, files }),
-  /** Stops sending with a code. */
-  nearbyStop: () => call<void>('nearby_stop'),
-  /** Finds the device sending with `code` on this Wi-Fi: what it offers. */
-  nearbyReceive: (code: string) => call<NearbyOffer>('nearby_receive', { code }),
-  /** Tells the device that sent with a code how it ended. */
-  nearbyAnswer: (offer: string, answer: 'done' | 'declined' | 'failed') => call<void>('nearby_answer', { offer, answer }),
+  /** This device's name and short id, as devices nearby see them. */
+  nearbyWhoami: () => call<NearbyMe>('nearby_whoami'),
+  /** Ready to receive from devices nearby, or not; `onNearbyReady` says what comes. */
+  nearbyReady: (on: boolean, alwaysCode: boolean) => call<void>('nearby_ready', { on, alwaysCode }),
+  /** Accept or Decline an offer from a device nearby. False if it's gone. */
+  nearbyReply: (ask: string, accept: boolean) => call<boolean>('nearby_reply', { ask, accept }),
+  /** How taking the files from a device nearby went. */
+  nearbyFinish: (ask: string, answer: 'done' | 'failed') => call<void>('nearby_finish', { ask, answer }),
+  /** The devices nearby ready to receive, on this Wi-Fi. */
+  nearbyFind: () => call<NearbyDevice[]>('nearby_find'),
+  /** Offers files on this device to one nearby, and waits for the answer there. */
+  nearbyOffer: (device: NearbyDevice, offer: string, files: { source: string; name: string; size: number }[], alwaysCode: boolean) =>
+    call<NearbySaid>('nearby_offer', { device, offer, files, alwaysCode }),
+  /** The code shown on the device nearby, typed here. */
+  nearbyCode: (offer: string, code: string) => call<NearbyCodeSaid>('nearby_code', { offer, code }),
+  /** Stops an offer to a device nearby. */
+  nearbyCancel: (offer: string) => call<void>('nearby_cancel', { offer }),
   /** Files on this device, uploaded to the host and kept for `to`; `onShareSending` says how far. */
   shareHoldLocal: (id: string, to: string, keep: boolean, files: { source: string; name: string; size: number }[]) =>
     call<HeldShare>('share_hold_local', { id, to, keep, files }),
+  /** Keeps files on the drive on the host, locked, for a device that's away. */
   shareHold: (id: string, to: string, keep: boolean, paths: string[]) =>
     call<HeldShare>('share_hold', { id, to, keep, paths }),
   /** This device's answer to a share the host kept for it. */
@@ -1106,11 +1134,18 @@ export async function onPresence(handler: () => void): Promise<() => void> {
   return listen('basalt://presence', () => handler())
 }
 
-/** What happens while sending with a code, as it happens. */
-export async function onNearby(handler: (said: { offer: string; event: NearbyEvent }) => void): Promise<() => void> {
-  if (!inTauri()) return () => {}
+/** What happens on this device while it is ready for nearby shares, as it happens. */
+export async function onNearbyReady(handler: (event: NearbyReadyEvent) => void): Promise<() => void> {
+  if (!inTauri()) return onPreview('nearby-ready', handler)
   const { listen } = await import('@tauri-apps/api/event')
-  return listen<{ offer: string; event: NearbyEvent }>('basalt://nearby', (e) => handler(e.payload))
+  return listen<NearbyReadyEvent>('basalt://nearby-ready', (e) => handler(e.payload))
+}
+
+/** How an offer to a device nearby ended there, once accepted. */
+export async function onNearbySent(handler: (said: { offer: string; answer: string }) => void): Promise<() => void> {
+  if (!inTauri()) return onPreview('nearby-sent', handler)
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<{ offer: string; answer: string }>('basalt://nearby-sent', (e) => handler(e.payload))
 }
 
 /** How far files on this device have gone up to the host, for a share kept there. */
@@ -1710,13 +1745,25 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return undefined as T
     case 'music_group':
       return { now: Date.now() } as T
-    case 'nearby_send':
-      return '482915' as T
-    case 'nearby_stop':
-    case 'nearby_answer':
+    // The page preview's café: two phones of the same name, one asking for a code.
+    case 'nearby_whoami':
+      return { id: 'K7QM', name: 'Maya’s laptop', form: 'computer' } as T
+    case 'nearby_find':
+      return [
+        { id: 'TUVW', name: 'Pixel 8', form: 'phone', address: '10.0.0.4', port: 1, key: '', code: false },
+        { id: 'MNPR', name: 'Pixel 8', form: 'phone', address: '10.0.0.7', port: 1, key: '', code: true },
+        { id: 'XY34', name: 'Leo’s laptop', form: 'computer', address: '10.0.0.9', port: 1, key: '', code: false },
+      ] as T
+    case 'nearby_offer':
+      return { kind: (args?.device as { code?: boolean })?.code ? 'code' : 'accepted' } as T
+    case 'nearby_code':
+      return { kind: 'right' } as T
+    case 'nearby_ready':
+    case 'nearby_finish':
+    case 'nearby_cancel':
       return undefined as T
-    case 'nearby_receive':
-      throw new ApiError('notfound', 'no device sending with a code was found on this Wi-Fi')
+    case 'nearby_reply':
+      return true as T
     // The page preview's household: this laptop, a phone and a tablet of the
     // same profile, and Sam's phone.
     case 'presence': {

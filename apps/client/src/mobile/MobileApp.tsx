@@ -80,7 +80,8 @@ import { offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/update
 import { ActionSheet, Sheet } from './Sheet'
 import { YourDevices } from '@/components/YourDevices'
 import { ownDevices } from '@/lib/usePresence'
-import { PhoneShare, SharingCard } from './PhoneShare'
+import { PhoneNearby, PhoneShare, SharingCard } from './PhoneShare'
+import { useNearbyNotifications } from '@/components/share/nearbyNotifications'
 import { useAlwaysReady } from '@/lib/alwaysReady'
 import { remaining, type Resumable } from '@/components/ContinueWatching'
 import { useLongPress } from '@/lib/useLongPress'
@@ -187,11 +188,13 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
           notice={vault.removed}
           onBack={changingDrive ? () => setChangingDrive(false) : undefined}
           currentHostId={changingDrive ? vault.status.hostId : null}
+          onNearby={TV ? undefined : () => model.nearby.setScreenOpen(true)}
           onPaired={(next) => {
             setChangingDrive(false)
             vault.switchTo(next)
           }}
         />
+        {!TV && <PhoneNearby nearby={model.nearby} />}
       </Safe>
     )
   }
@@ -434,7 +437,16 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   useNotificationTaps(openWhatsNew, (action) => {
     // "share:<id>" opens the Inbox; "share-accept:<id>" and the like answer it too.
     const [what, id] = [action.slice(0, action.indexOf(':')), action.slice(action.indexOf(':') + 1)]
-    const item = model.inbox.items.find((i) => i.id === id && i.direction === 'in')
+    // From a device nearby: answered here, and its sheet shows (a code, if one is asked).
+    if (id.startsWith('nearby-')) {
+      const ask = id.slice('nearby-'.length)
+      if (what === 'share-accept') model.nearby.accept(ask)
+      else if (what === 'share-decline') model.nearby.decline(ask)
+      return
+    }
+    const item =
+      model.inbox.items.find((i) => i.id === id && i.direction === 'in') ??
+      model.nearby.items.find((i) => i.id === id && i.direction === 'in')
     if (item && what === 'share-accept' && item.state === 'waiting') model.inbox.accept(item)
     else if (item && what === 'share-decline' && item.state === 'waiting') model.inbox.decline(item)
     else if (item && what === 'share-open' && item.saved?.[0]?.uri) {
@@ -444,6 +456,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
     if (sharingHere) setInboxOpen(true)
   })
   usePhoneShareNotifications(model)
+  useNearbyNotifications(model.nearby)
 
   const active = transfers.active
 
@@ -681,6 +694,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       <TransfersSheet model={model} open={transfersOpen} onClose={() => setTransfersOpen(false)} />
 
       {sharingHere && <PhoneShare model={model} inboxOpen={inboxOpen} onCloseInbox={() => setInboxOpen(false)} />}
+      {!TV && <PhoneNearby nearby={model.nearby} />}
 
       <PhoneManagePanel open={managing} onClose={() => setManaging(false)} />
 

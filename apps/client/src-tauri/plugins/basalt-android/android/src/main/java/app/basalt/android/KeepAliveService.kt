@@ -85,7 +85,10 @@ class KeepAliveService : Service() {
       type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
     }
     if (reasons.containsKey("transfer")) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-    if (reasons.containsKey("ready")) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+    // Ready for the home's devices, or for devices nearby: the same kind of work.
+    if (reasons.containsKey("ready") || reasons.containsKey("nearby")) {
+      type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+    }
     // Nothing left by the time it starts: data sync, as before, and it stops.
     return if (type == 0) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else type
   }
@@ -123,7 +126,7 @@ class KeepAliveService : Service() {
      * player, else a transfer.
      */
     private fun shown(): Shown? =
-      reasons["music"] ?: reasons["playback"] ?: reasons["transfer"] ?: reasons["ready"]
+      reasons["music"] ?: reasons["playback"] ?: reasons["transfer"] ?: reasons["ready"] ?: reasons["nearby"]
 
     fun hold(context: Context, reason: String, title: String, text: String, progress: Int) {
       main.removeCallbacks(stopLater)
@@ -218,7 +221,7 @@ class KeepAliveService : Service() {
           .setStyle(Notification.MediaStyle().setMediaSession(token).setShowActionsInCompactView(0, 1, 2))
           .build()
       }
-      if (reasons.keys.all { it == "ready" }) {
+      if (reasons.keys.all { it == "ready" || it == "nearby" }) {
         if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(READY_CHANNEL) == null) {
           manager.createNotificationChannel(
             NotificationChannel(READY_CHANNEL, "Ready to receive", NotificationManager.IMPORTANCE_MIN).apply {

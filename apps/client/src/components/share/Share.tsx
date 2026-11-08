@@ -10,7 +10,6 @@ import {
   Upload,
   Film,
   HardDrive,
-  Hash,
   Image,
   Laptop,
   Monitor,
@@ -22,8 +21,9 @@ import {
   X,
 } from 'lucide-react'
 
-import { api, onShareSending, type PresentDevice } from '@/lib/api'
-import { SendWithCode } from './Nearby'
+import { api, onShareSending, type NearbyDevice, type PresentDevice } from '@/lib/api'
+import { NearbyChooser, NearbyList } from './Nearby'
+import type { Nearby } from '@/lib/useNearby'
 import type { Presence } from '@/lib/usePresence'
 import { seenLine } from '@/lib/usePresence'
 import type { Inbox } from '@/lib/useInbox'
@@ -66,11 +66,14 @@ export function ShareChooser({
   inbox,
   onDone,
   sheet,
+  nearby,
 }: {
   files: ShareFile[]
   presence: Presence
   inbox: Inbox
   onDone: (said: string) => void
+  /** Devices nearby, not on this host: for files on this device. */
+  nearby?: Nearby
   /** In a phone's sheet: the button stays at the bottom, over the list, never scrolled away. */
   sheet?: boolean
 }): React.JSX.Element {
@@ -103,7 +106,8 @@ export function ShareChooser({
   }, [busy, onDrive])
   const nobody = targets.mine.length + targets.home.length + targets.loose.length === 0
   // To a device not on this host, nearby, by a code (05): files on this device only.
-  const [byCode, setByCode] = useState(false)
+  const [nearbyPick, setNearbyPick] = useState<NearbyDevice | null>(null)
+  const byCode = nearbyPick !== null
   const onThisDevice = files.length > 0 && files.every((f) => f.source)
   // What the host can keep now, asked once a device that's away is chosen.
   const [host, setHost] = useState<{ room?: number; secure?: boolean } | null>(null)
@@ -169,9 +173,9 @@ export function ShareChooser({
         </span>
       </div>
 
-      {byCode ? (
-        <div className="min-h-0 flex-1 overflow-y-auto pb-1 pt-2">
-          <SendWithCode files={files} onDone={() => onDone('')} />
+      {nearbyPick && nearby ? (
+        <div className="flex min-h-0 flex-1 flex-col pb-1 pt-2">
+          <NearbyChooser nearby={nearby} files={files} phone={sheet} initial={nearbyPick} onDone={() => onDone('')} />
         </div>
       ) : (
       <div className="min-h-0 flex-1 overflow-y-auto pb-1">
@@ -202,21 +206,10 @@ export function ShareChooser({
           </div>
         ))}
         {targets.loose.map((d) => row(d))}
-        {onThisDevice && (
+        {onThisDevice && nearby && (
           <>
-            <Section>Someone not in this home</Section>
-            <button
-              onClick={() => setByCode(true)}
-              className="flex w-full items-center gap-3 px-5 py-2.5 text-left hover:bg-white/[0.03] active:bg-white/[0.05]"
-            >
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-textDim">
-                <Hash size={17} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-[14px] text-text">Send with a code</span>
-                <span className="block text-[12px] text-textFaint">They type it on their device, on the same Wi-Fi</span>
-              </span>
-            </button>
+            <Section>Nearby, not in this home</Section>
+            <NearbyList nearby={nearby} chosen={null} onChoose={setNearbyPick} />
           </>
         )}
       </div>
@@ -705,17 +698,21 @@ export function ReceivePrompt({
 export function InboxList({
   inbox,
   presence,
+  nearby,
   direction,
   onAnswer,
 }: {
   inbox: Inbox
   presence: Presence
+  /** Shares with devices nearby, listed with the home's. */
+  nearby?: Nearby
   direction: 'in' | 'out'
   /** Opens the prompt for one waiting. */
   onAnswer: (item: ShareItem) => void
 }): React.JSX.Element {
   const myProfile = presence.devices.find((d) => d.device === presence.you)?.profile
-  const mine = inbox.items.filter((i) => i.direction === direction)
+  const fromNearby = new Set(nearby?.items ?? [])
+  const mine = [...inbox.items, ...(nearby?.items ?? [])].filter((i) => i.direction === direction).sort((a, b) => b.at - a.at)
   const waiting = mine.filter((i) => i.state === 'waiting')
   const moving = mine.filter((i) => i.state === 'moving')
   const earlier = mine.filter((i) => i.state !== 'waiting' && i.state !== 'moving')
@@ -732,10 +729,10 @@ export function InboxList({
     <ShareRow
       key={`${item.direction}-${item.id}`}
       item={item}
-      who={calledOf(item.peer, myProfile)}
-      progress={inbox.progressOf(item)}
+      who={fromNearby.has(item) ? item.peer.name : calledOf(item.peer, myProfile)}
+      progress={fromNearby.has(item) ? (nearby?.progressOf(item) ?? null) : inbox.progressOf(item)}
       onAnswer={() => onAnswer(item)}
-      onForget={() => inbox.forget(item)}
+      onForget={() => (fromNearby.has(item) ? nearby?.forget(item) : inbox.forget(item))}
     />
   )
   return (

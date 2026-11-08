@@ -96,7 +96,9 @@ import { useMusicMine } from '@/lib/useMusicMine'
 import { ownDevices, usePresence } from '@/lib/usePresence'
 import { useInbox } from '@/lib/useInbox'
 import type { ShareFile } from '@/lib/share'
-import { InboxPage, OfferCard, ShareDialog, ShareSaid } from '@/components/share/DesktopShare'
+import { InboxPage, NearbyDialog, NearbyOfferCard, OfferCard, ShareDialog, ShareSaid } from '@/components/share/DesktopShare'
+import { useNearby } from '@/lib/useNearby'
+import { useNearbyNotifications } from '@/components/share/nearbyNotifications'
 import { useAlwaysReady } from '@/lib/alwaysReady'
 import { useShareNotifications } from '@/components/share/notifications'
 import { entriesToMedia, isMediaFile, nextEpisodes } from '@/lib/media'
@@ -217,6 +219,8 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     transfers,
     profileId ?? undefined,
   )
+  // Sharing with devices nearby, no host needed: before a drive too.
+  const nearby = useNearby(transfers)
   // Only for a host too old to sort the drive itself.
   const needsScan =
     collections.unsupported && (nav === 'recent' || LIBRARY_KEYS.includes(nav))
@@ -1424,6 +1428,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     musicMine,
     presence,
     inbox,
+    nearby,
     sharing,
     setSharing,
     mediaBase,
@@ -1552,6 +1557,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
     void api.stayRunning(keepRunning).catch(() => {})
   }, [keepRunning])
   useShareNotifications(inbox, presence, model.setNav)
+  useNearbyNotifications(model.nearby)
   const {
     vault,
     transfers,
@@ -1682,6 +1688,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
             notice={vault.removed}
             onBack={changingDrive ? () => setChangingDrive(false) : undefined}
             currentHostId={changingDrive ? vault.status.hostId : null}
+            onNearby={() => model.nearby.setScreenOpen(true)}
             onPaired={(next) => {
               setChangingDrive(false)
               setNav('files')
@@ -1689,6 +1696,8 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
             }}
           />
         </div>
+        <NearbyOfferCard nearby={model.nearby} />
+        <NearbyDialog nearby={model.nearby} />
       </div>
     )
   }
@@ -1939,6 +1948,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
               <InboxPage
                 presence={presence}
                 inbox={inbox}
+                nearby={model.nearby}
                 onSendLocal={() =>
                   void pickFiles()
                     .then((paths) => (paths.length > 0 ? api.localFiles(paths) : []))
@@ -1954,6 +1964,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                 onForget={forgetVault}
                 onChangeDrive={() => setChangingDrive(true)}
                 inbox={presence.supported && presence.you !== '' ? inbox : undefined}
+                nearby={model.nearby}
                 presence={presence}
               />
             ) : noDrive ? (
@@ -2094,10 +2105,13 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
         files={sharing}
         presence={presence}
         inbox={inbox}
+        nearby={model.nearby}
         onClose={() => setSharing(null)}
         onSaid={setShareSaid}
       />
       <OfferCard presence={presence} inbox={inbox} />
+      <NearbyOfferCard nearby={model.nearby} />
+      <NearbyDialog nearby={model.nearby} />
       <ShareSaid said={shareSaid} onGone={() => setShareSaid(null)} />
 
       <CommandPalette

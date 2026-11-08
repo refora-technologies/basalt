@@ -1,12 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { isAndroid } from '@/lib/platform'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronLeft, ChevronRight, Hash, Send } from 'lucide-react'
-import { ReceiveWithCode } from '@/components/share/Nearby'
+import { ChevronLeft, ChevronRight, Radio, Send } from 'lucide-react'
 
 import type { AppModel } from '@/App'
 import { Switch } from '@/components/Switch'
 import { SyncLogPanel } from '@/components/music/SyncLog'
 import { InboxList, ReceivePrompt, ShareChooser } from '@/components/share/Share'
+import { NearbyPrompt, NearbyScreen, NearbySwitches } from '@/components/share/Nearby'
+import type { Nearby } from '@/lib/useNearby'
 import { HeldList } from '@/components/share/Held'
 import type { ShareItem } from '@/lib/share'
 import { Sheet } from './Sheet'
@@ -41,6 +43,7 @@ export function PhoneShare({
           <div>
             <ShareChooser
               sheet
+              nearby={model.nearby}
               files={sharing}
               presence={presence}
               inbox={inbox}
@@ -94,12 +97,8 @@ function InboxScreen({
 }): React.JSX.Element {
   const { presence, inbox } = model
   const [page, setPage] = useState<'in' | 'out'>('in')
-  const [byCode, setByCode] = useState(false)
+  const nearby = model.nearby
   useBack(open, () => {
-    if (byCode) {
-      setByCode(false)
-      return true
-    }
     onClose()
     return true
   })
@@ -134,26 +133,30 @@ function InboxScreen({
           <div className="min-h-0 flex-1">
             <SectionPager items={pages} active={page} onChoose={(key) => setPage(key as 'in' | 'out')} link={link}>
               <div className="h-full overflow-y-auto pt-1">
-                {page === 'in' &&
-                  (byCode ? (
-                    <div className="mx-3 mb-2 mt-1 rounded-2xl bg-[#141416] py-3">
-                      <div className="px-5 pb-1 text-[15px] font-semibold text-text">Receive with a code</div>
-                      <ReceiveWithCode inbox={inbox} phone onClose={() => setByCode(false)} />
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => setByCode(true)}
-                      className="mx-3 mb-1 mt-1 flex w-[calc(100%-24px)] items-center gap-3 rounded-2xl bg-[#141416] px-3.5 py-3 text-left active:bg-white/[0.06]"
+                {page === 'in' && (
+                  <button
+                    onClick={() => nearby.setScreenOpen(true)}
+                    className="mx-3 mb-1 mt-1 flex w-[calc(100%-24px)] items-center gap-3 rounded-2xl bg-[#141416] px-3.5 py-3 text-left active:bg-white/[0.06]"
+                  >
+                    <span
+                      className={
+                        nearby.ready
+                          ? 'flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sky-400/15 text-sky-300'
+                          : 'flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-textDim'
+                      }
                     >
-                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-textDim">
-                        <Hash size={16} />
+                      <Radio size={16} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[14.5px] text-text">Nearby</span>
+                      <span className="block text-[12px] text-textFaint">
+                        {nearby.ready
+                          ? `Ready to receive${nearby.me ? ` as ${nearby.me.name} · ${nearby.me.id}` : ''}${nearby.alwaysCode ? ', with a code' : ''}`
+                          : 'From someone who isn’t in this home: off'}
                       </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-[14.5px] text-text">Receive with a code</span>
-                        <span className="block text-[12px] text-textFaint">From someone who isn’t in this home, on the same Wi-Fi</span>
-                      </span>
-                    </button>
-                  ))}
+                    </span>
+                  </button>
+                )}
                 {page === 'out' && (
                   <button
                     onClick={() =>
@@ -174,13 +177,83 @@ function InboxScreen({
                     </span>
                   </button>
                 )}
-                <InboxList inbox={inbox} presence={presence} direction={page} onAnswer={onAnswer} />
+                <InboxList inbox={inbox} presence={presence} nearby={nearby} direction={page} onAnswer={onAnswer} />
               </div>
             </SectionPager>
           </div>
         </motion.div>
       )}
     </AnimatePresence>
+  )
+}
+
+/**
+ * Nearby on a phone, with or without a drive: the Nearby screen, sliding in
+ * over the app, and the sheet that comes up when a device nearby offers
+ * something.
+ */
+export function PhoneNearby({ nearby }: { nearby: Nearby }): React.JSX.Element {
+  const [putAway, setPutAway] = useState<Set<string>>(() => new Set())
+  const offer = nearby.incoming.find((i) => i.accepted || !putAway.has(i.ask)) ?? null
+  const open = nearby.screenOpen
+  // Ready for devices nearby: kept running when left, as for the home's.
+  useEffect(() => {
+    if (!nearby.ready || !isAndroid()) return undefined
+    void android.keepAlive('nearby', 'Basalt', 'Ready to receive from nearby')
+    return () => void android.letGo('nearby')
+  }, [nearby.ready])
+  useBack(open, () => {
+    nearby.setScreenOpen(false)
+    return true
+  })
+  return (
+    <>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ x: '100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: '100%' }}
+            transition={{ duration: 0.28, ease: [0.32, 0.72, 0, 1] }}
+            className="fixed inset-0 z-[65] flex flex-col bg-ink"
+            style={{ paddingTop: 'var(--inset-top, 0px)', paddingBottom: 'var(--inset-bottom, 0px)' }}
+          >
+            <header className="flex h-14 shrink-0 items-center gap-1 px-1.5">
+              <button
+                onClick={() => nearby.setScreenOpen(false)}
+                aria-label="Back"
+                className="flex h-11 w-11 items-center justify-center rounded-full text-text active:bg-white/[0.08]"
+              >
+                <ChevronLeft size={24} />
+              </button>
+              <h1 className="text-[20px] font-semibold tracking-tight text-text">Nearby</h1>
+            </header>
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-4">
+              <NearbyScreen
+                nearby={nearby}
+                phone
+                pickFiles={async () => {
+                  const files = await android.pickFiles('any')
+                  return files.map((f) => ({ name: f.name, size: Math.max(0, f.size), path: '', source: f.uri }))
+                }}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <Sheet
+        open={offer !== null}
+        onClose={() => {
+          if (offer && !offer.accepted) setPutAway((s) => new Set(s).add(offer.ask))
+        }}
+      >
+        {offer && (
+          <div className="pb-[calc(var(--inset-bottom,0px)+18px)]">
+            <NearbyPrompt nearby={nearby} offer={offer} />
+          </div>
+        )}
+      </Sheet>
+    </>
   )
 }
 
@@ -192,6 +265,7 @@ export function SharingCard({ model }: { model: AppModel }): React.JSX.Element {
   return (
     <div className="rounded-2xl border border-white/[0.07] bg-[#141416] py-1">
       <div className="px-4 pb-1 pt-2.5 font-mono text-[10.5px] uppercase tracking-[0.18em] text-textFaint">Sharing</div>
+      <NearbySwitches nearby={model.nearby} className="px-4" />
       <Switch
         label="Always ready to receive"
         description="Basalt stays ready when you leave it, and tells you when something comes. Android shows a quiet notification while it’s ready."

@@ -42,7 +42,7 @@ async function plugin<T>(command: string, args?: Record<string, unknown>): Promi
 }
 
 /** Why the app keeps running in the background. */
-export type KeepReason = 'transfer' | 'playback' | 'music' | 'ready'
+export type KeepReason = 'transfer' | 'playback' | 'music' | 'ready' | 'nearby'
 
 export const android = {
   /** Photos and videos, or any files, from the phone's own picker. */

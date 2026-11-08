@@ -6,6 +6,7 @@ import {
   HardDrive,
   Loader2,
   MoreHorizontal,
+  Radio,
   RefreshCw,
   ShieldCheck,
   Trash2,
@@ -55,6 +56,7 @@ export function PairingView({
   onBack,
   currentHostId,
   onHowItWorks,
+  onNearby,
 }: {
   onPaired: (status: Status) => void
   /** Said above the list: why the app is back here, such as a host removing it. */
@@ -68,6 +70,8 @@ export function PairingView({
   currentHostId?: string | null
   /** Shows the introduction again: what Basalt is, and how to get the host. */
   onHowItWorks?: () => void
+  /** Sharing with a device nearby: no drive needed. */
+  onNearby?: () => void
 }): React.JSX.Element {
   const [hosts, setHosts] = useState<DiscoveredHost[] | null>(null)
   const [scanning, setScanning] = useState(false)
@@ -387,6 +391,19 @@ export function PairingView({
               onAddress={(address) => void chooseAddress(address)}
               onRescan={() => void scan()}
             />
+            {onNearby && (
+              <button
+                onClick={onNearby}
+                className="mt-3 flex w-full shrink-0 items-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-2.5 text-left transition-colors hover:bg-white/[0.05] active:bg-white/[0.06]"
+              >
+                <Radio size={15} className="shrink-0 text-sky-300" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[13px] text-text">Share with a device nearby</span>
+                  <span className="block text-[11.5px] text-textFaint">Send or receive files on this Wi-Fi, no drive needed</span>
+                </span>
+                <ArrowRight size={13} className="shrink-0 text-textFaint" />
+              </button>
+            )}
             {onHowItWorks && (
               <button
                 onClick={onHowItWorks}

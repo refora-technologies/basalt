@@ -1,0 +1,79 @@
+import { useEffect, useRef } from 'react'
+
+import { api, onNotification } from '@/lib/api'
+import { android } from '@/lib/android'
+import { isAndroid } from '@/lib/platform'
+import { isProgram, titleOf } from '@/lib/share'
+import type { Nearby } from '@/lib/useNearby'
+
+/**
+ * Notifications for shares from devices nearby, while Basalt is out of sight:
+ * an offer, with Accept and Decline in it, and files that arrived. On a
+ * computer, its own (shown only with the window hidden); on a phone,
+ * Android's, when the app isn't in front. Each is told once.
+ */
+export function useNearbyNotifications(nearby: Nearby): void {
+  const told = useRef(new Set<string>())
+  const started = useRef(Date.now())
+  const nearbyRef = useRef(nearby)
+  nearbyRef.current = nearby
+
+  useEffect(() => {
+    for (const offer of nearby.incoming) {
+      if (offer.accepted || told.current.has(offer.ask)) continue
+      told.current.add(offer.ask)
+      const title = `${offer.from.name} · ${offer.from.id} wants to send you ${titleOf(offer.files.map((f) => ({ ...f, path: '' })))}`
+      const text = offer.code ? 'A device nearby · a code is asked' : 'A device nearby'
+      if (isAndroid()) {
+        if (document.visibilityState !== 'visible') {
+          void android.notifyShare(`nearby-${offer.ask}`, title, text, ['Accept|accept', 'Decline|decline']).catch(() => {})
+        }
+      } else {
+        void api
+          .notify(`nearby-${offer.ask}`, title, text, [
+            ['Accept', 'accept'],
+            ['Decline', 'decline'],
+          ])
+          .catch(() => {})
+      }
+    }
+  }, [nearby.incoming])
+
+  useEffect(() => {
+    for (const item of nearby.items) {
+      if (item.direction !== 'in' || item.state !== 'done' || item.at < started.current) continue
+      const tag = `arrived-${item.id}`
+      if (told.current.has(tag)) continue
+      told.current.add(tag)
+      const title = `${titleOf(item.files)} arrived`
+      const text = `From ${item.peer.name} · ${item.savedAs ?? ''}`
+      if (isAndroid()) {
+        const one = item.saved?.length === 1 && !isProgram(item.saved[0]!.name)
+        void android.notifyShare(item.id, title, text, one ? ['Open|open'] : []).catch(() => {})
+      } else {
+        void api.notify(item.id, title, text).catch(() => {})
+      }
+    }
+  }, [nearby.items])
+
+  // A computer's buttons in its notification.
+  useEffect(() => {
+    if (isAndroid()) return undefined
+    let stop: (() => void) | null = null
+    let gone = false
+    void onNotification(({ tag, action }) => {
+      if (!tag.startsWith('nearby-')) return
+      const ask = tag.slice('nearby-'.length)
+      if (action === 'accept') nearbyRef.current.accept(ask)
+      else if (action === 'decline') nearbyRef.current.decline(ask)
+      else nearbyRef.current.setScreenOpen(true)
+    }).then((unlisten) => {
+      if (gone) unlisten()
+      else stop = unlisten
+    })
+    return () => {
+      gone = true
+      stop?.()
+    }
+  }, [])
+}

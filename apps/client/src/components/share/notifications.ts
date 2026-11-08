@@ -54,6 +54,8 @@ export function useShareNotifications(inbox: Inbox, presence: Presence, setNav: 
     const stops: (() => void)[] = []
     let gone = false
     void onNotification(({ tag, action }) => {
+      // A device nearby's: its own hook answers it.
+      if (tag.startsWith('nearby-')) return
       const item = inboxRef.current.items.find((i) => i.id === tag && i.direction === 'in')
       if (item && item.state === 'waiting' && action === 'accept') inboxRef.current.accept(item)
       else if (item && item.state === 'waiting' && action === 'decline') inboxRef.current.decline(item)
