@@ -154,14 +154,23 @@ export function MusicPlayer({
    * and kept, as it is the device's own.
    */
   const startLag = useRef(readStartLag())
+  /**
+   * Counts every pause, seek and group change: a start's check that comes
+   * after one of them measures that, not the start. (A pause a second after
+   * a play was once read as the player starting late, again and again,
+   * until the phone started 0.25 s before the others.)
+   */
+  const moves = useRef(0)
   /** A start at a moment: a second on, where it got to says how late it really began. */
   const checkStart = (position: number, at: number): void => {
+    const since = moves.current
     setTimeout(() => {
+      if (moves.current !== since || latest.current.paused || rate.current !== 1) return
       void measure.current().then((exact) => {
-        if (!exact) return
+        if (!exact || moves.current !== since || latest.current.paused) return
         const late = position + (exact.at - at) / 1000 - exact.position
         // Far off is something else (a seek, a stall): not the player's own lag.
-        if (Math.abs(late) > 0.5) return
+        if (Math.abs(late) > MOST_START_MISS_S) return
         startLag.current = Math.max(0, Math.min(MAX_START_LAG_MS, startLag.current + late * 1000 * 0.7))
         saveStartLag(startLag.current)
       })
@@ -235,7 +244,8 @@ export function MusicPlayer({
   /** The gaps found at the last checks, since the last seek. */
   const gaps = useRef<number[]>([])
   const setRate = useCallback((next: number) => {
-    if (next === rate.current) return
+    // Not 1: asked again each time, as a speed lasts only a few seconds unless renewed.
+    if (next === rate.current && next === 1) return
     rate.current = next
     controls.current?.setRate(next)
   }, [])
@@ -404,6 +414,7 @@ export function MusicPlayer({
     )
     gaps.current = []
     checkLanding.current = false
+    moves.current += 1
     setRate(1)
     remote.current = true
     try {
@@ -426,19 +437,11 @@ export function MusicPlayer({
           controls.current?.playAt(step.from, step.at)
           corrected.current = step.at
           break
-        case 'pause': {
-          const version = next.version
-          const pauseIt = (): void => {
-            if (groupRef.current?.version !== version) return
-            controls.current?.setPaused(true)
-            controls.current?.seek(step.position)
-          }
-          const wait = step.at - Date.now()
-          if (wait > 0) setTimeout(pauseIt, wait)
-          else pauseIt()
+        case 'pause':
+          // At the moment, timed outside the page.
+          controls.current?.pauseAt(step.position, step.at)
           corrected.current = step.at
           break
-        }
         case 'nothing':
           break
       }
@@ -453,28 +456,66 @@ export function MusicPlayer({
   const tellRef = useRef(tell)
   tellRef.current = tell
 
-  /** Asks the host about the group; the answer is played at once. False if it couldn't be. */
-  const askGroup = useCallback(async (request: MusicGroupRequest): Promise<boolean> => {
-    if (groupsOk.current === false || !whoRef.current) return false
-    try {
-      const sent = Date.now()
-      const answer = await api.musicGroup(request)
-      const back = Date.now()
-      groupsOk.current = true
-      if (request.action !== 'view') syncLog(`asked ${describeAsk(request)}: done in ${back - sent} ms`)
-      clockSamples.current = [
-        ...clockSamples.current.slice(-19),
-        { offset: answer.now - (sent + back) / 2, took: back - sent, at: back },
-      ]
-      offsetRef.current = bestOffset(clockSamples.current, back) ?? answer.now - back
-      applyRef.current(answer.group ?? null)
-      return true
-    } catch (e) {
-      if (e instanceof ApiError && (e.kind === 'unsupported' || e.kind === 'incompatible')) groupsOk.current = false
-      syncLog(`asked ${describeAsk(request)}: refused (${e instanceof Error ? e.message : String(e)})`)
-      return false
+  /**
+   * Out of the group without having left it: the host took it out while its
+   * line was down, and the word never came. Back in, through a member still
+   * playing; false if none could take it.
+   */
+  const rejoin = useCallback(async (was: MusicGroup): Promise<boolean> => {
+    for (const member of was.members) {
+      if (member.device === you.current) continue
+      try {
+        const answer = await api.musicGroup({ action: 'start', with: member.device })
+        if (!answer.group) continue
+        syncLog(`out of group ${was.id} without leaving: back in through ${member.name}`)
+        applied.current = null
+        applyRef.current(answer.group)
+        return true
+      } catch {
+        // Not playing any more: the next one.
+      }
     }
+    syncLog(`out of group ${was.id} without leaving: none of it to join again, playing on here`)
+    return false
   }, [])
+
+  /** Asks the host about the group; the answer is played at once. False if it couldn't be. */
+  const askGroup = useCallback(
+    async (request: MusicGroupRequest, again = true): Promise<boolean> => {
+      if (groupsOk.current === false || !whoRef.current) return false
+      try {
+        const sent = Date.now()
+        const answer = await api.musicGroup(request)
+        const back = Date.now()
+        groupsOk.current = true
+        if (request.action !== 'view') syncLog(`asked ${describeAsk(request)}: done in ${back - sent} ms`)
+        clockSamples.current = [
+          ...clockSamples.current.slice(-19),
+          { offset: answer.now - (sent + back) / 2, took: back - sent, at: back },
+        ]
+        offsetRef.current = bestOffset(clockSamples.current, back) ?? answer.now - back
+        const was = groupRef.current
+        if (request.action === 'view' && !answer.group && was && !leaving.current && again) {
+          if (await rejoin(was)) return true
+        }
+        applyRef.current(answer.group ?? null)
+        return true
+      } catch (e) {
+        if (e instanceof ApiError && (e.kind === 'unsupported' || e.kind === 'incompatible')) groupsOk.current = false
+        const said = e instanceof Error ? e.message : String(e)
+        syncLog(`asked ${describeAsk(request)}: refused (${said})`)
+        // A change asked of a group the host no longer has this device in:
+        // back in, then asked again, so the press reaches every one of them.
+        const was = groupRef.current
+        if (again && was && request.action === 'set' && /isn.t playing in a group|no such group/.test(said)) {
+          if (await rejoin(was)) return askGroup({ ...request, group: undefined, expect: undefined }, false)
+          applyRef.current(null)
+        }
+        return false
+      }
+    },
+    [rejoin],
+  )
   /** In a group, and asked by a hand here (not applying the group's own word). */
   const byHandInGroup = (): boolean => groupRef.current !== null && !remote.current
 
@@ -570,6 +611,7 @@ export function MusicPlayer({
           void askGroup({ action: 'set', position: seconds, leadMs: SEEK_TOGETHER_MS })
           return
         }
+        moves.current += 1
         controls.current?.seek(seconds)
         toLinked('seek', seconds)
         // Others see the jump at once, not at the next report.
@@ -913,6 +955,7 @@ export function MusicPlayer({
       if (step.do === 'seek') {
         gaps.current = []
         setRate(1)
+        moves.current += 1
         controls.current?.seek(step.to)
         corrected.current = Date.now()
         checkLanding.current = true
@@ -973,6 +1016,7 @@ export function MusicPlayer({
       if (step.do === 'seek') {
         gaps.current = []
         setRate(1)
+        moves.current += 1
         controls.current?.seek(step.to)
         corrected.current = Date.now()
         checkLanding.current = true
@@ -987,6 +1031,14 @@ export function MusicPlayer({
     }, FOLLOW_EVERY_MS)
     return () => clearInterval(timer)
   }, [inGroup, setRate])
+
+  // In a group, asked now and then whether it still is: a word lost while
+  // the line was down is found within seconds, not at the next press.
+  useEffect(() => {
+    if (!inGroup) return undefined
+    const timer = setInterval(() => void askGroup({ action: 'view' }), GROUP_CHECK_EVERY_MS)
+    return () => clearInterval(timer)
+  }, [inGroup, askGroup])
 
   // The group's every change, as it happens, down the device channel.
   useEffect(() => {
@@ -1344,11 +1396,18 @@ const CATCH_UP_MARGIN_S = 0.8
 /** How long after a start at a moment it checks where it got to. */
 const START_CHECK_MS = 1_200
 /** The most a player is taken to need to make sound once unpaused. */
-const MAX_START_LAG_MS = 400
+const MAX_START_LAG_MS = 300
+/** A start found further off than this, in seconds, was something else: not learnt from. */
+const MOST_START_MISS_S = 0.3
+/**
+ * Where it is kept. Named anew in 1.6.4: the name before held lags learnt
+ * wrongly from pauses (up to 0.4 s), so every device learns its own again.
+ */
+const START_LAG_KEY = 'basalt.music.startLag.2'
 
 function readStartLag(): number {
   try {
-    const kept = Number(localStorage.getItem('basalt.music.startLag'))
+    const kept = Number(localStorage.getItem(START_LAG_KEY))
     return Number.isFinite(kept) ? Math.max(0, Math.min(MAX_START_LAG_MS, kept)) : 0
   } catch {
     return 0
@@ -1357,11 +1416,14 @@ function readStartLag(): number {
 
 function saveStartLag(ms: number): void {
   try {
-    localStorage.setItem('basalt.music.startLag', String(Math.round(ms)))
+    localStorage.setItem(START_LAG_KEY, String(Math.round(ms)))
   } catch {
     // Not kept: learnt again next time.
   }
 }
+
+/** How often a device in a group asks the host whether it still is. */
+const GROUP_CHECK_EVERY_MS = 10_000
 
 /** How often a device in sync checks it keeps to the other. */
 const FOLLOW_EVERY_MS = 1_000
@@ -1391,10 +1453,14 @@ interface EngineControls {
   playAt: (position: number, at: number) => void
   /** Paused or playing, as asked; a start waited for is given up. */
   setPaused: (paused: boolean) => void
+  /** Paused at `position` at `at` (Unix ms). */
+  pauseAt: (position: number, at: number) => void
 }
 
 /** Reads of the player's clock taken to work out the second: about a fifth of a second's worth. */
 const CLOCK_READS = 16
+/** A speed other than 1 lasts this long unless asked again: past the next check or two. */
+const RATE_HOLDS_MS = 4_000
 
 /**
  * mpv, playing the song at `path`. Mounted only while there is a queue, so
@@ -1467,6 +1533,13 @@ function Engine({
       started.current(null, at)
       return
     }
+    // Timed outside the page, so a hidden page (screen off, the tray)
+    // starts on time too.
+    const native = await api.musicPlayAt(position, at, startLag.current).catch(() => null)
+    if (native) {
+      if (!native.gone && waiting.current === mine) started.current(native.position, native.at)
+      return
+    }
     if (!(await ready(mine))) return
     // `target` is played from at `when`: where the others are then.
     let target = position
@@ -1505,6 +1578,9 @@ function Engine({
     },
     read: async () => {
       if (!inTauri()) return null
+      // Read outside the page: a hidden page's timers would spread these over seconds.
+      const native = await api.musicClock(CLOCK_READS).catch(() => null)
+      if (native) return native
       const readings: Reading[] = []
       for (let i = 0; i < CLOCK_READS; i++) {
         const sent = Date.now()
@@ -1517,18 +1593,39 @@ function Engine({
     },
     setPaused: (paused) => {
       ++waiting.current
+      if (inTauri()) void api.musicCancel().catch(() => {})
       void mpv.setPaused(paused)
+    },
+    pauseAt: (position, at) => {
+      const mine = ++waiting.current
+      if (!inTauri()) return
+      void api.musicPauseAt(position, at).catch(() => {
+        // Not in this app: timed by the page.
+        setTimeout(() => {
+          if (waiting.current !== mine) return
+          void mpv.setPaused(true).then(() => seekTo(position))
+        }, Math.max(0, at - Date.now()))
+      })
     },
     playAt: (position, at) => {
       const mine = ++waiting.current
+      if (inTauri()) {
+        void release(position, at, mine)
+        return
+      }
       void mpv
         .setPaused(true)
         .then(() => seekTo(Math.max(0, position)))
         .then(() => release(position, at, mine))
     },
-    // mpv keeps the pitch at a speed this close to 1.
+    // mpv keeps the pitch at a speed this close to 1. Back to 1 by itself
+    // unless asked again: a hidden page that stops checking never leaves it
+    // running fast or slow.
     setRate: (rate) => {
-      if (inTauri()) void mpvBackend.command('set', ['speed', rate.toFixed(4)]).catch(() => {})
+      if (!inTauri()) return
+      void api.musicSetRate(rate, RATE_HOLDS_MS).catch(() => {
+        void mpvBackend.command('set', ['speed', rate.toFixed(4)]).catch(() => {})
+      })
     },
   }
 

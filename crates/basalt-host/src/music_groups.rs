@@ -11,7 +11,10 @@
 //! asking "next" as their song ends move it on once.
 //!
 //! Who is in a group goes by who is online (the device channel's presence),
-//! not by reports: a phone whose screen is off stays in it.
+//! not by reports: a phone whose screen is off stays in it. A device whose
+//! line drops stays in for [`AWAY_GRACE_MS`]: a phone's Wi-Fi blinks, and its
+//! line comes straight back. (Taken out at once, it never heard so, and its
+//! next pause stopped only itself.)
 
 use std::collections::HashMap;
 
@@ -21,11 +24,16 @@ use basalt_proto::msg::{GroupMember, Listening, MusicGroup, MusicGroupRequest};
 /// a second and a half on a slow phone.
 pub const MOST_LEAD_MS: i64 = 3_000;
 
+/// How long a member may be off the line before it leaves its group.
+pub const AWAY_GRACE_MS: i64 = 45_000;
+
 /// All the groups, by id. A device is in one group at most.
 #[derive(Debug, Default)]
 pub struct Groups {
     groups: HashMap<String, Group>,
     next_id: u64,
+    /// Members off the line, since when (host ms).
+    away: HashMap<String, i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -166,17 +174,30 @@ impl Groups {
         }
     }
 
-    /// Devices that are no longer online leave their groups; a group left
-    /// with one is no group. What changed, group by group.
-    pub fn keep_online(&mut self, online: impl Fn(&str) -> bool) -> Vec<Changed> {
-        let gone: Vec<String> = self
+    /// Devices off the line for [`AWAY_GRACE_MS`] leave their groups; a
+    /// group left with one is no group. What changed, group by group. `now`
+    /// is the host's clock; asked again every few seconds.
+    pub fn keep_online(&mut self, online: impl Fn(&str) -> bool, now: i64) -> Vec<Changed> {
+        let members: Vec<String> = self
             .groups
             .values()
             .flat_map(|g| g.state.members.iter())
-            .filter(|m| !online(&m.device))
             .map(|m| m.device.clone())
             .collect();
-        gone.iter().map(|device| self.leave(device)).collect()
+        self.away.retain(|d, _| members.contains(d) && !online(d));
+        let mut gone = Vec::new();
+        for device in members.into_iter().filter(|d| !online(d)) {
+            let since = *self.away.entry(device.clone()).or_insert(now);
+            if now - since >= AWAY_GRACE_MS {
+                gone.push(device);
+            }
+        }
+        gone.iter()
+            .map(|device| {
+                self.away.remove(device);
+                self.leave(device)
+            })
+            .collect()
     }
 
     /// The group's id `device` may change: the one asked for, of its
@@ -458,13 +479,23 @@ mod tests {
             .unwrap();
         assert_eq!(three.id, group.id, "the phone's group, not a new one");
         assert_eq!(three.members.len(), 3);
-        // The tablet goes off the network: the other two stay together.
-        let changed = groups.keep_online(|d| d != "tablet");
+        // The tablet's line drops: kept in through a blink.
+        assert!(groups.keep_online(|d| d != "tablet", 10_000).is_empty());
+        assert!(
+            groups.keep_online(|_| true, 20_000).is_empty(),
+            "back in time"
+        );
+        assert!(
+            groups.keep_online(|d| d != "tablet", 30_000).is_empty(),
+            "away again: counted from now, not from the first time"
+        );
+        // Gone for good: the other two stay together.
+        let changed = groups.keep_online(|d| d != "tablet", 30_000 + AWAY_GRACE_MS);
         assert_eq!(changed.len(), 1);
         assert_eq!(changed[0].group.as_ref().unwrap().members.len(), 2);
         assert_eq!(changed[0].left, ["tablet"]);
         // Online, nothing changes.
-        assert!(groups.keep_online(|_| true).is_empty());
+        assert!(groups.keep_online(|_| true, 100_000).is_empty());
         // The phone leaves: the laptop alone is no group.
         let gone = groups
             .ask("maya", member("phone"), &ask("leave"), None, 4_000)

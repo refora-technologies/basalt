@@ -30,7 +30,9 @@ const here = path.dirname(fileURLToPath(import.meta.url))
 const read = (relative: string): string =>
   readFileSync(path.resolve(here, relative), 'utf8')
 
-const shell = read('../../src-tauri/src/lib.rs')
+const shellMain = read('../../src-tauri/src/lib.rs')
+// Commands in the shell's own modules, registered in lib.rs by their path.
+const shell = [shellMain, read('../../src-tauri/src/music_timing.rs')].join('\n')
 const uiRust = read('../../../../crates/basalt-client/src/ui.rs')
 // The library and change types are protocol types, shared by both halves, and
 // they reach JavaScript just the same — so they need the same check.
@@ -55,7 +57,7 @@ function uncomment(source: string): string {
 
 function rustCommands(source: string): Map<string, string[]> {
   const commands = new Map<string, string[]>()
-  const pattern = /#\[tauri::command\]\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*\(([^)]*)\)/g
+  const pattern = /#\[tauri::command\]\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)/g
 
   for (const match of source.matchAll(pattern)) {
     const [, name, rawParams] = match
@@ -164,10 +166,10 @@ describe('the shell and the interface agree', () => {
   )
 
   it('every command is registered in the invoke handler', () => {
-    const handler = shell.match(/generate_handler!\[([\s\S]*?)\]/)?.[1] ?? ''
+    const handler = shellMain.match(/generate_handler!\[([\s\S]*?)\]/)?.[1] ?? ''
     const registered = handler
       .split(',')
-      .map((name) => name.trim())
+      .map((name) => name.trim().replace(/^[\w:]*::/, ''))
       .filter(Boolean)
 
     for (const name of commands.keys()) {

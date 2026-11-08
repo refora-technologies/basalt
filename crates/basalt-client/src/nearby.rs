@@ -120,13 +120,24 @@ impl NearbySender {
         let code = digits(code)?;
         let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
         let tcp_port = listener.local_addr()?.port();
-        let udp = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port))
-            .await
-            .map_err(|e| {
-                ClientError::Config(format!(
-                    "another device here is already sending with a code ({e})"
-                ))
-            })?;
+        // A code just stopped frees the port a moment later (its task ends
+        // at its next await): tried again for up to a second before saying so.
+        let mut tries = 0;
+        let udp = loop {
+            match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)).await {
+                Ok(udp) => break udp,
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && tries < 10 => {
+                    tries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                    return Err(ClientError::Config(format!(
+                        "something else on this device is using Basalt's port for codes ({port}): close it and try again"
+                    )));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
         let id = new_code();
         let offer = Arc::new(offer);
         let task = tokio::spawn(async move {

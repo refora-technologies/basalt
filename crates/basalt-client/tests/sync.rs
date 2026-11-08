@@ -1716,8 +1716,37 @@ async fn a_profiles_devices_play_together_by_the_hosts_state() {
             .is_err()
     );
 
-    // The laptop goes away: the phone is on its own again.
+    // The laptop's line drops for a moment (its Wi-Fi blinks): it stays in
+    // the group, and back on the line it is told the group as it is.
     drop(laptop_watch);
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    let kept = phone
+        .music_group(MusicGroupRequest {
+            action: "view".into(),
+            ..MusicGroupRequest::default()
+        })
+        .await
+        .unwrap()
+        .group
+        .expect("still a group through a blink");
+    assert_eq!(kept.members.len(), 2);
+    let back_at_laptop = Notices::default();
+    let _laptop_back = laptop.watch_with(|_| {}, back_at_laptop.record());
+    assert!(
+        back_at_laptop
+            .wait_for(|n| n.starts_with("message music.group") && n.contains(&kept.id))
+            .await,
+        "back on the line, the laptop hears its group"
+    );
+
+    // The laptop leaves: the phone is on its own again.
+    laptop
+        .music_group(MusicGroupRequest {
+            action: "leave".into(),
+            ..MusicGroupRequest::default()
+        })
+        .await
+        .unwrap();
     assert!(
         at_phone
             .wait_for(|n| n.starts_with("message music.group") && n.contains("\"group\":null"))

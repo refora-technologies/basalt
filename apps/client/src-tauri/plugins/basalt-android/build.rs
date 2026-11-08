@@ -30,6 +30,8 @@ const COMMANDS: &[&str] = &[
     "set_brightness",
     "set_volume",
     "notify_update",
+    "notify_share",
+    "cancel_share",
     "take_action",
     "app_version",
     "share_text",

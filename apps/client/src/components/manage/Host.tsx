@@ -140,13 +140,28 @@ export function HostHero(tools: Tools): React.JSX.Element {
                     style={{ width: `${((vault.total - vault.free - shareBytes) / vault.total) * 100}%` }}
                   />
                   {shareBytes > 0 && (
-                    <div className="h-full bg-white/45" style={{ width: `${Math.max((shareBytes / vault.total) * 100, 0.8)}%` }} />
+                    <div className="h-full bg-amber-300/85" style={{ width: `${Math.max((shareBytes / vault.total) * 100, 0.8)}%` }} />
                   )}
                 </div>
                 <div className="tnum mt-2 font-mono text-[11.5px] text-textFaint">
                   {formatBytes(vault.free)} free of {formatBytes(vault.total)}
-                  {shareBytes > 0 && <> · {formatBytes(shareBytes)} share files</>}
                 </div>
+                {(status.sharing?.used ?? 0) > 0 && (
+                  <div className="tnum mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-textFaint">
+                    {shareBytes > 0 && (
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-[7px] w-[7px] rounded-full bg-amber-300/85" />
+                        Share files {formatBytes(shareBytes)} on the drive
+                      </span>
+                    )}
+                    {(status.sharing?.used ?? 0) - shareBytes > 0 && (
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-[7px] w-[7px] rounded-full border border-amber-300/85" />
+                        {formatBytes((status.sharing?.used ?? 0) - shareBytes)} locked on the host’s computer
+                      </span>
+                    )}
+                  </div>
+                )}
                 {view.cannotAddFiles && (
                   <p
                     className={cn(

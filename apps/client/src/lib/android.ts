@@ -119,6 +119,14 @@ export const android = {
   /** "Basalt <version> is available", as a phone notification. Whether it showed. */
   notifyUpdate: async (version: string) =>
     (await plugin<{ shown: boolean }>('notify_update', { version }))?.shown ?? false,
+  /**
+   * A share, as a notification on top: one offered (buttons "Label|action"),
+   * or one that arrived. Tapped, the app opens at its Inbox.
+   */
+  notifyShare: async (tag: string, title: string, text: string, actions: string[] = []) =>
+    (await plugin<{ shown: boolean }>('notify_share', { tag, title, text, actions }))?.shown ?? false,
+  /** A share's notification taken away. */
+  cancelShare: (tag: string) => plugin<void>('cancel_share', { tag }),
   /** What a notification tap asked the app to open, once. */
   takeAction: async () => (await plugin<{ action: string | null }>('take_action'))?.action ?? null,
   canInstallApks: async () => (await plugin<{ can: boolean }>('can_install_apks'))?.can ?? false,

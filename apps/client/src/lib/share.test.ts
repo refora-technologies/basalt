@@ -6,7 +6,10 @@ import {
   apply,
   calledOf,
   isProgram,
+  progressIn,
+  progressLine,
   received,
+  timeLeft,
   takesWithoutAsking,
   targetsOf,
   titleOf,
@@ -123,5 +126,44 @@ describe('why a share didn’t arrive', () => {
       'The two devices couldn’t reach each other on this Wi-Fi.',
     )
     expect(plainReason('protocol: the device that sent it said: that isn’t offered'.replace('’', "'"))).toBe('The device that sent it took it back.')
+  })
+})
+
+describe('how far a share has come', () => {
+  const item: ShareItem = {
+    id: 'o9',
+    direction: 'in',
+    files: [
+      { name: 'a.jpg', size: 1_000, path: '' },
+      { name: 'b.mp4', size: 9_000, path: '' },
+    ],
+    peer: { device: 'p', name: 'Phone' },
+    state: 'moving',
+    at: 1,
+  }
+  const format = (bytes: number): string => `${bytes} B`
+
+  it('counts the files before the one moving as done', () => {
+    const p = progressIn(
+      item,
+      [
+        { id: 'share-o9-0', transferred: 1_000, status: 'done', rate: 0 },
+        { id: 'share-o9-1', transferred: 4_000, status: 'active', rate: 500 },
+        { id: 'share-other-0', transferred: 7, status: 'active', rate: 99 },
+      ],
+      5,
+    )
+    expect(p).toEqual({ done: 5_000, total: 10_000, rate: 500, at: 5 })
+    expect(progressLine(p!, format)).toBe('50% · 5000 B of 10000 B · 500 B/s · 10 s left')
+  })
+
+  it('is nothing until a file starts', () => {
+    expect(progressIn(item, [], 5)).toBeNull()
+  })
+
+  it('says the time left as a person would', () => {
+    expect(timeLeft(9.2)).toBe('10 s')
+    expect(timeLeft(150)).toBe('3 min')
+    expect(timeLeft(3_900)).toBe('1 h 5 min')
   })
 })

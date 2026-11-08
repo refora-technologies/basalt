@@ -191,6 +191,35 @@ impl<R: Runtime> BasaltAndroid<R> {
     }
 
     /// Shows a finished download, or removes one that failed.
+    /// mpv's property `name` read as `format` ("double", "flag"): None when
+    /// it has none (nothing open).
+    pub fn mpv_get(&self, name: &str, format: &str) -> Result<Option<serde_json::Value>> {
+        #[derive(Deserialize)]
+        struct Got {
+            value: Option<serde_json::Value>,
+        }
+        let got: Got = self.call(
+            "mpvGetProperty",
+            serde_json::json!({ "name": name, "format": format }),
+        )?;
+        Ok(got.value)
+    }
+
+    /// Sets mpv's property `name`, as mpv's words ("yes", "1.0021").
+    pub fn mpv_set(&self, name: &str, value: &str) -> Result<()> {
+        let _: serde_json::Value = self.call(
+            "mpvSetProperty",
+            serde_json::json!({ "name": name, "value": value }),
+        )?;
+        Ok(())
+    }
+
+    /// Runs an mpv command: its name, then its words.
+    pub fn mpv_command(&self, args: &[String]) -> Result<()> {
+        let _: serde_json::Value = self.call("mpvCommand", serde_json::json!({ "args": args }))?;
+        Ok(())
+    }
+
     pub fn finish_download(&self, uri: &str, ok: bool) -> Result<()> {
         self.call::<serde_json::Value>("finishDownload", FinishDownloadArgs { uri, ok })
             .map(|_| ())

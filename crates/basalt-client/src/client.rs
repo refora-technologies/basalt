@@ -44,6 +44,10 @@ pub const CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 /// without asking either end to hold much.
 pub const IN_FLIGHT: usize = 3;
 
+/// How long a download cut off part-way keeps being taken up again with no
+/// byte coming, before it is given up.
+const RESUME_DOWNLOAD_FOR: std::time::Duration = std::time::Duration::from_secs(120);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransferKind {
@@ -1800,10 +1804,10 @@ impl Basalt {
         cancel: Option<Cancel>,
     ) -> Result<u64> {
         use tokio::io::AsyncWriteExt;
-        let pool = self.pool().await?;
-        let mut lease = pool.acquire().await?;
         let mut out = tokio::fs::File::from_std(out);
         let mut done = 0u64;
+        let mut moved_since = std::time::Instant::now();
+        let mut lease = None;
         while done < total {
             if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
                 return Err(ClientError::Cancelled);
@@ -1814,8 +1818,34 @@ impl Basalt {
                 offset: done,
                 length: HELD_PIECE,
             };
-            let result = lease.share_read(&request).await;
-            let piece = lease.check(result)?;
+            let asked: Result<Vec<u8>> = async {
+                if lease.is_none() {
+                    lease = Some(self.pool().await?.acquire().await?);
+                }
+                let line = lease.as_mut().expect("just made");
+                let result = line.share_read(&request).await;
+                line.check(result)
+            }
+            .await;
+            let piece = match asked {
+                Ok(piece) => piece,
+                // The line dropped part-way: taken up again from this piece,
+                // on a new connection, while bytes keep coming now and then.
+                Err(e @ (ClientError::Io(_) | ClientError::Net(_)))
+                    if done > 0 && moved_since.elapsed() < RESUME_DOWNLOAD_FOR =>
+                {
+                    if let Some(mut gone) = lease.take() {
+                        gone.discard();
+                    }
+                    tracing::info!(
+                        "{name} stopped at {done} of {total} bytes ({e}); taking it up again"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            moved_since = std::time::Instant::now();
             if piece.is_empty() {
                 return Err(ClientError::Protocol("the held file ended early".into()));
             }
@@ -2323,7 +2353,10 @@ impl Basalt {
         Ok(done)
     }
 
-    /// The download itself: every byte of `remote`, written to `file`.
+    /// The download itself: every byte of `remote`, written to `file`. A
+    /// line that drops part-way (the Wi-Fi gone a moment, the host's
+    /// computer asleep briefly) is taken up again from where it got to, for
+    /// as long as [`RESUME_DOWNLOAD_FOR`] passes without a byte.
     async fn download_into(
         &self,
         remote: &str,
@@ -2332,16 +2365,65 @@ impl Basalt {
         progress: Option<ProgressFn>,
         cancel: Option<Cancel>,
     ) -> Result<u64> {
+        let mut done = 0u64;
+        let mut moved_since = std::time::Instant::now();
+        loop {
+            let before = done;
+            let error = match self
+                .download_part(remote, total, file, &progress, &cancel, &mut done)
+                .await
+            {
+                Ok(()) => return Ok(done),
+                Err(e) => e,
+            };
+            // Only the line dropping is tried again; a cancel, a file that
+            // changed, or a host that says no is said at once.
+            let dropped = matches!(error, ClientError::Io(_) | ClientError::Net(_));
+            if !dropped || done == 0 {
+                return Err(error);
+            }
+            if done > before {
+                moved_since = std::time::Instant::now();
+            }
+            if moved_since.elapsed() > RESUME_DOWNLOAD_FOR {
+                return Err(error);
+            }
+            tracing::info!(
+                "{remote} stopped at {done} of {total} bytes ({error}); taking it up again"
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                return Err(ClientError::Cancelled);
+            }
+        }
+    }
+
+    /// From `done` bytes to the end, on one connection; `done` moves as the
+    /// bytes land, so a try that fails says how far it got.
+    async fn download_part(
+        &self,
+        remote: &str,
+        total: u64,
+        file: &mut tokio::fs::File,
+        progress: &Option<ProgressFn>,
+        cancel: &Option<Cancel>,
+        done: &mut u64,
+    ) -> Result<()> {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
+        // A try cut off mid-answer may have written part of a range past
+        // `done`: written again from there, over it.
+        {
+            use tokio::io::AsyncSeekExt;
+            file.seek(std::io::SeekFrom::Start(*done)).await?;
+        }
 
-        let outcome: Result<u64> = async {
+        let outcome: Result<()> = async {
             // Ranges asked for and not yet read back, oldest first.
             let mut asked: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
-            let mut requested = 0u64;
-            let mut done = 0u64;
+            let mut requested = *done;
 
-            while done < total {
+            while *done < total {
                 while asked.len() < IN_FLIGHT && requested < total {
                     let want = CHUNK_BYTES.min(total - requested);
                     lease.send_read(remote, requested, want).await?;
@@ -2364,18 +2446,18 @@ impl Basalt {
                         "{remote} changed while it was downloading ({done} of {total} bytes)"
                     )));
                 }
-                done += got;
+                *done += got;
 
-                if let Some(report) = &progress {
+                if let Some(report) = progress {
                     report(Progress {
                         kind: TransferKind::Download,
                         path: remote.to_string(),
-                        transferred: done,
+                        transferred: *done,
                         total,
                     });
                 }
             }
-            Ok(done)
+            Ok(())
         }
         .await;
 

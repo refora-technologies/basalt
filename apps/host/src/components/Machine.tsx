@@ -148,6 +148,8 @@ function Drive({
   // Share files on the drive's disk, shown apart within what's used.
   const shareBytes = Math.min(shareBytesOnDrive(status.sharing), vault.total - vault.free)
   const shares = vault.total > 0 ? shareBytes / vault.total : 0
+  // Share files kept locked in the host's own folder, on another disk than the drive's.
+  const apart = (status.sharing?.used ?? 0) - shareBytes
 
   return (
     <div className="flex shrink-0 flex-col border-t border-line px-6 py-5 min-[860px]:w-[330px] min-[860px]:border-l min-[860px]:border-t-0">
@@ -204,7 +206,7 @@ function Drive({
                 />
                 {shares > 0 && (
                   <motion.div
-                    className="h-full bg-white/45"
+                    className="h-full bg-amber-300/85"
                     initial={{ width: 0 }}
                     animate={{ width: `${Math.max(shares * 100, 0.8)}%` }}
                     transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
@@ -215,10 +217,27 @@ function Drive({
                 <span className="text-textDim">{formatBytes(vault.free)} free</span>
                 <span className="text-textFaint">of {formatBytes(vault.total)}</span>
               </div>
-              {shareBytes > 0 && (
-                <div className="tnum mt-1 flex items-center gap-1.5 font-mono text-[10.5px] text-textFaint">
-                  <span className="h-[6px] w-[6px] rounded-full bg-white/45" />
-                  {formatBytes(shareBytes)} of it share files
+              {(shareBytes > 0 || apart > 0) && (
+                <div className="tnum mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10.5px] text-textFaint">
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-[7px] w-[7px] rounded-full bg-basaltDeep" />
+                    Files {formatBytes(Math.max(0, vault.total - vault.free - shareBytes))}
+                  </span>
+                  {shareBytes > 0 && (
+                    <span className="flex items-center gap-1.5" title="Files kept for devices that were away, on the drive's disk">
+                      <span className="h-[7px] w-[7px] rounded-full bg-amber-300/85" />
+                      Share files {formatBytes(shareBytes)}
+                    </span>
+                  )}
+                </div>
+              )}
+              {apart > 0 && (
+                <div
+                  className="mt-2 flex items-center gap-2 rounded-md bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-textDim"
+                  title="Kept locked in Basalt Host's own folder, never on the shared drive"
+                >
+                  <span className="h-[7px] w-[7px] shrink-0 rounded-full border border-amber-300/85" />
+                  <span className="min-w-0 flex-1 truncate">{formatBytes(apart)} of share files, locked, on this computer</span>
                 </div>
               )}
             </>

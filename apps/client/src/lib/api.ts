@@ -921,6 +921,21 @@ export const api = {
   /** Asks another of the profile's devices to pause, play, skip or stop. */
   /** Devices playing together: see `MusicGroupRequest` in basalt-proto. Refused (`unsupported`) by hosts before 1.6.4. */
   musicGroup: (request: MusicGroupRequest) => call<{ now: number; group?: MusicGroup }>('music_group', { request }),
+  /** A file received on this computer, opened as the computer opens it (never a program). */
+  receivedOpen: (path: string) => call<void>('received_open', { path }),
+  /** A file received on this computer, shown in its folder. */
+  receivedShow: (path: string) => call<void>('received_show', { path }),
+  /** Quick reads of the player's clock, taken outside the page (on time when it is hidden). */
+  musicClock: (reads: number) => call<{ position: number; at: number; took: number }[]>('music_clock', { reads }),
+  /** Paused at `position`, playing from it at `at` (Unix ms), unpaused `lag` ms early; timed outside the page. */
+  musicPlayAt: (position: number, at: number, lag: number) =>
+    call<{ position: number | null; at: number; gone: boolean }>('music_play_at', { position, at, lag }),
+  /** Paused at `position` at `at` (Unix ms); false if something else was asked meanwhile. */
+  musicPauseAt: (position: number, at: number) => call<boolean>('music_pause_at', { position, at }),
+  /** A start or pause waiting for its moment is given up. */
+  musicCancel: () => call<void>('music_cancel'),
+  /** A hair faster or slower, back to 1 after `forMs` unless asked again. */
+  musicSetRate: (rate: number, forMs: number) => call<void>('music_set_rate', { rate, forMs }),
   musicCommand: (device: string, action: MusicCommand['action'], position = 0, listening?: Listening, clock?: number) => {
     const request = { device, action, position, listening, clock }
     return call<void>('music_command', { request })

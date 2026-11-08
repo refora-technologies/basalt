@@ -29,6 +29,8 @@ permissions = [
     "allow-set-brightness",
     "allow-set-volume",
     "allow-notify-update",
+    "allow-notify-share",
+    "allow-cancel-share",
     "allow-take-action",
     "allow-app-version",
     "allow-share-text",

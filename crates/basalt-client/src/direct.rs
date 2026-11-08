@@ -15,6 +15,11 @@
 //! The wire, inside TLS: the receiver writes one line of JSON,
 //! `{"offer","token","file"}`; the sender answers `ok <bytes>` and the bytes,
 //! or `no <why>`.
+//!
+//! A line that drops part-way is taken up again (1.6.4): the receiver asks
+//! `"from"`, the bytes it already has, and a sender that can answers
+//! `ok <bytes> from <n>` and sends the rest. One before 1.6.4 ignores it and
+//! sends it all, and the receiver starts its copy again.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -69,7 +74,16 @@ struct Ask {
     offer: String,
     token: String,
     file: usize,
+    /// The bytes the receiver already has: the rest is sent.
+    #[serde(default)]
+    from: u64,
 }
+
+/// How long a share cut off part-way is tried again, from where it got to,
+/// before it is given up: a phone's Wi-Fi blinks, a laptop sleeps a moment.
+const RESUME_FOR: Duration = Duration::from_secs(120);
+/// The wait between tries.
+const RESUME_EVERY: Duration = Duration::from_secs(2);
 
 impl DirectServer {
     /// Starts listening on every address of this device, on a port the
@@ -169,18 +183,18 @@ where
     tokio::time::timeout(ASK_TIMEOUT, read.read_line(&mut line))
         .await
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "no question"))??;
-    let source = serde_json::from_str::<Ask>(line.trim())
-        .ok()
-        .and_then(|ask| {
-            let shares = shares.lock().expect("shares lock");
-            let shared = shares.get(&ask.offer)?;
-            // Compared in full every time: the secret is the only thing that
-            // stands between a stranger on the Wi-Fi and the file.
-            let right = same(shared.token.as_bytes(), ask.token.as_bytes());
-            (right && shared.until > Instant::now())
-                .then(|| shared.sources.get(ask.file).cloned())
-                .flatten()
-        });
+    let ask = serde_json::from_str::<Ask>(line.trim()).ok();
+    let from = ask.as_ref().map_or(0, |a| a.from);
+    let source = ask.and_then(|ask| {
+        let shares = shares.lock().expect("shares lock");
+        let shared = shares.get(&ask.offer)?;
+        // Compared in full every time: the secret is the only thing that
+        // stands between a stranger on the Wi-Fi and the file.
+        let right = same(shared.token.as_bytes(), ask.token.as_bytes());
+        (right && shared.until > Instant::now())
+            .then(|| shared.sources.get(ask.file).cloned())
+            .flatten()
+    });
     let Some(source) = source else {
         write.write_all(b"no that isn't offered\n").await?;
         return write.shutdown().await;
@@ -199,8 +213,16 @@ where
         }
     };
     let length = file.metadata()?.len();
-    write.write_all(format!("ok {length}\n").as_bytes()).await?;
     let mut file = tokio::fs::File::from_std(file);
+    if from > 0 && from <= length {
+        use tokio::io::AsyncSeekExt;
+        file.seek(std::io::SeekFrom::Start(from)).await?;
+        write
+            .write_all(format!("ok {length} from {from}\n").as_bytes())
+            .await?;
+    } else {
+        write.write_all(format!("ok {length}\n").as_bytes()).await?;
+    }
     tokio::io::copy(&mut file, &mut write).await?;
     write.shutdown().await
 }
@@ -212,7 +234,8 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 
 /// Takes file number `file` of `offer` from the sender at `endpoint`, into
 /// `out`. Each of its addresses is tried in turn; the first that answers
-/// with the right key is used.
+/// with the right key is used. Cut off part-way (either side's Wi-Fi gone
+/// a moment), it is tried again for [`RESUME_FOR`] from where it got to.
 #[allow(clippy::too_many_arguments)]
 pub async fn fetch(
     endpoint: &Endpoint,
@@ -223,6 +246,60 @@ pub async fn fetch(
     out: std::fs::File,
     progress: Option<ProgressFn>,
     cancel: Option<Cancel>,
+) -> Result<u64> {
+    let mut have = 0u64;
+    let mut moved_since = Instant::now();
+    loop {
+        let before = have;
+        let tried = fetch_once(
+            endpoint, offer, token, file, name, &out, &progress, &cancel, &mut have,
+        )
+        .await;
+        let error = match tried {
+            Ok(bytes) => return Ok(bytes),
+            // Never reached at all: said at once, so the sender can send it
+            // through the host instead. Only a share under way is taken up.
+            Err(e) if !resumable(&e) || have == 0 => return Err(e),
+            Err(e) => e,
+        };
+        if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+            return Err(ClientError::Protocol("cancelled".into()));
+        }
+        // Counted from the last time bytes came: a slow line that keeps
+        // moving is never given up on.
+        if have > before {
+            moved_since = Instant::now();
+        }
+        if moved_since.elapsed() > RESUME_FOR {
+            return Err(error);
+        }
+        tracing::info!("a share stopped at {have} bytes ({error}); trying again");
+        tokio::time::sleep(RESUME_EVERY).await;
+    }
+}
+
+/// Whether a fetch that failed this way is worth trying again: the line,
+/// not the sender saying no.
+fn resumable(error: &ClientError) -> bool {
+    match error {
+        ClientError::Protocol(why) => why.contains("stopped part-way"),
+        ClientError::Config(why) => why.contains("couldn't reach") || why.contains("didn't answer"),
+        _ => true,
+    }
+}
+
+/// One try at each of the sender's addresses, from `have` bytes on.
+#[allow(clippy::too_many_arguments)]
+async fn fetch_once(
+    endpoint: &Endpoint,
+    offer: &str,
+    token: &str,
+    file: usize,
+    name: &str,
+    out: &std::fs::File,
+    progress: &Option<ProgressFn>,
+    cancel: &Option<Cancel>,
+    have: &mut u64,
 ) -> Result<u64> {
     let mut last = ClientError::Protocol("the device that sent it has no address".into());
     for address in &endpoint.addresses {
@@ -236,9 +313,10 @@ pub async fn fetch(
             token,
             file,
             name,
-            &out,
-            &progress,
-            &cancel,
+            out,
+            progress,
+            cancel,
+            have,
         )
         .await
         {
@@ -262,6 +340,7 @@ async fn fetch_from(
     out: &std::fs::File,
     progress: &Option<ProgressFn>,
     cancel: &Option<Cancel>,
+    have: &mut u64,
 ) -> Result<u64> {
     let tcp = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(at))
         .await
@@ -277,16 +356,27 @@ async fn fetch_from(
     .await
     .map_err(|_| ClientError::Config(format!("the device at {at} didn't answer")))??;
     let (read, mut write) = tokio::io::split(tls);
-    let ask = serde_json::json!({ "offer": offer, "token": token, "file": file });
+    let ask = serde_json::json!({ "offer": offer, "token": token, "file": file, "from": *have });
     write.write_all(format!("{ask}\n").as_bytes()).await?;
     let mut read = BufReader::new(read);
     let mut line = String::new();
     read.read_line(&mut line).await?;
     let line = line.trim();
-    let length: u64 = match line.strip_prefix("ok ") {
-        Some(n) => n
-            .parse()
-            .map_err(|_| ClientError::Protocol("the device that sent it answered oddly".into()))?,
+    let (length, from): (u64, u64) = match line.strip_prefix("ok ") {
+        Some(said) => {
+            let oddly = || ClientError::Protocol("the device that sent it answered oddly".into());
+            let mut words = said.split(' ');
+            let length = words
+                .next()
+                .and_then(|n| n.parse().ok())
+                .ok_or_else(oddly)?;
+            // "from <n>": the rest. Without it, all of it, from the start.
+            let from = match (words.next(), words.next()) {
+                (Some("from"), Some(n)) => n.parse().map_err(|_| oddly())?,
+                _ => 0,
+            };
+            (length, from)
+        }
         None => {
             let why = line.strip_prefix("no ").unwrap_or(line);
             return Err(ClientError::Protocol(format!(
@@ -295,8 +385,17 @@ async fn fetch_from(
         }
     };
     let mut out = tokio::fs::File::from_std(out.try_clone()?);
+    {
+        use tokio::io::AsyncSeekExt;
+        if from == 0 && *have > 0 {
+            // A sender that can't take it up again: the copy starts over.
+            out.set_len(0).await?;
+        }
+        out.seek(std::io::SeekFrom::Start(from)).await?;
+    }
+    *have = from;
     let mut buffer = vec![0u8; 256 * 1024];
-    let mut done = 0u64;
+    let mut done = from;
     while done < length {
         if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
             return Err(ClientError::Protocol("cancelled".into()));
@@ -310,6 +409,7 @@ async fn fetch_from(
         }
         out.write_all(&buffer[..n]).await?;
         done += n as u64;
+        *have = done;
         if let Some(report) = progress {
             report(Progress {
                 kind: TransferKind::Download,
@@ -382,6 +482,45 @@ mod tests {
             *seen.lock().unwrap(),
             body.len() as u64,
             "progress to the end"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_share_cut_off_is_taken_up_from_where_it_got_to() {
+        let dir = temp("resume");
+        let body: Vec<u8> = (0..2_000_000u32).map(|i| (i % 241) as u8).collect();
+        std::fs::write(dir.join("film.mp4"), &body).unwrap();
+        let (server, endpoint) = loopback(dir.clone()).await;
+        let token = server.offer("o4", vec!["film.mp4".into()]);
+        // The first 700 000 bytes came before the line dropped.
+        let into = dir.join("received.mp4");
+        std::fs::write(&into, &body[..700_000]).unwrap();
+        let out = std::fs::OpenOptions::new().write(true).open(&into).unwrap();
+        let first = Arc::new(Mutex::new(None::<u64>));
+        let heard = Arc::clone(&first);
+        let report: ProgressFn = Arc::new(move |p: Progress| {
+            heard.lock().unwrap().get_or_insert(p.transferred);
+        });
+        let mut have = 700_000;
+        let bytes = fetch_once(
+            &endpoint,
+            "o4",
+            &token,
+            0,
+            "film.mp4",
+            &out,
+            &Some(report),
+            &None,
+            &mut have,
+        )
+        .await
+        .unwrap();
+        assert_eq!(bytes, body.len() as u64);
+        assert_eq!(std::fs::read(&into).unwrap(), body, "whole, the same bytes");
+        assert!(
+            first.lock().unwrap().unwrap() > 700_000,
+            "only the rest came: progress goes on from where it was"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

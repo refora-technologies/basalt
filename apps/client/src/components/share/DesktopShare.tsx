@@ -4,9 +4,9 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Hash, Send, X } from 'lucide-react'
 
 import type { Inbox } from '@/lib/useInbox'
+import { SectionTabs, useSectionLink } from '@/mobile/SectionPager'
 import type { Presence } from '@/lib/usePresence'
 import type { ShareFile, ShareItem } from '@/lib/share'
-import { cn } from '@/lib/utils'
 import { InboxList, ReceivePrompt, ShareChooser } from './Share'
 import { ReceiveWithCode } from './Nearby'
 
@@ -125,74 +125,68 @@ export function InboxPage({
   const [answering, setAnswering] = useState<ShareItem | null>(null)
   const [byCode, setByCode] = useState(false)
   const waiting = inbox.waiting.length
+  const link = useSectionLink()
+  const pages = [
+    { key: 'in', label: waiting > 0 ? `Received · ${waiting}` : 'Received' },
+    { key: 'out', label: 'Sent' },
+  ]
   return (
     <div className="h-full overflow-y-auto px-8 py-6">
       <div className="mx-auto max-w-[720px]">
         <div className="flex items-center gap-4">
           <h1 className="text-[20px] font-semibold text-text">Inbox</h1>
-          <div className="ml-auto flex rounded-full border border-white/[0.07] bg-white/[0.04] p-1">
-            {(['in', 'out'] as const).map((which) => (
-              <button
-                key={which}
-                onClick={() => setPage(which)}
-                className={cn(
-                  'flex items-center gap-1.5 rounded-full px-4 py-1.5 text-[13px]',
-                  page === which ? 'bg-white font-semibold text-black' : 'text-textDim hover:text-text',
-                )}
-              >
-                {which === 'in' ? 'Received' : 'Sent'}
-                {which === 'in' && waiting > 0 && (
-                  <span
-                    className={cn(
-                      'rounded-full px-1.5 font-mono text-[10px] font-bold leading-[16px]',
-                      page === 'in' ? 'bg-black text-white' : 'bg-white text-black',
-                    )}
-                  >
-                    {waiting}
-                  </span>
-                )}
-              </button>
-            ))}
+          <div className="ml-auto w-[260px]">
+            <SectionTabs items={pages} active={page} onChoose={(key) => setPage(key as 'in' | 'out')} link={link} />
           </div>
         </div>
-        {page === 'in' &&
-          (byCode ? (
-            <div className="mt-4 rounded-2xl border border-white/[0.07] bg-white/[0.03] py-4">
-              <div className="px-5 pb-1 text-[14px] font-semibold text-text">Receive with a code</div>
-              <ReceiveWithCode inbox={inbox} onClose={() => setByCode(false)} />
-            </div>
-          ) : (
-            <button
-              onClick={() => setByCode(true)}
-              className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 py-3 text-left hover:bg-white/[0.05]"
-            >
-              <Hash size={17} className="shrink-0 text-textDim" />
-              <span className="min-w-0 flex-1">
-                <span className="block text-[14px] text-text">Receive with a code</span>
-                <span className="block text-[12px] text-textFaint">From a device not on this host, on the same Wi-Fi</span>
-              </span>
-            </button>
-          ))}
-        {page === 'out' && (
-          <button
-            onClick={onSendLocal}
-            className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 py-3 text-left hover:bg-white/[0.05]"
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={page}
+            initial={{ opacity: 0, x: page === 'out' ? 28 : -28 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: page === 'out' ? -28 : 28 }}
+            transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
           >
-            <Send size={17} className="shrink-0 text-textDim" />
-            <span className="min-w-0 flex-1">
-              <span className="block text-[14px] text-text">Send from this computer</span>
-              <span className="block text-[12px] text-textFaint">Any file on this computer, straight to another device</span>
-            </span>
-          </button>
-        )}
-        <p className="mt-3 text-[12.5px] text-textFaint">
-          {page === 'in'
-            ? 'Files shared with this computer. They go to the folder chosen in Settings, Sharing.'
-            : 'Files you shared from this computer, and what became of them.'}
-        </p>
-        <div className="-mx-5 mt-4">
-          <InboxList inbox={inbox} presence={presence} direction={page} onAnswer={setAnswering} />
-        </div>
+            {page === 'in' &&
+              (byCode ? (
+                <div className="mt-4 rounded-2xl border border-white/[0.07] bg-white/[0.03] py-4">
+                  <div className="px-5 pb-1 text-[14px] font-semibold text-text">Receive with a code</div>
+                  <ReceiveWithCode inbox={inbox} onClose={() => setByCode(false)} />
+                </div>
+              ) : (
+                <button
+                  onClick={() => setByCode(true)}
+                  className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 py-3 text-left hover:bg-white/[0.05]"
+                >
+                  <Hash size={17} className="shrink-0 text-textDim" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[14px] text-text">Receive with a code</span>
+                    <span className="block text-[12px] text-textFaint">From someone who isn’t in this home, on the same Wi-Fi</span>
+                  </span>
+                </button>
+              ))}
+            {page === 'out' && (
+              <button
+                onClick={onSendLocal}
+                className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 py-3 text-left hover:bg-white/[0.05]"
+              >
+                <Send size={17} className="shrink-0 text-textDim" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[14px] text-text">Send from this computer</span>
+                  <span className="block text-[12px] text-textFaint">Any file on this computer, straight to another device</span>
+                </span>
+              </button>
+            )}
+            <p className="mt-3 text-[12.5px] text-textFaint">
+              {page === 'in'
+                ? 'Files shared with this computer. They go to the folder chosen in Settings, Sharing.'
+                : 'Files you shared from this computer, and what became of them.'}
+            </p>
+            <div className="-mx-5 mt-4">
+              <InboxList inbox={inbox} presence={presence} direction={page} onAnswer={setAnswering} />
+            </div>
+          </motion.div>
+        </AnimatePresence>
         {answering && (
           <div className="mt-2 rounded-2xl border border-white/10 bg-panel2 p-4">
             <ReceivePrompt item={answering} presence={presence} inbox={inbox} compact onDone={() => setAnswering(null)} />

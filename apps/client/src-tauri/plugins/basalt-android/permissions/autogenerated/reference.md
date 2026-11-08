@@ -30,6 +30,8 @@ What the Basalt interface may ask of Android directly. Opening files and creatin
 - `allow-set-brightness`
 - `allow-set-volume`
 - `allow-notify-update`
+- `allow-notify-share`
+- `allow-cancel-share`
 - `allow-take-action`
 - `allow-app-version`
 - `allow-share-text`
@@ -109,6 +111,32 @@ Enables the can_install_apks command without any pre-configured scope.
 <td>
 
 Denies the can_install_apks command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-cancel-share`
+
+</td>
+<td>
+
+Enables the cancel_share command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-cancel-share`
+
+</td>
+<td>
+
+Denies the cancel_share command without any pre-configured scope.
 
 </td>
 </tr>
@@ -759,6 +787,32 @@ Enables the mpv_subtitle_font command without any pre-configured scope.
 <td>
 
 Denies the mpv_subtitle_font command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-notify-share`
+
+</td>
+<td>
+
+Enables the notify_share command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-notify-share`
+
+</td>
+<td>
+
+Denies the notify_share command without any pre-configured scope.
 
 </td>
 </tr>

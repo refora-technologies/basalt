@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Check,
+  ChevronDown,
   Download,
+  ExternalLink,
   FileText,
+  FolderOpen,
+  Share2,
+  Upload,
   Film,
   HardDrive,
   Hash,
@@ -22,8 +27,22 @@ import { SendWithCode } from './Nearby'
 import type { Presence } from '@/lib/usePresence'
 import { seenLine } from '@/lib/usePresence'
 import type { Inbox } from '@/lib/useInbox'
-import { calledOf, isProgram, targetsOf, titleOf, totalOf, type ShareFile, type ShareItem } from '@/lib/share'
+import {
+  calledOf,
+  isProgram,
+  percentOf,
+  progressLine,
+  targetsOf,
+  titleOf,
+  totalOf,
+  type Progress,
+  type SavedFile,
+  type ShareFile,
+  type ShareItem,
+} from '@/lib/share'
 import { cn, formatBytes } from '@/lib/utils'
+import { android } from '@/lib/android'
+import { isAndroid } from '@/lib/platform'
 import { profileColor } from '@/lib/useIdentity'
 
 /**
@@ -46,11 +65,14 @@ export function ShareChooser({
   presence,
   inbox,
   onDone,
+  sheet,
 }: {
   files: ShareFile[]
   presence: Presence
   inbox: Inbox
   onDone: (said: string) => void
+  /** In a phone's sheet: the button stays at the bottom, over the list, never scrolled away. */
+  sheet?: boolean
 }): React.JSX.Element {
   const targets = useMemo(() => targetsOf(presence.devices, presence.you), [presence])
   const [chosen, setChosen] = useState<PresentDevice | null>(null)
@@ -182,7 +204,7 @@ export function ShareChooser({
         {targets.loose.map((d) => row(d))}
         {onThisDevice && (
           <>
-            <Section>Nearby</Section>
+            <Section>Someone not in this home</Section>
             <button
               onClick={() => setByCode(true)}
               className="flex w-full items-center gap-3 px-5 py-2.5 text-left hover:bg-white/[0.03] active:bg-white/[0.05]"
@@ -192,7 +214,7 @@ export function ShareChooser({
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[14px] text-text">Send with a code</span>
-                <span className="block text-[12px] text-textFaint">To a device not on this host, on the same Wi-Fi</span>
+                <span className="block text-[12px] text-textFaint">They type it on their device, on the same Wi-Fi</span>
               </span>
             </button>
           </>
@@ -200,8 +222,20 @@ export function ShareChooser({
       </div>
       )}
 
+      {!chosen && !byCode && !nobody && (
+        <div className={cn('border-t border-white/[0.06] px-5 pt-3.5', sheet && 'sticky bottom-0 bg-[#141416] pb-1')}>
+          <button disabled className="w-full rounded-full bg-white/[0.06] py-3 text-[14px] font-semibold text-textFaint">
+            Choose where it goes
+          </button>
+        </div>
+      )}
       {chosen && !byCode && (
-        <div className="border-t border-white/[0.06] px-5 pt-3.5">
+        <div
+          className={cn(
+            'border-t border-white/[0.06] px-5 pt-3.5',
+            sheet && 'sticky bottom-0 bg-[#141416] pb-1 shadow-[0_-10px_20px_rgba(0,0,0,0.35)]',
+          )}
+        >
           {chosen.online ? (
             <button
               disabled={busy}
@@ -259,6 +293,218 @@ export function ShareChooser({
         </div>
       )}
     </div>
+  )
+}
+
+/** What a share's row says under its name. */
+export function shareLine(item: ShareItem, who: string, progress: Progress | null): string {
+  if (item.direction === 'in') {
+    if (item.state === 'waiting') return `From ${who} · ${formatBytes(totalOf(item.files))}`
+    if (item.state === 'moving') return progress ? `From ${who}` : `From ${who} · ${item.reason ?? 'starting…'}`
+    if (item.state === 'done') {
+      if (item.takenOn) return `Taken on ${item.takenOn}`
+      // Several: the folder they're in, not the last one's name.
+      const where = item.savedAs && item.files.length > 1 ? item.savedAs.replace(/[\\/][^\\/]*$/, '') : item.savedAs
+      return `From ${who} · ${where ?? 'received'}`
+    }
+    if (item.state === 'declined') return `From ${who} · declined`
+    return `From ${who} · didn’t arrive${item.reason ? `: ${item.reason}` : ''}`
+  }
+  if (item.state === 'waiting') return `To ${who} · ${item.reason ?? 'waiting for an answer'}`
+  if (item.state === 'moving') {
+    if (progress?.up) return `To ${who} · going up to the host`
+    return progress ? `To ${item.takenOn ?? who}` : `To ${item.takenOn ?? who} · ${item.reason ?? 'on its way'}`
+  }
+  if (item.state === 'done') return `To ${item.takenOn ?? who} · arrived`
+  if (item.state === 'declined') return `To ${who} · declined`
+  return `To ${who} · didn’t arrive${item.reason ? `: ${item.reason}` : ''}`
+}
+
+/**
+ * One share in the Inbox: what it is, who it's from or for, how far it has
+ * come while it moves, and, once here, what can be done with it.
+ */
+function ShareRow({
+  item,
+  who,
+  progress,
+  onAnswer,
+  onForget,
+}: {
+  item: ShareItem
+  who: string
+  progress: Progress | null
+  onAnswer: () => void
+  onForget: () => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const saved = item.direction === 'in' && item.state === 'done' && !item.takenOn ? (item.saved ?? []) : []
+  const finished = item.state === 'done' || item.state === 'declined' || item.state === 'failed'
+  const badge =
+    item.state === 'done' ? (
+      <Check size={10} strokeWidth={3} />
+    ) : item.state === 'declined' || item.state === 'failed' ? (
+      <X size={10} strokeWidth={3} />
+    ) : item.state === 'moving' ? (
+      item.direction === 'out' ? (
+        <Upload size={10} strokeWidth={3} />
+      ) : (
+        <Download size={10} strokeWidth={3} />
+      )
+    ) : item.direction === 'in' ? (
+      <HardDrive size={10} strokeWidth={3} />
+    ) : (
+      <Send size={10} strokeWidth={3} />
+    )
+  const tried = (work: Promise<unknown>): void => {
+    setError(null)
+    void work.catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+  }
+  return (
+    <div className="group px-5 py-2.5">
+      <div className="flex items-center gap-3">
+        <span className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/[0.06] text-textDim">
+          <FileIcon name={item.files[0]?.name ?? ''} size={17} />
+          <span
+            className={cn(
+              'absolute -bottom-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full border-2 border-panel2',
+              item.state === 'done'
+                ? 'bg-emerald-400 text-black'
+                : item.state === 'failed' || item.state === 'declined'
+                  ? 'bg-white/40 text-black'
+                  : 'bg-white text-black',
+            )}
+          >
+            {badge}
+          </span>
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[14.5px] text-text">{titleOf(item.files)}</span>
+          <span className="block truncate text-[12px] text-textFaint">{shareLine(item, who, progress)}</span>
+        </span>
+        {item.direction === 'in' && item.state === 'waiting' && item.offer && (
+          <button onClick={onAnswer} className="rounded-full bg-white px-3.5 py-1.5 text-[12.5px] font-semibold text-black">
+            Answer
+          </button>
+        )}
+        {finished && (
+          <button
+            onClick={onForget}
+            aria-label="Remove from the list"
+            title="Remove from the list (the file stays where it is)"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-textFaint opacity-60 hover:bg-white/[0.06] hover:text-text hover:opacity-100 group-hover:opacity-100"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+      {item.state === 'moving' && (
+        <div className="ml-[52px] mt-2">
+          <div className="h-1 overflow-hidden rounded-full bg-white/[0.08]">
+            {progress ? (
+              <div
+                className="h-full rounded-full bg-white transition-[width] duration-500 ease-out"
+                style={{ width: `${Math.max(2, percentOf(progress))}%` }}
+              />
+            ) : (
+              <div className="share-starting h-full w-1/3 rounded-full bg-white/60" />
+            )}
+          </div>
+          {progress && (
+            <div className="mt-1 font-mono text-[11px] tabular-nums text-textFaint">{progressLine(progress, formatBytes)}</div>
+          )}
+        </div>
+      )}
+      {saved.length === 1 && <SavedActions file={saved[0]!} onTry={tried} />}
+      {saved.length > 1 && (
+        <div className="ml-[52px] mt-1.5">
+          <div className="flex flex-wrap gap-2">
+            {!isAndroid() && saved[0]?.path && (
+              <ActionButton icon={FolderOpen} onClick={() => tried(api.receivedShow(saved[0]!.path!))}>
+                Show in folder
+              </ActionButton>
+            )}
+            <ActionButton icon={ChevronDown} onClick={() => setOpen((v) => !v)} turned={open}>
+              {open ? 'Hide the files' : `The ${saved.length} files`}
+            </ActionButton>
+          </div>
+          {open && (
+            <div className="mt-2 rounded-xl border border-white/[0.06] py-1">
+              {saved.map((file) => (
+                <div key={file.shownAs} className="flex items-center gap-2 px-3 py-1.5 text-textDim">
+                  <FileIcon name={file.name} size={14} />
+                  <span className="min-w-0 flex-1 truncate text-[13px]">{file.name}</span>
+                  {!isProgram(file.name) && (
+                    <button
+                      onClick={() => tried(openSaved(file))}
+                      className="rounded-full px-2.5 py-1 text-[12px] text-text hover:bg-white/[0.06] active:bg-white/[0.08]"
+                    >
+                      Open
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {error && <p className="ml-[52px] mt-1.5 text-[12px] text-danger">{error}</p>}
+    </div>
+  )
+}
+
+/** Opens a file received here: on a computer as it opens it, on a phone with the app for it. */
+function openSaved(file: SavedFile): Promise<unknown> {
+  if (isAndroid() && file.uri) return android.openDownload(file.uri)
+  if (file.path) return api.receivedOpen(file.path)
+  return Promise.reject(new Error('It can’t be opened from here.'))
+}
+
+/** Open, and Show in folder on a computer or Share on a phone, for one file received. */
+function SavedActions({ file, onTry }: { file: SavedFile; onTry: (work: Promise<unknown>) => void }): React.JSX.Element {
+  const program = isProgram(file.name)
+  const phone = isAndroid()
+  return (
+    <div className="ml-[52px] mt-1.5 flex flex-wrap gap-2">
+      {!program && (
+        <ActionButton icon={ExternalLink} onClick={() => onTry(openSaved(file))}>
+          Open
+        </ActionButton>
+      )}
+      {!phone && file.path && (
+        <ActionButton icon={FolderOpen} onClick={() => onTry(api.receivedShow(file.path!))}>
+          Show in folder
+        </ActionButton>
+      )}
+      {phone && file.uri && (
+        <ActionButton icon={Share2} onClick={() => onTry(android.shareDownload(file.uri!))}>
+          Share
+        </ActionButton>
+      )}
+    </div>
+  )
+}
+
+function ActionButton({
+  icon: Icon,
+  onClick,
+  turned,
+  children,
+}: {
+  icon: typeof Check
+  onClick: () => void
+  turned?: boolean
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-1.5 rounded-full border border-white/[0.12] px-3 py-1.5 text-[12.5px] text-text transition-colors hover:bg-white/[0.06] active:bg-white/[0.08]"
+    >
+      <Icon size={13} className={cn('text-textDim transition-transform', turned && 'rotate-180')} />
+      {children}
+    </button>
   )
 }
 
@@ -482,46 +728,15 @@ export function InboxList({
       </p>
     )
   }
-  const line = (item: ShareItem): string => {
-    const who = calledOf(item.peer, myProfile)
-    if (direction === 'in') {
-      if (item.state === 'waiting') return `From ${who} · ${formatBytes(totalOf(item.files))}`
-      if (item.state === 'moving') return `From ${who} · from the host`
-      if (item.state === 'done') return item.takenOn ? `Taken on ${item.takenOn}` : `From ${who} · ${item.savedAs ?? 'received'}`
-      if (item.state === 'declined') return `From ${who} · declined`
-      return `From ${who} · didn’t arrive${item.reason ? `: ${item.reason}` : ''}`
-    }
-    if (item.state === 'waiting') return `To ${who} · waiting for an answer`
-    if (item.state === 'moving') return `To ${item.takenOn ?? who} · on its way`
-    if (item.state === 'done') return `To ${item.takenOn ?? who} · arrived`
-    if (item.state === 'declined') return `To ${who} · declined`
-    return `To ${who} · didn’t arrive${item.reason ? `: ${item.reason}` : ''}`
-  }
   const rowOf = (item: ShareItem): React.JSX.Element => (
-    <div key={`${item.direction}-${item.id}`} className="flex items-center gap-3 px-5 py-2.5">
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-textDim">
-        {item.state === 'done' ? (
-          <Check size={15} />
-        ) : item.state === 'declined' || item.state === 'failed' ? (
-          <X size={15} />
-        ) : item.state === 'moving' ? (
-          <Download size={15} />
-        ) : direction === 'in' ? (
-          <HardDrive size={15} />
-        ) : (
-          <Send size={15} />
-        )}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[14.5px] text-text">{titleOf(item.files)}</span>
-        <span className="block truncate text-[12px] text-textFaint">{line(item)}</span>
-      </span>
-      {direction === 'in' && item.state === 'waiting' && item.offer && (
-        <button onClick={() => onAnswer(item)} className="rounded-full bg-white px-3.5 py-1.5 text-[12.5px] font-semibold text-black">
-          Answer
-        </button>
-      )}
-    </div>
+    <ShareRow
+      key={`${item.direction}-${item.id}`}
+      item={item}
+      who={calledOf(item.peer, myProfile)}
+      progress={inbox.progressOf(item)}
+      onAnswer={() => onAnswer(item)}
+      onForget={() => inbox.forget(item)}
+    />
   )
   return (
     <div className="pb-4">

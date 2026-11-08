@@ -3674,6 +3674,9 @@ impl OnLine {
                 .expect("line lock")
                 .open(&device, profile.as_deref(), unix_ms());
         waiting.extend(host.held_offers(&device));
+        // Back on the line: its group as it is now, for any change missed
+        // while it was off.
+        waiting.extend(host.group_now(&device));
         if came {
             let _ = host.line_events.send(LineEvent::Presence);
         }
@@ -4210,24 +4213,42 @@ impl Host {
         Ok(mine)
     }
 
+    /// A `music.group` message from the host to `to`.
+    fn group_message(
+        &self,
+        to: &str,
+        body: serde_json::Value,
+    ) -> basalt_proto::msg::ChannelMessage {
+        let host_name = self.config.lock().expect("config lock").host_name.clone();
+        basalt_proto::msg::ChannelMessage {
+            id: format!("group-{}-{to}", unix_ms()),
+            from_device: format!("host-{}", self.identity.host_id),
+            from_name: host_name,
+            from_profile: None,
+            to: basalt_proto::msg::Address::Device {
+                device: to.to_string(),
+            },
+            kind: "music.group".into(),
+            body,
+            sent: unix_ms(),
+            expires: unix_ms(),
+        }
+    }
+
+    /// The group `device` is in, as a message: for a device back on the line.
+    fn group_now(&self, device: &str) -> Option<basalt_proto::msg::ChannelMessage> {
+        let group = self.music_groups.lock().expect("groups lock").of(device)?;
+        Some(self.group_message(
+            device,
+            serde_json::json!({ "now": unix_ms(), "group": group }),
+        ))
+    }
+
     /// Tells a group's members what it is now, and those who left it that
     /// they're on their own: a `music.group` message down each one's watch.
     fn tell_group(&self, changed: &crate::music_groups::Changed) {
-        let host_name = self.config.lock().expect("config lock").host_name.clone();
         let send = |to: &str, body: serde_json::Value| {
-            let message = basalt_proto::msg::ChannelMessage {
-                id: format!("group-{}-{to}", unix_ms()),
-                from_device: format!("host-{}", self.identity.host_id),
-                from_name: host_name.clone(),
-                from_profile: None,
-                to: basalt_proto::msg::Address::Device {
-                    device: to.to_string(),
-                },
-                kind: "music.group".into(),
-                body,
-                sent: unix_ms(),
-                expires: unix_ms(),
-            };
+            let message = self.group_message(to, body);
             let _ = self.line_events.send(LineEvent::Message {
                 to: to.to_string(),
                 message: Box::new(message),
@@ -4254,7 +4275,7 @@ impl Host {
             self.music_groups
                 .lock()
                 .expect("groups lock")
-                .keep_online(|d| line.is_online(d))
+                .keep_online(|d| line.is_online(d), unix_ms())
         };
         for changed in &changes {
             self.tell_group(changed);
@@ -4463,8 +4484,9 @@ impl Host {
             .lock()
             .expect("line lock")
             .heard(device, unix_ms());
-        if let Some(waiting) = back {
+        if let Some(mut waiting) = back {
             let _ = self.line_events.send(LineEvent::Presence);
+            waiting.extend(self.group_now(device));
             for message in waiting {
                 let _ = self.line_events.send(LineEvent::Message {
                     to: device.to_string(),
@@ -4805,8 +4827,9 @@ pub async fn serve(server: BoundServer) -> Result<()> {
                 let changed = host.line.lock().expect("line lock").sweep(unix_ms());
                 if changed {
                     let _ = host.line_events.send(LineEvent::Presence);
-                    host.keep_groups_online();
                 }
+                // Every time: a member off the line leaves once its grace is over.
+                host.keep_groups_online();
             }
         });
     }

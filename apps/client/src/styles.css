@@ -377,3 +377,16 @@ html[data-shape] .shadow-lift {
     opacity: 0.4;
   }
 }
+
+/* A share accepted, its first bytes not yet here: a light along the line. */
+.share-starting {
+  animation: share-starting 1.2s ease-in-out infinite;
+}
+@keyframes share-starting {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}

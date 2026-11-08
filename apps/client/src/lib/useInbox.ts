@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { api, onChannel, type ChannelMessage, type HeldShare, type NearbyOffer, type PresentDevice } from './api'
+import { api, onChannel, onShareSending, type ChannelMessage, type HeldShare, type NearbyOffer, type PresentDevice } from './api'
 import type { Presence } from './usePresence'
 import type { Transfers } from './useTransfers'
 import {
@@ -11,12 +11,16 @@ import {
   kept,
   newOfferId,
   partyOf,
+  progressIn,
   received,
   takesWithoutAsking,
   type AnswerBody,
   type HandoffBody,
   type OfferBody,
   type Party,
+  type Progress,
+  type ProgressBody,
+  type SavedFile,
   type ShareFile,
   type ShareItem,
 } from './share'
@@ -47,6 +51,8 @@ export interface Inbox {
   /** The folder received files go to; empty for the usual one. */
   folder: string
   setFolder: (folder: string) => void
+  /** How far one moving has come: here from its transfers, for one sent from what the other side says. */
+  progressOf: (item: ShareItem) => Progress | null
 }
 
 /**
@@ -89,6 +95,51 @@ export function useInbox(
   const profileRef = useRef(profile)
   profileRef.current = profile
 
+  // How far shares sent from here have come: told by the device taking
+  // them, or, going up to the host first, by this app.
+  const [sentProgress, setSentProgress] = useState<Map<string, Progress>>(() => new Map())
+  useEffect(() => {
+    let gone = false
+    let stop: (() => void) | null = null
+    void onShareSending((s) =>
+      setSentProgress((map) => new Map(map).set(s.offer, { done: s.done, total: s.total, rate: 0, up: true, at: Date.now() })),
+    ).then((unlisten) => {
+      if (gone) unlisten()
+      else stop = unlisten
+    })
+    return () => {
+      gone = true
+      stop?.()
+    }
+  }, [])
+
+  // How far each share coming here has come, from its files' transfers.
+  const moving = transfers.transfers
+  const progressOf = useCallback(
+    (item: ShareItem): Progress | null => {
+      if (item.state !== 'moving') return null
+      if (item.direction === 'in') return progressIn(item, moving, Date.now())
+      return sentProgress.get(item.id) ?? null
+    },
+    [moving, sentProgress],
+  )
+
+  // Told back to the device that sent it, about once a second, so its Sent
+  // shows how far it has come too.
+  const toldAt = useRef(new Map<string, number>())
+  useEffect(() => {
+    const now = Date.now()
+    for (const item of itemsRef.current) {
+      if (item.direction !== 'in' || item.state !== 'moving' || !item.offer || item.offer.nearby) continue
+      if (now - (toldAt.current.get(item.id) ?? 0) < PROGRESS_EVERY_MS) continue
+      const p = progressIn(item, moving, now)
+      if (!p) continue
+      toldAt.current.set(item.id, now)
+      const body: ProgressBody = { offer: item.id, done: p.done, total: p.total, rate: p.rate }
+      void api.channelSend({ to: 'device', device: item.offer.from.device }, KIND.progress, body, 0).catch(() => {})
+    }
+  }, [moving])
+
   const me = (): Party | null => {
     const p = presenceRef.current
     const mine = p.devices.find((d) => d.device === p.you)
@@ -120,6 +171,7 @@ export function useInbox(
       update(item.id, (i) => ({ ...i, state: 'moving' }))
       void answer(offer, 'accepted')
       let last = ''
+      const saved: SavedFile[] = []
       try {
         for (const [n, file] of offer.files.entries()) {
           const id = `share-${offer.offer}-${n}`
@@ -127,19 +179,20 @@ export function useInbox(
           try {
             const folder = settings.current.folder || undefined
             // On the sending device: straight from it. On the drive: from the host.
-            const saved = offer.held
+            const landed = offer.held
               ? await api.receiveHeld(offer.offer, n, file.name, file.size, id, folder)
               : offer.direct
                 ? await api.receiveDirect(offer.direct.endpoint, offer.offer, offer.direct.token, n, file.name, id, folder)
                 : await api.receiveFile(file.path, id, folder)
             transfersRef.current.finish(id)
-            last = saved.shownAs
+            last = landed.shownAs
+            saved.push({ name: file.name, shownAs: landed.shownAs, path: landed.path, uri: landed.uri })
           } catch (e) {
             transfersRef.current.finish(id, e)
             throw e
           }
         }
-        update(item.id, (i) => ({ ...i, state: 'done', savedAs: last, offer: undefined }))
+        update(item.id, (i) => ({ ...i, state: 'done', savedAs: last, saved, offer: undefined }))
         void answer(offer, 'done')
         // Kept on the host for this device: told it arrived, so it can go.
         if (offer.held) void api.shareAnswer(offer.offer, true).catch(() => {})
@@ -185,6 +238,16 @@ export function useInbox(
         const myProfile = profileRef.current
         const handoff = message.kind === KIND.handoff
         if (handoff || takesWithoutAsking(body, myProfile, settings.current.acceptFromHome)) void take(item)
+        return
+      }
+      if (message.kind === KIND.progress) {
+        const said = message.body as ProgressBody
+        if (!said?.offer) return
+        // Only for a share sent from here, and it can only come forward.
+        const sent = itemsRef.current.find((i) => i.id === said.offer && i.direction === 'out')
+        if (!sent) return
+        setSentProgress((map) => new Map(map).set(said.offer, { done: said.done, total: said.total, rate: said.rate, at: Date.now() }))
+        if (sent.state === 'waiting') update(sent.id, (i) => (i.direction === 'out' ? { ...i, state: 'moving' } : i))
         return
       }
       if (message.kind === KIND.answer) {
@@ -371,8 +434,12 @@ export function useInbox(
     setAcceptFromHome,
     folder,
     setFolder,
+    progressOf,
   }
 }
+
+/** How often a device taking a share tells the sender how far it has come. */
+const PROGRESS_EVERY_MS = 1_000
 
 const ACCEPT_KEY = 'basalt.share.acceptFromHome'
 const FOLDER_KEY = 'basalt.share.folder'

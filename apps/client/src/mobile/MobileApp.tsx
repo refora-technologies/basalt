@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeftRight,
   KeyRound,
@@ -36,6 +36,7 @@ import {
 } from 'lucide-react'
 import { Switch } from '@/components/Switch'
 import { filesEmptyLabel } from '@/lib/useVault'
+import { calledOf, isProgram, titleOf } from '@/lib/share'
 import { setShowHidden, useShowHidden } from '@/lib/showHidden'
 import { wrongHostText } from '@/lib/wrongHost'
 import type { AppModel } from '@/App'
@@ -430,7 +431,19 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   const update = useUpdate()
   const [bannerGone, setBannerGone] = useState<string | null>(() => remembered(BANNER_DISMISSED))
   useUpdateNotification(update)
-  useNotificationTaps(openWhatsNew)
+  useNotificationTaps(openWhatsNew, (action) => {
+    // "share:<id>" opens the Inbox; "share-accept:<id>" and the like answer it too.
+    const [what, id] = [action.slice(0, action.indexOf(':')), action.slice(action.indexOf(':') + 1)]
+    const item = model.inbox.items.find((i) => i.id === id && i.direction === 'in')
+    if (item && what === 'share-accept' && item.state === 'waiting') model.inbox.accept(item)
+    else if (item && what === 'share-decline' && item.state === 'waiting') model.inbox.decline(item)
+    else if (item && what === 'share-open' && item.saved?.[0]?.uri) {
+      void android.openDownload(item.saved[0].uri)
+      return
+    }
+    if (sharingHere) setInboxOpen(true)
+  })
+  usePhoneShareNotifications(model)
 
   const active = transfers.active
 
@@ -640,7 +653,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       <WhatsNew />
 
       <Rise
-        show={notice !== null}
+        show={!!notice}
         onClick={() => setNotice(null)}
         className="fixed inset-x-4 z-[70] mx-auto max-w-[480px] rounded-xl border border-white/[0.1] bg-[#1c1c1f] px-4 py-3 text-[13.5px] leading-snug text-text shadow-lift"
         style={{ bottom: `calc(var(--inset-bottom, 0px) + ${wide ? 20 : 84}px)` }}
@@ -1297,11 +1310,15 @@ function useUpdateNotification(update: UpdateState): void {
 }
 
 /** A tap on the update notification opens the update, whether the app was running or not. */
-function useNotificationTaps(showUpdate: () => void): void {
+function useNotificationTaps(showUpdate: () => void, onShare: (action: string) => void): void {
+  const share = useRef(onShare)
+  share.current = onShare
   useEffect(() => {
     if (!isAndroid()) return undefined
     const take = async (): Promise<void> => {
-      if ((await android.takeAction().catch(() => null)) === 'update') showUpdate()
+      const action = await android.takeAction().catch(() => null)
+      if (action === 'update') showUpdate()
+      else if (action?.startsWith('share')) share.current(action)
     }
     void take()
     const onVisible = (): void => {
@@ -1456,13 +1473,63 @@ function TransfersSheet({
  * Keeps the app alive while anything is moving, with a notification that
  * says what and how far — and lets go the moment nothing is.
  */
+/**
+ * The phone's notifications for shares, while Basalt is out of sight: one
+ * offered, with Accept and Decline, and one that arrived, with Open. Each is
+ * told once, and taken away once answered here.
+ */
+function usePhoneShareNotifications(model: AppModel): void {
+  const { inbox, presence } = model
+  const seen = useRef(new Map<string, string>())
+  const started = useRef(Date.now())
+  const myProfile = presence.devices.find((d) => d.device === presence.you)?.profile
+  useEffect(() => {
+    if (!isAndroid()) return
+    const away = document.visibilityState !== 'visible'
+    for (const item of inbox.items) {
+      if (item.direction !== 'in') continue
+      const before = seen.current.get(item.id)
+      seen.current.set(item.id, item.state)
+      if (before === item.state) continue
+      if (before === undefined && item.at < started.current) continue
+      const from = calledOf(item.peer, myProfile)
+      if (item.state === 'waiting' && item.offer) {
+        if (away) {
+          void android
+            .notifyShare(item.id, `${item.peer.profileName ?? item.peer.name} wants to send you ${titleOf(item.files)}`, `From ${from}`, [
+              'Accept|accept',
+              'Decline|decline',
+            ])
+            .catch(() => {})
+        }
+      } else if (item.state === 'done' && !item.takenOn) {
+        const one = item.saved?.length === 1 && !isProgram(item.saved[0]!.name)
+        void android
+          .notifyShare(item.id, `${titleOf(item.files)} arrived`, `From ${from} · ${item.savedAs ?? 'Download/Basalt'}`, one ? ['Open|open'] : [])
+          .catch(() => {})
+      } else if (before === 'waiting') {
+        // Answered here, or moving now: the offer's notification has said its piece.
+        void android.cancelShare(item.id).catch(() => {})
+      }
+    }
+  }, [inbox.items, myProfile])
+}
+
 function useKeepAliveForTransfers(model: AppModel): void {
   const active = model.transfers.active
-  const total = active.reduce((sum, t) => sum + t.total, 0)
-  const done = active.reduce((sum, t) => sum + t.transferred, 0)
+  // Shares sent from this phone move too: how far, as the other side says.
+  const sending = model.inbox.items.filter((i) => i.direction === 'out' && i.state === 'moving')
+  const sent = sending.map((i) => model.inbox.progressOf(i)).filter((p) => p !== null)
+  const total = active.reduce((sum, t) => sum + t.total, 0) + sent.reduce((sum, p) => sum + p.total, 0)
+  const done = active.reduce((sum, t) => sum + t.transferred, 0) + sent.reduce((sum, p) => sum + p.done, 0)
   const percent = total > 0 ? Math.floor((done / total) * 100) : -1
-  const count = active.length
-  const first = active[0]?.name ?? ''
+  const count = active.length + sent.length
+  // A share coming in says so: "Receiving holiday.mp4".
+  const first = active[0]
+    ? `${active[0].id.startsWith('share-') ? 'Receiving ' : ''}${active[0].name}`
+    : sending[0]
+      ? `Sending ${titleOf(sending[0].files)}`
+      : ''
   const [asked, setAsked] = useState(false)
 
   useEffect(() => {

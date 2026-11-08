@@ -663,12 +663,21 @@ function Scrubber({ compact }: { compact?: boolean }): React.JSX.Element {
   const [held, setHeld] = useState<number | null>(null)
   const heldRef = useRef(held)
   heldRef.current = held
+  /**
+   * A seek asked for and not there yet: in a group it lands a moment ahead,
+   * on another device over the network. Shown where it was let go, moving on
+   * as the song would, until the song gets there; never the old place first.
+   */
+  const [landing, setLanding] = useState<{ to: number; since: number } | null>(null)
   /** The place let go of: moved there, and the line follows the song again. */
   const commit = (): void => {
     const to = heldRef.current
     heldRef.current = null
     setHeld(null)
-    if (to !== null) player?.seek(to)
+    if (to !== null) {
+      setLanding({ to, since: Date.now() })
+      player?.seek(to)
+    }
   }
   const commitRef = useRef(commit)
   commitRef.current = commit
@@ -686,7 +695,19 @@ function Scrubber({ compact }: { compact?: boolean }): React.JSX.Element {
       window.removeEventListener('pointercancel', letGo)
     }
   }, [holding])
-  const at = held ?? clock.position
+  const playing = player ? !player.paused : false
+  const landingAt = landing ? landing.to + (playing ? (Date.now() - landing.since) / 1000 : 0) : null
+  // There (within a second of it), or given up on after a while: the song's own clock again.
+  useEffect(() => {
+    if (!landing) return undefined
+    if (landingAt !== null && Math.abs(clock.position - landingAt) < 1) {
+      setLanding(null)
+      return undefined
+    }
+    const giveUp = setTimeout(() => setLanding(null), Math.max(0, LANDING_AT_MOST_MS - (Date.now() - landing.since)))
+    return () => clearTimeout(giveUp)
+  }, [landing, landingAt, clock.position])
+  const at = held ?? landingAt ?? clock.position
   const total = clock.duration
   // Not known until the song has opened: a light along the line meanwhile.
   if (total <= 0) {
@@ -734,6 +755,9 @@ function Scrubber({ compact }: { compact?: boolean }): React.JSX.Element {
     </div>
   )
 }
+
+/** How long the line waits for a seek to land before it follows the song's clock again. */
+const LANDING_AT_MOST_MS = 3_000
 
 /** A time, or a dash while it is not known yet. */
 function Time({ value, minus }: { value: number | null; minus?: boolean }): React.JSX.Element {

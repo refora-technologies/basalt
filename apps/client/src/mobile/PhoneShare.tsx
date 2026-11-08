@@ -9,8 +9,8 @@ import { SyncLogPanel } from '@/components/music/SyncLog'
 import { InboxList, ReceivePrompt, ShareChooser } from '@/components/share/Share'
 import { HeldList } from '@/components/share/Held'
 import type { ShareItem } from '@/lib/share'
-import { cn } from '@/lib/utils'
 import { Sheet } from './Sheet'
+import { SectionPager, SectionTabs, useSectionLink } from './SectionPager'
 import { useBack } from './useBack'
 import { android } from '@/lib/android'
 import { useAlwaysReady } from '@/lib/alwaysReady'
@@ -36,16 +36,17 @@ export function PhoneShare({
 
   return (
     <>
-      <Sheet open={sharing !== null} onClose={() => setSharing(null)}>
+      <Sheet open={sharing !== null} onClose={() => setSharing(null)} tall>
         {sharing && (
-          <div className="pb-[calc(var(--inset-bottom,0px)+18px)]">
+          <div>
             <ShareChooser
+              sheet
               files={sharing}
               presence={presence}
               inbox={inbox}
               onDone={(said) => {
                 setSharing(null)
-                model.setNotice(said)
+                if (said) model.setNotice(said)
               }}
             />
           </div>
@@ -103,6 +104,11 @@ function InboxScreen({
     return true
   })
   const waiting = inbox.waiting.length
+  const link = useSectionLink()
+  const pages = [
+    { key: 'in', label: waiting > 0 ? `Received · ${waiting}` : 'Received' },
+    { key: 'out', label: 'Sent' },
+  ]
   return (
     <AnimatePresence>
       {open && (
@@ -124,74 +130,53 @@ function InboxScreen({
             </button>
             <h1 className="text-[20px] font-semibold tracking-tight text-text">Inbox</h1>
           </header>
-          <div className="shrink-0 px-4 pb-2.5 pt-1">
-            <div className="flex rounded-full border border-white/[0.07] bg-white/[0.04] p-1">
-              {(['in', 'out'] as const).map((which) => (
-                <button
-                  key={which}
-                  onClick={() => setPage(which)}
-                  className={cn(
-                    'flex flex-1 items-center justify-center gap-1.5 rounded-full py-2 text-[13.5px]',
-                    page === which ? 'bg-white font-semibold text-black shadow-[0_2px_10px_rgba(0,0,0,0.35)]' : 'text-textDim',
-                  )}
-                >
-                  {which === 'in' ? 'Received' : 'Sent'}
-                  {which === 'in' && waiting > 0 && (
-                    <span
-                      className={cn(
-                        'min-w-[17px] rounded-full px-1 font-mono text-[10px] font-bold leading-[17px]',
-                        page === 'in' ? 'bg-black text-white' : 'bg-white text-black',
-                      )}
+          <SectionTabs items={pages} active={page} onChoose={(key) => setPage(key as 'in' | 'out')} link={link} />
+          <div className="min-h-0 flex-1">
+            <SectionPager items={pages} active={page} onChoose={(key) => setPage(key as 'in' | 'out')} link={link}>
+              <div className="h-full overflow-y-auto pt-1">
+                {page === 'in' &&
+                  (byCode ? (
+                    <div className="mx-3 mb-2 mt-1 rounded-2xl bg-[#141416] py-3">
+                      <div className="px-5 pb-1 text-[15px] font-semibold text-text">Receive with a code</div>
+                      <ReceiveWithCode inbox={inbox} phone onClose={() => setByCode(false)} />
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setByCode(true)}
+                      className="mx-3 mb-1 mt-1 flex w-[calc(100%-24px)] items-center gap-3 rounded-2xl bg-[#141416] px-3.5 py-3 text-left active:bg-white/[0.06]"
                     >
-                      {waiting}
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-textDim">
+                        <Hash size={16} />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[14.5px] text-text">Receive with a code</span>
+                        <span className="block text-[12px] text-textFaint">From someone who isn’t in this home, on the same Wi-Fi</span>
+                      </span>
+                    </button>
+                  ))}
+                {page === 'out' && (
+                  <button
+                    onClick={() =>
+                      void android.pickFiles('any').then((files) => {
+                        if (files.length === 0) return
+                        onClose()
+                        model.setSharing(files.map((f) => ({ name: f.name, size: Math.max(0, f.size), path: '', source: f.uri })))
+                      })
+                    }
+                    className="mx-3 mb-1 mt-1 flex w-[calc(100%-24px)] items-center gap-3 rounded-2xl bg-[#141416] px-3.5 py-3 text-left active:bg-white/[0.06]"
+                  >
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-textDim">
+                      <Send size={16} />
                     </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            {page === 'in' &&
-              (byCode ? (
-                <div className="mx-3 mb-2 mt-1 rounded-2xl bg-[#141416] py-3">
-                  <div className="px-5 pb-1 text-[15px] font-semibold text-text">Receive with a code</div>
-                  <ReceiveWithCode inbox={inbox} phone onClose={() => setByCode(false)} />
-                </div>
-              ) : (
-                <button
-                  onClick={() => setByCode(true)}
-                  className="mx-3 mb-1 mt-1 flex w-[calc(100%-24px)] items-center gap-3 rounded-2xl bg-[#141416] px-3.5 py-3 text-left active:bg-white/[0.06]"
-                >
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-textDim">
-                    <Hash size={16} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-[14.5px] text-text">Receive with a code</span>
-                    <span className="block text-[12px] text-textFaint">From a device not on this host, on the same Wi-Fi</span>
-                  </span>
-                </button>
-              ))}
-            {page === 'out' && (
-              <button
-                onClick={() =>
-                  void android.pickFiles('any').then((files) => {
-                    if (files.length === 0) return
-                    onClose()
-                    model.setSharing(files.map((f) => ({ name: f.name, size: Math.max(0, f.size), path: '', source: f.uri })))
-                  })
-                }
-                className="mx-3 mb-1 mt-1 flex w-[calc(100%-24px)] items-center gap-3 rounded-2xl bg-[#141416] px-3.5 py-3 text-left active:bg-white/[0.06]"
-              >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-textDim">
-                  <Send size={16} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[14.5px] text-text">Send from this phone</span>
-                  <span className="block text-[12px] text-textFaint">Any file on this phone, to a device</span>
-                </span>
-              </button>
-            )}
-            <InboxList inbox={inbox} presence={presence} direction={page} onAnswer={onAnswer} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[14.5px] text-text">Send from this phone</span>
+                      <span className="block text-[12px] text-textFaint">Any file on this phone, to a device</span>
+                    </span>
+                  </button>
+                )}
+                <InboxList inbox={inbox} presence={presence} direction={page} onAnswer={onAnswer} />
+              </div>
+            </SectionPager>
           </div>
         </motion.div>
       )}

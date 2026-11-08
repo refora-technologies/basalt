@@ -26,6 +26,7 @@ mod linux_player;
 #[cfg(target_os = "linux")]
 mod linux_update;
 mod media_controls;
+mod music_timing;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod tray;
 #[cfg(target_os = "linux")]
@@ -734,6 +735,56 @@ fn channel_take(state: State<'_, AppState>) -> Vec<basalt_proto::msg::ChannelMes
         .collect()
 }
 
+/// A file received here, opened with what the computer opens it with. A
+/// program never is: it is shown in its folder instead, for the person to
+/// decide.
+#[tauri::command]
+fn received_open(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let file = std::path::Path::new(&path);
+    if !file.is_file() {
+        return Err("It’s no longer there.".into());
+    }
+    let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if is_program(name) {
+        return Err(
+            "A program is never opened by Basalt: it’s shown in its folder instead.".into(),
+        );
+    }
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_path(path, None::<&str>)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Err("Only on a computer.".into())
+    }
+}
+
+/// A file received here, shown selected in its folder.
+#[tauri::command]
+fn received_show(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let file = std::path::Path::new(&path);
+    if !file.exists() {
+        return Err("It’s no longer there.".into());
+    }
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .reveal_item_in_dir(file)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Err("Only on a computer.".into())
+    }
+}
+
 /// Where a file shared with this device landed.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -913,6 +964,13 @@ async fn nearby_send(
     };
     let code = basalt_client::nearby::new_code();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    // One at a time: a code started again replaces the last, which stops
+    // first, so its port is free for this one.
+    let before = state.nearby.lock().expect("nearby lock").take();
+    if let Some((old, sender)) = before {
+        drop(sender);
+        server.withdraw(&old);
+    }
     let sender = basalt_client::nearby::NearbySender::start(
         &code,
         offered,
@@ -920,15 +978,7 @@ async fn nearby_send(
         basalt_client::nearby::NEARBY_PORT,
     )
     .await?;
-    // One at a time: a code started again replaces the last.
-    let before = state
-        .nearby
-        .lock()
-        .expect("nearby lock")
-        .replace((offer.clone(), sender));
-    if let Some((old, _)) = before {
-        server.withdraw(&old);
-    }
+    *state.nearby.lock().expect("nearby lock") = Some((offer.clone(), sender));
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             let _ = app.emit(
@@ -2536,6 +2586,13 @@ pub fn run() {
             music_now,
             music_command,
             music_group,
+            received_open,
+            received_show,
+            music_timing::music_clock,
+            music_timing::music_play_at,
+            music_timing::music_pause_at,
+            music_timing::music_cancel,
+            music_timing::music_set_rate,
             presence,
             channel_send,
             channel_take,

@@ -25,7 +25,7 @@ export function songOf(session: NowSession): string | null {
  * seek is heard, so closer than this they are brought together by playing
  * a little faster or slower instead.
  */
-export const SEEK_ABOVE_SECONDS = 0.25
+export const SEEK_ABOVE_SECONDS = 0.12
 /** Further apart than this, the one behind or ahead starts to make it up. */
 export const NUDGE_ABOVE_SECONDS = 0.012
 /** Closer than this, it is in step: two speakers in one room sound as one. */

@@ -166,6 +166,20 @@ class NotifyUpdateArgs {
 }
 
 @InvokeArg
+class NotifyShareArgs {
+  lateinit var tag: String
+  lateinit var title: String
+  var text: String = ""
+  /** Buttons, each "Label|action". */
+  var actions: Array<String> = emptyArray()
+}
+
+@InvokeArg
+class CancelShareArgs {
+  lateinit var tag: String
+}
+
+@InvokeArg
 class ShareTextArgs {
   lateinit var text: String
   var title: String? = null
@@ -1136,6 +1150,76 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     invoke.resolve(JSObject().put("shown", true))
   }
 
+  // ---------------------------------------------------------------------------
+  // Shares
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A share for this person: one offered (with Accept and Decline), or one
+   * that arrived. It shows on top, as a message would, on its own channel
+   * ("Shared files"), so it can be turned down in Android's settings without
+   * silencing anything else. Tapped, the app opens at its Inbox; a button
+   * opens it with that answer, which the page takes as "share-accept:<tag>".
+   */
+  @Command
+  fun notifyShare(invoke: Invoke) {
+    val args = invoke.parseArgs(NotifyShareArgs::class.java)
+    val context = activity.applicationContext
+    val allowed = Build.VERSION.SDK_INT < 33 ||
+      context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    if (!allowed) {
+      invoke.resolve(JSObject().put("shown", false))
+      return
+    }
+    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(SHARE_CHANNEL) == null) {
+      manager.createNotificationChannel(
+        NotificationChannel(SHARE_CHANNEL, "Shared files", NotificationManager.IMPORTANCE_HIGH).apply {
+          description = "Files your other devices and your home send you."
+        }
+      )
+    }
+    val id = SHARE_NOTIFICATIONS + (args.tag.hashCode() and 0xffff)
+    fun opening(action: String, code: Int): PendingIntent? {
+      val open = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+        putExtra(ACTION_EXTRA, action)
+        addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+      } ?: return null
+      return PendingIntent.getActivity(
+        context, code, open,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+      )
+    }
+    val builder = NotificationCompat.Builder(context, SHARE_CHANNEL)
+      .setSmallIcon(R.drawable.ic_stat_basalt)
+      .setContentTitle(args.title)
+      .setContentText(args.text)
+      .setStyle(NotificationCompat.BigTextStyle().bigText(args.text))
+      .setPriority(NotificationCompat.PRIORITY_HIGH)
+      .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+      .setAutoCancel(true)
+      .setContentIntent(opening("share:${args.tag}", id))
+    args.actions.forEachIndexed { n, button ->
+      val label = button.substringBefore('|')
+      val action = button.substringAfter('|', "")
+      if (label.isNotEmpty() && action.isNotEmpty()) {
+        builder.addAction(0, label, opening("share-$action:${args.tag}", id * 8 + n + 1))
+      }
+    }
+    manager.notify(id, builder.build())
+    invoke.resolve(JSObject().put("shown", true))
+  }
+
+  /** A share's notification taken away: answered here, or nothing more to say. */
+  @Command
+  fun cancelShare(invoke: Invoke) {
+    val args = invoke.parseArgs(CancelShareArgs::class.java)
+    val context = activity.applicationContext
+    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    manager.cancel(SHARE_NOTIFICATIONS + (args.tag.hashCode() and 0xffff))
+    invoke.resolve()
+  }
+
   /**
    * Android's id for this app on this phone, which survives a reinstall and
    * clearing the app's data, and changes only with a factory reset. The
@@ -1396,5 +1480,8 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     private const val ACTION_EXTRA = "basalt.action"
     private const val UPDATE_CHANNEL = "basalt-updates"
     private const val UPDATE_NOTIFICATION = 7301
+    private const val SHARE_CHANNEL = "basalt-shares"
+    /** Share notifications' ids start here, one per share. */
+    private const val SHARE_NOTIFICATIONS = 0x10000
   }
 }

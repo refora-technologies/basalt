@@ -70,11 +70,86 @@ export interface HandoffBody {
   offer: OfferBody
 }
 
+/** `share.progress`: how far it has come, from the device taking it to the one that sent it, about once a second. */
+export interface ProgressBody {
+  offer: string
+  done: number
+  total: number
+  /** Bytes a second now. */
+  rate: number
+}
+
 export const KIND = {
   offer: 'share.offer',
   answer: 'share.answer',
   handoff: 'share.handoff',
+  progress: 'share.progress',
 } as const
+
+/** How far a share has come, as the Inbox shows it. */
+export interface Progress {
+  done: number
+  total: number
+  /** Bytes a second now; 0 when not known. */
+  rate: number
+  /** Going up to the host first (a file on this device, for one away). */
+  up?: boolean
+  /** When this was last heard, Unix ms. */
+  at: number
+}
+
+/** "45% · 12.3 MB of 88.7 MB · 4.2 MB/s · 20 s left". */
+export function progressLine(p: Progress, format: (bytes: number) => string): string {
+  const parts = [`${percentOf(p)}%`, `${format(p.done)} of ${format(p.total)}`]
+  if (p.rate > 0) {
+    parts.push(`${format(p.rate)}/s`)
+    const left = (p.total - p.done) / p.rate
+    if (left >= 1) parts.push(`${timeLeft(left)} left`)
+  }
+  return parts.join(' · ')
+}
+
+export function percentOf(p: Progress): number {
+  return p.total > 0 ? Math.min(100, Math.floor((p.done / p.total) * 100)) : 0
+}
+
+/** "20 s", "4 min", "1 h 5 min". */
+export function timeLeft(seconds: number): string {
+  if (seconds < 60) return `${Math.ceil(seconds)} s`
+  const minutes = Math.ceil(seconds / 60)
+  if (minutes < 60) return `${minutes} min`
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`
+}
+
+/** A transfer of one of a share's files, as the transfer list has it. */
+export interface FileMoving {
+  id: string
+  transferred: number
+  status: 'active' | 'done' | 'failed' | 'cancelled'
+  rate: number
+}
+
+/**
+ * How far a share coming here has come, from its files' transfers (named
+ * `share-<offer>-<n>`). Null when none has started.
+ */
+export function progressIn(item: ShareItem, transfers: FileMoving[], now: number): Progress | null {
+  let done = 0
+  let rate = 0
+  let started = false
+  item.files.forEach((file, n) => {
+    const t = transfers.find((x) => x.id === `share-${item.id}-${n}`)
+    if (!t) return
+    started = true
+    if (t.status === 'done') done += file.size
+    else {
+      done += Math.min(file.size, t.transferred)
+      if (t.status === 'active') rate += t.rate
+    }
+  })
+  if (!started) return null
+  return { done, total: totalOf(item.files), rate, at: now }
+}
 
 /** How long an offer is worth answering, in ms. */
 export const OFFER_TTL_MS = 10 * 60_000
@@ -102,10 +177,23 @@ export interface ShareItem {
   takenOn?: string
   /** Where it landed, for one received. */
   savedAs?: string
+  /** Each file as it landed here: to open, show in its folder, or share on. */
+  saved?: SavedFile[]
   /** Why it failed, or was declined. */
   reason?: string
   /** The offer itself, kept while it waits for an answer here. */
   offer?: OfferBody
+}
+
+/** A file received here, and where it is. */
+export interface SavedFile {
+  name: string
+  /** Where somebody would look for it: a folder and a name. */
+  shownAs: string
+  /** On a computer, the file itself. */
+  path?: string
+  /** On a phone, Android's address for it. */
+  uri?: string
 }
 
 export function totalOf(files: ShareFile[]): number {
