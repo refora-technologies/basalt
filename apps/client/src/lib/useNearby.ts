@@ -14,6 +14,8 @@ import {
 import type { Transfers } from './useTransfers'
 import { kept, newOfferId, progressIn, type Progress, type SavedFile, type ShareFile, type ShareItem } from './share'
 import { plainReason } from './useInbox'
+import { isAndroid } from './platform'
+import { hostWifi, joinWifi, leaveWifi, scanWifi, wifiReady, type FoundWifi, type WifiState } from './nearbyWifi'
 
 /**
  * Sharing with devices nearby, without a host (1.6.4): a guest's phone, two
@@ -34,6 +36,12 @@ export interface Nearby {
   setReady: (on: boolean) => void
   alwaysCode: boolean
   setAlwaysCode: (on: boolean) => void
+  /** Why devices with no Wi-Fi in common can't find this one or be found, if they can't. */
+  wifiNote: string | null
+  /** On a computer: Windows Firewall keeps devices nearby out (`blocked`), until let through. */
+  firewall: 'open' | 'blocked' | 'unknown'
+  /** Lets them through: Windows asks for an administrator. Throws what went wrong. */
+  allowFirewall: () => Promise<void>
   /** Devices ready to receive nearby, while something looks (see `useNearbyDevices`). */
   devices: NearbyDevice[]
   looking: boolean
@@ -81,7 +89,8 @@ export interface Outgoing {
   offer: string
   device: NearbyDevice
   files: ShareFile[]
-  state: 'asking' | 'code' | 'sending'
+  /** Joining its own Wi-Fi first (no network in common), then asking, a code, sending. */
+  state: 'joining' | 'asking' | 'code' | 'sending'
   /** Tries left after a wrong code. */
   left?: number
 }
@@ -98,6 +107,12 @@ export function useNearby(transfers: Transfers): Nearby {
   const [ready, setReadyState] = useState(() => localStorage.getItem(READY_KEY) === '1')
   const [alwaysCode, setAlwaysCodeState] = useState(() => localStorage.getItem(CODE_KEY) === '1')
   const [devices, setDevices] = useState<NearbyDevice[]>([])
+  /** Devices found by their own Wi-Fi: no network in common. */
+  const [far, setFar] = useState<FoundWifi[]>([])
+  const [wifiNote, setWifiNote] = useState<string | null>(null)
+  const [firewall, setFirewall] = useState<'open' | 'blocked' | 'unknown'>('open')
+  /** Offers sent over a Wi-Fi joined for them: left once each ends. */
+  const joinedFor = useRef(new Set<string>())
   const [looking, setLooking] = useState(false)
   const [watchers, setWatchers] = useState(0)
   const [incoming, setIncoming] = useState<Incoming[]>([])
@@ -132,6 +147,51 @@ export function useNearby(transfers: Transfers): Nearby {
   useEffect(() => {
     void api.nearbyReady(ready, alwaysCode).catch(() => {})
   }, [ready, alwaysCode])
+
+  // Ready on a computer: whether Windows Firewall lets devices nearby in.
+  useEffect(() => {
+    if (!ready || isAndroid()) return
+    void api
+      .nearbyFirewall()
+      .then(setFirewall)
+      .catch(() => setFirewall('unknown'))
+  }, [ready])
+  const allowFirewall = useCallback(async () => {
+    setFirewall(await api.nearbyFirewallAllow())
+  }, [])
+
+  // Ready: a Wi-Fi of its own too, for devices with no network in common.
+  useEffect(() => {
+    if (!ready) {
+      setWifiNote(null)
+      void hostWifi(false).catch(() => {})
+      return undefined
+    }
+    let live = true
+    void (async () => {
+      const state = await wifiReady(true)
+      if (!live) return
+      if (state !== 'granted') {
+        setWifiNote(wifiNoteFor(state))
+        return
+      }
+      try {
+        await hostWifi(true)
+        if (live) setWifiNote(null)
+      } catch (e) {
+        if (live) setWifiNote(`Devices with no Wi-Fi in common can’t find this one: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    })()
+    return () => {
+      live = false
+    }
+  }, [ready])
+
+  /** Leaves the Wi-Fi joined for an offer, once it has ended. */
+  const leaveFor = useCallback((offer: string) => {
+    if (!joinedFor.current.delete(offer)) return
+    if (joinedFor.current.size === 0) void leaveWifi().catch(() => {})
+  }, [])
 
   const setReady = useCallback((on: boolean) => {
     setReadyState(on)
@@ -241,11 +301,12 @@ export function useNearby(transfers: Transfers): Nearby {
     let gone = false
     let stop: (() => void) | null = null
     void onNearbySent(({ offer, answer }) => {
+      leaveFor(offer)
       setOutgoing((list) => list.filter((o) => o.offer !== offer))
       update(offer, 'out', (i) => ({
         ...i,
         state: answer === 'done' ? 'done' : 'failed',
-        reason: answer === 'done' ? undefined : 'It didn’t arrive.',
+        reason: answer === 'done' ? undefined : 'The other device couldn’t take it.',
       }))
     }).then((unlisten) => {
       if (gone) unlisten()
@@ -255,7 +316,7 @@ export function useNearby(transfers: Transfers): Nearby {
       gone = true
       stop?.()
     }
-  }, [update])
+  }, [update, leaveFor])
 
   const accept = useCallback((ask: string) => {
     setIncoming((list) => list.map((i) => (i.ask === ask ? { ...i, accepted: true } : i)))
@@ -292,22 +353,60 @@ export function useNearby(transfers: Transfers): Nearby {
     return () => clearInterval(timer)
   }, [watchers, look])
 
+  // Devices with no network in common, by their own Wi-Fi: looked for less
+  // often (Android allows a few looks a minute). Asked for what it needs once.
+  useEffect(() => {
+    if (watchers === 0) return undefined
+    let live = true
+    const lookFar = async (ask: boolean): Promise<void> => {
+      const state = await wifiReady(ask)
+      if (!live || state !== 'granted') return
+      const found = await scanWifi().catch(() => [])
+      if (live) setFar(found)
+    }
+    void lookFar(true)
+    const timer = setInterval(() => void lookFar(false), FAR_LOOK_EVERY_MS)
+    return () => {
+      live = false
+      clearInterval(timer)
+    }
+  }, [watchers])
+
+  // Both, each device once: on this Wi-Fi first (nothing to join).
+  const all = useMemo(() => {
+    const here = new Set(devices.map((d) => d.id))
+    const farAway: NearbyDevice[] = far
+      .filter((f) => !here.has(f.id) && f.id !== me?.id)
+      .map((f) => ({ id: f.id, name: f.name || 'A device', address: '', port: 0, key: '', code: true, ssid: f.ssid }))
+    return [...devices, ...farAway]
+  }, [devices, far, me])
+
   const send = useCallback(
     (device: NearbyDevice, files: ShareFile[]): string => {
       const offer = newOfferId()
       const peer = { device: `nearby-${device.id}`, name: `${device.name} · ${device.id}`, form: device.form }
-      setOutgoing((list) => [...list, { offer, device, files, state: 'asking' }])
+      setOutgoing((list) => [...list, { offer, device, files, state: device.ssid ? 'joining' : 'asking' }])
       setItems((list) => kept([{ id: offer, direction: 'out', files, peer, state: 'waiting', at: Date.now() }, ...list]))
       void (async () => {
       try {
+        let there = device
+        if (device.ssid) {
+          // No network in common: its own Wi-Fi joined, and it found there.
+          joinedFor.current.add(offer)
+          await joinWifi(device.ssid)
+          there = await findOnJoined(device.id)
+          setOutgoing((list) => list.map((o) => (o.offer === offer ? { ...o, device: there, state: 'asking' } : o)))
+        }
         const said = await api.nearbyOffer(
-          device,
+          there,
           offer,
           // A file on the drive: passed on from the host by this device as it comes.
           files.map((f) => ({ source: f.source ?? `drive:${f.path}`, name: f.name, size: f.size })),
-          alwaysCode,
+          // Over its own Wi-Fi anyone nearby could join: a code, always.
+          alwaysCode || !!device.ssid,
         )
         if (said.kind === 'declined') {
+          leaveFor(offer)
           setOutgoing((list) => list.filter((o) => o.offer !== offer))
           update(offer, 'out', (i) => ({ ...i, state: 'declined' }))
         } else if (said.kind === 'code') {
@@ -318,6 +417,7 @@ export function useNearby(transfers: Transfers): Nearby {
           update(offer, 'out', (i) => ({ ...i, state: 'moving', reason: undefined }))
         }
       } catch (e) {
+        leaveFor(offer)
         setOutgoing((list) => list.filter((o) => o.offer !== offer))
         const reason = plainReason(e instanceof Error ? e.message : String(e))
         update(offer, 'out', (i) => ({ ...i, state: 'failed', reason }))
@@ -325,7 +425,7 @@ export function useNearby(transfers: Transfers): Nearby {
       })()
       return offer
     },
-    [alwaysCode, update],
+    [alwaysCode, update, leaveFor],
   )
 
   const typeCode = useCallback(
@@ -335,6 +435,7 @@ export function useNearby(transfers: Transfers): Nearby {
         setOutgoing((list) => list.map((o) => (o.offer === offer ? { ...o, state: 'sending' } : o)))
         update(offer, 'out', (i) => ({ ...i, state: 'moving', reason: undefined }))
       } else if (said.left === 0) {
+        leaveFor(offer)
         setOutgoing((list) => list.filter((o) => o.offer !== offer))
         update(offer, 'out', (i) => ({ ...i, state: 'failed', reason: 'Too many wrong codes.' }))
       } else {
@@ -342,16 +443,17 @@ export function useNearby(transfers: Transfers): Nearby {
       }
       return said
     },
-    [update],
+    [update, leaveFor],
   )
 
   const cancel = useCallback(
     (offer: string) => {
+      leaveFor(offer)
       setOutgoing((list) => list.filter((o) => o.offer !== offer))
       update(offer, 'out', (i) => (i.state === 'waiting' ? { ...i, state: 'failed', reason: 'Cancelled.' } : i))
       void api.nearbyCancel(offer).catch(() => {})
     },
-    [update],
+    [update, leaveFor],
   )
 
   const moving = transfers.transfers
@@ -387,7 +489,10 @@ export function useNearby(transfers: Transfers): Nearby {
       setReady,
       alwaysCode,
       setAlwaysCode,
-      devices,
+      wifiNote,
+      firewall,
+      allowFirewall,
+      devices: all,
       looking,
       look,
       watch,
@@ -404,7 +509,7 @@ export function useNearby(transfers: Transfers): Nearby {
       screenOpen,
       setScreenOpen,
     }),
-    [me, ready, setReady, alwaysCode, setAlwaysCode, devices, looking, look, watch, incoming, accept, decline, outgoing, send, typeCode, cancel, items, progressOf, forget, screenOpen],
+    [me, ready, setReady, alwaysCode, setAlwaysCode, wifiNote, firewall, allowFirewall, all, looking, look, watch, incoming, accept, decline, outgoing, send, typeCode, cancel, items, progressOf, forget, screenOpen],
   )
 }
 
@@ -417,6 +522,34 @@ export function useNearbyDevices(nearby: Nearby, on: boolean): NearbyDevice[] {
     return () => watch(false)
   }, [on, watch])
   return nearby.devices
+}
+
+/** How often devices with no network in common are looked for. */
+const FAR_LOOK_EVERY_MS = 12_000
+
+/** Once its Wi-Fi is joined, the device there, as the same-Wi-Fi look finds it. */
+async function findOnJoined(id: string): Promise<NearbyDevice> {
+  for (let tries = 0; tries < 8; tries++) {
+    const found = (await api.nearbyFind().catch(() => [] as NearbyDevice[])).find((d) => d.id === id)
+    if (found) return found
+    await new Promise((done) => setTimeout(done, 1_000))
+  }
+  throw new Error('Joined its Wi-Fi, but it didn’t answer there.')
+}
+
+/** What stands in the way of a Wi-Fi of its own, said plainly. */
+function wifiNoteFor(state: WifiState): string {
+  switch (state) {
+    case 'location':
+      return 'To be found by devices with no Wi-Fi in common, turn on Location (Android needs it to look for Wi-Fi).'
+    case 'ask':
+    case 'denied':
+      return 'To be found by devices with no Wi-Fi in common, allow Basalt to find nearby devices.'
+    case 'unsupported':
+      return 'This device can’t open a Wi-Fi of its own: only devices on the same Wi-Fi find it.'
+    default:
+      return ''
+  }
 }
 
 /** Bytes a second, from the last word and this one. */

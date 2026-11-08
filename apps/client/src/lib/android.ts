@@ -125,6 +125,18 @@ export const android = {
    */
   notifyShare: async (tag: string, title: string, text: string, actions: string[] = []) =>
     (await plugin<{ shown: boolean }>('notify_share', { tag, title, text, actions }))?.shown ?? false,
+  /** Whether a nearby device's own Wi-Fi can be hosted, found and joined: `granted`, or what's missing. */
+  nearbyWifiState: async () => (await plugin<{ state: string }>('nearby_wifi_state'))?.state ?? 'unsupported',
+  /** Android's question for it: location before Android 13, nearby devices after. */
+  requestNearbyWifi: async () => (await plugin<{ state: string }>('request_nearby_wifi'))?.state ?? 'denied',
+  /** Hosts this phone's own Wi-Fi (Wi-Fi Direct) by that name and passphrase. */
+  nearbyHost: (ssid: string, passphrase: string) => plugin<void>('nearby_host', { ssid, passphrase }),
+  nearbyHostStop: () => plugin<void>('nearby_host_stop'),
+  /** The Basalt Wi-Fis around, from a fresh look. */
+  nearbyScan: async () => (await plugin<{ found: { ssid: string; level: number }[] }>('nearby_scan'))?.found ?? [],
+  /** Joins one, for this app: Android asks first. */
+  nearbyJoin: (ssid: string, passphrase: string) => plugin<void>('nearby_join', { ssid, passphrase }),
+  nearbyLeave: () => plugin<void>('nearby_leave'),
   /** A share's notification taken away. */
   cancelShare: (tag: string) => plugin<void>('cancel_share', { tag }),
   /** What a notification tap asked the app to open, once. */

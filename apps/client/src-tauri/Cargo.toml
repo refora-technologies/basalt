@@ -18,6 +18,7 @@ tauri-build = { version = "2", features = [] }
 # `cargo test` — and so the pre-commit hook — stays a few seconds rather than a
 # few minutes.
 basalt-client = { path = "../../../crates/basalt-client" }
+basalt-net = { path = "../../../crates/basalt-net" }
 basalt-proto = { path = "../../../crates/basalt-proto" }
 basalt-update = { path = "../../../crates/basalt-update" }
 
@@ -52,3 +53,11 @@ webkit2gtk = { version = "2.0", features = ["v2_16"] }
 # the tray. Tauri's own notification plugin can't tell which was pressed.
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8"
+# A nearby device's own Wi-Fi: hosting it (Wi-Fi Direct) and looking for one (WLAN).
+windows = { version = "0.61", features = [
+    "Devices_WiFiDirect",
+    "Security_Credentials",
+    "Foundation",
+    "Win32_Foundation",
+    "Win32_NetworkManagement_WiFi",
+] }

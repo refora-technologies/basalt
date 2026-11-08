@@ -116,13 +116,9 @@ export function SettingsView({
           <Action label="Forget this drive" danger onClick={onForget} />
         </Section>
 
-        <Section icon={Info} title="About" hint="Basalt, by Refora Technologies">
-          <About product="Basalt" />
-        </Section>
-
         {inbox && <SharingSection inbox={inbox} presence={presence} />}
         {nearby && (
-          <Section icon={Radio} title="Nearby" hint="Devices on this Wi-Fi that aren’t on your host">
+          <Section icon={Radio} title="Nearby" hint="Devices around you that aren’t on your host">
             <NearbySwitches nearby={nearby} className="rounded-none px-4 py-2.5" />
           </Section>
         )}
@@ -190,6 +186,10 @@ export function SettingsView({
             This computer only connects to the host it paired with, and proves who
             it is with its own key, which never leaves it.
           </Note>
+        </Section>
+
+        <Section icon={Info} title="About" hint="Basalt, by Refora Technologies">
+          <About product="Basalt" />
         </Section>
       </div>
     </div>

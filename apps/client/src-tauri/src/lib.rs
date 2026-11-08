@@ -27,6 +27,7 @@ mod linux_player;
 mod linux_update;
 mod media_controls;
 mod music_timing;
+mod nearby_wifi;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod tray;
 #[cfg(target_os = "linux")]
@@ -140,6 +141,11 @@ struct AppState {
     direct: tokio::sync::OnceCell<Arc<basalt_client::direct::DirectServer>>,
     /// Ready to receive from devices nearby, while it is.
     nearby_ready: Mutex<Option<basalt_client::nearby::Ready>>,
+    /// This device's own Wi-Fi while ready, and one joined to share.
+    nearby_wifi: nearby_wifi::State,
+    /// Offers to devices nearby still waiting for their answer: a word here
+    /// drops the line, and the other side's question goes with it.
+    nearby_asking: Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
     /// Offers to devices nearby waiting for the code shown there.
     nearby_offers: Mutex<std::collections::HashMap<String, basalt_client::nearby::Offering>>,
 }
@@ -1022,6 +1028,111 @@ fn nearby_finish(state: State<'_, AppState>, ask: String, answer: String) {
     }
 }
 
+/// This device's own Wi-Fi, as others find it: its name and passphrase.
+#[tauri::command]
+fn nearby_wifi_own(state: State<'_, AppState>) -> nearby_wifi::Own {
+    nearby_wifi::own(&nearby_me(&state))
+}
+
+/// The passphrase of a Basalt Wi-Fi found around, from its name.
+#[tauri::command]
+fn nearby_wifi_passphrase(ssid: String) -> Answer<String> {
+    let (id, _) = basalt_client::nearby::wifi_device(&ssid).ok_or_else(|| UiError {
+        kind: "error".into(),
+        message: "that isn't a Basalt Wi-Fi".into(),
+    })?;
+    Ok(basalt_client::nearby::wifi_passphrase(&id))
+}
+
+fn wifi_error(message: String) -> UiError {
+    UiError {
+        kind: "error".into(),
+        message,
+    }
+}
+
+/// Hosts this computer's own Wi-Fi while it is ready, for devices with no
+/// network in common; or stops.
+#[tauri::command]
+async fn nearby_wifi_host(app: tauri::AppHandle, on: bool) -> Answer<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        if on {
+            nearby_wifi::host(&state.nearby_wifi, &nearby_me(&state)).map_err(wifi_error)
+        } else {
+            nearby_wifi::stop_host(&state.nearby_wifi);
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// The Basalt Wi-Fis around: devices ready with no network in common.
+#[tauri::command]
+async fn nearby_wifi_scan() -> Answer<Vec<nearby_wifi::Found>> {
+    tauri::async_runtime::spawn_blocking(nearby_wifi::scan)
+        .await
+        .map_err(|e| wifi_error(e.to_string()))?
+        .map_err(wifi_error)
+}
+
+/// Joins a Basalt Wi-Fi found around, to share with the device hosting it.
+#[tauri::command]
+async fn nearby_wifi_join(app: tauri::AppHandle, ssid: String) -> Answer<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        nearby_wifi::join(&app.state::<AppState>().nearby_wifi, &ssid).map_err(wifi_error)
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// Leaves a Basalt Wi-Fi joined to share: back to the Wi-Fi before.
+#[tauri::command]
+async fn nearby_wifi_leave(app: tauri::AppHandle) -> Answer<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        nearby_wifi::leave(&app.state::<AppState>().nearby_wifi)
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))
+}
+
+/// Whether Windows Firewall lets devices nearby reach this app: `open`,
+/// `blocked` or `unknown` (always `open` elsewhere).
+#[tauri::command]
+async fn nearby_firewall() -> Answer<String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let exe = std::env::current_exe().map_err(|e| wifi_error(e.to_string()))?;
+        Ok(basalt_net::firewall::check(&exe).as_str().to_string())
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// Lets devices nearby reach this app through Windows Firewall, after
+/// Windows asks for an administrator; what it does now.
+#[tauri::command]
+async fn nearby_firewall_allow() -> Answer<String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let exe = std::env::current_exe().map_err(|e| wifi_error(e.to_string()))?;
+        // The development copy's own name, never the real app's rule.
+        let name = if dev_isolated().is_some() {
+            "Basalt (development copy)"
+        } else {
+            "Basalt"
+        };
+        basalt_net::firewall::allow(
+            &exe,
+            name,
+            "Lets devices nearby offer you files, and take the ones you send them.",
+        )
+        .map(|state| state.as_str().to_string())
+        .map_err(|e| wifi_error(e.to_string()))
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
 /// How far taking the files from a device nearby has come, for its sender.
 #[tauri::command]
 fn nearby_progress(state: State<'_, AppState>, ask: String, done: u64, total: u64) {
@@ -1076,14 +1187,37 @@ async fn nearby_offer(
         })
         .collect();
     let me = nearby_me(&state);
-    let (said, offering) =
-        match basalt_client::nearby::offer(&device, &me, &listed, take, always_code).await {
-            Ok(answered) => answered,
-            Err(e) => {
-                server.withdraw(&offer);
-                return Err(e.into());
-            }
-        };
+    // Taken back while it waits (Cancel): the line drops, and the question
+    // on the other device goes with it, rather than staying to be accepted.
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    state
+        .nearby_asking
+        .lock()
+        .expect("nearby lock")
+        .insert(offer.clone(), stop);
+    let asked = tokio::select! {
+        answered = basalt_client::nearby::offer(&device, &me, &listed, take, always_code) => Some(answered),
+        _ = stopped => None,
+    };
+    state
+        .nearby_asking
+        .lock()
+        .expect("nearby lock")
+        .remove(&offer);
+    let (said, offering) = match asked {
+        Some(Ok(answered)) => answered,
+        Some(Err(e)) => {
+            server.withdraw(&offer);
+            return Err(e.into());
+        }
+        None => {
+            server.withdraw(&offer);
+            return Err(UiError {
+                kind: "cancelled".into(),
+                message: "Cancelled.".into(),
+            });
+        }
+    };
     match said {
         basalt_client::nearby::Said::Accepted => nearby_wait_end(app, offer, offering),
         basalt_client::nearby::Said::Code => {
@@ -1167,6 +1301,14 @@ async fn nearby_code(
 /// Stops an offer to a device nearby: nobody can take it any more.
 #[tauri::command]
 fn nearby_cancel(state: State<'_, AppState>, offer: String) {
+    if let Some(stop) = state
+        .nearby_asking
+        .lock()
+        .expect("nearby lock")
+        .remove(&offer)
+    {
+        let _ = stop.send(());
+    }
     state
         .nearby_offers
         .lock()
@@ -2583,6 +2725,8 @@ pub fn run() {
                 channel: Mutex::new(std::collections::VecDeque::new()),
                 direct: tokio::sync::OnceCell::new(),
                 nearby_ready: Mutex::new(None),
+                nearby_wifi: nearby_wifi::State::default(),
+                nearby_asking: Mutex::new(std::collections::HashMap::new()),
                 nearby_offers: Mutex::new(std::collections::HashMap::new()),
             });
 
@@ -2752,6 +2896,14 @@ pub fn run() {
             nearby_reply,
             nearby_finish,
             nearby_progress,
+            nearby_wifi_own,
+            nearby_firewall,
+            nearby_firewall_allow,
+            nearby_wifi_passphrase,
+            nearby_wifi_host,
+            nearby_wifi_scan,
+            nearby_wifi_join,
+            nearby_wifi_leave,
             nearby_find,
             nearby_offer,
             nearby_code,

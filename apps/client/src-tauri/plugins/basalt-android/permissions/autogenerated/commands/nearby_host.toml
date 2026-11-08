@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-nearby-host"
+description = "Enables the nearby_host command without any pre-configured scope."
+commands.allow = ["nearby_host"]
+
+[[permission]]
+identifier = "deny-nearby-host"
+description = "Denies the nearby_host command without any pre-configured scope."
+commands.deny = ["nearby_host"]

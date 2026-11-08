@@ -1534,7 +1534,7 @@ function usePhoneShareNotifications(model: AppModel): void {
             ])
             .catch(() => {})
         }
-      } else if (item.state === 'done' && !item.takenOn) {
+      } else if (item.state === 'done' && !item.takenOn && away) {
         const one = item.saved?.length === 1 && !isProgram(item.saved[0]!.name)
         void android
           .notifyShare(item.id, `${titleOf(item.files)} arrived`, `From ${from} · ${item.savedAs ?? 'Download/Basalt'}`, one ? ['Open|open'] : [])

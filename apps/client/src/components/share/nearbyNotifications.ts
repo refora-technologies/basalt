@@ -48,6 +48,8 @@ export function useNearbyNotifications(nearby: Nearby): void {
       const title = `${titleOf(item.files)} arrived`
       const text = `From ${item.peer.name} · ${item.savedAs ?? ''}`
       if (isAndroid()) {
+        // In front, the list says so already.
+        if (document.visibilityState === 'visible') continue
         const one = item.saved?.length === 1 && !isProgram(item.saved[0]!.name)
         void android.notifyShare(item.id, title, text, one ? ['Open|open'] : []).catch(() => {})
       } else {

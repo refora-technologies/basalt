@@ -334,6 +334,7 @@ name = "basalt-client-shell"
 version = "1.6.3"
 dependencies = [
  "basalt-client",
+ "basalt-net",
  "basalt-proto",
  "basalt-update",
  "base64 0.23.1",
@@ -351,6 +352,7 @@ dependencies = [
  "tauri-winrt-notification",
  "tokio",
  "webkit2gtk",
+ "windows 0.61.3",
 ]
 
 [[package]]

@@ -180,6 +180,12 @@ class CancelShareArgs {
 }
 
 @InvokeArg
+class NearbyWifiArgs {
+  var ssid: String = ""
+  var passphrase: String = ""
+}
+
+@InvokeArg
 class ShareTextArgs {
   lateinit var text: String
   var title: String? = null
@@ -246,6 +252,10 @@ class MpvPropertyArgs {
 @TauriPlugin(
   permissions = [
     Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications"),
+    // Finding and joining a nearby device's own Wi-Fi: Android 13 asks for
+    // "nearby devices", before that for location.
+    Permission(strings = [Manifest.permission.NEARBY_WIFI_DEVICES], alias = "nearbyWifi"),
+    Permission(strings = [Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION], alias = "location"),
     Permission(strings = [LocalNetwork.PERMISSION], alias = LocalNetwork.ALIAS),
     Permission(strings = [LocalNetwork.TEST_PERMISSION], alias = LocalNetwork.TEST_ALIAS),
   ]
@@ -1208,6 +1218,75 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     }
     manager.notify(id, builder.build())
     invoke.resolve(JSObject().put("shown", true))
+  }
+
+  // ---------------------------------------------------------------------------
+  // A nearby device's own Wi-Fi: see NearbyWifi
+  // ---------------------------------------------------------------------------
+
+  private val nearbyWifi: NearbyWifi by lazy { NearbyWifi(activity.applicationContext) }
+
+  private fun nearbyAlias(): String = if (Build.VERSION.SDK_INT >= 33) "nearbyWifi" else "location"
+
+  /** Whether hosting, finding and joining a nearby Wi-Fi may be done: `granted`, or what's missing. */
+  @Command
+  fun nearbyWifiState(invoke: Invoke) {
+    val granted = getPermissionState(nearbyAlias()).toString() == "granted"
+    val state = when {
+      Build.VERSION.SDK_INT < 29 -> "unsupported"
+      !granted -> "ask"
+      !nearbyWifi.locationOn() -> "location"
+      else -> "granted"
+    }
+    invoke.resolve(JSObject().put("state", state))
+  }
+
+  @Command
+  fun requestNearbyWifi(invoke: Invoke) {
+    requestPermissionForAlias(nearbyAlias(), invoke, "nearbyWifiAnswered")
+  }
+
+  @PermissionCallback
+  fun nearbyWifiAnswered(invoke: Invoke) {
+    val granted = getPermissionState(nearbyAlias()).toString() == "granted"
+    invoke.resolve(JSObject().put("state", if (!granted) "denied" else if (!nearbyWifi.locationOn()) "location" else "granted"))
+  }
+
+  @Command
+  fun nearbyHost(invoke: Invoke) {
+    val args = invoke.parseArgs(NearbyWifiArgs::class.java)
+    nearbyWifi.host(args.ssid, args.passphrase) { why ->
+      if (why == null) invoke.resolve() else invoke.reject(why)
+    }
+  }
+
+  @Command
+  fun nearbyHostStop(invoke: Invoke) {
+    nearbyWifi.stopHost()
+    invoke.resolve()
+  }
+
+  @Command
+  fun nearbyScan(invoke: Invoke) {
+    nearbyWifi.scan { found ->
+      val list = JSArray()
+      for ((ssid, level) in found) list.put(JSObject().put("ssid", ssid).put("level", level))
+      invoke.resolve(JSObject().put("found", list))
+    }
+  }
+
+  @Command
+  fun nearbyJoin(invoke: Invoke) {
+    val args = invoke.parseArgs(NearbyWifiArgs::class.java)
+    nearbyWifi.join(args.ssid, args.passphrase) { why ->
+      if (why == null) invoke.resolve() else invoke.reject(why)
+    }
+  }
+
+  @Command
+  fun nearbyLeave(invoke: Invoke) {
+    nearbyWifi.leave()
+    invoke.resolve()
   }
 
   /** A share's notification taken away: answered here, or nothing more to say. */

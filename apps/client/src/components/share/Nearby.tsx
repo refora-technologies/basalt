@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, Laptop, Loader2, Lock, Monitor, Radio, Send, Smartphone, Tablet, X } from 'lucide-react'
+import { Check, Laptop, Loader2, Lock, Monitor, Radio, Send, ShieldAlert, Smartphone, Tablet, Wifi, X } from 'lucide-react'
 
 import type { NearbyDevice, NearbyMe } from '@/lib/api'
 import type { Incoming, Nearby, Outgoing } from '@/lib/useNearby'
@@ -62,12 +62,18 @@ export function NearbyDeviceRow({
     >
       <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.08] text-text">
         <Icon size={16} />
-        <span className="surface-ring absolute -bottom-px -right-px h-2.5 w-2.5 rounded-full bg-sky-400" />
+        <span
+          className={cn('surface-ring absolute -bottom-px -right-px h-2.5 w-2.5 rounded-full', device.ssid ? 'bg-violet-400' : 'bg-sky-400')}
+        />
       </span>
       <span className="min-w-0 flex-1">
         <NearbyName device={device} className="text-[14.5px] text-text" />
         <span className="flex items-center gap-1 text-[12px] text-textFaint">
-          {device.code ? (
+          {device.ssid ? (
+            <>
+              <Wifi size={11} /> Its own Wi-Fi · a code is asked
+            </>
+          ) : device.code ? (
             <>
               <Lock size={11} /> Asks for a code
             </>
@@ -100,7 +106,7 @@ export function NearbyList({
     return (
       <p className="flex items-center gap-2 px-5 py-2.5 text-[12.5px] leading-snug text-textFaint">
         {nearby.looking && <Loader2 size={13} className="shrink-0 animate-spin" />}
-        Looking on this Wi-Fi… The other device turns on “Ready to receive from nearby”.
+        Looking for devices nearby… The other device turns on “Ready to receive from nearby”.
       </p>
     )
   }
@@ -187,6 +193,26 @@ export function NearbySending({
   const device = sending.device
   return (
     <div className="px-5 pb-2 pt-3 text-center">
+      {sending.state === 'joining' && (
+        <>
+          <Loader2 size={20} className="mx-auto animate-spin text-textDim" />
+          <p className="mt-3 text-[14px] text-text">Joining the Wi-Fi of</p>
+          <NearbyName device={device} className="mt-1 justify-center text-[16px] font-semibold text-text" />
+          <p className="mt-2 text-[12.5px] leading-snug text-textFaint">
+            You have no Wi-Fi in common, so this device joins its own for a moment.
+            {phone ? ' Android asks first: choose Connect.' : ' This computer leaves its Wi-Fi until it’s done.'}
+          </p>
+          <button
+            onClick={() => {
+              nearby.cancel(sending.offer)
+              onClose()
+            }}
+            className="mt-4 w-full rounded-full border border-white/[0.12] py-2.5 text-[13.5px] text-text"
+          >
+            Cancel
+          </button>
+        </>
+      )}
       {sending.state === 'asking' && (
         <>
           <Loader2 size={20} className="mx-auto animate-spin text-textDim" />
@@ -407,14 +433,16 @@ export function NearbyPrompt({
 
 /** "Ready to receive from nearby" and "Always ask for a code", with what they mean. */
 export function NearbySwitches({ nearby, className }: { nearby: Nearby; className?: string }): React.JSX.Element {
+  const [allowing, setAllowing] = useState(false)
+  const [said, setSaid] = useState<string | null>(null)
   return (
     <>
       <Switch
         label="Ready to receive from nearby"
         description={
           nearby.me
-            ? `Devices on this Wi-Fi see “${nearby.me.name} · ${nearby.me.id}” and can offer you files. You accept each one.`
-            : 'Devices on this Wi-Fi can offer you files. You accept each one.'
+            ? `Devices nearby see “${nearby.me.name} · ${nearby.me.id}” and can offer you files, on this Wi-Fi or, with none in common, on a small one of this device’s own. You accept each one.`
+            : 'Devices nearby can offer you files. You accept each one.'
         }
         checked={nearby.ready}
         onChange={nearby.setReady}
@@ -427,6 +455,32 @@ export function NearbySwitches({ nearby, className }: { nearby: Nearby; classNam
         onChange={nearby.setAlwaysCode}
         className={className}
       />
+      {nearby.ready && nearby.firewall === 'blocked' && (
+        <div className="mx-4 my-2 flex items-start gap-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] px-3.5 py-3">
+          <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-300" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[13px] leading-snug text-text">Windows Firewall keeps devices nearby out</p>
+            <p className="mt-0.5 text-[12px] leading-snug text-textFaint">
+              They can’t offer you files, or take what you send them, until Basalt is let through. Windows asks you first.
+            </p>
+            {said && <p className="mt-1 text-[12px] text-danger">{said}</p>}
+          </div>
+          <button
+            disabled={allowing}
+            onClick={() => {
+              setAllowing(true)
+              setSaid(null)
+              nearby
+                .allowFirewall()
+                .catch((e: unknown) => setSaid(e instanceof Error ? e.message : String(e)))
+                .finally(() => setAllowing(false))
+            }}
+            className="shrink-0 rounded-full bg-white px-3.5 py-1.5 text-[12.5px] font-semibold text-black disabled:opacity-60"
+          >
+            {allowing ? 'Asking…' : 'Let it through'}
+          </button>
+        </div>
+      )}
     </>
   )
 }
@@ -455,6 +509,9 @@ export function NearbyScreen({
         </div>
       )}
       <NearbySwitches nearby={nearby} className="px-5" />
+      {nearby.ready && nearby.wifiNote && (
+        <p className="mx-5 mt-1 rounded-xl bg-white/[0.04] px-3 py-2 text-[12px] leading-snug text-textDim">{nearby.wifiNote}</p>
+      )}
       <div className="px-5 pb-1 pt-4 font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">Send</div>
       {files ? (
         <div className="flex min-h-0 flex-col">

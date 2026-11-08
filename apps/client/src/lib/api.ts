@@ -487,7 +487,7 @@ export interface MusicGroupRequest {
   leadMs?: number
 }
 
-/** A device as devices nearby see it: its name, kind and short id ("K7QM"). */
+/** A device as devices nearby see it: its name, kind and short id ("K7HM"). */
 export interface NearbyMe {
   id: string
   name: string
@@ -501,6 +501,12 @@ export interface NearbyDevice extends NearbyMe {
   key: string
   /** It asks for a code every time. */
   code: boolean
+  /**
+   * Found by its own Wi-Fi, not on this one (no network in common): joined
+   * to send, and a code always asked. Its address, port and key come once
+   * joined.
+   */
+  ssid?: string
 }
 
 /** Where to take files from a device nearby, once agreed. */
@@ -908,6 +914,22 @@ export const api = {
   nearbyReady: (on: boolean, alwaysCode: boolean) => call<void>('nearby_ready', { on, alwaysCode }),
   /** Accept or Decline an offer from a device nearby. False if it's gone. */
   nearbyReply: (ask: string, accept: boolean) => call<boolean>('nearby_reply', { ask, accept }),
+  /** Whether Windows Firewall lets devices nearby reach this app. */
+  nearbyFirewall: () => call<'open' | 'blocked' | 'unknown'>('nearby_firewall'),
+  /** Lets them through, after Windows asks for an administrator. */
+  nearbyFirewallAllow: () => call<'open' | 'blocked' | 'unknown'>('nearby_firewall_allow'),
+  /** This device's own Wi-Fi, as devices nearby find it. */
+  nearbyWifiOwn: () => call<{ ssid: string; passphrase: string }>('nearby_wifi_own'),
+  /** The passphrase of a Basalt Wi-Fi found around. */
+  nearbyWifiPassphrase: (ssid: string) => call<string>('nearby_wifi_passphrase', { ssid }),
+  /** Hosts this computer's own Wi-Fi while ready, or stops. */
+  nearbyWifiHost: (on: boolean) => call<void>('nearby_wifi_host', { on }),
+  /** The Basalt Wi-Fis around. */
+  nearbyWifiScan: () => call<{ ssid: string; level: number }[]>('nearby_wifi_scan'),
+  /** Joins a Basalt Wi-Fi found around. */
+  nearbyWifiJoin: (ssid: string) => call<void>('nearby_wifi_join', { ssid }),
+  /** Leaves it: back to the Wi-Fi before. */
+  nearbyWifiLeave: () => call<void>('nearby_wifi_leave'),
   /** How far taking the files from a device nearby has come, for its sender. */
   nearbyProgress: (ask: string, done: number, total: number) => call<void>('nearby_progress', { ask, done, total }),
   /** How taking the files from a device nearby went. */
@@ -1756,7 +1778,7 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return { now: Date.now() } as T
     // The page preview's café: two phones of the same name, one asking for a code.
     case 'nearby_whoami':
-      return { id: 'K7QM', name: 'Maya’s laptop', form: 'computer' } as T
+      return { id: 'K7HM', name: 'Maya’s laptop', form: 'computer' } as T
     case 'nearby_find':
       return [
         { id: 'TUVW', name: 'Pixel 8', form: 'phone', address: '10.0.0.4', port: 1, key: '', code: false },
@@ -1767,6 +1789,18 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return { kind: (args?.device as { code?: boolean })?.code ? 'code' : 'accepted' } as T
     case 'nearby_code':
       return { kind: 'right' } as T
+    case 'nearby_firewall':
+    case 'nearby_firewall_allow':
+      return 'open' as T
+    case 'nearby_wifi_own':
+      return { ssid: 'DIRECT-bs-K7HM Maya_s laptop', passphrase: 'bslt-K7HM-0' } as T
+    case 'nearby_wifi_passphrase':
+      return 'bslt-0' as T
+    case 'nearby_wifi_scan':
+      return [] as T
+    case 'nearby_wifi_host':
+    case 'nearby_wifi_join':
+    case 'nearby_wifi_leave':
     case 'nearby_ready':
     case 'nearby_progress':
     case 'nearby_finish':

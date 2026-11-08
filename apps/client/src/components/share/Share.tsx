@@ -566,7 +566,9 @@ export function ShareStatus({
           {state === 'waiting'
             ? (item?.reason ?? 'They see it now, and answer Accept or Decline.')
             : state === 'failed'
-              ? (item?.reason ?? 'Try again.')
+              ? item?.reason && !/^it didn.t arrive\.?$/i.test(item.reason)
+                ? item.reason
+                : 'Try again in a moment.'
               : state === 'moving'
                 ? 'It carries on if you close this.'
                 : ''}

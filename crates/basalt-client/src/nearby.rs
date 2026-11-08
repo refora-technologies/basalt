@@ -2,7 +2,7 @@
 //! guest's phone at home. From 1.6.4.
 //!
 //! A device that is ready to receive answers on the Wi-Fi with its name, its
-//! kind and a short id ("K7QM": two phones called "Pixel 8" are told apart).
+//! kind and a short id ("K7HM": two phones called "Pixel 8" are told apart).
 //! A device sharing lists them; one tapped is sent the offer, and the person
 //! there answers Accept or Decline, as within a home.
 //!
@@ -80,6 +80,48 @@ pub fn short_id(seed: &[u8]) -> String {
             letter as char
         })
         .collect()
+}
+
+/// Every Basalt Wi-Fi's name starts so: Android lets an app name its own
+/// Wi-Fi only "DIRECT-" and two letters, then what it likes.
+pub const WIFI_PREFIX: &str = "DIRECT-bs-";
+
+/// The Wi-Fi a device ready to receive hosts for devices with no network in
+/// common: "DIRECT-bs-K7HM Pixel 8", at most 32 bytes, its name made plain.
+pub fn wifi_name(me: &Me) -> String {
+    let plain: String = me
+        .name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let mut name = format!("{WIFI_PREFIX}{} {}", me.id, plain.trim());
+    name.truncate(32);
+    name.trim_end().to_string()
+}
+
+/// Its passphrase, from its id alone, so a device that finds it can join.
+/// Not a secret: who may take files is settled by the code, always asked
+/// for this way (anyone nearby could join a Wi-Fi like this).
+pub fn wifi_passphrase(id: &str) -> String {
+    let digest = ring::digest::digest(
+        &ring::digest::SHA256,
+        format!("basalt nearby wifi {id}").as_bytes(),
+    );
+    format!("bslt-{id}-{}", &hex::encode(digest.as_ref())[..10])
+}
+
+/// The id and name in a Basalt Wi-Fi's name, if it is one.
+pub fn wifi_device(ssid: &str) -> Option<(String, String)> {
+    let rest = ssid.strip_prefix(WIFI_PREFIX)?;
+    let (id, name) = rest.split_once(' ').unwrap_or((rest, ""));
+    (id.len() == 4 && id.bytes().all(|c| ID_LETTERS.contains(&c)))
+        .then(|| (id.to_string(), name.to_string()))
 }
 
 /// A six-digit code, at random.
@@ -833,6 +875,22 @@ mod tests {
         assert_ne!(id, short_id(b"another phone"));
     }
 
+    #[test]
+    fn a_devices_own_wifi_is_named_for_it_and_read_back() {
+        let ssid = wifi_name(&me("K7HM", "Maya’s very long phone name here"));
+        assert!(ssid.starts_with("DIRECT-bs-K7HM Maya_s"), "{ssid}");
+        assert!(ssid.len() <= 32);
+        assert_eq!(
+            wifi_device(&ssid).map(|(id, _)| id),
+            Some("K7HM".to_string())
+        );
+        assert_eq!(wifi_device("DIRECT-xy-Printer"), None);
+        assert_eq!(wifi_device("Home Wi-Fi"), None);
+        let pass = wifi_passphrase("K7HM");
+        assert!(pass.len() >= 8 && pass.len() <= 63);
+        assert_eq!(pass, wifi_passphrase("K7HM"), "the same on both sides");
+    }
+
     #[tokio::test]
     async fn a_ready_device_is_found_offered_and_accepted_without_a_code() {
         let port = 47_745;
@@ -971,6 +1029,36 @@ mod tests {
         assert_eq!(wrong, CodeSaid::Wrong { left: 4 });
         assert_eq!(right, CodeSaid::Right);
         assert_eq!(end, "done");
+    }
+
+    #[tokio::test]
+    async fn an_offer_taken_back_while_asked_leaves_nothing_to_accept() {
+        let port = 47_749;
+        let (tx, mut events) = mpsc::unbounded_channel();
+        let ready = Ready::start(me("HJKM", "Pixel 8"), false, tx, port)
+            .await
+            .unwrap();
+        let device = found(port, "HJKM").await;
+        let sending = tokio::spawn(async move {
+            offer(
+                &device,
+                &me("ACDE", "Maya's laptop"),
+                &files(),
+                take(),
+                false,
+            )
+            .await
+        });
+        let ReadyEvent::Offer { ask, .. } = next(&mut events).await else {
+            panic!("an offer");
+        };
+        // Cancel on the sender: its side of the line goes.
+        sending.abort();
+        assert!(
+            matches!(next(&mut events).await, ReadyEvent::Gone { ask: gone, .. } if gone == ask),
+            "the question goes on this side too"
+        );
+        assert!(!ready.answer(&ask, true), "nothing left to accept");
     }
 
     #[tokio::test]
