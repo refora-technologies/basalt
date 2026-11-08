@@ -316,6 +316,9 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   // Sharing with the host's other devices: not on a TV, and only on a host
   // that passes shares.
   const sharingHere = !TV && model.presence.supported && model.presence.you !== ''
+  // Devices nearby need no host: the Inbox, Send and the share sheet are
+  // there with none reachable too (a café, no drive at all).
+  const shareAnywhere = !TV
   const [inboxOpen, setInboxOpen] = useState(false)
   const [alwaysReady] = useAlwaysReady()
   const ready =
@@ -453,7 +456,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       void android.openDownload(item.saved[0].uri)
       return
     }
-    if (sharingHere) setInboxOpen(true)
+    if (shareAnywhere) setInboxOpen(true)
   })
   usePhoneShareNotifications(model)
   useNearbyNotifications(model.nearby)
@@ -513,7 +516,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
             }}
             query={query}
             onQuery={setQuery}
-            onInbox={sharingHere ? () => setInboxOpen(true) : undefined}
+            onInbox={shareAnywhere ? () => setInboxOpen(true) : undefined}
           />
         )}
 
@@ -630,7 +633,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
               }}
               onDismiss={() => setShared([])}
               onSend={
-                sharingHere
+                shareAnywhere
                   ? () => {
                       const files = shared
                       setShared([])
@@ -693,7 +696,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
 
       <TransfersSheet model={model} open={transfersOpen} onClose={() => setTransfersOpen(false)} />
 
-      {sharingHere && <PhoneShare model={model} inboxOpen={inboxOpen} onCloseInbox={() => setInboxOpen(false)} />}
+      {shareAnywhere && <PhoneShare model={model} inboxOpen={inboxOpen} onCloseInbox={() => setInboxOpen(false)} />}
       {!TV && <PhoneNearby nearby={model.nearby} />}
 
       <PhoneManagePanel open={managing} onClose={() => setManaging(false)} />

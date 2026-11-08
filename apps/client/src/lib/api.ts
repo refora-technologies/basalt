@@ -509,19 +509,14 @@ export interface NearbyDevice extends NearbyMe {
   ssid?: string
 }
 
-/** Where to take files from a device nearby, once agreed. */
-export interface NearbyTake {
-  endpoint: { addresses: string[]; port: number; key: string }
-  offer: string
-  token: string
-}
 
 /** What happens on this device while it is ready for nearby shares. */
 export type NearbyReadyEvent =
   | { kind: 'offer'; ask: string; from: NearbyMe; files: { name: string; size: number }[]; code: boolean }
   | { kind: 'code'; ask: string; code: string }
   | { kind: 'wrongCode'; ask: string; left: number }
-  | { kind: 'take'; ask: string; take: NearbyTake }
+  /** Agreed: each file is taken with `nearbyTakeFile`, down the line the offer came up. */
+  | { kind: 'take'; ask: string }
   | { kind: 'gone'; ask: string; why: string }
 
 /** What a device nearby said to an offer. */
@@ -931,7 +926,8 @@ export const api = {
   /** Leaves it: back to the Wi-Fi before. */
   nearbyWifiLeave: () => call<void>('nearby_wifi_leave'),
   /** How far taking the files from a device nearby has come, for its sender. */
-  nearbyProgress: (ask: string, done: number, total: number) => call<void>('nearby_progress', { ask, done, total }),
+  nearbyTakeFile: (ask: string, file: number, name: string, id: string, folder?: string) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('nearby_take_file', { ask, file, name, id, folder: folder ?? null }),
   /** How taking the files from a device nearby went. */
   nearbyFinish: (ask: string, answer: 'done' | 'failed') => call<void>('nearby_finish', { ask, answer }),
   /** The devices nearby ready to receive, on this Wi-Fi. */
@@ -1801,8 +1797,9 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     case 'nearby_wifi_host':
     case 'nearby_wifi_join':
     case 'nearby_wifi_leave':
+    case 'nearby_take_file':
+      return { shownAs: 'Downloads/Basalt/file' } as T
     case 'nearby_ready':
-    case 'nearby_progress':
     case 'nearby_finish':
     case 'nearby_cancel':
       return undefined as T

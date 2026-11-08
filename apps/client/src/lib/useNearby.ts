@@ -9,7 +9,6 @@ import {
   type NearbyDevice,
   type NearbyMe,
   type NearbyReadyEvent,
-  type NearbyTake,
 } from './api'
 import type { Transfers } from './useTransfers'
 import { kept, newOfferId, progressIn, type Progress, type SavedFile, type ShareFile, type ShareItem } from './share'
@@ -208,7 +207,7 @@ export function useNearby(transfers: Transfers): Nearby {
 
   /** Takes the files agreed, one after another, then tells the sender how it went. */
   const take = useCallback(
-    async (ask: string, offer: Incoming, where: NearbyTake) => {
+    async (ask: string, offer: Incoming) => {
       const id = `nb-${ask}`
       const peer = { device: `nearby-${offer.from.id}`, name: `${offer.from.name} · ${offer.from.id}`, form: offer.from.form }
       const files: ShareFile[] = offer.files.map((f) => ({ name: f.name, size: f.size, path: '' }))
@@ -220,7 +219,8 @@ export function useNearby(transfers: Transfers): Nearby {
           transfersRef.current.start({ id: transfer, kind: 'download', name: file.name, path: file.name, total: file.size })
           try {
             const folder = localStorage.getItem(FOLDER_KEY) || undefined
-            const landed = await api.receiveDirect(where.endpoint, where.offer, where.token, n, file.name, transfer, folder)
+            // Down the line the offer came up: this device never has to reach the sender.
+            const landed = await api.nearbyTakeFile(ask, n, file.name, transfer, folder)
             transfersRef.current.finish(transfer)
             saved.push({ name: file.name, shownAs: landed.shownAs, path: landed.path, uri: landed.uri })
           } catch (e) {
@@ -261,7 +261,7 @@ export function useNearby(transfers: Transfers): Nearby {
           const offer = incomingRef.current.find((i) => i.ask === event.ask)
           forget()
           // Stopped here meanwhile: the sender is told it didn't go.
-          if (offer) void take(event.ask, offer, event.take)
+          if (offer) void take(event.ask, offer)
           else void api.nearbyFinish(event.ask, 'failed').catch(() => {})
           break
         }
@@ -465,19 +465,6 @@ export function useNearby(transfers: Transfers): Nearby {
     [moving, sentProgress],
   )
 
-  // How far each share coming here has come, told to its sender about once a second.
-  const toldAt = useRef(new Map<string, number>())
-  useEffect(() => {
-    const now = Date.now()
-    for (const item of items) {
-      if (item.direction !== 'in' || item.state !== 'moving' || !item.id.startsWith('nb-')) continue
-      if (now - (toldAt.current.get(item.id) ?? 0) < 1_000) continue
-      const p = progressIn(item, moving, now)
-      if (!p) continue
-      toldAt.current.set(item.id, now)
-      void api.nearbyProgress(item.id.slice(3), p.done, p.total).catch(() => {})
-    }
-  }, [moving, items])
 
   const forget = useCallback((item: ShareItem) => setItems((list) => list.filter((i) => i !== item)), [])
 

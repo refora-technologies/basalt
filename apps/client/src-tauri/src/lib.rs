@@ -147,7 +147,9 @@ struct AppState {
     /// drops the line, and the other side's question goes with it.
     nearby_asking: Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
     /// Offers to devices nearby waiting for the code shown there.
-    nearby_offers: Mutex<std::collections::HashMap<String, basalt_client::nearby::Offering>>,
+    nearby_offers: Mutex<
+        std::collections::HashMap<String, (basalt_client::nearby::Offering, Vec<String>, u64)>,
+    >,
 }
 
 /// Messages kept for the page at most: past it, the oldest go.
@@ -1133,14 +1135,6 @@ async fn nearby_firewall_allow() -> Answer<String> {
     .map_err(|e| wifi_error(e.to_string()))?
 }
 
-/// How far taking the files from a device nearby has come, for its sender.
-#[tauri::command]
-fn nearby_progress(state: State<'_, AppState>, ask: String, done: u64, total: u64) {
-    if let Some(ready) = state.nearby_ready.lock().expect("nearby lock").as_ref() {
-        ready.progress(&ask, done, total);
-    }
-}
-
 /// The devices nearby ready to receive, on this Wi-Fi.
 #[tauri::command]
 async fn nearby_find(
@@ -1157,9 +1151,10 @@ async fn nearby_find(
     Ok(found)
 }
 
-/// Offers files on this device to a device nearby, and waits for its answer:
-/// accepted (then `basalt://nearby-sent` says how it ended), declined, or a
-/// code wanted (then `nearby_code`).
+/// Offers files on this device (or the drive's, `drive:<path>`) to a device
+/// nearby, and waits for its answer: accepted (the files go down the same line,
+/// `basalt://nearby-progress` says how far, `basalt://nearby-sent` how it
+/// ended), declined, or a code wanted (then `nearby_code`).
 #[tauri::command]
 async fn nearby_offer(
     app: tauri::AppHandle,
@@ -1169,16 +1164,6 @@ async fn nearby_offer(
     files: Vec<LocalFile>,
     always_code: bool,
 ) -> Answer<basalt_client::nearby::Said> {
-    let server = state
-        .direct
-        .get_or_try_init(|| start_direct(&app, Arc::clone(&state.client)))
-        .await?;
-    let token = server.offer(&offer, files.iter().map(|f| f.source.clone()).collect());
-    let take = basalt_client::nearby::Take {
-        endpoint: server.endpoint(),
-        offer: offer.clone(),
-        token,
-    };
     let listed: Vec<basalt_client::nearby::NearbyFile> = files
         .iter()
         .map(|f| basalt_client::nearby::NearbyFile {
@@ -1196,7 +1181,7 @@ async fn nearby_offer(
         .expect("nearby lock")
         .insert(offer.clone(), stop);
     let asked = tokio::select! {
-        answered = basalt_client::nearby::offer(&device, &me, &listed, take, always_code) => Some(answered),
+        answered = basalt_client::nearby::offer(&device, &me, &listed, always_code) => Some(answered),
         _ = stopped => None,
     };
     state
@@ -1206,53 +1191,84 @@ async fn nearby_offer(
         .remove(&offer);
     let (said, offering) = match asked {
         Some(Ok(answered)) => answered,
-        Some(Err(e)) => {
-            server.withdraw(&offer);
-            return Err(e.into());
-        }
+        Some(Err(e)) => return Err(e.into()),
         None => {
-            server.withdraw(&offer);
             return Err(UiError {
                 kind: "cancelled".into(),
                 message: "Cancelled.".into(),
             });
         }
     };
+    let sources: Vec<String> = files.into_iter().map(|f| f.source).collect();
+    let total: u64 = listed.iter().map(|f| f.size).sum();
     match said {
-        basalt_client::nearby::Said::Accepted => nearby_wait_end(app, offer, offering),
+        basalt_client::nearby::Said::Accepted => nearby_serve(app, offer, offering, sources, total),
         basalt_client::nearby::Said::Code => {
             state
                 .nearby_offers
                 .lock()
                 .expect("nearby lock")
-                .insert(offer, offering);
+                .insert(offer, (offering, sources, total));
         }
-        basalt_client::nearby::Said::Declined => server.withdraw(&offer),
+        basalt_client::nearby::Said::Declined => {}
     }
     Ok(said)
 }
 
-/// Waits for a device nearby to say how taking the files went.
-fn nearby_wait_end(
+/// Sends an agreed offer's files down its line as they're asked for, then
+/// says how it ended.
+fn nearby_serve(
     app: tauri::AppHandle,
     offer: String,
     offering: basalt_client::nearby::Offering,
+    sources: Vec<String>,
+    total: u64,
 ) {
     use tauri::Emitter;
     tauri::async_runtime::spawn(async move {
+        let opener = open_local(&app);
+        let client = Arc::clone(&app.state::<AppState>().client);
+        let open = move |file: usize| {
+            let source = sources.get(file).cloned();
+            let opener = Arc::clone(&opener);
+            let client = Arc::clone(&client);
+            async move {
+                let source = source.ok_or_else(|| std::io::Error::other("no such file"))?;
+                // A file on the drive: passed on from the host as it comes.
+                if let Some(path) = source.strip_prefix(basalt_client::direct::DRIVE_SOURCE) {
+                    let (length, read) = client
+                        .read_stream(path, 0)
+                        .await
+                        .map_err(std::io::Error::other)?;
+                    return Ok((length, Box::new(read) as basalt_client::nearby::Source));
+                }
+                let file = tokio::task::spawn_blocking(move || opener(&source))
+                    .await
+                    .map_err(std::io::Error::other)??;
+                let length = file.metadata()?.len();
+                Ok((
+                    length,
+                    Box::new(tokio::fs::File::from_std(file)) as basalt_client::nearby::Source,
+                ))
+            }
+        };
         let told = app.clone();
         let progress_offer = offer.clone();
+        let last = std::sync::Mutex::new(std::time::Instant::now());
         let answer = offering
-            .end_with(move |done, total| {
+            .serve(open, move |sent| {
+                // About four times a second is plenty for a bar.
+                let mut at = last.lock().expect("progress lock");
+                if at.elapsed() < std::time::Duration::from_millis(250) && sent < total {
+                    return;
+                }
+                *at = std::time::Instant::now();
                 let _ = told.emit(
                     "basalt://nearby-progress",
-                    serde_json::json!({ "offer": progress_offer, "done": done, "total": total }),
+                    serde_json::json!({ "offer": progress_offer, "done": sent, "total": total.max(sent) }),
                 );
             })
             .await;
-        if let Some(server) = app.state::<AppState>().direct.get() {
-            server.withdraw(&offer);
-        }
         let _ = app.emit(
             "basalt://nearby-sent",
             serde_json::json!({ "offer": offer, "answer": answer }),
@@ -1273,7 +1289,7 @@ async fn nearby_code(
         .lock()
         .expect("nearby lock")
         .remove(&offer);
-    let Some(mut offering) = taken else {
+    let Some((mut offering, sources, total)) = taken else {
         return Err(UiError {
             kind: "error".into(),
             message: "that offer has ended: send it again".into(),
@@ -1281,19 +1297,17 @@ async fn nearby_code(
     };
     let said = offering.code(&code).await?;
     match said {
-        basalt_client::nearby::CodeSaid::Right => nearby_wait_end(app, offer, offering),
+        basalt_client::nearby::CodeSaid::Right => {
+            nearby_serve(app, offer, offering, sources, total)
+        }
         basalt_client::nearby::CodeSaid::Wrong { left } if left > 0 => {
             state
                 .nearby_offers
                 .lock()
                 .expect("nearby lock")
-                .insert(offer, offering);
+                .insert(offer, (offering, sources, total));
         }
-        basalt_client::nearby::CodeSaid::Wrong { .. } => {
-            if let Some(server) = state.direct.get() {
-                server.withdraw(&offer);
-            }
-        }
+        basalt_client::nearby::CodeSaid::Wrong { .. } => {}
     }
     Ok(said)
 }
@@ -1314,9 +1328,6 @@ fn nearby_cancel(state: State<'_, AppState>, offer: String) {
         .lock()
         .expect("nearby lock")
         .remove(&offer);
-    if let Some(server) = state.direct.get() {
-        server.withdraw(&offer);
-    }
 }
 
 /// Takes an offer back: nobody can take its files any more.
@@ -1346,6 +1357,8 @@ fn local_files(paths: Vec<String>) -> Vec<serde_json::Value> {
 /// Takes one file of an offer from the device that offers it, straight
 /// across the Wi-Fi, into this device's received folder.
 #[allow(clippy::too_many_arguments)]
+/// Takes one file of an offer straight from the device that offers it.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn receive_direct(
     app: tauri::AppHandle,
@@ -1358,6 +1371,79 @@ async fn receive_direct(
     id: String,
     folder: Option<String>,
 ) -> Answer<Received> {
+    let shown = name.clone();
+    receive_into(
+        app,
+        &state,
+        name,
+        id,
+        folder,
+        move |out, report, cancel| async move {
+            basalt_client::direct::fetch(
+                &endpoint,
+                &offer,
+                &token,
+                file,
+                &shown,
+                out,
+                Some(report),
+                Some(cancel),
+            )
+            .await
+        },
+    )
+    .await
+}
+
+/// Takes one file of an offer from a device nearby, agreed: it comes down
+/// the line its offer came up.
+#[tauri::command]
+async fn nearby_take_file(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    ask: String,
+    file: usize,
+    name: String,
+    id: String,
+    folder: Option<String>,
+) -> Answer<Received> {
+    let link = state
+        .nearby_ready
+        .lock()
+        .expect("nearby lock")
+        .as_ref()
+        .and_then(|ready| ready.link(&ask))
+        .ok_or_else(|| UiError {
+            kind: "error".into(),
+            message: "the device that sent it has gone".into(),
+        })?;
+    let shown = name.clone();
+    receive_into(
+        app,
+        &state,
+        name,
+        id,
+        folder,
+        move |out, report, cancel| async move {
+            link.take_file(file, &shown, out, Some(report), Some(cancel))
+                .await
+        },
+    )
+    .await
+}
+
+async fn receive_into<F, Fut>(
+    app: tauri::AppHandle,
+    state: &AppState,
+    name: String,
+    id: String,
+    folder: Option<String>,
+    take: F,
+) -> Answer<Received>
+where
+    F: FnOnce(std::fs::File, basalt_client::client::ProgressFn, Cancel) -> Fut,
+    Fut: std::future::Future<Output = basalt_client::Result<u64>>,
+{
     let cancel = Cancel::new();
     state
         .transfers
@@ -1384,17 +1470,7 @@ async fn receive_direct(
             kind: "error".into(),
             message: format!("couldn’t save to Downloads: {e}"),
         })?;
-        let result = basalt_client::direct::fetch(
-            &endpoint,
-            &offer,
-            &token,
-            file,
-            &name,
-            owned_file(created.fd),
-            Some(report),
-            Some(cancel),
-        )
-        .await;
+        let result = take(owned_file(created.fd), report, cancel).await;
         let ok = result.is_ok();
         let handle = app.clone();
         let uri = created.uri.clone();
@@ -1422,17 +1498,7 @@ async fn receive_direct(
             kind: "error".into(),
             message: format!("couldn’t write {}: {e}", local.display()),
         })?;
-        let result = basalt_client::direct::fetch(
-            &endpoint,
-            &offer,
-            &token,
-            file,
-            &name,
-            out,
-            Some(report),
-            Some(cancel),
-        )
-        .await;
+        let result = take(out, report, cancel).await;
         if result.is_err() {
             let _ = std::fs::remove_file(&local);
         } else {
@@ -2895,7 +2961,7 @@ pub fn run() {
             nearby_ready,
             nearby_reply,
             nearby_finish,
-            nearby_progress,
+            nearby_take_file,
             nearby_wifi_own,
             nearby_firewall,
             nearby_firewall_allow,

@@ -326,7 +326,13 @@ export function NearbyChooser({
         </button>
         <p className="mt-2 text-center text-[12px] leading-snug text-textFaint">
           {error ??
-            `${files.some((f) => !f.source) ? 'From the drive, through this device.' : 'Straight to it, on this Wi-Fi.'} ${
+            `${
+              files.some((f) => !f.source)
+                ? 'From the drive, through this device.'
+                : chosen?.ssid
+                  ? 'On its own Wi-Fi: this device joins it for a moment.'
+                  : 'Straight to it, on this Wi-Fi.'
+            } ${
               chosen?.code || nearby.alwaysCode ? 'They show a code, and you type it.' : 'They’re asked to accept.'
             }`}
         </p>

@@ -190,7 +190,7 @@ export function ShareChooser({
         </div>
       ) : (
       <div className="min-h-0 flex-1 overflow-y-auto pb-1">
-        {nobody && !onThisDevice && (
+        {nobody && !onThisDevice && !nearby && (
           <p className="px-5 py-6 text-[13px] leading-relaxed text-textFaint">
             No other devices on this host yet. Pair another phone or computer, and it shows here.
           </p>

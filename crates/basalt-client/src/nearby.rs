@@ -20,15 +20,17 @@
 //! sender   → receiver (TLS, pinned to "key")
 //!                              {"from": {"id","name","form"}, "files": […], "code": bool}
 //! receiver → sender            {"answer": "accepted" | "declined" | "code"}
-//!   accepted:  sender → {"take": {endpoint, offer, token}}
 //!   code:      sender → {"pake": A}; receiver → {"pake": B, "proof"}; sender → {"proof"}
 //!              wrong: receiver → {"wrong": left}, and again with a new A
-//!              right: sender → {"take": sealed with the code's key}
+//! then, for each file:
+//!   receiver → {"want": n}; sender → {"file": n, "length": L} and L bytes, or {"no": why}
 //! receiver → sender            {"answer": "done" | "failed"}
 //! ```
 //!
-//! The files themselves then go as any file on a device does, over TLS
-//! pinned to the sender's direct listener (see [`crate::direct`]).
+//! The files come down the same line the offer went up, from the sender: the
+//! receiver never has to reach the sender. A phone that joined another
+//! device's own Wi-Fi accepts no connection there, and a computer's firewall
+//! may let none in; the line the sender opened is the one that works.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -36,15 +38,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use basalt_proto::hex;
-use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
 use ring::hmac;
 use serde::{Deserialize, Serialize};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::direct::Endpoint;
+use crate::client::{Cancel, Progress, ProgressFn, TransferKind};
 use crate::{ClientError, Result};
 
 /// Where a device ready for nearby shares answers.
@@ -165,15 +166,6 @@ pub struct NearbyDevice {
     pub code: bool,
 }
 
-/// Where to take the files from, once agreed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Take {
-    pub endpoint: Endpoint,
-    pub offer: String,
-    pub token: String,
-}
-
 // ---------------------------------------------------------------------------
 // Ready to receive
 // ---------------------------------------------------------------------------
@@ -194,21 +186,82 @@ pub enum ReadyEvent {
     Code { ask: String, code: String },
     /// The sender typed a wrong code; `left` more tries.
     WrongCode { ask: String, left: u32 },
-    /// Agreed: take the files from here, then say how it went with [`Ready::finish`].
-    Take { ask: String, take: Take },
+    /// Agreed: take each file with [`Ready::link`], then say how it went with [`Ready::finish`].
+    Take { ask: String },
     /// The sender went, or the tries ran out, before it was agreed.
     Gone { ask: String, why: String },
 }
 
 type Waiting = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
-type Finishing = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Taking>>>>;
+type Finishing = Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>;
+type Links = Arc<Mutex<HashMap<String, Arc<NearbyLink>>>>;
+type BoxRead = Box<dyn AsyncRead + Send + Unpin>;
+type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
 
-/// What the receiver tells the sender while it takes the files.
-enum Taking {
-    /// How far it has come, in bytes.
-    Progress(u64, u64),
-    /// How it ended: `done` or `failed`.
-    End(String),
+/// The line to a sender whose offer was agreed: each file is asked for, and
+/// comes, down it.
+pub struct NearbyLink {
+    io: tokio::sync::Mutex<LinkIo>,
+}
+
+struct LinkIo {
+    lines: tokio::io::Lines<BufReader<BoxRead>>,
+    write: BoxWrite,
+}
+
+impl NearbyLink {
+    /// Takes file `file` of the offer into `out`, as it comes.
+    pub async fn take_file(
+        &self,
+        file: usize,
+        name: &str,
+        out: std::fs::File,
+        progress: Option<ProgressFn>,
+        cancel: Option<Cancel>,
+    ) -> Result<u64> {
+        let mut io = self.io.lock().await;
+        send_json(&mut io.write, &serde_json::json!({ "want": file })).await?;
+        let said = next_json(&mut io.lines, TAKE_WAIT).await?;
+        let Some(length) = said["length"].as_u64() else {
+            return Err(ClientError::Protocol(format!(
+                "the device that sent it said: {}",
+                said["no"].as_str().unwrap_or("no")
+            )));
+        };
+        let reader = io.lines.get_mut();
+        let mut out = tokio::fs::File::from_std(out);
+        let mut buffer = vec![0u8; 256 * 1024];
+        let mut done = 0u64;
+        while done < length {
+            if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                return Err(ClientError::Protocol("cancelled".into()));
+            }
+            let want = buffer.len().min((length - done) as usize);
+            let n = tokio::time::timeout(STEP * 4, reader.read(&mut buffer[..want]))
+                .await
+                .map_err(|_| {
+                    ClientError::Protocol("the device that sent it stopped part-way".into())
+                })??;
+            if n == 0 {
+                return Err(ClientError::Protocol(
+                    "the device that sent it stopped part-way".into(),
+                ));
+            }
+            out.write_all(&buffer[..n]).await?;
+            done += n as u64;
+            if let Some(report) = &progress {
+                report(Progress {
+                    kind: TransferKind::Download,
+                    path: name.to_string(),
+                    transferred: done,
+                    total: length,
+                });
+            }
+        }
+        out.flush().await?;
+        out.sync_all().await?;
+        Ok(done)
+    }
 }
 
 /// Ready to receive from devices nearby, until dropped.
@@ -216,6 +269,7 @@ pub struct Ready {
     task: tokio::task::JoinHandle<()>,
     answers: Waiting,
     finishes: Finishing,
+    links: Links,
 }
 
 impl Drop for Ready {
@@ -240,6 +294,7 @@ impl Ready {
         let udp = bind_port(port).await?;
         let answers: Waiting = Arc::default();
         let finishes: Finishing = Arc::default();
+        let links: Links = Arc::default();
         let said = serde_json::json!({
             "id": me.id,
             "name": me.name,
@@ -252,6 +307,7 @@ impl Ready {
         let task = {
             let answers = Arc::clone(&answers);
             let finishes = Arc::clone(&finishes);
+            let links = Arc::clone(&links);
             tokio::spawn(async move {
                 let answering = async {
                     let mut buffer = [0u8; 64];
@@ -279,16 +335,26 @@ impl Ready {
                         let events = events.clone();
                         let answers = Arc::clone(&answers);
                         let finishes = Arc::clone(&finishes);
+                        let links = Arc::clone(&links);
                         tokio::spawn(async move {
                             let Ok(Ok(tls)) =
                                 tokio::time::timeout(STEP, acceptor.accept(stream)).await
                             else {
                                 return;
                             };
-                            let ended =
-                                receive(tls, &ask, always_code, &events, &answers, &finishes).await;
+                            let ended = receive(
+                                tls,
+                                &ask,
+                                always_code,
+                                &events,
+                                &answers,
+                                &finishes,
+                                &links,
+                            )
+                            .await;
                             answers.lock().expect("answers lock").remove(&ask);
                             finishes.lock().expect("finishes lock").remove(&ask);
+                            links.lock().expect("links lock").remove(&ask);
                             if let Err(e) = ended {
                                 let _ = events.send(ReadyEvent::Gone {
                                     ask,
@@ -308,6 +374,7 @@ impl Ready {
             task,
             answers,
             finishes,
+            links,
         })
     }
 
@@ -322,31 +389,30 @@ impl Ready {
     /// How taking the files went: `done` or `failed`, told to the sender.
     pub fn finish(&self, ask: &str, answer: &str) {
         if let Some(waiting) = self.finishes.lock().expect("finishes lock").remove(ask) {
-            let _ = waiting.send(Taking::End(answer.to_string()));
+            let _ = waiting.send(answer.to_string());
         }
     }
 
-    /// How far taking the files has come, told to the sender so its Sent
-    /// shows it too. About once a second is plenty.
-    pub fn progress(&self, ask: &str, done: u64, total: u64) {
-        if let Some(waiting) = self.finishes.lock().expect("finishes lock").get(ask) {
-            let _ = waiting.send(Taking::Progress(done, total));
-        }
+    /// The line to take an agreed offer's files down.
+    pub fn link(&self, ask: &str) -> Option<Arc<NearbyLink>> {
+        self.links.lock().expect("links lock").get(ask).cloned()
     }
 }
 
 /// One sender, on the receiving side: its offer, the person's answer, a
 /// code if asked for, and where to take the files.
-async fn receive<S: AsyncRead + AsyncWrite + Unpin>(
+async fn receive<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     stream: S,
     ask: &str,
     always_code: bool,
     events: &mpsc::UnboundedSender<ReadyEvent>,
     answers: &Waiting,
     finishes: &Finishing,
+    links: &Links,
 ) -> Result<()> {
-    let (read, mut write) = tokio::io::split(stream);
-    let mut lines = BufReader::new(read).lines();
+    let (read, write) = tokio::io::split(stream);
+    let mut lines = BufReader::new(Box::new(read) as BoxRead).lines();
+    let mut write: BoxWrite = Box::new(write);
     let hello: serde_json::Value = next_json(&mut lines, STEP).await?;
     let from: Me = serde_json::from_value(hello["from"].clone())
         .map_err(|_| ClientError::Protocol("not an offer".into()))?;
@@ -377,7 +443,7 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin>(
         return Ok(());
     }
 
-    let take: Take = if code_needed {
+    if code_needed {
         let code = new_code();
         let _ = events.send(ReadyEvent::Code {
             ask: ask.to_string(),
@@ -385,7 +451,7 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin>(
         });
         send_json(&mut write, &serde_json::json!({ "answer": "code" })).await?;
         let mut tries = 0;
-        let key = loop {
+        loop {
             let said: serde_json::Value = next_json(&mut lines, ANSWER_WAIT).await?;
             let a = hex::decode(said["pake"].as_str().unwrap_or_default())
                 .map_err(|_| ClientError::Protocol("not a code's message".into()))?;
@@ -405,7 +471,7 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin>(
             let back: serde_json::Value = next_json(&mut lines, STEP).await?;
             let theirs = back["proof"].as_str().unwrap_or_default();
             if hex::constant_time_eq(proof(&key, SENDER, &a, &b).as_bytes(), theirs.as_bytes()) {
-                break key;
+                break;
             }
             tries += 1;
             let left = MOST_TRIES.saturating_sub(tries);
@@ -419,42 +485,34 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin>(
                     "too many wrong codes: it was stopped".into(),
                 ));
             }
-        };
-        let sealed: serde_json::Value = next_json(&mut lines, STEP).await?;
-        let plain = open(&key, sealed["take"].as_str().unwrap_or_default())?;
-        serde_json::from_slice(&plain)
-            .map_err(|e| ClientError::Protocol(format!("the offer: {e}")))?
+        }
     } else {
         send_json(&mut write, &serde_json::json!({ "answer": "accepted" })).await?;
-        let said: serde_json::Value = next_json(&mut lines, STEP).await?;
-        serde_json::from_value(said["take"].clone())
-            .map_err(|e| ClientError::Protocol(format!("the offer: {e}")))?
-    };
+    }
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    // Agreed: the files come down this line, as each is asked for.
+    let link = Arc::new(NearbyLink {
+        io: tokio::sync::Mutex::new(LinkIo { lines, write }),
+    });
+    let (tx, rx) = oneshot::channel();
     finishes
         .lock()
         .expect("finishes lock")
         .insert(ask.to_string(), tx);
+    links
+        .lock()
+        .expect("links lock")
+        .insert(ask.to_string(), Arc::clone(&link));
     let _ = events.send(ReadyEvent::Take {
         ask: ask.to_string(),
-        take,
     });
-    let deadline = tokio::time::Instant::now() + TAKE_WAIT;
-    let answer = loop {
-        match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Some(Taking::Progress(done, total))) => {
-                send_json(
-                    &mut write,
-                    &serde_json::json!({ "progress": done, "total": total }),
-                )
-                .await?;
-            }
-            Ok(Some(Taking::End(answer))) => break answer,
-            _ => break "failed".to_string(),
-        }
-    };
-    send_json(&mut write, &serde_json::json!({ "answer": answer })).await?;
+    let answer = tokio::time::timeout(TAKE_WAIT, rx)
+        .await
+        .ok()
+        .and_then(|got| got.ok())
+        .unwrap_or_else(|| "failed".into());
+    let mut io = link.io.lock().await;
+    send_json(&mut io.write, &serde_json::json!({ "answer": answer })).await?;
     Ok(())
 }
 
@@ -571,19 +629,20 @@ pub enum Said {
 pub struct Offering {
     lines: tokio::io::Lines<BufReader<tokio::io::ReadHalf<TlsStream>>>,
     write: tokio::io::WriteHalf<TlsStream>,
-    take: Take,
 }
+
+/// A file being sent: its length, and its bytes from the start.
+pub type Source = Box<dyn AsyncRead + Send + Unpin>;
 
 type TlsStream = tokio_rustls::client::TlsStream<TcpStream>;
 
-/// Offers `files` to `device`, as `me`; `take` says where they are (this
-/// device's direct listener). `always_code`: this side asks for a code too.
-/// Waits for the person there to answer.
+/// Offers `files` to `device`, as `me`. `always_code`: this side asks for a
+/// code too. Waits for the person there to answer; once agreed, the files go
+/// with [`Offering::serve`].
 pub async fn offer(
     device: &NearbyDevice,
     me: &Me,
     files: &[NearbyFile],
-    take: Take,
     always_code: bool,
 ) -> Result<(Said, Offering)> {
     let at: IpAddr = device
@@ -607,14 +666,11 @@ pub async fn offer(
     .await?;
     let answer: serde_json::Value = next_json(&mut lines, ANSWER_WAIT).await?;
     let said = match answer["answer"].as_str() {
-        Some("accepted") => {
-            send_json(&mut write, &serde_json::json!({ "take": take })).await?;
-            Said::Accepted
-        }
+        Some("accepted") => Said::Accepted,
         Some("code") => Said::Code,
         _ => Said::Declined,
     };
-    Ok((said, Offering { lines, write, take }))
+    Ok((said, Offering { lines, write }))
 }
 
 /// What came of a code typed.
@@ -662,29 +718,64 @@ impl Offering {
             let left = said["wrong"].as_u64().unwrap_or(0) as u32;
             return Ok(CodeSaid::Wrong { left });
         }
-        let sealed = seal(
-            &key,
-            &serde_json::to_vec(&self.take).expect("a take serialises"),
-        )?;
-        send_json(&mut self.write, &serde_json::json!({ "take": sealed })).await?;
         Ok(CodeSaid::Right)
     }
 
-    /// How it ended there: `done` or `failed`.
-    pub async fn end(self) -> String {
-        self.end_with(|_, _| {}).await
-    }
-
-    /// The same, told how far it has come there (bytes done, of all) as it goes.
-    pub async fn end_with(mut self, progress: impl Fn(u64, u64)) -> String {
+    /// Sends each file as the other device asks for it (`open` gives its
+    /// length and bytes), telling `progress` the bytes sent so far, until it
+    /// says how it ended: `done` or `failed`.
+    pub async fn serve<F, Fut>(mut self, open: F, progress: impl Fn(u64)) -> String
+    where
+        F: Fn(usize) -> Fut,
+        Fut: std::future::Future<Output = std::io::Result<(u64, Source)>>,
+    {
+        let mut sent = 0u64;
         loop {
-            match next_json(&mut self.lines, TAKE_WAIT).await {
-                Ok(said) if said.get("progress").is_some() => progress(
-                    said["progress"].as_u64().unwrap_or(0),
-                    said["total"].as_u64().unwrap_or(0),
-                ),
-                Ok(said) => return said["answer"].as_str().unwrap_or("failed").to_string(),
+            let said = match next_json(&mut self.lines, TAKE_WAIT).await {
+                Ok(said) => said,
                 Err(_) => return "failed".into(),
+            };
+            let Some(file) = said["want"].as_u64() else {
+                return said["answer"].as_str().unwrap_or("failed").to_string();
+            };
+            let (length, mut source) = match open(file as usize).await {
+                Ok(opened) => opened,
+                Err(e) => {
+                    if send_json(&mut self.write, &serde_json::json!({ "no": e.to_string() }))
+                        .await
+                        .is_err()
+                    {
+                        return "failed".into();
+                    }
+                    continue;
+                }
+            };
+            if send_json(
+                &mut self.write,
+                &serde_json::json!({ "file": file, "length": length }),
+            )
+            .await
+            .is_err()
+            {
+                return "failed".into();
+            }
+            let mut buffer = vec![0u8; 256 * 1024];
+            let mut left = length;
+            while left > 0 {
+                let want = buffer.len().min(left as usize);
+                let n = match source.read(&mut buffer[..want]).await {
+                    Ok(0) | Err(_) => return "failed".into(),
+                    Ok(n) => n,
+                };
+                if self.write.write_all(&buffer[..n]).await.is_err() {
+                    return "failed".into();
+                }
+                left -= n as u64;
+                sent += n as u64;
+                progress(sent);
+            }
+            if self.write.flush().await.is_err() {
+                return "failed".into();
             }
         }
     }
@@ -764,41 +855,6 @@ fn proof(key: &[u8], side: &[u8], a: &[u8], b: &[u8]) -> String {
     hex::encode(context.sign().as_ref())
 }
 
-/// The key that locks where to take the files: made from SPAKE2's, for this alone.
-fn take_key(key: &[u8]) -> LessSafeKey {
-    let mac = hmac::sign(
-        &hmac::Key::new(hmac::HMAC_SHA256, key),
-        b"basalt nearby take",
-    );
-    LessSafeKey::new(
-        UnboundKey::new(&CHACHA20_POLY1305, &mac.as_ref()[..32]).expect("a 32-byte key"),
-    )
-}
-
-fn seal(key: &[u8], plain: &[u8]) -> Result<String> {
-    let mut data = plain.to_vec();
-    take_key(key)
-        .seal_in_place_append_tag(
-            Nonce::assume_unique_for_key([0; 12]),
-            Aad::from(b"take"),
-            &mut data,
-        )
-        .map_err(|_| ClientError::Protocol("the offer couldn't be locked".into()))?;
-    Ok(hex::encode(&data))
-}
-
-fn open(key: &[u8], sealed: &str) -> Result<Vec<u8>> {
-    let mut data = hex::decode(sealed).map_err(|_| ClientError::Protocol("not an offer".into()))?;
-    let plain = take_key(key)
-        .open_in_place(
-            Nonce::assume_unique_for_key([0; 12]),
-            Aad::from(b"take"),
-            &mut data,
-        )
-        .map_err(|_| ClientError::Protocol("the offer was changed on the way".into()))?;
-    Ok(plain.to_vec())
-}
-
 async fn next_json<R: AsyncRead + Unpin>(
     lines: &mut tokio::io::Lines<BufReader<R>>,
     wait: Duration,
@@ -833,23 +889,28 @@ mod tests {
         }
     }
 
-    fn take() -> Take {
-        Take {
-            endpoint: Endpoint {
-                addresses: vec!["127.0.0.1".into()],
-                port: 1234,
-                key: "ab".repeat(32),
-            },
-            offer: "o1".into(),
-            token: "t1".into(),
-        }
+    /// The bytes of the one file offered.
+    fn body() -> Vec<u8> {
+        (0..700_000u32).map(|i| (i % 239) as u8).collect()
     }
 
     fn files() -> Vec<NearbyFile> {
         vec![NearbyFile {
             name: "Holiday 2026.mkv".into(),
-            size: 4_200,
+            size: 700_000,
         }]
+    }
+
+    /// What the sender opens when the file is asked for.
+    async fn open(file: usize) -> std::io::Result<(u64, Source)> {
+        if file != 0 {
+            return Err(std::io::Error::other("no such file"));
+        }
+        let bytes = body();
+        Ok((
+            bytes.len() as u64,
+            Box::new(std::io::Cursor::new(bytes)) as Source,
+        ))
     }
 
     async fn found(port: u16, id: &str) -> NearbyDevice {
@@ -864,6 +925,21 @@ mod tests {
             .await
             .expect("an event in time")
             .expect("an event")
+    }
+
+    /// Takes the one file down the agreed line, and checks it.
+    async fn take_it(ready: &Ready, ask: &str, name: &str) {
+        let link = ready.link(ask).expect("a line to take it down");
+        let into =
+            std::env::temp_dir().join(format!("basalt-nearby-{name}-{}", std::process::id()));
+        let out = std::fs::File::create(&into).unwrap();
+        let bytes = link
+            .take_file(0, "Holiday 2026.mkv", out, None, None)
+            .await
+            .unwrap();
+        assert_eq!(bytes, 700_000);
+        assert_eq!(std::fs::read(&into).unwrap(), body(), "the same bytes");
+        let _ = std::fs::remove_file(into);
     }
 
     #[test]
@@ -892,33 +968,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_ready_device_is_found_offered_and_accepted_without_a_code() {
+    async fn a_ready_device_is_found_offered_accepted_and_given_the_file_down_the_same_line() {
         let port = 47_745;
         let (tx, mut events) = mpsc::unbounded_channel();
-        let ready = Ready::start(me("K7QM", "Sam's phone"), false, tx, port)
+        let ready = Ready::start(me("K7HM", "Sam's phone"), false, tx, port)
             .await
             .unwrap();
-        let device = found(port, "K7QM").await;
+        let device = found(port, "K7HM").await;
         assert_eq!(device.name, "Sam's phone");
         assert!(!device.code);
 
         let sending = tokio::spawn(async move {
-            let (said, offering) = offer(
-                &device,
-                &me("ACDE", "Maya's laptop"),
-                &files(),
-                take(),
-                false,
-            )
-            .await
-            .unwrap();
-            let heard = Arc::new(Mutex::new(Vec::new()));
-            let into = Arc::clone(&heard);
+            let (said, offering) = offer(&device, &me("ACDE", "Maya's laptop"), &files(), false)
+                .await
+                .unwrap();
+            let sent = Arc::new(Mutex::new(0u64));
+            let counted = Arc::clone(&sent);
             let end = offering
-                .end_with(move |done, total| into.lock().unwrap().push((done, total)))
+                .serve(open, move |bytes| *counted.lock().unwrap() = bytes)
                 .await;
-            let heard = heard.lock().unwrap().clone();
-            (said, (end, heard))
+            let sent = *sent.lock().unwrap();
+            (said, end, sent)
         });
         let ReadyEvent::Offer {
             ask,
@@ -933,20 +1003,13 @@ mod tests {
         assert_eq!(offered, files());
         assert!(!code);
         assert!(ready.answer(&ask, true));
-        let ReadyEvent::Take { take: got, .. } = next(&mut events).await else {
-            panic!("where to take it");
-        };
-        assert_eq!(got, take());
-        ready.progress(&ask, 2_100, 4_200);
+        assert!(matches!(next(&mut events).await, ReadyEvent::Take { .. }));
+        take_it(&ready, &ask, "plain").await;
         ready.finish(&ask, "done");
-        let (said, (end, heard)) = sending.await.unwrap();
+        let (said, end, sent) = sending.await.unwrap();
         assert_eq!(said, Said::Accepted);
         assert_eq!(end, "done");
-        assert_eq!(
-            heard,
-            vec![(2_100, 4_200)],
-            "the sender hears how far it came"
-        );
+        assert_eq!(sent, 700_000, "the sender counts what it sent");
     }
 
     #[tokio::test]
@@ -958,22 +1021,17 @@ mod tests {
             .unwrap();
         let device = found(port, "MNPR").await;
         let sending = tokio::spawn(async move {
-            offer(
-                &device,
-                &me("ACDE", "Maya's laptop"),
-                &files(),
-                take(),
-                false,
-            )
-            .await
-            .unwrap()
-            .0
+            offer(&device, &me("ACDE", "Maya's laptop"), &files(), false)
+                .await
+                .unwrap()
+                .0
         });
         let ReadyEvent::Offer { ask, .. } = next(&mut events).await else {
             panic!("an offer");
         };
         assert!(ready.answer(&ask, false));
         assert_eq!(sending.await.unwrap(), Said::Declined);
+        assert!(ready.link(&ask).is_none(), "no line to take anything down");
     }
 
     #[tokio::test]
@@ -988,21 +1046,16 @@ mod tests {
         assert!(device.code, "it says so when found");
         let (shown_tx, shown_rx) = oneshot::channel::<String>();
         let sending = tokio::spawn(async move {
-            let (said, mut offering) = offer(
-                &device,
-                &me("ACDE", "Maya's laptop"),
-                &files(),
-                take(),
-                false,
-            )
-            .await
-            .unwrap();
+            let (said, mut offering) =
+                offer(&device, &me("ACDE", "Maya's laptop"), &files(), false)
+                    .await
+                    .unwrap();
             assert_eq!(said, Said::Code);
             let shown = shown_rx.await.unwrap();
             let mistyped = format!("{:06}", (shown.parse::<u32>().unwrap() + 1) % 1_000_000);
             let wrong = offering.code(&mistyped).await.unwrap();
             let right = offering.code(&shown).await.unwrap();
-            (wrong, right, offering.end().await)
+            (wrong, right, offering.serve(open, |_| {}).await)
         });
         let ReadyEvent::Offer { ask, code, .. } = next(&mut events).await else {
             panic!("an offer");
@@ -1012,6 +1065,10 @@ mod tests {
         let ReadyEvent::Code { code: shown, .. } = next(&mut events).await else {
             panic!("a code to show");
         };
+        assert!(
+            ready.link(&ask).is_none(),
+            "nothing to take before the code"
+        );
         shown_tx.send(shown).unwrap();
         assert!(
             matches!(
@@ -1020,10 +1077,11 @@ mod tests {
             ),
             "a wrong code first"
         );
-        let ReadyEvent::Take { take: got, .. } = next(&mut events).await else {
-            panic!("where to take it, after the right code");
-        };
-        assert_eq!(got, take());
+        assert!(
+            matches!(next(&mut events).await, ReadyEvent::Take { .. }),
+            "agreed after the right code"
+        );
+        take_it(&ready, &ask, "coded").await;
         ready.finish(&ask, "done");
         let (wrong, right, end) = sending.await.unwrap();
         assert_eq!(wrong, CodeSaid::Wrong { left: 4 });
@@ -1040,14 +1098,7 @@ mod tests {
             .unwrap();
         let device = found(port, "HJKM").await;
         let sending = tokio::spawn(async move {
-            offer(
-                &device,
-                &me("ACDE", "Maya's laptop"),
-                &files(),
-                take(),
-                false,
-            )
-            .await
+            offer(&device, &me("ACDE", "Maya's laptop"), &files(), false).await
         });
         let ReadyEvent::Offer { ask, .. } = next(&mut events).await else {
             panic!("an offer");
@@ -1070,16 +1121,10 @@ mod tests {
             .unwrap();
         let device = found(port, "XY34").await;
         let sending = tokio::spawn(async move {
-            offer(
-                &device,
-                &me("ACDE", "Maya's laptop"),
-                &files(),
-                take(),
-                true,
-            )
-            .await
-            .unwrap()
-            .0
+            offer(&device, &me("ACDE", "Maya's laptop"), &files(), true)
+                .await
+                .unwrap()
+                .0
         });
         let ReadyEvent::Offer { ask, code, .. } = next(&mut events).await else {
             panic!("an offer");
