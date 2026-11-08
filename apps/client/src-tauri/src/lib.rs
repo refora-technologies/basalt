@@ -906,6 +906,30 @@ fn open_local(app: &tauri::AppHandle) -> basalt_client::direct::Opener {
     }
 }
 
+/// This device's listener for files it offers, started now: files on it, and
+/// files on the drive passed on from the host as they come (`drive:<path>`),
+/// for a device nearby that isn't on the host.
+async fn start_direct(
+    app: &tauri::AppHandle,
+    client: Arc<Basalt>,
+) -> basalt_client::Result<Arc<basalt_client::direct::DirectServer>> {
+    let server = basalt_client::direct::DirectServer::start(open_local(app)).await?;
+    server.set_relay(Arc::new(move |path: String, from: u64| {
+        let client = Arc::clone(&client);
+        Box::pin(async move {
+            let (total, read) = client
+                .read_stream(&path, from)
+                .await
+                .map_err(std::io::Error::other)?;
+            Ok((
+                total,
+                Box::new(read) as Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+            ))
+        })
+    }));
+    Ok(server)
+}
+
 /// Offers files on this device to another, straight across the Wi-Fi: where
 /// to take them from, and the secret that does. `sources` are paths, or a
 /// phone's content URIs.
@@ -918,7 +942,7 @@ async fn share_local(
 ) -> Answer<serde_json::Value> {
     let server = state
         .direct
-        .get_or_try_init(|| basalt_client::direct::DirectServer::start(open_local(&app)))
+        .get_or_try_init(|| start_direct(&app, Arc::clone(&state.client)))
         .await?;
     let token = server.offer(&offer, sources);
     Ok(serde_json::json!({ "endpoint": server.endpoint(), "token": token }))
@@ -998,6 +1022,14 @@ fn nearby_finish(state: State<'_, AppState>, ask: String, answer: String) {
     }
 }
 
+/// How far taking the files from a device nearby has come, for its sender.
+#[tauri::command]
+fn nearby_progress(state: State<'_, AppState>, ask: String, done: u64, total: u64) {
+    if let Some(ready) = state.nearby_ready.lock().expect("nearby lock").as_ref() {
+        ready.progress(&ask, done, total);
+    }
+}
+
 /// The devices nearby ready to receive, on this Wi-Fi.
 #[tauri::command]
 async fn nearby_find(
@@ -1028,7 +1060,7 @@ async fn nearby_offer(
 ) -> Answer<basalt_client::nearby::Said> {
     let server = state
         .direct
-        .get_or_try_init(|| basalt_client::direct::DirectServer::start(open_local(&app)))
+        .get_or_try_init(|| start_direct(&app, Arc::clone(&state.client)))
         .await?;
     let token = server.offer(&offer, files.iter().map(|f| f.source.clone()).collect());
     let take = basalt_client::nearby::Take {
@@ -1074,7 +1106,16 @@ fn nearby_wait_end(
 ) {
     use tauri::Emitter;
     tauri::async_runtime::spawn(async move {
-        let answer = offering.end().await;
+        let told = app.clone();
+        let progress_offer = offer.clone();
+        let answer = offering
+            .end_with(move |done, total| {
+                let _ = told.emit(
+                    "basalt://nearby-progress",
+                    serde_json::json!({ "offer": progress_offer, "done": done, "total": total }),
+                );
+            })
+            .await;
         if let Some(server) = app.state::<AppState>().direct.get() {
             server.withdraw(&offer);
         }
@@ -2710,6 +2751,7 @@ pub fn run() {
             nearby_ready,
             nearby_reply,
             nearby_finish,
+            nearby_progress,
             nearby_find,
             nearby_offer,
             nearby_code,

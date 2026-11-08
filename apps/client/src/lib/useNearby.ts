@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   api,
+  onNearbyProgress,
   onNearbyReady,
   onNearbySent,
   type NearbyCodeSaid,
@@ -46,7 +47,8 @@ export interface Nearby {
   decline: (ask: string) => void
   /** Offers sent from here, while being answered: the code to type, if one is asked. */
   outgoing: Outgoing[]
-  send: (device: NearbyDevice, files: ShareFile[]) => Promise<string>
+  /** Sends at once and says the offer's id; what comes of it is in `outgoing` and `items`. */
+  send: (device: NearbyDevice, files: ShareFile[]) => string
   typeCode: (offer: string, code: string) => Promise<NearbyCodeSaid>
   cancel: (offer: string) => void
   /** What came and went, for the Inbox's lists. */
@@ -102,6 +104,8 @@ export function useNearby(transfers: Transfers): Nearby {
   const [outgoing, setOutgoing] = useState<Outgoing[]>([])
   const [items, setItems] = useState<ShareItem[]>(() => load())
   const [screenOpen, setScreenOpen] = useState(false)
+  /** How far each offer sent from here has come there. */
+  const [sentProgress, setSentProgress] = useState<Map<string, Progress>>(() => new Map())
   const transfersRef = useRef(transfers)
   transfersRef.current = transfers
   const incomingRef = useRef(incoming)
@@ -216,6 +220,22 @@ export function useNearby(transfers: Transfers): Nearby {
     }
   }, [take])
 
+  // How far each offer sent from here has come there.
+  useEffect(() => {
+    let gone = false
+    let stop: (() => void) | null = null
+    void onNearbyProgress(({ offer, done, total }) =>
+      setSentProgress((map) => new Map(map).set(offer, { done, total, rate: rateOf(map.get(offer), done), at: Date.now() })),
+    ).then((unlisten) => {
+      if (gone) unlisten()
+      else stop = unlisten
+    })
+    return () => {
+      gone = true
+      stop?.()
+    }
+  }, [])
+
   // How each offer sent from here ended there.
   useEffect(() => {
     let gone = false
@@ -273,16 +293,18 @@ export function useNearby(transfers: Transfers): Nearby {
   }, [watchers, look])
 
   const send = useCallback(
-    async (device: NearbyDevice, files: ShareFile[]): Promise<string> => {
+    (device: NearbyDevice, files: ShareFile[]): string => {
       const offer = newOfferId()
       const peer = { device: `nearby-${device.id}`, name: `${device.name} · ${device.id}`, form: device.form }
       setOutgoing((list) => [...list, { offer, device, files, state: 'asking' }])
       setItems((list) => kept([{ id: offer, direction: 'out', files, peer, state: 'waiting', at: Date.now() }, ...list]))
+      void (async () => {
       try {
         const said = await api.nearbyOffer(
           device,
           offer,
-          files.map((f) => ({ source: f.source ?? '', name: f.name, size: f.size })),
+          // A file on the drive: passed on from the host by this device as it comes.
+          files.map((f) => ({ source: f.source ?? `drive:${f.path}`, name: f.name, size: f.size })),
           alwaysCode,
         )
         if (said.kind === 'declined') {
@@ -299,8 +321,8 @@ export function useNearby(transfers: Transfers): Nearby {
         setOutgoing((list) => list.filter((o) => o.offer !== offer))
         const reason = plainReason(e instanceof Error ? e.message : String(e))
         update(offer, 'out', (i) => ({ ...i, state: 'failed', reason }))
-        throw new Error(reason)
       }
+      })()
       return offer
     },
     [alwaysCode, update],
@@ -334,9 +356,26 @@ export function useNearby(transfers: Transfers): Nearby {
 
   const moving = transfers.transfers
   const progressOf = useCallback(
-    (item: ShareItem): Progress | null => (item.state === 'moving' && item.direction === 'in' ? progressIn(item, moving, Date.now()) : null),
-    [moving],
+    (item: ShareItem): Progress | null => {
+      if (item.state !== 'moving') return null
+      return item.direction === 'in' ? progressIn(item, moving, Date.now()) : (sentProgress.get(item.id) ?? null)
+    },
+    [moving, sentProgress],
   )
+
+  // How far each share coming here has come, told to its sender about once a second.
+  const toldAt = useRef(new Map<string, number>())
+  useEffect(() => {
+    const now = Date.now()
+    for (const item of items) {
+      if (item.direction !== 'in' || item.state !== 'moving' || !item.id.startsWith('nb-')) continue
+      if (now - (toldAt.current.get(item.id) ?? 0) < 1_000) continue
+      const p = progressIn(item, moving, now)
+      if (!p) continue
+      toldAt.current.set(item.id, now)
+      void api.nearbyProgress(item.id.slice(3), p.done, p.total).catch(() => {})
+    }
+  }, [moving, items])
 
   const forget = useCallback((item: ShareItem) => setItems((list) => list.filter((i) => i !== item)), [])
 
@@ -378,6 +417,16 @@ export function useNearbyDevices(nearby: Nearby, on: boolean): NearbyDevice[] {
     return () => watch(false)
   }, [on, watch])
   return nearby.devices
+}
+
+/** Bytes a second, from the last word and this one. */
+function rateOf(last: Progress | undefined, done: number): number {
+  if (!last) return 0
+  const seconds = (Date.now() - last.at) / 1000
+  if (seconds <= 0) return last.rate
+  const now = Math.max(0, (done - last.done) / seconds)
+  // Smoothed, so the time left doesn't jump about.
+  return last.rate > 0 ? last.rate * 0.6 + now * 0.4 : now
 }
 
 function load(): ShareItem[] {

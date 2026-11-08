@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Laptop, Loader2, Lock, Monitor, Radio, Send, Smartphone, Tablet, X } from 'lucide-react'
+import { Check, Laptop, Loader2, Lock, Monitor, Radio, Send, Smartphone, Tablet, X } from 'lucide-react'
 
 import type { NearbyDevice, NearbyMe } from '@/lib/api'
 import type { Incoming, Nearby, Outgoing } from '@/lib/useNearby'
@@ -7,6 +7,7 @@ import { useNearbyDevices } from '@/lib/useNearby'
 import { isProgram, titleOf, totalOf, type ShareFile } from '@/lib/share'
 import { cn, formatBytes } from '@/lib/utils'
 import { Switch } from '@/components/Switch'
+import { ShareStatus } from './Share'
 
 /**
  * Sharing with devices nearby, without a host: the devices ready around
@@ -61,7 +62,7 @@ export function NearbyDeviceRow({
     >
       <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/[0.08] text-text">
         <Icon size={16} />
-        <span className="absolute -bottom-px -right-px h-3 w-3 rounded-full border-2 border-panel2 bg-sky-400/90" />
+        <span className="surface-ring absolute -bottom-px -right-px h-2.5 w-2.5 rounded-full bg-sky-400" />
       </span>
       <span className="min-w-0 flex-1">
         <NearbyName device={device} className="text-[14.5px] text-text" />
@@ -76,8 +77,8 @@ export function NearbyDeviceRow({
         </span>
       </span>
       {chosen && (
-        <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-white text-[13px] font-bold text-black">
-          ✓
+        <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full bg-white text-black">
+          <Check size={13} strokeWidth={3} />
         </span>
       )}
     </button>
@@ -238,16 +239,6 @@ export function NearbySending({
           </button>
         </>
       )}
-      {sending.state === 'sending' && (
-        <>
-          <Send size={20} className="mx-auto text-textDim" />
-          <p className="mt-3 text-[15px] font-semibold text-text">Accepted: on its way</p>
-          <p className="mt-1 text-[12.5px] text-textFaint">It shows in Sent, and says when it has arrived.</p>
-          <button onClick={onClose} className="mt-4 w-full rounded-full bg-white py-2.5 text-[13.5px] font-semibold text-black">
-            Done
-          </button>
-        </>
-      )}
     </div>
   )
 }
@@ -274,20 +265,19 @@ export function NearbyChooser({
   const [offer, setOffer] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const sending = offer ? (nearby.outgoing.find((o) => o.offer === offer) ?? null) : null
-  if (offer && sending) return <NearbySending nearby={nearby} sending={sending} phone={phone} onClose={onDone} />
-  if (offer && !sending) {
-    // Answered and gone from the list: declined, or it failed.
-    const item = nearby.items.find((i) => i.id === offer && i.direction === 'out')
+  if (offer && sending && sending.state !== 'sending') {
+    return <NearbySending nearby={nearby} sending={sending} phone={phone} onClose={onDone} />
+  }
+  if (offer) {
+    // Accepted and on its way, or answered: followed to the end.
+    const item = nearby.items.find((i) => i.id === offer && i.direction === 'out') ?? null
     return (
-      <div className="px-5 pb-2 pt-3 text-center">
-        <p className="text-[15px] font-semibold text-text">
-          {item?.state === 'declined' ? 'Declined' : item?.state === 'done' ? 'Arrived' : 'It didn’t go'}
-        </p>
-        {item?.reason && <p className="mt-1 text-[12.5px] text-textFaint">{item.reason}</p>}
-        <button onClick={onDone} className="mt-4 w-full rounded-full border border-white/[0.12] py-2.5 text-[13.5px] text-text">
-          Done
-        </button>
-      </div>
+      <ShareStatus
+        item={item}
+        to={chosen ? `${chosen.name} · ${chosen.id}` : 'the other device'}
+        progress={item ? nearby.progressOf(item) : null}
+        onDone={onDone}
+      />
     )
   }
   return (
@@ -299,19 +289,20 @@ export function NearbyChooser({
         <button
           disabled={!chosen}
           onClick={() => {
-            if (!chosen) return
+            // Once: the window moves on to it at once, so it can't be sent twice.
+            if (!chosen || offer) return
             setError(null)
-            nearby
-              .send(chosen, files)
-              .then(setOffer)
-              .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+            setOffer(nearby.send(chosen, files))
           }}
           className="w-full rounded-full bg-white py-3 text-[14px] font-semibold text-black transition-transform active:scale-[0.98] disabled:bg-white/[0.06] disabled:text-textFaint"
         >
           {chosen ? `Send to ${chosen.name} · ${chosen.id}` : 'Choose where it goes'}
         </button>
         <p className="mt-2 text-center text-[12px] leading-snug text-textFaint">
-          {error ?? (chosen?.code || nearby.alwaysCode ? 'Straight to it, on this Wi-Fi. They show a code, and you type it.' : 'Straight to it, on this Wi-Fi. They’re asked to accept.')}
+          {error ??
+            `${files.some((f) => !f.source) ? 'From the drive, through this device.' : 'Straight to it, on this Wi-Fi.'} ${
+              chosen?.code || nearby.alwaysCode ? 'They show a code, and you type it.' : 'They’re asked to accept.'
+            }`}
         </p>
       </div>
     </div>

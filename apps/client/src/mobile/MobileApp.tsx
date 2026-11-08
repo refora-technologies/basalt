@@ -1501,6 +1501,24 @@ function usePhoneShareNotifications(model: AppModel): void {
     if (!isAndroid()) return
     const away = document.visibilityState !== 'visible'
     for (const item of inbox.items) {
+      if (item.direction === 'out') {
+        // Sent from here: told how it went there, while away.
+        const key = `out-${item.id}`
+        const was = seen.current.get(key)
+        seen.current.set(key, item.state)
+        if (was === undefined || was === item.state || !away) continue
+        const to = calledOf(item.peer, myProfile)
+        const said =
+          item.state === 'done'
+            ? `${titleOf(item.files)} arrived on ${item.takenOn ?? to}`
+            : item.state === 'declined'
+              ? `${to} declined ${titleOf(item.files)}`
+              : item.state === 'failed'
+                ? `${titleOf(item.files)} didn’t arrive`
+                : null
+        if (said) void android.notifyShare(key, said, item.reason ?? '').catch(() => {})
+        continue
+      }
       if (item.direction !== 'in') continue
       const before = seen.current.get(item.id)
       seen.current.set(item.id, item.state)
@@ -1532,8 +1550,13 @@ function usePhoneShareNotifications(model: AppModel): void {
 function useKeepAliveForTransfers(model: AppModel): void {
   const active = model.transfers.active
   // Shares sent from this phone move too: how far, as the other side says.
-  const sending = model.inbox.items.filter((i) => i.direction === 'out' && i.state === 'moving')
-  const sent = sending.map((i) => model.inbox.progressOf(i)).filter((p) => p !== null)
+  const sendingHome = model.inbox.items.filter((i) => i.direction === 'out' && i.state === 'moving')
+  const sendingNearby = model.nearby.items.filter((i) => i.direction === 'out' && i.state === 'moving')
+  const sending = [...sendingHome, ...sendingNearby]
+  const sent = [
+    ...sendingHome.map((i) => model.inbox.progressOf(i)),
+    ...sendingNearby.map((i) => model.nearby.progressOf(i)),
+  ].filter((p) => p !== null)
   const total = active.reduce((sum, t) => sum + t.total, 0) + sent.reduce((sum, p) => sum + p.total, 0)
   const done = active.reduce((sum, t) => sum + t.transferred, 0) + sent.reduce((sum, p) => sum + p.done, 0)
   const percent = total > 0 ? Math.floor((done / total) * 100) : -1

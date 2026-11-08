@@ -1,20 +1,21 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ArrowDown,
+  ArrowUp,
   Check,
+  Clock,
   ChevronDown,
-  Download,
   ExternalLink,
   FileText,
   FolderOpen,
   Share2,
   Upload,
   Film,
-  HardDrive,
   Image,
   Laptop,
+  Loader2,
   Monitor,
   Music,
-  Send,
   Smartphone,
   Tablet,
   Tv,
@@ -80,6 +81,11 @@ export function ShareChooser({
   const targets = useMemo(() => targetsOf(presence.devices, presence.you), [presence])
   const [chosen, setChosen] = useState<PresentDevice | null>(null)
   const [busy, setBusy] = useState(false)
+  // Pressed once is sent once: a second press while the first is on its
+  // way does nothing (it offered the same file five times to the other side).
+  const sending = useRef(false)
+  /** Sent: the window follows it from here. */
+  const [sent, setSent] = useState<{ id: string; to: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [removeIfAnswered, setRemoveIfAnswered] = useState(inbox.removeOnAnswer)
   const myProfile = presence.devices.find((d) => d.device === presence.you)?.profile
@@ -126,7 +132,8 @@ export function ShareChooser({
   const noRoom = host?.room !== undefined && totalOf(files) > host.room
 
   const send = async (): Promise<void> => {
-    if (!chosen) return
+    if (!chosen || sending.current) return
+    sending.current = true
     setBusy(true)
     setError(null)
     try {
@@ -135,15 +142,17 @@ export function ShareChooser({
         onDone(`On the host for ${chosen.name}. It arrives when it’s back.`)
         return
       }
-      await inbox.send(files, chosen)
+      const id = await inbox.send(files, chosen)
       const who = calledOf({ device: chosen.device, name: chosen.name, form: chosen.form, profile: chosen.profile, profileName: chosen.profileName }, myProfile)
-      onDone(chosen.profile && chosen.profile === myProfile ? `Sent to ${who}.` : `Sent. ${chosen.profileName ?? chosen.name} is asked to accept.`)
+      setSent({ id, to: who })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+      sending.current = false
     } finally {
       setBusy(false)
     }
   }
+  const sentItem = sent ? (inbox.items.find((i) => i.id === sent.id && i.direction === 'out') ?? null) : null
 
   const row = (device: PresentDevice, indent = false): React.JSX.Element => (
     <DeviceRow
@@ -173,7 +182,9 @@ export function ShareChooser({
         </span>
       </div>
 
-      {nearbyPick && nearby ? (
+      {sent ? (
+        <ShareStatus item={sentItem} to={sent.to} progress={sentItem ? inbox.progressOf(sentItem) : null} onDone={() => onDone('')} />
+      ) : nearbyPick && nearby ? (
         <div className="flex min-h-0 flex-1 flex-col pb-1 pt-2">
           <NearbyChooser nearby={nearby} files={files} phone={sheet} initial={nearbyPick} onDone={() => onDone('')} />
         </div>
@@ -206,7 +217,7 @@ export function ShareChooser({
           </div>
         ))}
         {targets.loose.map((d) => row(d))}
-        {onThisDevice && nearby && (
+        {nearby && (onThisDevice || onDrive) && (
           <>
             <Section>Nearby, not in this home</Section>
             <NearbyList nearby={nearby} chosen={null} onChoose={setNearbyPick} />
@@ -215,14 +226,14 @@ export function ShareChooser({
       </div>
       )}
 
-      {!chosen && !byCode && !nobody && (
+      {!chosen && !byCode && !nobody && !sent && (
         <div className={cn('border-t border-white/[0.06] px-5 pt-3.5', sheet && 'sticky bottom-0 bg-[#141416] pb-1')}>
           <button disabled className="w-full rounded-full bg-white/[0.06] py-3 text-[14px] font-semibold text-textFaint">
             Choose where it goes
           </button>
         </div>
       )}
-      {chosen && !byCode && (
+      {chosen && !byCode && !sent && (
         <div
           className={cn(
             'border-t border-white/[0.06] px-5 pt-3.5',
@@ -334,22 +345,18 @@ function ShareRow({
   const [error, setError] = useState<string | null>(null)
   const saved = item.direction === 'in' && item.state === 'done' && !item.takenOn ? (item.saved ?? []) : []
   const finished = item.state === 'done' || item.state === 'declined' || item.state === 'failed'
-  const badge =
-    item.state === 'done' ? (
-      <Check size={10} strokeWidth={3} />
-    ) : item.state === 'declined' || item.state === 'failed' ? (
-      <X size={10} strokeWidth={3} />
-    ) : item.state === 'moving' ? (
-      item.direction === 'out' ? (
-        <Upload size={10} strokeWidth={3} />
-      ) : (
-        <Download size={10} strokeWidth={3} />
-      )
-    ) : item.direction === 'in' ? (
-      <HardDrive size={10} strokeWidth={3} />
-    ) : (
-      <Send size={10} strokeWidth={3} />
-    )
+  // One simple mark per state, drawn the same size everywhere: a tick,
+  // a cross, an arrow the way it goes, or a clock while it waits.
+  const Badge =
+    item.state === 'done'
+      ? Check
+      : item.state === 'declined' || item.state === 'failed'
+        ? X
+        : item.state === 'moving'
+          ? item.direction === 'out'
+            ? ArrowUp
+            : ArrowDown
+          : Clock
   const tried = (work: Promise<unknown>): void => {
     setError(null)
     void work.catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
@@ -361,15 +368,17 @@ function ShareRow({
           <FileIcon name={item.files[0]?.name ?? ''} size={17} />
           <span
             className={cn(
-              'absolute -bottom-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full border-2 border-panel2',
+              'surface-ring absolute -bottom-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full',
               item.state === 'done'
                 ? 'bg-emerald-400 text-black'
                 : item.state === 'failed' || item.state === 'declined'
-                  ? 'bg-white/40 text-black'
-                  : 'bg-white text-black',
+                  ? 'bg-[#5a5a60] text-white'
+                  : item.state === 'waiting'
+                    ? 'bg-amber-300 text-black'
+                    : 'bg-white text-black',
             )}
           >
-            {badge}
+            <Badge size={11} strokeWidth={2.75} />
           </span>
         </span>
         <span className="min-w-0 flex-1">
@@ -501,6 +510,107 @@ function ActionButton({
   )
 }
 
+/**
+ * One share sent from here, as it goes: waiting for the other side's
+ * answer, accepted and moving (how far, how fast), then arrived, or why
+ * not. The Share window stays on it after Send, so nobody wonders whether
+ * it went and presses again.
+ */
+export function ShareStatus({
+  item,
+  to,
+  progress,
+  onDone,
+  onCancel,
+}: {
+  item: ShareItem | null
+  /** Who it went to, as said here. */
+  to: string
+  progress: Progress | null
+  onDone: () => void
+  /** While it waits for an answer: take it back. */
+  onCancel?: () => void
+}): React.JSX.Element {
+  const state = item?.state ?? 'waiting'
+  const Icon =
+    state === 'done' ? Check : state === 'declined' || state === 'failed' ? X : state === 'moving' ? Upload : Loader2
+  return (
+    <div className="px-5 pb-1 pt-4">
+      <div className="flex flex-col items-center text-center">
+        <span
+          className={cn(
+            'flex h-12 w-12 items-center justify-center rounded-full',
+            state === 'done'
+              ? 'bg-emerald-400/15 text-emerald-300'
+              : state === 'declined' || state === 'failed'
+                ? 'bg-white/[0.06] text-textDim'
+                : 'bg-white/[0.08] text-text',
+          )}
+        >
+          <Icon size={22} className={state === 'waiting' ? 'animate-spin' : undefined} />
+        </span>
+        <p className="mt-3 text-[15px] font-semibold text-text">
+          {state === 'waiting'
+            ? `Waiting for ${to} to accept`
+            : state === 'moving'
+              ? progress
+                ? `Sending to ${to}`
+                : `Accepted: starting`
+              : state === 'done'
+                ? `Arrived on ${item?.takenOn ?? to}`
+                : state === 'declined'
+                  ? `${to} declined it`
+                  : 'It didn’t arrive'}
+        </p>
+        <p className="mt-1 text-[12.5px] leading-snug text-textFaint">
+          {state === 'waiting'
+            ? (item?.reason ?? 'They see it now, and answer Accept or Decline.')
+            : state === 'failed'
+              ? (item?.reason ?? 'Try again.')
+              : state === 'moving'
+                ? 'It carries on if you close this.'
+                : ''}
+        </p>
+      </div>
+      {state === 'moving' && (
+        <div className="mt-4">
+          <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.08]">
+            {progress ? (
+              <div
+                className="h-full rounded-full bg-white transition-[width] duration-500 ease-out"
+                style={{ width: `${Math.max(2, percentOf(progress))}%` }}
+              />
+            ) : (
+              <div className="share-starting h-full w-1/3 rounded-full bg-white/60" />
+            )}
+          </div>
+          {progress && (
+            <div className="mt-1.5 text-center font-mono text-[11px] tabular-nums text-textFaint">
+              {progressLine(progress, formatBytes)}
+            </div>
+          )}
+        </div>
+      )}
+      <div className="mt-5 flex gap-2.5">
+        {state === 'waiting' && onCancel && (
+          <button onClick={onCancel} className="flex-1 rounded-full border border-white/[0.12] py-2.5 text-[13.5px] text-text">
+            Take it back
+          </button>
+        )}
+        <button
+          onClick={onDone}
+          className={cn(
+            'flex-1 rounded-full py-2.5 text-[13.5px] font-semibold',
+            state === 'done' || state === 'declined' || state === 'failed' ? 'bg-white text-black' : 'border border-white/[0.12] text-text',
+          )}
+        >
+          {state === 'done' || state === 'declined' || state === 'failed' ? 'Done' : 'Close'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function Section({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
     <div className="px-5 pb-1 pt-3.5 font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">{children}</div>
@@ -536,7 +646,7 @@ function DeviceRow({
       >
         <Icon size={16} />
         {device.online && (
-          <span className="absolute -bottom-px -right-px h-3 w-3 rounded-full border-2 border-panel2 bg-emerald-400/80" />
+          <span className="surface-ring absolute -bottom-px -right-px h-2.5 w-2.5 rounded-full bg-emerald-400" />
         )}
       </span>
       <span className="min-w-0 flex-1">

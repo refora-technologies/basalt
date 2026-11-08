@@ -56,6 +56,33 @@ export function useNearbyNotifications(nearby: Nearby): void {
     }
   }, [nearby.items])
 
+  // Sent from here: accepted, arrived, or declined there.
+  const sentSeen = useRef(new Map<string, string>())
+  useEffect(() => {
+    for (const item of nearby.items) {
+      if (item.direction !== 'out') continue
+      const before = sentSeen.current.get(item.id)
+      sentSeen.current.set(item.id, item.state)
+      if (before === undefined || before === item.state) continue
+      const said =
+        item.state === 'moving'
+          ? `${item.peer.name} accepted ${titleOf(item.files)}`
+          : item.state === 'done'
+            ? `${titleOf(item.files)} arrived on ${item.peer.name}`
+            : item.state === 'declined'
+              ? `${item.peer.name} declined ${titleOf(item.files)}`
+              : item.state === 'failed'
+                ? `${titleOf(item.files)} didn’t arrive on ${item.peer.name}`
+                : null
+      if (!said) continue
+      if (isAndroid()) {
+        if (document.visibilityState !== 'visible') void android.notifyShare(`sent-${item.id}`, said, 'A device nearby').catch(() => {})
+      } else {
+        void api.notify(`sent-${item.id}`, said, 'A device nearby').catch(() => {})
+      }
+    }
+  }, [nearby.items])
+
   // A computer's buttons in its notification.
   useEffect(() => {
     if (isAndroid()) return undefined

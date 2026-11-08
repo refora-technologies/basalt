@@ -26,6 +26,24 @@ export function useShareNotifications(inbox: Inbox, presence: Presence, setNav: 
     // (in the tray, minimised or behind another), where the card in the
     // corner can't be seen.
     for (const item of inbox.items) {
+      if (item.direction === 'out') {
+        // Sent from here: told how it went there.
+        const key = `out-${item.id}`
+        const was = seen.current.get(key)
+        seen.current.set(key, item.state)
+        if (was === undefined || was === item.state) continue
+        const to = calledOf(item.peer, myProfile)
+        const said =
+          item.state === 'done'
+            ? `${titleOf(item.files)} arrived on ${item.takenOn ?? to}`
+            : item.state === 'declined'
+              ? `${to} declined ${titleOf(item.files)}`
+              : item.state === 'failed'
+                ? `${titleOf(item.files)} didn’t arrive`
+                : null
+        if (said) void api.notify(key, said, item.reason ?? '').catch(() => {})
+        continue
+      }
       if (item.direction !== 'in') continue
       const before = seen.current.get(item.id)
       seen.current.set(item.id, item.state)

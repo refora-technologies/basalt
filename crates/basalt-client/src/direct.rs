@@ -47,6 +47,29 @@ pub struct Endpoint {
 /// path on a computer, a phone's content URI.
 pub type Opener = Arc<dyn Fn(&str) -> std::io::Result<std::fs::File> + Send + Sync>;
 
+/// A file on the drive, passed on as it comes from the host: its size, and
+/// its bytes from the offset asked. For a device nearby that isn't on the
+/// host; its source is offered as `drive:<path>`.
+pub type Relay = Arc<
+    dyn Fn(
+            String,
+            u64,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = std::io::Result<(
+                            u64,
+                            Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+                        )>,
+                    > + Send,
+            >,
+        > + Send
+        + Sync,
+>;
+
+/// The start of a source that is a file on the drive, relayed from the host.
+pub const DRIVE_SOURCE: &str = "drive:";
+
 /// How long a share can be taken after it is offered.
 const SHARE_LASTS: Duration = Duration::from_secs(30 * 60);
 /// The longest a receiver may take to say what it wants.
@@ -67,6 +90,7 @@ pub struct DirectServer {
     port: u16,
     key: String,
     shares: Arc<Mutex<HashMap<String, Shared>>>,
+    relay: Arc<Mutex<Option<Relay>>>,
 }
 
 #[derive(Deserialize)]
@@ -102,8 +126,10 @@ impl DirectServer {
             port,
             key: identity.host_id.clone(),
             shares: Arc::new(Mutex::new(HashMap::new())),
+            relay: Arc::new(Mutex::new(None)),
         });
         let shares = Arc::clone(&server.shares);
+        let relay = Arc::clone(&server.relay);
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
@@ -112,11 +138,12 @@ impl DirectServer {
                 let acceptor = acceptor.clone();
                 let shares = Arc::clone(&shares);
                 let opener = Arc::clone(&opener);
+                let relay = relay.lock().expect("relay lock").clone();
                 tokio::spawn(async move {
                     if let Ok(Ok(tls)) =
                         tokio::time::timeout(ASK_TIMEOUT, acceptor.accept(stream)).await
                     {
-                        let _ = serve(tls, shares, opener).await;
+                        let _ = serve(tls, shares, opener, relay).await;
                     }
                 });
             }
@@ -158,6 +185,11 @@ impl DirectServer {
         token
     }
 
+    /// How files on the drive are passed on (`drive:<path>` sources).
+    pub fn set_relay(&self, relay: Relay) {
+        *self.relay.lock().expect("relay lock") = Some(relay);
+    }
+
     /// Takes an offer back: nobody can take it any more.
     pub fn withdraw(&self, offer: &str) {
         self.shares.lock().expect("shares lock").remove(offer);
@@ -173,6 +205,7 @@ async fn serve<S>(
     stream: S,
     shares: Arc<Mutex<HashMap<String, Shared>>>,
     opener: Opener,
+    relay: Option<Relay>,
 ) -> std::io::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -199,6 +232,31 @@ where
         write.write_all(b"no that isn't offered\n").await?;
         return write.shutdown().await;
     };
+    // A file on the drive: passed on from the host as it comes.
+    if let Some(path) = source.strip_prefix(DRIVE_SOURCE) {
+        let Some(relay) = relay else {
+            write
+                .write_all(b"no it can't be passed on from here\n")
+                .await?;
+            return write.shutdown().await;
+        };
+        let (length, mut reader) = match relay(path.to_string(), from).await {
+            Ok(opened) => opened,
+            Err(e) => {
+                write.write_all(format!("no {e}\n").as_bytes()).await?;
+                return write.shutdown().await;
+            }
+        };
+        if from > 0 && from <= length {
+            write
+                .write_all(format!("ok {length} from {from}\n").as_bytes())
+                .await?;
+        } else {
+            write.write_all(format!("ok {length}\n").as_bytes()).await?;
+        }
+        tokio::io::copy(&mut reader, &mut write).await?;
+        return write.shutdown().await;
+    }
     let opened = {
         let opener = Arc::clone(&opener);
         tokio::task::spawn_blocking(move || opener(&source))

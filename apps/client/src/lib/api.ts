@@ -908,6 +908,8 @@ export const api = {
   nearbyReady: (on: boolean, alwaysCode: boolean) => call<void>('nearby_ready', { on, alwaysCode }),
   /** Accept or Decline an offer from a device nearby. False if it's gone. */
   nearbyReply: (ask: string, accept: boolean) => call<boolean>('nearby_reply', { ask, accept }),
+  /** How far taking the files from a device nearby has come, for its sender. */
+  nearbyProgress: (ask: string, done: number, total: number) => call<void>('nearby_progress', { ask, done, total }),
   /** How taking the files from a device nearby went. */
   nearbyFinish: (ask: string, answer: 'done' | 'failed') => call<void>('nearby_finish', { ask, answer }),
   /** The devices nearby ready to receive, on this Wi-Fi. */
@@ -1139,6 +1141,13 @@ export async function onNearbyReady(handler: (event: NearbyReadyEvent) => void):
   if (!inTauri()) return onPreview('nearby-ready', handler)
   const { listen } = await import('@tauri-apps/api/event')
   return listen<NearbyReadyEvent>('basalt://nearby-ready', (e) => handler(e.payload))
+}
+
+/** How far an offer to a device nearby has come there, as it goes. */
+export async function onNearbyProgress(handler: (said: { offer: string; done: number; total: number }) => void): Promise<() => void> {
+  if (!inTauri()) return onPreview('nearby-progress', handler)
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<{ offer: string; done: number; total: number }>('basalt://nearby-progress', (e) => handler(e.payload))
 }
 
 /** How an offer to a device nearby ended there, once accepted. */
@@ -1759,6 +1768,7 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     case 'nearby_code':
       return { kind: 'right' } as T
     case 'nearby_ready':
+    case 'nearby_progress':
     case 'nearby_finish':
     case 'nearby_cancel':
       return undefined as T

@@ -390,3 +390,15 @@ html[data-shape] .shadow-lift {
     transform: translateX(300%);
   }
 }
+
+/*
+ * A small mark on an icon (a status badge, an online dot) is ringed in the
+ * colour of what it sits on, so it reads as cut out of the icon, whatever
+ * the surface: the page, a window, a phone's sheet. Each sets --surface.
+ */
+:root {
+  --surface: #0b0b0c;
+}
+.surface-ring {
+  box-shadow: 0 0 0 2px var(--surface);
+}

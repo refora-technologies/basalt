@@ -29,9 +29,9 @@ export interface Inbox {
   /** Offers waiting for this person's answer: what the badge counts. */
   waiting: ShareItem[]
   /** Sends files on the drive to one device. Throws when it can't be reached. */
-  send: (files: ShareFile[], to: PresentDevice) => Promise<void>
+  send: (files: ShareFile[], to: PresentDevice) => Promise<string>
   /** Keeps files on the drive on the host for a device that's away; `keep` past its answer. */
-  sendThroughHost: (files: ShareFile[], to: PresentDevice, keep: boolean) => Promise<void>
+  sendThroughHost: (files: ShareFile[], to: PresentDevice, keep: boolean) => Promise<string>
   /** "Share again": a copy of what the host keeps, for another device. */
   shareAgain: (share: HeldShare, to: PresentDevice) => Promise<void>
   /** "Remove from the host once answered": the default for each send through it. */
@@ -290,7 +290,7 @@ export function useInbox(
     }
   }, [who, hear])
 
-  const send = useCallback(async (files: ShareFile[], to: PresentDevice) => {
+  const send = useCallback(async (files: ShareFile[], to: PresentDevice): Promise<string> => {
     const from = me()
     if (!from) throw new Error('Not connected to the host.')
     const offer = newOfferId()
@@ -308,10 +308,11 @@ export function useInbox(
     setItems((list) =>
       kept([{ id: body.offer, direction: 'out', files: told, peer: body.to, state: 'waiting', at: Date.now() }, ...list]),
     )
+    return offer
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const sendThroughHost = useCallback(async (files: ShareFile[], to: PresentDevice, keep: boolean) => {
+  const sendThroughHost = useCallback(async (files: ShareFile[], to: PresentDevice, keep: boolean): Promise<string> => {
     const offer = newOfferId()
     if (files.every((f) => f.source)) {
       // On this device: up to the host first, then kept there.
@@ -334,6 +335,7 @@ export function useInbox(
     setItems((list) =>
       kept([{ id: offer, direction: 'out', files, peer: partyOf(to), state: 'waiting', at: Date.now(), reason: 'On the host until it’s back' }, ...list]),
     )
+    return offer
   }, [])
 
   const shareAgain = useCallback(

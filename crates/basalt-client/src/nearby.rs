@@ -159,7 +159,15 @@ pub enum ReadyEvent {
 }
 
 type Waiting = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
-type Finishing = Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>;
+type Finishing = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Taking>>>>;
+
+/// What the receiver tells the sender while it takes the files.
+enum Taking {
+    /// How far it has come, in bytes.
+    Progress(u64, u64),
+    /// How it ended: `done` or `failed`.
+    End(String),
+}
 
 /// Ready to receive from devices nearby, until dropped.
 pub struct Ready {
@@ -272,7 +280,15 @@ impl Ready {
     /// How taking the files went: `done` or `failed`, told to the sender.
     pub fn finish(&self, ask: &str, answer: &str) {
         if let Some(waiting) = self.finishes.lock().expect("finishes lock").remove(ask) {
-            let _ = waiting.send(answer.to_string());
+            let _ = waiting.send(Taking::End(answer.to_string()));
+        }
+    }
+
+    /// How far taking the files has come, told to the sender so its Sent
+    /// shows it too. About once a second is plenty.
+    pub fn progress(&self, ask: &str, done: u64, total: u64) {
+        if let Some(waiting) = self.finishes.lock().expect("finishes lock").get(ask) {
+            let _ = waiting.send(Taking::Progress(done, total));
         }
     }
 }
@@ -373,7 +389,7 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin>(
             .map_err(|e| ClientError::Protocol(format!("the offer: {e}")))?
     };
 
-    let (tx, rx) = oneshot::channel();
+    let (tx, mut rx) = mpsc::unbounded_channel();
     finishes
         .lock()
         .expect("finishes lock")
@@ -382,11 +398,20 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin>(
         ask: ask.to_string(),
         take,
     });
-    let answer = tokio::time::timeout(TAKE_WAIT, rx)
-        .await
-        .ok()
-        .and_then(|got| got.ok())
-        .unwrap_or_else(|| "failed".into());
+    let deadline = tokio::time::Instant::now() + TAKE_WAIT;
+    let answer = loop {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Some(Taking::Progress(done, total))) => {
+                send_json(
+                    &mut write,
+                    &serde_json::json!({ "progress": done, "total": total }),
+                )
+                .await?;
+            }
+            Ok(Some(Taking::End(answer))) => break answer,
+            _ => break "failed".to_string(),
+        }
+    };
     send_json(&mut write, &serde_json::json!({ "answer": answer })).await?;
     Ok(())
 }
@@ -604,10 +629,21 @@ impl Offering {
     }
 
     /// How it ended there: `done` or `failed`.
-    pub async fn end(mut self) -> String {
-        match next_json(&mut self.lines, TAKE_WAIT).await {
-            Ok(said) => said["answer"].as_str().unwrap_or("failed").to_string(),
-            Err(_) => "failed".into(),
+    pub async fn end(self) -> String {
+        self.end_with(|_, _| {}).await
+    }
+
+    /// The same, told how far it has come there (bytes done, of all) as it goes.
+    pub async fn end_with(mut self, progress: impl Fn(u64, u64)) -> String {
+        loop {
+            match next_json(&mut self.lines, TAKE_WAIT).await {
+                Ok(said) if said.get("progress").is_some() => progress(
+                    said["progress"].as_u64().unwrap_or(0),
+                    said["total"].as_u64().unwrap_or(0),
+                ),
+                Ok(said) => return said["answer"].as_str().unwrap_or("failed").to_string(),
+                Err(_) => return "failed".into(),
+            }
         }
     }
 }
@@ -818,7 +854,13 @@ mod tests {
             )
             .await
             .unwrap();
-            (said, offering.end().await)
+            let heard = Arc::new(Mutex::new(Vec::new()));
+            let into = Arc::clone(&heard);
+            let end = offering
+                .end_with(move |done, total| into.lock().unwrap().push((done, total)))
+                .await;
+            let heard = heard.lock().unwrap().clone();
+            (said, (end, heard))
         });
         let ReadyEvent::Offer {
             ask,
@@ -837,10 +879,16 @@ mod tests {
             panic!("where to take it");
         };
         assert_eq!(got, take());
+        ready.progress(&ask, 2_100, 4_200);
         ready.finish(&ask, "done");
-        let (said, end) = sending.await.unwrap();
+        let (said, (end, heard)) = sending.await.unwrap();
         assert_eq!(said, Said::Accepted);
         assert_eq!(end, "done");
+        assert_eq!(
+            heard,
+            vec![(2_100, 4_200)],
+            "the sender hears how far it came"
+        );
     }
 
     #[tokio::test]

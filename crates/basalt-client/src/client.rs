@@ -2330,6 +2330,61 @@ impl Basalt {
         Ok(done)
     }
 
+    /// A file on the drive as a stream, from byte `from` on (from the start
+    /// if `from` is past its end): its size, and its bytes as they come from
+    /// the host. For passing a drive file on to a device nearby that isn't
+    /// on the host. Stops when the reader is dropped.
+    pub async fn read_stream(
+        self: &Arc<Self>,
+        remote: &str,
+        from: u64,
+    ) -> Result<(u64, tokio::io::DuplexStream)> {
+        let total = self.stat(remote).await?.size;
+        let start = if from <= total { from } else { 0 };
+        let (mut write, read) = tokio::io::duplex(CHUNK_BYTES as usize);
+        let client = Arc::clone(self);
+        let remote = remote.to_string();
+        tokio::spawn(async move {
+            let streamed: Result<()> = async {
+                let pool = client.pool().await?;
+                let mut lease = pool.acquire().await?;
+                let mut asked: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
+                let mut requested = start;
+                let mut done = start;
+                let outcome: Result<()> = async {
+                    while done < total {
+                        while asked.len() < IN_FLIGHT && requested < total {
+                            let want = CHUNK_BYTES.min(total - requested);
+                            lease.send_read(&remote, requested, want).await?;
+                            asked.push_back(want);
+                            requested += want;
+                        }
+                        let expected = asked.pop_front().expect("a range is always in flight here");
+                        let got = lease.receive_read_into(&mut write).await?;
+                        client.count(got);
+                        if got != expected {
+                            return Err(ClientError::Protocol(format!(
+                                "{remote} changed while it was being passed on"
+                            )));
+                        }
+                        done += got;
+                    }
+                    Ok(())
+                }
+                .await;
+                if outcome.is_err() {
+                    lease.discard();
+                }
+                outcome
+            }
+            .await;
+            if let Err(e) = streamed {
+                tracing::info!("passing {remote} on stopped: {e}");
+            }
+        });
+        Ok((total, read))
+    }
+
     /// Downloads into a file somebody else has already opened.
     ///
     /// For Android, where a download is saved through the system — into

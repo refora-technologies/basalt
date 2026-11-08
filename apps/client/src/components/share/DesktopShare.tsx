@@ -57,7 +57,7 @@ export function ShareDialog({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 8, scale: 0.98 }}
             transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-            className="relative flex max-h-[80vh] w-[440px] flex-col rounded-2xl border border-white/10 bg-panel2 pb-4 pt-4 shadow-lift"
+            className="relative flex max-h-[80vh] w-[440px] flex-col rounded-2xl border border-white/10 bg-panel2 pb-4 pt-4 shadow-lift [--surface:#1C1C1F]"
           >
             <button
               onClick={onClose}
@@ -118,7 +118,7 @@ export function NearbyDialog({ nearby }: { nearby: Nearby }): React.JSX.Element 
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 8, scale: 0.98 }}
             transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-            className="relative flex max-h-[84vh] w-[460px] flex-col rounded-2xl border border-white/10 bg-panel2 pb-4 pt-4 shadow-lift"
+            className="relative flex max-h-[84vh] w-[460px] flex-col rounded-2xl border border-white/10 bg-panel2 pb-4 pt-4 shadow-lift [--surface:#1C1C1F]"
           >
             <button
               onClick={close}
@@ -162,7 +162,7 @@ export function NearbyOfferCard({ nearby }: { nearby: Nearby }): React.JSX.Eleme
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 12 }}
           transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-          className="fixed bottom-20 right-5 z-[81] w-[380px] rounded-2xl border border-white/10 bg-panel2 p-4 shadow-lift"
+          className="fixed bottom-20 right-5 z-[81] w-[380px] rounded-2xl border border-white/10 bg-panel2 p-4 shadow-lift [--surface:#1C1C1F]"
         >
           <NearbyPrompt nearby={nearby} offer={offer} compact onLater={() => setPutAway((s) => new Set(s).add(offer.ask))} />
         </motion.div>
@@ -183,7 +183,7 @@ export function OfferCard({ presence, inbox }: { presence: Presence; inbox: Inbo
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 12 }}
           transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-          className="fixed bottom-20 right-5 z-[80] w-[380px] rounded-2xl border border-white/10 bg-panel2 p-4 shadow-lift"
+          className="fixed bottom-20 right-5 z-[80] w-[380px] rounded-2xl border border-white/10 bg-panel2 p-4 shadow-lift [--surface:#1C1C1F]"
         >
           <button
             onClick={() => setPutAway((s) => new Set(s).add(item.id))}

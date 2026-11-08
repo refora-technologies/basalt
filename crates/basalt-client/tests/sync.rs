@@ -2567,3 +2567,52 @@ fn claim_code(fixture: &Fixture, id: &str) -> String {
         .and_then(|p| p.claim_code)
         .expect("a profile waiting for its PIN has a code")
 }
+
+// ---------------------------------------------------------------------------
+// A drive file passed on to a device nearby
+// ---------------------------------------------------------------------------
+
+/// A device nearby isn't on the host: a file on the drive goes to it through
+/// a device that is, passed on as it comes.
+#[tokio::test]
+async fn a_drive_file_is_passed_on_to_a_device_nearby() {
+    use basalt_client::direct::{DRIVE_SOURCE, DirectServer, Relay};
+
+    let fixture = start_host().await;
+    let body: Vec<u8> = (0..9_000_000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::create_dir_all(fixture.vault_path("films")).unwrap();
+    std::fs::write(fixture.vault_path("films/trip.mkv"), &body).unwrap();
+    let laptop = fixture.paired_client().await;
+
+    let opener: basalt_client::direct::Opener =
+        Arc::new(|source: &str| std::fs::File::open(source));
+    let server = DirectServer::start(opener).await.unwrap();
+    let client = Arc::clone(&laptop);
+    let relay: Relay = Arc::new(move |path: String, from: u64| {
+        let client = Arc::clone(&client);
+        Box::pin(async move {
+            let (total, read) = client
+                .read_stream(&path, from)
+                .await
+                .map_err(std::io::Error::other)?;
+            Ok((
+                total,
+                Box::new(read) as Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+            ))
+        })
+    });
+    server.set_relay(relay);
+    let token = server.offer("o1", vec![format!("{DRIVE_SOURCE}films/trip.mkv")]);
+    let mut endpoint = server.endpoint();
+    endpoint.addresses = vec!["127.0.0.1".into()];
+
+    // The device nearby: no host, only the offer.
+    let into = fixture.dir.join("taken.mkv");
+    let out = std::fs::File::create(&into).unwrap();
+    let bytes =
+        basalt_client::direct::fetch(&endpoint, "o1", &token, 0, "trip.mkv", out, None, None)
+            .await
+            .unwrap();
+    assert_eq!(bytes, body.len() as u64);
+    assert_eq!(std::fs::read(&into).unwrap(), body, "the same bytes");
+}
