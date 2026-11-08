@@ -14,7 +14,8 @@ import type { Transfers } from './useTransfers'
 import { kept, newOfferId, progressIn, type Progress, type SavedFile, type ShareFile, type ShareItem } from './share'
 import { plainReason } from './useInbox'
 import { isAndroid } from './platform'
-import { hostWifi, joinWifi, leaveWifi, scanWifi, wifiReady, type FoundWifi, type WifiState } from './nearbyWifi'
+import { hostWifi, joinWifi, leaveWifi, scanWifi, turnWifiOn, wifiReady, type FoundWifi, type WifiState } from './nearbyWifi'
+import { pluginReason } from './android'
 
 /**
  * Sharing with devices nearby, without a host (1.6.4): a guest's phone, two
@@ -159,37 +160,86 @@ export function useNearby(transfers: Transfers): Nearby {
     setFirewall(await api.nearbyFirewallAllow())
   }, [])
 
-  // Ready: a Wi-Fi of its own too, for devices with no network in common.
+  // Ready: a Wi-Fi of its own too, for devices with no network in common,
+  // once Wi-Fi is on and Android lets it (see `hostNow` for when it's open).
+  const [hostable, setHostable] = useState(false)
   useEffect(() => {
     if (!ready) {
       setWifiNote(null)
-      void hostWifi(false).catch(() => {})
+      setHostable(false)
       return undefined
     }
     let live = true
-    void (async () => {
+    let again: ReturnType<typeof setTimeout> | null = null
+    let askedWifi = false
+    const start = async (): Promise<void> => {
       const state = await wifiReady(true)
       if (!live) return
+      if (state === 'wifi') {
+        // Off: turned on (Android's panel, from Android 10), and looked at
+        // again until it is, then hosted.
+        if (!askedWifi) {
+          askedWifi = true
+          void turnWifiOn().catch(() => {})
+        }
+        setWifiNote(wifiNoteFor(state))
+        again = setTimeout(() => void start(), 2_000)
+        return
+      }
       if (state !== 'granted') {
         setWifiNote(wifiNoteFor(state))
         return
       }
-      try {
-        await hostWifi(true)
-        if (live) setWifiNote(null)
-      } catch (e) {
-        if (live) setWifiNote(`Devices with no Wi-Fi in common can’t find this one: ${e instanceof Error ? e.message : String(e)}`)
-      }
-    })()
+      setHostable(true)
+    }
+    void start()
     return () => {
       live = false
+      setHostable(false)
+      if (again) clearTimeout(again)
     }
   }, [ready])
 
-  /** Leaves the Wi-Fi joined for an offer, once it has ended. */
+  /**
+   * Its own Wi-Fi is open only while this device isn't looking for others or
+   * sending over another's: a phone hosting one can't look at the Wi-Fis
+   * around (the Samsung A03s's looks never come back while it hosts), and
+   * every phone's own is 192.168.49.1, so on another's it would only find
+   * itself. Ready on the same Wi-Fi stays as it is throughout.
+   */
+  const [joined, setJoined] = useState(0)
+  const hostNow = ready && hostable && watchers === 0 && joined === 0
+  /** One change at a time, in order: Android's Wi-Fi Direct is busy otherwise. */
+  const hosting = useRef<Promise<void>>(Promise.resolve())
+  const host = useCallback((on: boolean): Promise<void> => {
+    const next = hosting.current.then(() => hostWifi(on))
+    hosting.current = next.catch(() => {})
+    return next
+  }, [])
+  useEffect(() => {
+    let live = true
+    host(hostNow)
+      .then(() => {
+        note(hostNow ? 'hosting its own Wi-Fi' : 'own Wi-Fi closed')
+        if (hostNow && live) setWifiNote(null)
+      })
+      .catch((e: unknown) => {
+        if (!hostNow) return
+        note(`hosting failed: ${pluginReason(e)}`)
+        if (live) setWifiNote(`Devices with no Wi-Fi in common can’t find this one: ${pluginReason(e)}`)
+      })
+    return () => {
+      live = false
+    }
+  }, [hostNow, host])
+
+  /** Leaves the Wi-Fi joined for an offer, once it has ended: its own opens again then, if ready. */
   const leaveFor = useCallback((offer: string) => {
     if (!joinedFor.current.delete(offer)) return
-    if (joinedFor.current.size === 0) void leaveWifi().catch(() => {})
+    if (joinedFor.current.size > 0) return
+    void leaveWifi()
+      .catch(() => {})
+      .finally(() => setJoined(joinedFor.current.size))
   }, [])
 
   const setReady = useCallback((on: boolean) => {
@@ -231,7 +281,7 @@ export function useNearby(transfers: Transfers): Nearby {
         update(id, 'in', (i) => ({ ...i, state: 'done', saved, savedAs: saved[saved.length - 1]?.shownAs }))
         void api.nearbyFinish(ask, 'done').catch(() => {})
       } catch (e) {
-        update(id, 'in', (i) => ({ ...i, state: 'failed', reason: plainReason(e instanceof Error ? e.message : String(e)) }))
+        update(id, 'in', (i) => ({ ...i, state: 'failed', reason: plainReason(pluginReason(e)) }))
         void api.nearbyFinish(ask, 'failed').catch(() => {})
       }
     },
@@ -360,25 +410,37 @@ export function useNearby(transfers: Transfers): Nearby {
     let live = true
     const lookFar = async (ask: boolean): Promise<void> => {
       const state = await wifiReady(ask)
-      if (!live || state !== 'granted') return
+      if (!live) return
+      if (state !== 'granted') {
+        setFar([])
+        return
+      }
       const found = await scanWifi().catch(() => [])
       if (live) setFar(found)
     }
-    void lookFar(true)
+    // A moment first, for this device's own Wi-Fi to close (see `hostNow`):
+    // a phone hosting one can't look.
+    const first = setTimeout(() => void lookFar(true), 1_500)
     const timer = setInterval(() => void lookFar(false), FAR_LOOK_EVERY_MS)
     return () => {
       live = false
+      clearTimeout(first)
       clearInterval(timer)
     }
   }, [watchers])
 
-  // Both, each device once: on this Wi-Fi first (nothing to join).
+  // Both, each device once (on this Wi-Fi rather than by its own), each
+  // where it was first seen: a row never moves under a finger about to tap it.
+  const firstSeen = useRef(new Map<string, number>())
   const all = useMemo(() => {
     const here = new Set(devices.map((d) => d.id))
     const farAway: NearbyDevice[] = far
       .filter((f) => !here.has(f.id) && f.id !== me?.id)
       .map((f) => ({ id: f.id, name: f.name || 'A device', address: '', port: 0, key: '', code: true, ssid: f.ssid }))
-    return [...devices, ...farAway]
+    const both = [...devices, ...farAway]
+    const seen = firstSeen.current
+    for (const d of both) if (!seen.has(d.id)) seen.set(d.id, seen.size)
+    return both.sort((a, b) => (seen.get(a.id) ?? 0) - (seen.get(b.id) ?? 0))
   }, [devices, far, me])
 
   const send = useCallback(
@@ -387,14 +449,28 @@ export function useNearby(transfers: Transfers): Nearby {
       const peer = { device: `nearby-${device.id}`, name: `${device.name} · ${device.id}`, form: device.form }
       setOutgoing((list) => [...list, { offer, device, files, state: device.ssid ? 'joining' : 'asking' }])
       setItems((list) => kept([{ id: offer, direction: 'out', files, peer, state: 'waiting', at: Date.now() }, ...list]))
+      if (device.ssid) {
+        // Counted at once, before the list that chose it closes: its own
+        // Wi-Fi stays closed from here (see `hostNow`).
+        joinedFor.current.add(offer)
+        setJoined(joinedFor.current.size)
+      }
       void (async () => {
       try {
         let there = device
+        note(`offer ${offer} to ${device.name} · ${device.id}${device.ssid ? ' by its own Wi-Fi' : ` at ${device.address}`}`)
         if (device.ssid) {
           // No network in common: its own Wi-Fi joined, and it found there.
-          joinedFor.current.add(offer)
+          if ((await wifiReady(false)) === 'wifi') {
+            await turnWifiOn().catch(() => {})
+            throw new Error('Turn on Wi-Fi, then send again.')
+          }
+          // Its own closed first (see `hostNow`), and waited for.
+          await host(false).catch(() => {})
           await joinWifi(device.ssid)
+          note(`joined ${device.ssid}`)
           there = await findOnJoined(device.id)
+          note(`found there at ${there.address}:${there.port}`)
           setOutgoing((list) => list.map((o) => (o.offer === offer ? { ...o, device: there, state: 'asking' } : o)))
         }
         const said = await api.nearbyOffer(
@@ -417,15 +493,16 @@ export function useNearby(transfers: Transfers): Nearby {
           update(offer, 'out', (i) => ({ ...i, state: 'moving', reason: undefined }))
         }
       } catch (e) {
+        note(`offer ${offer} failed: ${pluginReason(e)}`)
         leaveFor(offer)
         setOutgoing((list) => list.filter((o) => o.offer !== offer))
-        const reason = plainReason(e instanceof Error ? e.message : String(e))
+        const reason = plainReason(pluginReason(e))
         update(offer, 'out', (i) => ({ ...i, state: 'failed', reason }))
       }
       })()
       return offer
     },
-    [alwaysCode, update, leaveFor],
+    [alwaysCode, update, leaveFor, host],
   )
 
   const typeCode = useCallback(
@@ -516,17 +593,29 @@ const FAR_LOOK_EVERY_MS = 12_000
 
 /** Once its Wi-Fi is joined, the device there, as the same-Wi-Fi look finds it. */
 async function findOnJoined(id: string): Promise<NearbyDevice> {
-  for (let tries = 0; tries < 8; tries++) {
-    const found = (await api.nearbyFind().catch(() => [] as NearbyDevice[])).find((d) => d.id === id)
+  for (let tries = 1; tries <= 8; tries++) {
+    const all = await api.nearbyFind().catch((e: unknown) => {
+      note(`find failed: ${pluginReason(e)}`)
+      return [] as NearbyDevice[]
+    })
+    const found = all.find((d) => d.id === id)
     if (found) return found
+    note(`not found there yet (try ${tries}; ${all.length} others)`)
     await new Promise((done) => setTimeout(done, 1_000))
   }
   throw new Error('Joined its Wi-Fi, but it didn’t answer there.')
 }
 
+/** A step of sharing nearby, into the device's own log. */
+function note(line: string): void {
+  void api.nearbyNote(line).catch(() => {})
+}
+
 /** What stands in the way of a Wi-Fi of its own, said plainly. */
 function wifiNoteFor(state: WifiState): string {
   switch (state) {
+    case 'wifi':
+      return 'Turn on Wi-Fi to be found by devices with no Wi-Fi in common. You don’t need to join a network.'
     case 'location':
       return 'To be found by devices with no Wi-Fi in common, turn on Location (Android needs it to look for Wi-Fi).'
     case 'ask':

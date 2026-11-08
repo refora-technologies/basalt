@@ -38,6 +38,7 @@ What the Basalt interface may ask of Android directly. Opening files and creatin
 - `allow-nearby-scan`
 - `allow-nearby-join`
 - `allow-nearby-leave`
+- `allow-nearby-wifi-turn-on`
 - `allow-cancel-share`
 - `allow-take-action`
 - `allow-app-version`
@@ -950,6 +951,32 @@ Enables the nearby_wifi_state command without any pre-configured scope.
 <td>
 
 Denies the nearby_wifi_state command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-nearby-wifi-turn-on`
+
+</td>
+<td>
+
+Enables the nearby_wifi_turn_on command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-nearby-wifi-turn-on`
+
+</td>
+<td>
+
+Denies the nearby_wifi_turn_on command without any pre-configured scope.
 
 </td>
 </tr>

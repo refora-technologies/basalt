@@ -172,6 +172,8 @@ class NotifyShareArgs {
   var text: String = ""
   /** Buttons, each "Label|action". */
   var actions: Array<String> = emptyArray()
+  /** Only while the app isn't in front: there, the page says it already. */
+  var ifAway: Boolean = false
 }
 
 @InvokeArg
@@ -265,6 +267,19 @@ class MpvPropertyArgs {
   ]
 )
 class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
+  /** The app on screen, between Android's resume and pause. */
+  @Volatile
+  private var inFront = true
+
+  /**
+   * Whether the app is on screen now, from the activity itself: the
+   * plugins' own pause comes from the whole process's lifecycle, late or not
+   * at all with a service keeping the process up.
+   */
+  private fun onScreen(): Boolean {
+    val owner = activity as? androidx.lifecycle.LifecycleOwner ?: return inFront
+    return owner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+  }
   private var webView: WebView? = null
   private var multicast: WifiManager.MulticastLock? = null
   private var wifiCallback: ConnectivityManager.NetworkCallback? = null
@@ -323,10 +338,12 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   override fun onResume() {
+    inFront = true
     acquireMulticast()
   }
 
   override fun onPause() {
+    inFront = false
     // Only while the app is in front: it keeps the Wi-Fi radio awake for
     // broadcasts, which costs battery for nothing once nobody is looking.
     multicast?.let { if (it.isHeld) it.release() }
@@ -467,12 +484,14 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   fun pictureInPicture(active: Boolean, closed: Boolean) = pip.changed(active, closed)
 
   /**
-   * Keeps the page drawing in the small window. The activity pauses it as it
-   * goes there, as for any app in the back, and the page has to redraw once
-   * without its controls.
+   * Keeps the page running when the app goes into the back, where the
+   * activity pauses it as for any app. In the small window, it has to redraw
+   * without its controls; kept running for a reason (ready to receive, music
+   * in a group, a transfer), it is what answers: an offer, a press on another
+   * device, the next file. Nothing is drawn for nobody; its work goes on.
    */
   fun keepPageRunning() {
-    if (pip.inPip()) webView?.onResume()
+    if (pip.inPip() || KeepAliveService.keepingAlive()) webView?.onResume()
   }
 
   /** Back at the top level: to the home screen, as every app does, not closed. */
@@ -1179,6 +1198,12 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   fun notifyShare(invoke: Invoke) {
     val args = invoke.parseArgs(NotifyShareArgs::class.java)
     val context = activity.applicationContext
+    // Whether the app is in front is known here, not in the page: Android's
+    // web view may say "visible" with the app behind another.
+    if (args.ifAway && onScreen()) {
+      invoke.resolve(JSObject().put("shown", false))
+      return
+    }
     val allowed = Build.VERSION.SDK_INT < 33 ||
       context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
     if (!allowed) {
@@ -1236,13 +1261,25 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun nearbyWifiState(invoke: Invoke) {
     val granted = getPermissionState(nearbyAlias()).toString() == "granted"
-    val state = when {
-      Build.VERSION.SDK_INT < 29 -> "unsupported"
-      !granted -> "ask"
-      !nearbyWifi.locationOn() -> "location"
-      else -> "granted"
+    invoke.resolve(JSObject().put("state", nearbyState(granted)))
+  }
+
+  /** What stands in the way, in the order to put it right: permission, Wi-Fi, then Location. */
+  private fun nearbyState(granted: Boolean): String = when {
+    Build.VERSION.SDK_INT < 29 -> "unsupported"
+    !granted -> "ask"
+    !nearbyWifi.wifiOn() -> "wifi"
+    !nearbyWifi.locationOn() -> "location"
+    else -> "granted"
+  }
+
+  /** Wi-Fi off: turned on, or Android's Wi-Fi panel brought up to do it. */
+  @Command
+  fun nearbyWifiTurnOn(invoke: Invoke) {
+    activity.runOnUiThread {
+      nearbyWifi.turnWifiOn(activity)
+      invoke.resolve()
     }
-    invoke.resolve(JSObject().put("state", state))
   }
 
   @Command
@@ -1253,7 +1290,7 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   @PermissionCallback
   fun nearbyWifiAnswered(invoke: Invoke) {
     val granted = getPermissionState(nearbyAlias()).toString() == "granted"
-    invoke.resolve(JSObject().put("state", if (!granted) "denied" else if (!nearbyWifi.locationOn()) "location" else "granted"))
+    invoke.resolve(JSObject().put("state", if (!granted) "denied" else nearbyState(true)))
   }
 
   @Command
@@ -1266,8 +1303,7 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun nearbyHostStop(invoke: Invoke) {
-    nearbyWifi.stopHost()
-    invoke.resolve()
+    nearbyWifi.stopHost { invoke.resolve() }
   }
 
   @Command
@@ -1289,8 +1325,7 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun nearbyLeave(invoke: Invoke) {
-    nearbyWifi.leave()
-    invoke.resolve()
+    nearbyWifi.leave { invoke.resolve() }
   }
 
   /** A share's notification taken away: answered here, or nothing more to say. */

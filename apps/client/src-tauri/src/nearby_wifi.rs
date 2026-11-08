@@ -29,6 +29,7 @@ mod imp {
     use std::time::Duration;
 
     use windows::core::HSTRING;
+    use windows::Devices::Radios::{Radio, RadioAccessStatus, RadioKind, RadioState};
     use windows::Devices::WiFiDirect::{
         WiFiDirectAdvertisementPublisher, WiFiDirectAdvertisementPublisherStatus,
     };
@@ -40,6 +41,8 @@ mod imp {
     };
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const WIFI_OFF: &str =
+        "this computer's Wi-Fi is off: turn it on (and flight mode off), then try again";
 
     /// The Wi-Fi this computer hosts while it is ready, and the one it
     /// joined to share, with the one it was on before.
@@ -57,8 +60,57 @@ mod imp {
         }
     }
 
+    /// Wi-Fi switched off (the quick settings, not a hardware switch or
+    /// flight mode Windows won't undo for an app): switched back on, and a
+    /// moment given for it to come up. Says whether it is on now.
+    pub fn wifi_on() -> bool {
+        let turned = (|| -> windows::core::Result<Option<bool>> {
+            if Radio::RequestAccessAsync()?.get()? != RadioAccessStatus::Allowed {
+                return Ok(None);
+            }
+            let mut any = None;
+            for radio in Radio::GetRadiosAsync()?.get()? {
+                if radio.Kind()? != RadioKind::WiFi {
+                    continue;
+                }
+                if radio.State()? == RadioState::On {
+                    any = Some(false);
+                    continue;
+                }
+                let _ = radio.SetStateAsync(RadioState::On)?.get()?;
+                any = Some(radio.State()? == RadioState::On);
+            }
+            Ok(any)
+        })();
+        match turned {
+            // Just switched on: it takes a few seconds to be ready.
+            Ok(Some(true)) => {
+                std::thread::sleep(Duration::from_secs(3));
+                true
+            }
+            Ok(Some(false)) => radio_is_on(),
+            // Not allowed to say, or no radio API: carry on and let it say.
+            _ => true,
+        }
+    }
+
+    fn radio_is_on() -> bool {
+        (|| -> windows::core::Result<bool> {
+            for radio in Radio::GetRadiosAsync()?.get()? {
+                if radio.Kind()? == RadioKind::WiFi && radio.State()? == RadioState::On {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })()
+        .unwrap_or(true)
+    }
+
     pub fn host(state: &State, ssid: &str, passphrase: &str) -> Result<(), String> {
         stop_host(state);
+        if !wifi_on() {
+            return Err(WIFI_OFF.into());
+        }
         let started = (|| -> windows::core::Result<WiFiDirectAdvertisementPublisher> {
             let publisher = WiFiDirectAdvertisementPublisher::new()?;
             let advertisement = publisher.Advertisement()?;
@@ -100,6 +152,9 @@ mod imp {
 
     /// The Basalt Wi-Fis around, after a fresh look.
     pub fn scan(prefix: &str) -> Result<Vec<Found>, String> {
+        if !wifi_on() {
+            return Err(WIFI_OFF.into());
+        }
         // SAFETY: the WLAN API's own handles and lists, freed as it asks.
         unsafe {
             let mut version = 0u32;
@@ -148,7 +203,7 @@ mod imp {
                 WlanFreeMemory(networks as *const _);
             }
             WlanCloseHandle(handle, None);
-            found.sort_by(|a, b| b.level.cmp(&a.level));
+            found.sort_by_key(|f| std::cmp::Reverse(f.level));
             Ok(found)
         }
     }
@@ -204,6 +259,9 @@ mod imp {
     }
 
     pub fn join(state: &State, ssid: &str, passphrase: &str) -> Result<(), String> {
+        if !wifi_on() {
+            return Err(WIFI_OFF.into());
+        }
         let before = connected_profile().filter(|p| p != ssid);
         let profile = format!(
             r#"<?xml version="1.0"?>

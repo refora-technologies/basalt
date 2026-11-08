@@ -113,6 +113,9 @@ class KeepAliveService : Service() {
     private const val READY_CHANNEL = "basalt-ready"
     private const val NOTIFICATION_ID = 7742
     private val reasons = linkedMapOf<String, Shown>()
+
+    /** Kept running for something (ready, music, a transfer): the page has work in the back too. */
+    fun keepingAlive(): Boolean = reasons.isNotEmpty()
     private var lastShown = Shown("Basalt", "", -1)
     private var running: KeepAliveService? = null
     private var foreground = false

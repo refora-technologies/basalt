@@ -21,8 +21,8 @@ export interface FoundWifi {
   name: string
 }
 
-/** Whether this device can do it now: `granted`, or what stands in the way. */
-export type WifiState = 'granted' | 'ask' | 'denied' | 'location' | 'unsupported'
+/** Whether this device can do it now: `granted`, or what stands in the way (`wifi`: Wi-Fi is off). */
+export type WifiState = 'granted' | 'ask' | 'denied' | 'wifi' | 'location' | 'unsupported'
 
 /** The id and name in a Basalt Wi-Fi's name, if it is one. */
 export function wifiDevice(ssid: string): { id: string; name: string } | null {
@@ -41,6 +41,14 @@ export async function wifiReady(ask: boolean): Promise<WifiState> {
   const state = (await android.nearbyWifiState().catch(() => 'unsupported')) as WifiState
   if (state === 'ask' && ask) return (await android.requestNearbyWifi().catch(() => 'denied')) as WifiState
   return state
+}
+
+/**
+ * Wi-Fi off on a phone: turned on, as far as Android lets an app (before
+ * Android 10 it just is; after, Android's Wi-Fi panel comes up, one tap away).
+ */
+export async function turnWifiOn(): Promise<void> {
+  if (inTauri() && isAndroid()) await android.nearbyWifiTurnOn()
 }
 
 /** Hosts this device's own Wi-Fi, or stops. */

@@ -13,7 +13,6 @@ import {
   Film,
   Image,
   Laptop,
-  Loader2,
   Monitor,
   Music,
   Smartphone,
@@ -24,6 +23,7 @@ import {
 
 import { api, onShareSending, type NearbyDevice, type PresentDevice } from '@/lib/api'
 import { NearbyChooser, NearbyList } from './Nearby'
+import { HandoffMark, markForm } from './WaitingMarks'
 import type { Nearby } from '@/lib/useNearby'
 import type { Presence } from '@/lib/usePresence'
 import { seenLine } from '@/lib/usePresence'
@@ -189,7 +189,7 @@ export function ShareChooser({
           <NearbyChooser nearby={nearby} files={files} phone={sheet} initial={nearbyPick} onDone={() => onDone('')} />
         </div>
       ) : (
-      <div className="min-h-0 flex-1 overflow-y-auto pb-1">
+      <div className={cn('min-h-0 flex-1 overflow-y-auto pb-1', sheet && 'min-h-[38vh]')}>
         {nobody && !onThisDevice && !nearby && (
           <p className="px-5 py-6 text-[13px] leading-relaxed text-textFaint">
             No other devices on this host yet. Pair another phone or computer, and it shows here.
@@ -457,7 +457,7 @@ function ShareRow({
 }
 
 /** Opens a file received here: on a computer as it opens it, on a phone with the app for it. */
-function openSaved(file: SavedFile): Promise<unknown> {
+export function openSaved(file: SavedFile): Promise<unknown> {
   if (isAndroid() && file.uri) return android.openDownload(file.uri)
   if (file.path) return api.receivedOpen(file.path)
   return Promise.reject(new Error('It can’t be opened from here.'))
@@ -532,23 +532,26 @@ export function ShareStatus({
   onCancel?: () => void
 }): React.JSX.Element {
   const state = item?.state ?? 'waiting'
-  const Icon =
-    state === 'done' ? Check : state === 'declined' || state === 'failed' ? X : state === 'moving' ? Upload : Loader2
+  const Icon = state === 'done' ? Check : state === 'declined' || state === 'failed' ? X : Upload
   return (
     <div className="px-5 pb-1 pt-4">
       <div className="flex flex-col items-center text-center">
-        <span
-          className={cn(
-            'flex h-12 w-12 items-center justify-center rounded-full',
-            state === 'done'
-              ? 'bg-emerald-400/15 text-emerald-300'
-              : state === 'declined' || state === 'failed'
-                ? 'bg-white/[0.06] text-textDim'
-                : 'bg-white/[0.08] text-text',
-          )}
-        >
-          <Icon size={22} className={state === 'waiting' ? 'animate-spin' : undefined} />
-        </span>
+        {state === 'waiting' ? (
+          <HandoffMark from={markForm(null)} to={markForm(item?.peer?.form)} className="text-text" />
+        ) : (
+          <span
+            className={cn(
+              'flex h-12 w-12 items-center justify-center rounded-full',
+              state === 'done'
+                ? 'bg-emerald-400/15 text-emerald-300'
+                : state === 'declined' || state === 'failed'
+                  ? 'bg-white/[0.06] text-textDim'
+                  : 'bg-white/[0.08] text-text',
+            )}
+          >
+            <Icon size={22} />
+          </span>
+        )}
         <p className="mt-3 text-[15px] font-semibold text-text">
           {state === 'waiting'
             ? `Waiting for ${to} to accept`

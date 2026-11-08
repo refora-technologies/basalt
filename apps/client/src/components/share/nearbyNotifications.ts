@@ -25,9 +25,11 @@ export function useNearbyNotifications(nearby: Nearby): void {
       const title = `${offer.from.name} · ${offer.from.id} wants to send you ${titleOf(offer.files.map((f) => ({ ...f, path: '' })))}`
       const text = offer.code ? 'A device nearby · a code is asked' : 'A device nearby'
       if (isAndroid()) {
-        if (document.visibilityState !== 'visible') {
-          void android.notifyShare(`nearby-${offer.ask}`, title, text, ['Accept|accept', 'Decline|decline']).catch(() => {})
-        }
+        // Shown only with the app out of sight: Android knows, the page may not.
+        void android
+          .notifyShare(`nearby-${offer.ask}`, title, text, ['Accept|accept', 'Decline|decline'], true)
+          .then((shown) => api.nearbyNote(`offer from ${offer.from.id}: notified ${shown}, page ${document.visibilityState}`))
+          .catch(() => {})
       } else {
         void api
           .notify(`nearby-${offer.ask}`, title, text, [
@@ -48,10 +50,9 @@ export function useNearbyNotifications(nearby: Nearby): void {
       const title = `${titleOf(item.files)} arrived`
       const text = `From ${item.peer.name} · ${item.savedAs ?? ''}`
       if (isAndroid()) {
-        // In front, the list says so already.
-        if (document.visibilityState === 'visible') continue
+        // In front, the sheet says so already.
         const one = item.saved?.length === 1 && !isProgram(item.saved[0]!.name)
-        void android.notifyShare(item.id, title, text, one ? ['Open|open'] : []).catch(() => {})
+        void android.notifyShare(item.id, title, text, one ? ['Open|open'] : [], true).catch(() => {})
       } else {
         void api.notify(item.id, title, text).catch(() => {})
       }
@@ -78,7 +79,7 @@ export function useNearbyNotifications(nearby: Nearby): void {
                 : null
       if (!said) continue
       if (isAndroid()) {
-        if (document.visibilityState !== 'visible') void android.notifyShare(`sent-${item.id}`, said, 'A device nearby').catch(() => {})
+        void android.notifyShare(`sent-${item.id}`, said, 'A device nearby', [], true).catch(() => {})
       } else {
         void api.notify(`sent-${item.id}`, said, 'A device nearby').catch(() => {})
       }

@@ -147,9 +147,7 @@ struct AppState {
     /// drops the line, and the other side's question goes with it.
     nearby_asking: Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
     /// Offers to devices nearby waiting for the code shown there.
-    nearby_offers: Mutex<
-        std::collections::HashMap<String, (basalt_client::nearby::Offering, Vec<String>, u64)>,
-    >,
+    nearby_offers: Mutex<std::collections::HashMap<String, WaitingOffer>>,
 }
 
 /// Messages kept for the page at most: past it, the oldest go.
@@ -393,6 +391,8 @@ fn start_watching(client: &Arc<Basalt>, app: &tauri::AppHandle) {
                         kept.pop_front();
                     }
                 }
+                #[cfg(target_os = "android")]
+                share_offer_notice(&told, &message);
                 let _ = told.emit("basalt://channel", message);
             }
             basalt_client::WatchNotice::PresenceChanged => {
@@ -1005,10 +1005,79 @@ async fn nearby_ready(
     *state.nearby_ready.lock().expect("nearby lock") = Some(ready);
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
+            #[cfg(target_os = "android")]
+            nearby_offer_notice(&app, &event);
             let _ = app.emit("basalt://nearby-ready", &event);
         }
     });
     Ok(())
+}
+
+/// A share offered by a device of this home, told by Android itself while
+/// the app is out of sight: with the app swiped away there is no page to
+/// tell it. The offer's own tag, so the page's fuller one (Accept, Decline)
+/// takes its place when the page is there to make it.
+#[cfg(target_os = "android")]
+fn share_offer_notice(app: &tauri::AppHandle, message: &basalt_proto::msg::ChannelMessage) {
+    use tauri_plugin_basalt_android::BasaltAndroidExt;
+    if message.kind != "share.offer" {
+        return;
+    }
+    let Some(offer) = message.body["offer"].as_str() else {
+        return;
+    };
+    let names: Vec<&str> = message.body["files"]
+        .as_array()
+        .map(|files| files.iter().filter_map(|f| f["name"].as_str()).collect())
+        .unwrap_or_default();
+    let what = match names.as_slice() {
+        [one] => (*one).to_string(),
+        [] => "a file".to_string(),
+        many => format!("{} files", many.len()),
+    };
+    let from = message.body["from"]["profileName"]
+        .as_str()
+        .unwrap_or(&message.from_name);
+    let _ = app.basalt_android().notify_share_away(
+        offer,
+        &format!("{from} wants to send you {what}"),
+        &format!("From {}", message.from_name),
+        &[],
+    );
+}
+
+/// An offer from a device nearby, told by Android itself while the app is
+/// out of sight: the page doesn't run then, so it can't. The same tag and
+/// buttons as the page's own (nearbyNotifications.ts), so a tap answers it.
+#[cfg(target_os = "android")]
+fn nearby_offer_notice(app: &tauri::AppHandle, event: &basalt_client::nearby::ReadyEvent) {
+    use tauri_plugin_basalt_android::BasaltAndroidExt;
+    let basalt_client::nearby::ReadyEvent::Offer {
+        ask,
+        from,
+        files,
+        code,
+    } = event
+    else {
+        return;
+    };
+    let what = match files.as_slice() {
+        [one] => one.name.clone(),
+        many => format!("{} files", many.len()),
+    };
+    let title = format!("{} · {} wants to send you {what}", from.name, from.id);
+    let text = if *code {
+        "A device nearby · a code is asked"
+    } else {
+        "A device nearby"
+    };
+    let shown = app.basalt_android().notify_share_away(
+        &format!("nearby-{ask}"),
+        &title,
+        text,
+        &["Accept|accept", "Decline|decline"],
+    );
+    nearby_log(&format!("offer {ask}: notice asked of Android: {shown:?}"));
 }
 
 /// Accept or Decline for an offer from a device nearby. False if it's gone.
@@ -1133,6 +1202,42 @@ async fn nearby_firewall_allow() -> Answer<String> {
     })
     .await
     .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// An offer to a device nearby waiting for its code: the line, where each
+/// file is (`drive:` for one on the drive), and their size together.
+type WaitingOffer = (basalt_client::nearby::Offering, Vec<String>, u64);
+
+/// One line of what sharing nearby did, for the device's own log: Android's
+/// logcat (tag "BasaltNearby"), or the console on a computer.
+fn nearby_log(line: &str) {
+    #[cfg(target_os = "android")]
+    {
+        unsafe extern "C" {
+            fn __android_log_write(
+                priority: std::ffi::c_int,
+                tag: *const std::ffi::c_char,
+                text: *const std::ffi::c_char,
+            ) -> std::ffi::c_int;
+        }
+        const INFO: std::ffi::c_int = 4;
+        let text = std::ffi::CString::new(line.replace('\0', " ")).unwrap_or_default();
+        // SAFETY: both are NUL-terminated strings that outlive the call.
+        unsafe {
+            __android_log_write(INFO, c"BasaltNearby".as_ptr(), text.as_ptr());
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    eprintln!("nearby: {line}");
+}
+
+/// A step of sharing nearby, as the page saw it: into the same log.
+#[tauri::command]
+fn nearby_note(line: String) {
+    nearby_log(&format!(
+        "page: {}",
+        line.chars().take(500).collect::<String>()
+    ));
 }
 
 /// The devices nearby ready to receive, on this Wi-Fi.
@@ -1354,10 +1459,8 @@ fn local_files(paths: Vec<String>) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// Takes one file of an offer from the device that offers it, straight
+/// Takes one file of an offer straight from the device that offers it,
 /// across the Wi-Fi, into this device's received folder.
-#[allow(clippy::too_many_arguments)]
-/// Takes one file of an offer straight from the device that offers it.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn receive_direct(
@@ -2663,6 +2766,7 @@ fn dev_isolated() -> Option<PathBuf> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    basalt_client::nearby::trace_to(nearby_log);
     // Asked by the uninstaller when the app's data is deleted with it: the
     // device key lives in the chip, not in that data, and would otherwise be
     // left there for good. Done, and gone, before any window.
@@ -2962,6 +3066,7 @@ pub fn run() {
             nearby_reply,
             nearby_finish,
             nearby_take_file,
+            nearby_note,
             nearby_wifi_own,
             nearby_firewall,
             nearby_firewall_allow,

@@ -8,7 +8,7 @@ import { SectionTabs, useSectionLink } from '@/mobile/SectionPager'
 import type { Presence } from '@/lib/usePresence'
 import type { ShareFile, ShareItem } from '@/lib/share'
 import { InboxList, ReceivePrompt, ShareChooser } from './Share'
-import { NearbyPrompt, NearbyScreen } from './Nearby'
+import { NearbyPrompt, NearbyReceiving, NearbyScreen, useNearbyFollow } from './Nearby'
 import { api } from '@/lib/api'
 import { pickFiles } from '@/lib/dialogs'
 import { inTauri } from '@/lib/api'
@@ -153,18 +153,24 @@ export function NearbyDialog({ nearby }: { nearby: Nearby }): React.JSX.Element 
 export function NearbyOfferCard({ nearby }: { nearby: Nearby }): React.JSX.Element {
   const [putAway, setPutAway] = useState<Set<string>>(() => new Set())
   const offer = nearby.incoming.find((i) => i.accepted || !putAway.has(i.ask)) ?? null
+  const { following, stop } = useNearbyFollow(nearby)
+  const shown = offer ?? following
   return (
     <AnimatePresence>
-      {offer && (
+      {shown && (
         <motion.div
-          key={offer.ask}
+          key={offer ? offer.ask : (following?.id ?? 'following')}
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 12 }}
           transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
           className="fixed bottom-20 right-5 z-[81] w-[380px] rounded-2xl border border-white/10 bg-panel2 p-4 shadow-lift [--surface:#1C1C1F]"
         >
-          <NearbyPrompt nearby={nearby} offer={offer} compact onLater={() => setPutAway((s) => new Set(s).add(offer.ask))} />
+          {offer ? (
+            <NearbyPrompt nearby={nearby} offer={offer} compact onLater={() => setPutAway((s) => new Set(s).add(offer.ask))} />
+          ) : following ? (
+            <NearbyReceiving item={following} nearby={nearby} compact onDone={stop} />
+          ) : null}
         </motion.div>
       )}
     </AnimatePresence>

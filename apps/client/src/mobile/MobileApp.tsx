@@ -1503,14 +1503,14 @@ function usePhoneShareNotifications(model: AppModel): void {
   const myProfile = presence.devices.find((d) => d.device === presence.you)?.profile
   useEffect(() => {
     if (!isAndroid()) return
-    const away = document.visibilityState !== 'visible'
+    // Each shown only with the app out of sight: Android knows (see notifyShare).
     for (const item of inbox.items) {
       if (item.direction === 'out') {
         // Sent from here: told how it went there, while away.
         const key = `out-${item.id}`
         const was = seen.current.get(key)
         seen.current.set(key, item.state)
-        if (was === undefined || was === item.state || !away) continue
+        if (was === undefined || was === item.state) continue
         const to = calledOf(item.peer, myProfile)
         const said =
           item.state === 'done'
@@ -1520,7 +1520,7 @@ function usePhoneShareNotifications(model: AppModel): void {
               : item.state === 'failed'
                 ? `${titleOf(item.files)} didn’t arrive`
                 : null
-        if (said) void android.notifyShare(key, said, item.reason ?? '').catch(() => {})
+        if (said) void android.notifyShare(key, said, item.reason ?? '', [], true).catch(() => {})
         continue
       }
       if (item.direction !== 'in') continue
@@ -1530,18 +1530,19 @@ function usePhoneShareNotifications(model: AppModel): void {
       if (before === undefined && item.at < started.current) continue
       const from = calledOf(item.peer, myProfile)
       if (item.state === 'waiting' && item.offer) {
-        if (away) {
-          void android
-            .notifyShare(item.id, `${item.peer.profileName ?? item.peer.name} wants to send you ${titleOf(item.files)}`, `From ${from}`, [
-              'Accept|accept',
-              'Decline|decline',
-            ])
-            .catch(() => {})
-        }
-      } else if (item.state === 'done' && !item.takenOn && away) {
+        void android
+          .notifyShare(
+            item.id,
+            `${item.peer.profileName ?? item.peer.name} wants to send you ${titleOf(item.files)}`,
+            `From ${from}`,
+            ['Accept|accept', 'Decline|decline'],
+            true,
+          )
+          .catch(() => {})
+      } else if (item.state === 'done' && !item.takenOn) {
         const one = item.saved?.length === 1 && !isProgram(item.saved[0]!.name)
         void android
-          .notifyShare(item.id, `${titleOf(item.files)} arrived`, `From ${from} · ${item.savedAs ?? 'Download/Basalt'}`, one ? ['Open|open'] : [])
+          .notifyShare(item.id, `${titleOf(item.files)} arrived`, `From ${from} · ${item.savedAs ?? 'Download/Basalt'}`, one ? ['Open|open'] : [], true)
           .catch(() => {})
       } else if (before === 'waiting') {
         // Answered here, or moving now: the offer's notification has said its piece.

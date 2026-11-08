@@ -38,7 +38,25 @@ export interface Insets {
 async function plugin<T>(command: string, args?: Record<string, unknown>): Promise<T | null> {
   if (!inTauri() || !isAndroid()) return null
   const { invoke } = await import('@tauri-apps/api/core')
-  return invoke<T>(`plugin:basalt-android|${command}`, args ?? {})
+  try {
+    return await invoke<T>(`plugin:basalt-android|${command}`, args ?? {})
+  } catch (raw: unknown) {
+    // Android's refusals come as objects ({ message }), not Errors: said
+    // plainly, never "[object Object]".
+    throw new Error(pluginReason(raw))
+  }
+}
+
+/** The words in whatever a plugin call threw. */
+export function pluginReason(raw: unknown): string {
+  if (raw instanceof Error) return raw.message
+  if (typeof raw === 'string') return raw
+  if (raw && typeof raw === 'object' && 'message' in raw && typeof raw.message === 'string') return raw.message
+  try {
+    return JSON.stringify(raw)
+  } catch {
+    return 'Something went wrong.'
+  }
 }
 
 /** Why the app keeps running in the background. */
@@ -123,8 +141,8 @@ export const android = {
    * A share, as a notification on top: one offered (buttons "Label|action"),
    * or one that arrived. Tapped, the app opens at its Inbox.
    */
-  notifyShare: async (tag: string, title: string, text: string, actions: string[] = []) =>
-    (await plugin<{ shown: boolean }>('notify_share', { tag, title, text, actions }))?.shown ?? false,
+  notifyShare: async (tag: string, title: string, text: string, actions: string[] = [], ifAway = false) =>
+    (await plugin<{ shown: boolean }>('notify_share', { tag, title, text, actions, ifAway }))?.shown ?? false,
   /** Whether a nearby device's own Wi-Fi can be hosted, found and joined: `granted`, or what's missing. */
   nearbyWifiState: async () => (await plugin<{ state: string }>('nearby_wifi_state'))?.state ?? 'unsupported',
   /** Android's question for it: location before Android 13, nearby devices after. */
@@ -137,6 +155,8 @@ export const android = {
   /** Joins one, for this app: Android asks first. */
   nearbyJoin: (ssid: string, passphrase: string) => plugin<void>('nearby_join', { ssid, passphrase }),
   nearbyLeave: () => plugin<void>('nearby_leave'),
+  /** Wi-Fi off: turned on, or Android's Wi-Fi panel brought up to do it. */
+  nearbyWifiTurnOn: () => plugin<void>('nearby_wifi_turn_on'),
   /** A share's notification taken away. */
   cancelShare: (tag: string) => plugin<void>('cancel_share', { tag }),
   /** What a notification tap asked the app to open, once. */

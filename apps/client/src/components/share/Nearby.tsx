@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, Laptop, Loader2, Lock, Monitor, Radio, Send, ShieldAlert, Smartphone, Tablet, Wifi, X } from 'lucide-react'
+import { ArrowDown, Check, Laptop, Lock, Monitor, Radio, Send, ShieldAlert, Smartphone, Tablet, Wifi, X } from 'lucide-react'
 
 import type { NearbyDevice, NearbyMe } from '@/lib/api'
 import type { Incoming, Nearby, Outgoing } from '@/lib/useNearby'
 import { useNearbyDevices } from '@/lib/useNearby'
-import { isProgram, titleOf, totalOf, type ShareFile } from '@/lib/share'
+import { isProgram, percentOf, progressLine, titleOf, totalOf, type ShareFile, type ShareItem } from '@/lib/share'
 import { cn, formatBytes } from '@/lib/utils'
+import { HandoffMark, JoiningMark, LookingDots, markForm } from './WaitingMarks'
 import { Switch } from '@/components/Switch'
-import { ShareStatus } from './Share'
+import { openSaved, ShareStatus } from './Share'
 
 /**
  * Sharing with devices nearby, without a host: the devices ready around
@@ -106,7 +107,7 @@ export function NearbyList({
   if (devices.length === 0) {
     return (
       <p className="flex items-center gap-2 px-5 py-2.5 text-[12.5px] leading-snug text-textFaint">
-        {nearby.looking && <Loader2 size={13} className="shrink-0 animate-spin" />}
+        <LookingDots />
         Looking for devices nearby… The other device turns on “Ready to receive from nearby”.
       </p>
     )
@@ -196,7 +197,7 @@ export function NearbySending({
     <div className="px-5 pb-2 pt-3 text-center">
       {sending.state === 'joining' && (
         <>
-          <Loader2 size={20} className="mx-auto animate-spin text-textDim" />
+          <JoiningMark className="mx-auto text-text" />
           <p className="mt-3 text-[14px] text-text">Joining the Wi-Fi of</p>
           <NearbyName device={device} className="mt-1 justify-center text-[16px] font-semibold text-text" />
           <p className="mt-2 text-[12.5px] leading-snug text-textFaint">
@@ -216,7 +217,7 @@ export function NearbySending({
       )}
       {sending.state === 'asking' && (
         <>
-          <Loader2 size={20} className="mx-auto animate-spin text-textDim" />
+          <HandoffMark from={markForm(null)} to={markForm(device.form)} className="mx-auto text-text" />
           <p className="mt-3 text-[14px] text-text">Waiting for an answer on</p>
           <NearbyName device={device} className="mt-1 justify-center text-[16px] font-semibold text-text" />
           <p className="mt-2 text-[12.5px] leading-snug text-textFaint">
@@ -309,7 +310,9 @@ export function NearbyChooser({
   }
   return (
     <div className="flex min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {/* On a phone the sheet rises from the bottom: tall enough from the
+          start that a device found later doesn't push the rows up. */}
+      <div className={cn('min-h-0 flex-1 overflow-y-auto', phone && 'min-h-[30vh]')}>
         <NearbyList nearby={nearby} chosen={chosen ? `${chosen.id}-${chosen.key}` : null} onChoose={setChosen} />
       </div>
       <div className="border-t border-white/[0.06] px-5 pt-3.5">
@@ -346,6 +349,100 @@ export function NearbyChooser({
  * An offer from a device nearby, for this person: Accept or Decline, then
  * the code to tell the sender when one is asked.
  */
+/**
+ * Files from a device nearby, once agreed: kept in view while they come,
+ * then said to have arrived, with Open, or why not. The offer's own prompt
+ * hands over to this, so the receiver sees it through as the sender does.
+ */
+export function NearbyReceiving({
+  item,
+  nearby,
+  compact,
+  onDone,
+}: {
+  item: ShareItem
+  nearby: Nearby
+  compact?: boolean
+  onDone: () => void
+}): React.JSX.Element {
+  const [why, setWhy] = useState<string | null>(null)
+  const progress = nearby.progressOf(item)
+  const from = item.peer.name
+  const one = item.saved?.length === 1 ? item.saved[0]! : null
+  return (
+    <div className={cn('text-center', compact ? '' : 'px-5 pt-1')}>
+      <span
+        className={cn(
+          'mx-auto flex h-12 w-12 items-center justify-center rounded-full',
+          item.state === 'done' ? 'bg-emerald-400/15 text-emerald-300' : item.state === 'failed' ? 'bg-white/[0.06] text-textDim' : 'bg-white/[0.08] text-text',
+        )}
+      >
+        {item.state === 'done' ? <Check size={22} /> : item.state === 'failed' ? <X size={22} /> : <ArrowDown size={22} />}
+      </span>
+      <p className={cn('mt-3 font-semibold text-text', compact ? 'text-[14px]' : 'text-[15px]')}>
+        {item.state === 'done' ? `${titleOf(item.files)} arrived` : item.state === 'failed' ? 'It didn’t arrive' : `Receiving ${titleOf(item.files)}`}
+      </p>
+      <p className="mt-1 truncate text-[12.5px] text-textFaint">
+        {item.state === 'failed' ? (item.reason ?? 'The other device stopped sending.') : `From ${from}`}
+      </p>
+      {item.state === 'moving' && (
+        <div className="mt-4">
+          <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.08]">
+            {progress ? (
+              <div
+                className="h-full rounded-full bg-white transition-[width] duration-500 ease-out"
+                style={{ width: `${Math.max(2, percentOf(progress))}%` }}
+              />
+            ) : (
+              <div className="share-starting h-full w-1/3 rounded-full bg-white/60" />
+            )}
+          </div>
+          {progress && <div className="mt-1.5 font-mono text-[11px] tabular-nums text-textFaint">{progressLine(progress, formatBytes)}</div>}
+        </div>
+      )}
+      {why && <p className="mt-2 text-[12px] text-danger">{why}</p>}
+      <div className={cn('mt-4 flex gap-2.5', compact ? '' : 'pb-1')}>
+        {item.state === 'done' && one && !isProgram(one.name) && (
+          <button
+            onClick={() => {
+              setWhy(null)
+              openSaved(one)
+                .then(onDone)
+                .catch((e: unknown) => setWhy(e instanceof Error ? e.message : 'It can’t be opened from here.'))
+            }}
+            className={cn('flex-1 rounded-full bg-white font-semibold text-black active:scale-[0.98]', compact ? 'py-2 text-[12.5px]' : 'py-3 text-[14px]')}
+          >
+            Open
+          </button>
+        )}
+        <button
+          onClick={onDone}
+          className={cn(
+            'flex-1 rounded-full border border-white/[0.12] text-text',
+            compact ? 'py-2 text-[12.5px]' : 'py-2.5 text-[13.5px]',
+          )}
+        >
+          {item.state === 'moving' ? 'Hide' : 'Done'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The offer being answered here, and then the files it brought: the item
+ * followed once accepted, until put away.
+ */
+export function useNearbyFollow(nearby: Nearby): { following: ShareItem | null; stop: () => void } {
+  const [id, setId] = useState<string | null>(null)
+  const accepted = nearby.incoming.find((i) => i.accepted)?.ask
+  useEffect(() => {
+    if (accepted) setId(`nb-${accepted}`)
+  }, [accepted])
+  const following = id ? (nearby.items.find((i) => i.id === id && i.direction === 'in') ?? null) : null
+  return { following, stop: () => setId(null) }
+}
+
 export function NearbyPrompt({
   nearby,
   offer,
@@ -384,8 +481,8 @@ export function NearbyPrompt({
   }
   if (offer.accepted) {
     return (
-      <p className="flex items-center justify-center gap-2 py-3 text-[13px] text-textDim">
-        <Loader2 size={14} className="animate-spin" /> Starting…
+      <p className="flex items-center justify-center gap-2.5 py-3 text-[13px] text-textDim">
+        <LookingDots /> Starting…
       </p>
     )
   }
@@ -536,7 +633,7 @@ export function NearbyScreen({
             <Send size={17} className="shrink-0 text-textDim" />
             <span className="min-w-0 flex-1">
               <span className="block text-[14px] text-text">Send files to a device nearby</span>
-              <span className="block text-[12px] text-textFaint">Any file on this {phone ? 'phone' : 'computer'}, on the same Wi-Fi, no drive needed</span>
+              <span className="block text-[12px] text-textFaint">Any file on this {phone ? 'phone' : 'computer'}. No drive or shared Wi-Fi needed.</span>
             </span>
           </button>
         </div>

@@ -38,6 +38,7 @@ const COMMANDS: &[&str] = &[
     "nearby_scan",
     "nearby_join",
     "nearby_leave",
+    "nearby_wifi_turn_on",
     "cancel_share",
     "take_action",
     "app_version",

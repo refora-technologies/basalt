@@ -932,6 +932,8 @@ export const api = {
   nearbyFinish: (ask: string, answer: 'done' | 'failed') => call<void>('nearby_finish', { ask, answer }),
   /** The devices nearby ready to receive, on this Wi-Fi. */
   nearbyFind: () => call<NearbyDevice[]>('nearby_find'),
+  /** A step of sharing nearby, into the device's own log (Android's logcat). */
+  nearbyNote: (line: string) => call<void>('nearby_note', { line }),
   /** Offers files on this device to one nearby, and waits for the answer there. */
   nearbyOffer: (device: NearbyDevice, offer: string, files: { source: string; name: string; size: number }[], alwaysCode: boolean) =>
     call<NearbySaid>('nearby_offer', { device, offer, files, alwaysCode }),

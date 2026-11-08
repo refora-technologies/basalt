@@ -7,7 +7,7 @@ import type { AppModel } from '@/App'
 import { Switch } from '@/components/Switch'
 import { SyncLogPanel } from '@/components/music/SyncLog'
 import { InboxList, ReceivePrompt, ShareChooser } from '@/components/share/Share'
-import { NearbyPrompt, NearbyScreen, NearbySwitches } from '@/components/share/Nearby'
+import { NearbyPrompt, NearbyReceiving, NearbyScreen, NearbySwitches, useNearbyFollow } from '@/components/share/Nearby'
 import type { Nearby } from '@/lib/useNearby'
 import { HeldList } from '@/components/share/Held'
 import type { ShareItem } from '@/lib/share'
@@ -195,6 +195,7 @@ function InboxScreen({
 export function PhoneNearby({ nearby }: { nearby: Nearby }): React.JSX.Element {
   const [putAway, setPutAway] = useState<Set<string>>(() => new Set())
   const offer = nearby.incoming.find((i) => i.accepted || !putAway.has(i.ask)) ?? null
+  const { following, stop } = useNearbyFollow(nearby)
   const open = nearby.screenOpen
   // Ready for devices nearby: kept running when left, as for the home's.
   useEffect(() => {
@@ -242,16 +243,21 @@ export function PhoneNearby({ nearby }: { nearby: Nearby }): React.JSX.Element {
         )}
       </AnimatePresence>
       <Sheet
-        open={offer !== null}
+        open={offer !== null || following !== null}
         onClose={() => {
           if (offer && !offer.accepted) setPutAway((s) => new Set(s).add(offer.ask))
+          else if (!offer) stop()
         }}
       >
-        {offer && (
+        {offer ? (
           <div className="pb-[calc(var(--inset-bottom,0px)+18px)]">
             <NearbyPrompt nearby={nearby} offer={offer} />
           </div>
-        )}
+        ) : following ? (
+          <div className="pb-[calc(var(--inset-bottom,0px)+18px)]">
+            <NearbyReceiving item={following} nearby={nearby} onDone={stop} />
+          </div>
+        ) : null}
       </Sheet>
     </>
   )

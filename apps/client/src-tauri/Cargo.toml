@@ -55,7 +55,9 @@ webkit2gtk = { version = "2.0", features = ["v2_16"] }
 tauri-winrt-notification = "0.8"
 # A nearby device's own Wi-Fi: hosting it (Wi-Fi Direct) and looking for one (WLAN).
 windows = { version = "0.61", features = [
+    "Devices_Radios",
     "Devices_WiFiDirect",
+    "Foundation_Collections",
     "Security_Credentials",
     "Foundation",
     "Win32_Foundation",

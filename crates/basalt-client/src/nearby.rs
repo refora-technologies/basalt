@@ -48,6 +48,22 @@ use tokio::sync::{mpsc, oneshot};
 use crate::client::{Cancel, Progress, ProgressFn, TransferKind};
 use crate::{ClientError, Result};
 
+/// Where what happens on the way goes, for a device's own log (Android's
+/// logcat, a desktop's console): finding, joining and offering cross other
+/// devices' networks, and a step that fails there says nothing on screen.
+static TRACE: std::sync::OnceLock<fn(&str)> = std::sync::OnceLock::new();
+
+/// Sends this module's account of each step to `log`, once.
+pub fn trace_to(log: fn(&str)) {
+    let _ = TRACE.set(log);
+}
+
+fn trace(line: impl FnOnce() -> String) {
+    if let Some(log) = TRACE.get() {
+        log(&line());
+    }
+}
+
 /// Where a device ready for nearby shares answers.
 pub const READY_PORT: u16 = 7745;
 const MAGIC: &[u8; 5] = b"BSLTr";
@@ -290,8 +306,12 @@ impl Ready {
         let identity = basalt_net::identity::HostIdentity::generate("basalt-nearby")?;
         let acceptor = basalt_net::tls::server_config(&identity)?;
         let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+        // Its replies follow each connection in, whichever Wi-Fi it came
+        // over: see `on_no_network`.
+        on_no_network(&listener, "listener");
         let tcp_port = listener.local_addr()?.port();
         let udp = bind_port(port).await?;
+        let unbound = unbound_socket().await;
         let answers: Waiting = Arc::default();
         let finishes: Finishing = Arc::default();
         let links: Links = Arc::default();
@@ -320,15 +340,36 @@ impl Ready {
                         }
                         let mut reply = buffer[..14].to_vec();
                         reply.extend_from_slice(said.as_bytes());
-                        let _ = udp.send_to(&reply, from).await;
+                        let sent = udp.send_to(&reply, from).await;
+                        // And again on a socket on no network in particular:
+                        // the one that reaches a device on this one's own
+                        // Wi-Fi when the app is held to another (see
+                        // `unbound_socket`). Twice is harmless; the finder
+                        // counts each device once.
+                        let again = match &unbound {
+                            Some(unbound) => Some(unbound.send_to(&reply, from).await),
+                            None => None,
+                        };
+                        if !from.ip().is_loopback() {
+                            trace(|| {
+                                format!(
+                                    "ready: looked for by {from}, answered: {sent:?}, {again:?}"
+                                )
+                            });
+                        }
                     }
                 };
                 let serving = async {
                     let mut asks = 0u64;
                     loop {
-                        let Ok((stream, _)) = listener.accept().await else {
-                            continue;
+                        let (stream, from) = match listener.accept().await {
+                            Ok(accepted) => accepted,
+                            Err(e) => {
+                                trace(|| format!("ready: accept failed: {e}"));
+                                continue;
+                            }
                         };
+                        trace(|| format!("ready: an offer's line from {from}"));
                         asks += 1;
                         let ask = format!("n{asks}-{}", new_code());
                         let acceptor = acceptor.clone();
@@ -337,11 +378,19 @@ impl Ready {
                         let finishes = Arc::clone(&finishes);
                         let links = Arc::clone(&links);
                         tokio::spawn(async move {
-                            let Ok(Ok(tls)) =
-                                tokio::time::timeout(STEP, acceptor.accept(stream)).await
-                            else {
-                                return;
-                            };
+                            let tls =
+                                match tokio::time::timeout(STEP, acceptor.accept(stream)).await {
+                                    Ok(Ok(tls)) => tls,
+                                    other => {
+                                        trace(|| {
+                                            format!(
+                                                "ready: TLS from {from} failed: {:?}",
+                                                other.map(|r| r.map(|_| ()))
+                                            )
+                                        });
+                                        return;
+                                    }
+                                };
                             let ended = receive(
                                 tls,
                                 &ask,
@@ -355,6 +404,7 @@ impl Ready {
                             answers.lock().expect("answers lock").remove(&ask);
                             finishes.lock().expect("finishes lock").remove(&ask);
                             links.lock().expect("links lock").remove(&ask);
+                            trace(|| format!("ready: offer {ask} ended: {ended:?}"));
                             if let Err(e) = ended {
                                 let _ = events.send(ReadyEvent::Gone {
                                     ask,
@@ -523,7 +573,7 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 /// The devices ready to receive on this Wi-Fi, each once. `port` is
 /// [`READY_PORT`] but in tests.
 pub async fn find(port: u16, window: Duration) -> Result<Vec<NearbyDevice>> {
-    let udp = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+    let udp = Arc::new(UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?);
     udp.set_broadcast(true)?;
     let mut nonce = [0u8; 8];
     let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut nonce);
@@ -531,6 +581,29 @@ pub async fn find(port: u16, window: Duration) -> Result<Vec<NearbyDevice>> {
     query.push(VERSION);
     query.extend_from_slice(&nonce);
     let mut found: Vec<NearbyDevice> = Vec::new();
+    // Broadcasts are dropped on some Wi-Fi (a phone's chip, a router keeping
+    // devices apart, a device's own Wi-Fi): every neighbour is asked directly
+    // too, once, the network's own device first (on a device's own Wi-Fi,
+    // that is the device). Asked alongside, so answers are read as they come
+    // rather than after the last of 253 is sent.
+    let sweep = {
+        let udp = Arc::clone(&udp);
+        let query = query.clone();
+        tokio::spawn(async move {
+            let all = neighbours();
+            let mut failed = 0;
+            for neighbour in &all {
+                if udp
+                    .send_to(&query, SocketAddr::new(*neighbour, port))
+                    .await
+                    .is_err()
+                {
+                    failed += 1;
+                }
+            }
+            trace(|| format!("find: asked {} neighbours, {failed} failed", all.len()));
+        })
+    };
     let deadline = tokio::time::Instant::now() + window;
     let mut buffer = [0u8; 1024];
     let mut asked = 0;
@@ -543,13 +616,10 @@ pub async fn find(port: u16, window: Duration) -> Result<Vec<NearbyDevice>> {
                 .map(|ip| SocketAddr::new(ip, port))
                 .collect();
             for target in targets {
-                let _ = udp.send_to(&query, target).await;
-            }
-            // Broadcasts are dropped on some Wi-Fi (a phone's chip, a router
-            // keeping devices apart): every neighbour asked directly too, once.
-            if asked == 0 {
-                for neighbour in neighbours() {
-                    let _ = udp.send_to(&query, SocketAddr::new(neighbour, port)).await;
+                if let Err(e) = udp.send_to(&query, target).await
+                    && asked == 0
+                {
+                    trace(|| format!("find: couldn't ask {target}: {e}"));
                 }
             }
             asked += 1;
@@ -562,9 +632,12 @@ pub async fn find(port: u16, window: Duration) -> Result<Vec<NearbyDevice>> {
             && buffer[6..14] == nonce
             && let Ok(said) = serde_json::from_slice::<serde_json::Value>(&buffer[14..n])
         {
+            trace(|| format!("find: answered by {from}"));
             add(&mut found, &said, from);
         }
     }
+    sweep.abort();
+    trace(|| format!("find: {} found", found.len()));
     found.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
     Ok(found)
 }
@@ -661,7 +734,16 @@ pub async fn offer(
         .await
         {
             Ok(Ok(tcp)) => break tcp,
-            _ if tries < 4 => tokio::time::sleep(Duration::from_millis(1_500)).await,
+            failed if tries < 4 => {
+                trace(|| {
+                    format!(
+                        "offer: connect to {at}:{} failed ({:?}), try {tries}",
+                        device.port,
+                        failed.map(|r| r.map(|_| ()))
+                    )
+                });
+                tokio::time::sleep(Duration::from_millis(1_500)).await
+            }
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => {
                 return Err(ClientError::Config(format!(
@@ -671,6 +753,7 @@ pub async fn offer(
             }
         }
     };
+    trace(|| format!("offer: connected to {at}:{}", device.port));
     let (connector, _) =
         basalt_net::tls::client_config(basalt_net::tls::Trust::Pinned(device.key.clone()));
     let tls = tokio::time::timeout(STEP, connector.connect(basalt_net::tls::sni_name(), tcp))
@@ -805,6 +888,48 @@ impl Offering {
 // ---------------------------------------------------------------------------
 
 /// The ready port, tried for a second: one just stopped frees it a moment later.
+/// A socket held to no network, where the app's sockets are all held to one.
+///
+/// On Android the app holds itself to the Wi-Fi it's on (to reach its host
+/// there rather than over mobile data), and every socket it opens is sent
+/// out over that Wi-Fi alone. A phone ready nearby also hosts a Wi-Fi of its
+/// own, and its answers to a device that joined that one would go out over
+/// the home Wi-Fi to nowhere. A socket let go of that hold is routed as the
+/// system sees fit, which for its own Wi-Fi's devices is that Wi-Fi.
+/// Elsewhere there is no such hold, and no need.
+async fn unbound_socket() -> Option<UdpSocket> {
+    #[cfg(target_os = "android")]
+    {
+        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await.ok()?;
+        on_no_network(&socket, "answers").then_some(socket)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        None
+    }
+}
+
+/// Lets a socket go of the app's hold on one network (Android; elsewhere
+/// there is none). A listener let go answers each connection over the
+/// network it came in on: a device on this phone's own Wi-Fi as well as one
+/// on the home Wi-Fi. Says whether it was.
+#[cfg(target_os = "android")]
+fn on_no_network(socket: &impl std::os::fd::AsRawFd, what: &str) -> bool {
+    unsafe extern "C" {
+        /// From libandroid (API 23): `net_handle_t` 0 is "no network in particular".
+        fn android_setsocknetwork(network: u64, fd: std::ffi::c_int) -> std::ffi::c_int;
+    }
+    // SAFETY: a socket the caller holds open for the length of the call.
+    let done = unsafe { android_setsocknetwork(0, socket.as_raw_fd()) };
+    trace(|| format!("ready: {what} on no network in particular: {done}"));
+    done == 0
+}
+
+#[cfg(not(target_os = "android"))]
+fn on_no_network<T>(_: &T, _: &str) -> bool {
+    true
+}
+
 async fn bind_port(port: u16) -> Result<UdpSocket> {
     let mut tries = 0;
     loop {
@@ -839,6 +964,12 @@ fn neighbours() -> Vec<IpAddr> {
             }
         }
     }
+    // The network's own device first: x.x.x.1 is where a phone's own Wi-Fi
+    // (192.168.49.1) and a computer's (192.168.137.1) are, and most routers.
+    all.sort_by_key(|ip| match ip {
+        IpAddr::V4(v4) => v4.octets()[3] != 1,
+        IpAddr::V6(_) => true,
+    });
     all
 }
 
