@@ -169,6 +169,13 @@ html.tv [role='row']:focus,
 html.tv [data-player] [data-remote-scope] button:focus {
   background-color: rgba(255, 255, 255, 0.1);
 }
+/* A page's back bar over a list scrolling under it: solid on a TV, whose
+   webview draws no blur, so a white Play button doesn't show through
+   under the arrow. */
+html.tv [data-page-head] {
+  background-color: #0b0b0c;
+  backdrop-filter: none;
+}
 /* The highlight rings these itself. */
 html.tv [data-focus-ring] {
   --tw-ring-color: transparent !important;

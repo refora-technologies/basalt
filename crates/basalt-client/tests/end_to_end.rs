@@ -566,9 +566,11 @@ async fn a_host_is_reached_by_its_computers_name() {
     assert_eq!(info.address, fixture.addr);
     // Not held up by the names that do not resolve: "localhost.local" takes
     // Windows five seconds to give up on. A fixed limit failed now and then
-    // while every other test ran beside this one: the refusal above grew.
+    // while every other test ran beside this one: the refusal above grew,
+    // and the client meets it too. Twice it, and 3 s: a five-second stall on
+    // a calm machine (refused about 2 s) still fails it.
     assert!(
-        started.elapsed() < refused + std::time::Duration::from_secs(3),
+        started.elapsed() < refused * 2 + std::time::Duration::from_secs(3),
         "took {:?}, of which {refused:?} saying nothing answers at the old address",
         started.elapsed()
     );

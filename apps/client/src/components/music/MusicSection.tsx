@@ -578,7 +578,7 @@ function ArtistCard({
 
 function PageHead({ onBack, children }: { onBack: () => void; children?: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="sticky top-0 z-[1] -mx-1 flex h-11 items-center bg-ink/90 backdrop-blur">
+    <div data-page-head="" className="sticky top-0 z-[1] -mx-1 flex h-11 items-center bg-ink/90 backdrop-blur">
       <button
         onClick={onBack}
         aria-label="Back"
@@ -943,6 +943,7 @@ function SongList({
             >
               <button
                 onClick={() => player?.play(paths, i, from)}
+                data-remote-key={`song:${song.path}`}
                 className="flex min-w-0 flex-1 items-center gap-3 text-left"
               >
                 <span className="flex w-6 shrink-0 justify-end text-[12px] tabular-nums text-textFaint">

@@ -202,6 +202,20 @@ function settle(): void {
   const within = scope()
   const current = document.activeElement
   if (current && current !== document.body && within.contains(current)) return
+  // Lost because what it was on was drawn again (a song started with OK,
+  // and the page around it rebuilt as the music bar came): back on the
+  // same thing, not on the page's first button.
+  const key = lastKey
+  lastKey = null
+  if (key) {
+    const same = pressables(within).find((el) => el.getAttribute('data-remote-key') === key)
+    if (same) {
+      // Found again, not a screen's start: not moved on to it later.
+      placed = null
+      focus(same)
+      return
+    }
+  }
   // Lost from a part of the screen that changed under it (the music bar
   // turning from another device's music to this one's): found again there,
   // not back at the top of the page.
@@ -211,7 +225,7 @@ function settle(): void {
     const there = pressables(region)
     const back = there.find((el) => el.matches('[data-remote-region-first]')) ?? there[0]
     if (back) {
-      placed = back
+      placed = null
       focus(back)
       return
     }
@@ -232,6 +246,12 @@ function settle(): void {
  * where it is found again if what it was on goes.
  */
 let lastRegion: Element | null = null
+
+/**
+ * What the focus was last on, by the `data-remote-key` it carries (a song's
+ * path): found again by it when the screen is drawn anew.
+ */
+let lastKey: string | null = null
 
 /**
  * Where `settle` put the focus, until a key moves it. A screen whose start
@@ -311,7 +331,11 @@ export function startRemote(): void {
     startCameLate()
   }, 150)
   document.addEventListener('focusin', (e) => {
-    lastRegion = e.target instanceof Element ? e.target.closest('[data-remote-region]') : null
+    // The focus falling back to the page itself (what had it was removed)
+    // is not a new place: what it was on is still what to find again.
+    if (e.target === document.body || !(e.target instanceof Element)) return
+    lastRegion = e.target.closest('[data-remote-region]')
+    lastKey = e.target.closest('[data-remote-key]')?.getAttribute('data-remote-key') ?? null
   })
   window.addEventListener('keydown', (e) => {
     placed = null
