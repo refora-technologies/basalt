@@ -51,7 +51,8 @@ export function NearbyDeviceRow({
   chosen: boolean
   onClick: () => void
 }): React.JSX.Element {
-  const Icon = formIcon(device.form)
+  // Found by its own Wi-Fi, its kind isn't known yet: a neutral mark, not a guess.
+  const Icon = device.ssid && !device.form ? Radio : formIcon(device.form)
   return (
     <button
       onClick={onClick}

@@ -254,7 +254,11 @@ class MpvPropertyArgs {
     Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications"),
     // Finding and joining a nearby device's own Wi-Fi: Android 13 asks for
     // "nearby devices", before that for location.
-    Permission(strings = [Manifest.permission.NEARBY_WIFI_DEVICES], alias = "nearbyWifi"),
+    // Android 13+: its own Wi-Fi needs "nearby devices", and looking at the Wi-Fis around still location.
+    Permission(
+      strings = [Manifest.permission.NEARBY_WIFI_DEVICES, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION],
+      alias = "nearbyWifi",
+    ),
     Permission(strings = [Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION], alias = "location"),
     Permission(strings = [LocalNetwork.PERMISSION], alias = LocalNetwork.ALIAS),
     Permission(strings = [LocalNetwork.TEST_PERMISSION], alias = LocalNetwork.TEST_ALIAS),
@@ -1421,10 +1425,13 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
       .build()
     val callback = object : ConnectivityManager.NetworkCallback() {
       override fun onAvailable(network: Network) {
+        // Sharing over a nearby device's own Wi-Fi: left on it until done.
+        if (NearbyWifi.joinedNow) return
         connectivity().bindProcessToNetwork(network)
       }
 
       override fun onLost(network: Network) {
+        if (NearbyWifi.joinedNow) return
         if (connectivity().boundNetworkForProcess == network) {
           connectivity().bindProcessToNetwork(null)
         }

@@ -1671,6 +1671,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
               setIntroducing(false)
             }}
             onLeave={onboarded() ? () => setIntroducing(false) : undefined}
+            onNearby={() => model.nearby.setScreenOpen(true)}
           />
         </div>
       </div>

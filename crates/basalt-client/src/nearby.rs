@@ -649,9 +649,28 @@ pub async fn offer(
         .address
         .parse()
         .map_err(|_| ClientError::Protocol("that device has no address".into()))?;
-    let tcp = tokio::time::timeout(STEP, TcpStream::connect(SocketAddr::new(at, device.port)))
+    // Tried a few times: a Wi-Fi just joined (a device's own) takes a moment
+    // before this device's connections go over it.
+    let mut tries = 0;
+    let tcp = loop {
+        tries += 1;
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            TcpStream::connect(SocketAddr::new(at, device.port)),
+        )
         .await
-        .map_err(|_| ClientError::Config(format!("couldn't reach {}", device.name)))??;
+        {
+            Ok(Ok(tcp)) => break tcp,
+            _ if tries < 4 => tokio::time::sleep(Duration::from_millis(1_500)).await,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                return Err(ClientError::Config(format!(
+                    "couldn't reach {}",
+                    device.name
+                )));
+            }
+        }
+    };
     let (connector, _) =
         basalt_net::tls::client_config(basalt_net::tls::Trust::Pinned(device.key.clone()));
     let tls = tokio::time::timeout(STEP, connector.connect(basalt_net::tls::sni_name(), tcp))

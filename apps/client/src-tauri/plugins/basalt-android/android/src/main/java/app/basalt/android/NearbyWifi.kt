@@ -31,7 +31,7 @@ class NearbyWifi(private val context: Context) {
   private val main = Handler(Looper.getMainLooper())
   private val p2p: WifiP2pManager? = context.getSystemService(Context.WIFI_P2P_SERVICE) as WifiP2pManager?
   private var channel: WifiP2pManager.Channel? = null
-  private var joined: ConnectivityManager.NetworkCallback? = null
+  private var joinedCallback: ConnectivityManager.NetworkCallback? = null
   private var before: Network? = null
   private var hosting = false
 
@@ -40,9 +40,8 @@ class NearbyWifi(private val context: Context) {
   private val wifi: WifiManager
     get() = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
-  /** Whether Android will let this phone look for Wi-Fi: it wants Location on, before Android 13. */
+  /** Whether Android will let this phone look at the Wi-Fis around: Location must be on, on every version. */
   fun locationOn(): Boolean {
-    if (Build.VERSION.SDK_INT >= 33) return true
     val location = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     return if (Build.VERSION.SDK_INT >= 28) location.isLocationEnabled else true
   }
@@ -141,30 +140,35 @@ class NearbyWifi(private val context: Context) {
         connectivity.bindProcessToNetwork(network)
         if (!answered) {
           answered = true
-          main.post { done(null) }
+          // A moment for its routes to apply to this app's connections.
+          main.postDelayed({ done(null) }, SETTLE_MS)
         }
       }
 
       override fun onUnavailable() {
+        joinedNow = false
         if (!answered) {
           answered = true
           main.post { done("It couldn't join that device's Wi-Fi.") }
         }
       }
     }
-    joined = callback
+    joinedCallback = callback
+    joinedNow = true
     try {
       connectivity.requestNetwork(request, callback, JOIN_WAIT_MS)
     } catch (e: Exception) {
-      joined = null
+      joinedCallback = null
+      joinedNow = false
       done(e.message ?: "It couldn't join that device's Wi-Fi.")
     }
   }
 
   /** Leaves a Wi-Fi joined for sharing: back to the one before. */
   fun leave() {
-    val callback = joined ?: return
-    joined = null
+    val callback = joinedCallback ?: return
+    joinedCallback = null
+    joinedNow = false
     runCatching { connectivity.unregisterNetworkCallback(callback) }
     runCatching { connectivity.bindProcessToNetwork(before) }
     before = null
@@ -177,9 +181,14 @@ class NearbyWifi(private val context: Context) {
   }
 
   companion object {
+    /** On a nearby device's own Wi-Fi now, to share: the app's binding stays on it. */
+    @Volatile
+    var joinedNow = false
+
     /** Every Basalt Wi-Fi is named so. */
     const val PREFIX = "DIRECT-bs-"
     private const val SCAN_WAIT_MS = 3_000L
     private const val JOIN_WAIT_MS = 60_000
+    private const val SETTLE_MS = 1_500L
   }
 }

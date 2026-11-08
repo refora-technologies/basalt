@@ -175,6 +175,7 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
             setIntroducing(false)
           }}
           onLeave={onboarded() ? () => setIntroducing(false) : undefined}
+          onNearby={TV ? undefined : () => model.nearby.setScreenOpen(true)}
         />
       </Safe>
     )

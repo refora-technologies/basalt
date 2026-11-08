@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ArrowLeft, ArrowRight, Download, Globe, Keyboard, Send } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Download, Globe, Keyboard, Radio, Send } from 'lucide-react'
 import { OnboardingScene } from './OnboardingScene'
 import { api, type DiscoveredHost } from '@/lib/api'
 import { android } from '@/lib/android'
@@ -58,8 +58,11 @@ const RESCAN_MS = 4000
 export function Onboarding({
   onDone,
   onLeave,
+  onNearby,
 }: {
   onDone: () => void
+  /** Sharing with a device nearby instead: no drive needed. */
+  onNearby?: () => void
   /** Back from the first page, when it was opened from the drive list to see again. */
   onLeave?: () => void
 }): React.JSX.Element {
@@ -208,7 +211,25 @@ export function Onboarding({
                     </p>
                   </>
                 ) : (
-                  <Finding phone={phone} hosts={hosts} onDone={onDone} />
+                  <>
+                    <Finding phone={phone} hosts={hosts} onDone={onDone} />
+                    {onNearby && hosts !== null && (
+                      <button
+                        onClick={() => {
+                          onDone()
+                          onNearby()
+                        }}
+                        className="mt-4 flex w-full items-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-2.5 text-left transition-colors hover:bg-white/[0.05] active:bg-white/[0.06]"
+                      >
+                        <Radio size={15} className="shrink-0 text-sky-300" />
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[13px] text-text">Or share with a device nearby</span>
+                          <span className="block text-[11.5px] text-textFaint">Send or receive files, no drive needed</span>
+                        </span>
+                        <ArrowRight size={13} className="shrink-0 text-textFaint" />
+                      </button>
+                    )}
+                  </>
                 )}
               </motion.div>
             </AnimatePresence>
