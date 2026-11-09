@@ -138,6 +138,9 @@ struct AppState {
     channel: Mutex<std::collections::VecDeque<basalt_proto::msg::ChannelMessage>>,
     /// Where offers and hand-offs are kept a while on disk (see `keep_share_message`).
     kept_shares: Option<std::path::PathBuf>,
+    /// Where share notices go for Android to show (see `share_notice`).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    notices: Option<std::path::PathBuf>,
     /// This device's listener for files it offers from itself, started the
     /// first time it offers one.
     direct: tokio::sync::OnceCell<Arc<basalt_client::direct::DirectServer>>,
@@ -1116,9 +1119,7 @@ fn share_offer_notice(app: &tauri::AppHandle, message: &basalt_proto::msg::Chann
             format!("From {}", message.from_name),
         )
     };
-    let _ = app
-        .basalt_android()
-        .notify_share_away(offer, &title, &text, &[]);
+    share_notice(app, offer, &title, &text, &[]);
 }
 
 /// An offer from a device nearby, told by Android itself while the app is
@@ -1126,7 +1127,6 @@ fn share_offer_notice(app: &tauri::AppHandle, message: &basalt_proto::msg::Chann
 /// buttons as the page's own (nearbyNotifications.ts), so a tap answers it.
 #[cfg(target_os = "android")]
 fn nearby_offer_notice(app: &tauri::AppHandle, event: &basalt_client::nearby::ReadyEvent) {
-    use tauri_plugin_basalt_android::BasaltAndroidExt;
     let basalt_client::nearby::ReadyEvent::Offer {
         ask,
         from,
@@ -1146,13 +1146,47 @@ fn nearby_offer_notice(app: &tauri::AppHandle, event: &basalt_client::nearby::Re
     } else {
         "A device nearby"
     };
-    let shown = app.basalt_android().notify_share_away(
+    share_notice(
+        app,
         &format!("nearby-{ask}"),
         &title,
         text,
         &["Accept|accept", "Decline|decline"],
     );
-    nearby_log(&format!("offer {ask}: notice asked of Android: {shown:?}"));
+    nearby_log(&format!("offer {ask}: notice written"));
+}
+
+/// A share's notice, for Android to show while Basalt isn't on screen
+/// (ShareNotices watches the file): written, never asked of the plugin,
+/// which fails with Basalt swiped away. The last 20 are kept.
+#[cfg(target_os = "android")]
+fn share_notice(app: &tauri::AppHandle, tag: &str, title: &str, text: &str, actions: &[&str]) {
+    let Some(path) = app
+        .try_state::<AppState>()
+        .and_then(|state| state.notices.clone())
+    else {
+        return;
+    };
+    let mut kept: Vec<serde_json::Value> = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    kept.push(serde_json::json!({
+        "at": now_ms() as u64,
+        "tag": tag,
+        "title": title,
+        "text": text,
+        "actions": actions,
+    }));
+    let start = kept.len().saturating_sub(20);
+    let Ok(bytes) = serde_json::to_vec(&kept[start..]) else {
+        return;
+    };
+    // Whole, then moved into place: the watcher reads it complete.
+    let fresh = path.with_extension("json.new");
+    if std::fs::write(&fresh, bytes).is_ok() {
+        let _ = std::fs::rename(&fresh, &path);
+    }
 }
 
 /// Accept or Decline for an offer from a device nearby. False if it's gone.
@@ -1293,7 +1327,10 @@ fn shared_in(args: &[String]) -> Vec<LocalFile> {
         .iter()
         .filter_map(|path| {
             let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
-            let name = std::path::Path::new(path).file_name()?.to_string_lossy().into_owned();
+            let name = std::path::Path::new(path)
+                .file_name()?
+                .to_string_lossy()
+                .into_owned();
             Some(LocalFile {
                 source: path.clone(),
                 name,
@@ -2962,6 +2999,14 @@ pub fn run() {
             let hint: Option<String> =
                 dev_isolated().map(|folder| format!("development copy {}", folder.display()));
             let kept_shares = store_path.with_file_name("share-messages.json");
+            let notices = store_path.with_file_name("share-notices.json");
+            // Told now, while there is a window to ask Android through: later,
+            // with Basalt swiped away, there may be none.
+            #[cfg(target_os = "android")]
+            {
+                use tauri_plugin_basalt_android::BasaltAndroidExt;
+                let _ = app.basalt_android().notices_at(&notices.to_string_lossy());
+            }
             // The device's key goes in the phone's hardware key store there;
             // on Windows the client finds the TPM by itself.
             #[cfg(mobile)]
@@ -3013,6 +3058,7 @@ pub fn run() {
                 external: Mutex::new(std::collections::HashSet::new()),
                 channel: Mutex::new(kept_share_messages(&kept_shares)),
                 kept_shares: Some(kept_shares.clone()),
+                notices: Some(notices.clone()),
                 direct: tokio::sync::OnceCell::new(),
                 nearby_ready: Mutex::new(None),
                 nearby_wifi: nearby_wifi::State::default(),

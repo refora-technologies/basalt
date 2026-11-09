@@ -48,8 +48,21 @@ impl Version {
 pub fn is_newer(candidate: &str, current: &str) -> bool {
     match (Version::parse(candidate), Version::parse(current)) {
         (Some(new), Some(old)) => new > old,
+        // This copy is a test build of a release to come (`1.6.4-beta.1`):
+        // that release itself is newer, as is anything after it.
+        (Some(new), None) => before_release(current).is_some_and(|base| new >= base),
         _ => false,
     }
+}
+
+/// The release a test build comes before: `1.6.4` for `1.6.4-beta.1`. Only
+/// for the copy running, never for a tag offered (see [`Version::parse`]).
+fn before_release(current: &str) -> Option<Version> {
+    let (base, label) = current.trim().split_once('-')?;
+    if label.is_empty() || !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '.') {
+        return None;
+    }
+    Version::parse(base)
 }
 
 #[cfg(test)]
@@ -85,6 +98,16 @@ mod tests {
         // Ten is after nine, which string comparison gets wrong.
         assert!(!is_newer("v1.0.9", "1.0.10"));
         assert!(is_newer("v1.0.10", "1.0.9"));
+    }
+
+    #[test]
+    fn a_test_build_is_offered_its_release_and_later_only() {
+        assert!(is_newer("v1.6.4", "1.6.4-beta.1"));
+        assert!(is_newer("v1.7.0", "1.6.4-beta.1"));
+        assert!(!is_newer("v1.6.3", "1.6.4-beta.1"));
+        // A tag with a label is still never offered.
+        assert!(!is_newer("v1.6.4-beta.2", "1.6.4-beta.1"));
+        assert!(!is_newer("v1.6.4", "1.6.4-"));
     }
 
     #[test]

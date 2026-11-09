@@ -6,6 +6,8 @@ import type { Transfers } from './useTransfers'
 import {
   KIND,
   OFFER_TTL_MS,
+  endedUnanswered,
+  unanswered,
   apply,
   kept,
   newOfferId,
@@ -378,28 +380,13 @@ export function useInbox(
   // withdrawn). One kept on the host waits there as the host says (24 h).
   useEffect(() => {
     const sweep = (): void => {
-      const now = Date.now()
-      const old = (i: ShareItem): boolean => i.state === 'waiting' && now - i.at > OFFER_TTL_MS
-      const ending = itemsRef.current.filter(
-        (i) => old(i) && (i.direction === 'out' ? !i.reason : !!i.offer && !i.offer.held),
-      )
+      const ending = unanswered(itemsRef.current, Date.now())
       if (ending.length === 0) return
       for (const i of ending) {
         if (i.direction === 'out') void api.withdrawLocal(i.id).catch(() => {})
       }
       const gone = new Set(ending.map((i) => `${i.direction}:${i.id}`))
-      setItems((list) =>
-        list.map((i) =>
-          gone.has(`${i.direction}:${i.id}`)
-            ? {
-                ...i,
-                state: 'failed',
-                offer: undefined,
-                reason: i.direction === 'out' ? 'No answer in 10 minutes.' : 'Not answered in 10 minutes: ask them to send it again.',
-              }
-            : i,
-        ),
-      )
+      setItems((list) => list.map((i) => (gone.has(`${i.direction}:${i.id}`) ? endedUnanswered(i) : i)))
     }
     sweep()
     const timer = setInterval(sweep, 30_000)

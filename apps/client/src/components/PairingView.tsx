@@ -399,7 +399,7 @@ export function PairingView({
                 <Radio size={15} className="shrink-0 text-sky-300" />
                 <span className="min-w-0 flex-1">
                   <span className="block text-[13px] text-text">Share with a device nearby</span>
-                  <span className="block text-[11.5px] text-textFaint">Send or receive files on this Wi-Fi, no drive needed</span>
+                  <span className="block text-[11.5px] text-textFaint">Send or receive files with devices nearby, no drive needed</span>
                 </span>
                 <ArrowRight size={13} className="shrink-0 text-textFaint" />
               </button>

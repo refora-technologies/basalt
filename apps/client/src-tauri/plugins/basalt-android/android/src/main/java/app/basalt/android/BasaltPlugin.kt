@@ -166,6 +166,10 @@ class NotifyUpdateArgs {
 }
 
 @InvokeArg
+class NoticesAtArgs {
+  lateinit var path: String
+}
+
 class NotifyShareArgs {
   lateinit var tag: String
   lateinit var title: String
@@ -276,7 +280,7 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
    * plugins' own pause comes from the whole process's lifecycle, late or not
    * at all with a service keeping the process up.
    */
-  private fun onScreen(): Boolean {
+  internal fun onScreen(): Boolean {
     val owner = activity as? androidx.lifecycle.LifecycleOwner ?: return inFront
     return owner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
   }
@@ -1204,49 +1208,16 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
       invoke.resolve(JSObject().put("shown", false))
       return
     }
-    val allowed = Build.VERSION.SDK_INT < 33 ||
-      context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-    if (!allowed) {
-      invoke.resolve(JSObject().put("shown", false))
-      return
-    }
-    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(SHARE_CHANNEL) == null) {
-      manager.createNotificationChannel(
-        NotificationChannel(SHARE_CHANNEL, "Shared files", NotificationManager.IMPORTANCE_HIGH).apply {
-          description = "Files your other devices and your home send you."
-        }
-      )
-    }
-    val id = SHARE_NOTIFICATIONS + (args.tag.hashCode() and 0xffff)
-    fun opening(action: String, code: Int): PendingIntent? {
-      val open = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
-        putExtra(ACTION_EXTRA, action)
-        addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-      } ?: return null
-      return PendingIntent.getActivity(
-        context, code, open,
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-      )
-    }
-    val builder = NotificationCompat.Builder(context, SHARE_CHANNEL)
-      .setSmallIcon(R.drawable.ic_stat_basalt)
-      .setContentTitle(args.title)
-      .setContentText(args.text)
-      .setStyle(NotificationCompat.BigTextStyle().bigText(args.text))
-      .setPriority(NotificationCompat.PRIORITY_HIGH)
-      .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-      .setAutoCancel(true)
-      .setContentIntent(opening("share:${args.tag}", id))
-    args.actions.forEachIndexed { n, button ->
-      val label = button.substringBefore('|')
-      val action = button.substringAfter('|', "")
-      if (label.isNotEmpty() && action.isNotEmpty()) {
-        builder.addAction(0, label, opening("share-$action:${args.tag}", id * 8 + n + 1))
-      }
-    }
-    manager.notify(id, builder.build())
-    invoke.resolve(JSObject().put("shown", true))
+    val shown = ShareNotices.post(context, args.tag, args.title, args.text, args.actions.toList())
+    invoke.resolve(JSObject().put("shown", shown))
+  }
+
+  /** Where Rust writes share notices for the service to show: see [ShareNotices]. */
+  @Command
+  fun noticesAt(invoke: Invoke) {
+    val args = invoke.parseArgs(NoticesAtArgs::class.java)
+    ShareNotices.setPath(activity.applicationContext, args.path)
+    invoke.resolve()
   }
 
   // ---------------------------------------------------------------------------
@@ -1597,6 +1568,9 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     /** The one running, for the activity's own callbacks to reach. */
     @Volatile
     var current: BasaltPlugin? = null
+
+    /** Basalt on screen now: false with no window at all (swiped away). */
+    fun onScreenNow(): Boolean = current?.onScreen() ?: false
 
     private const val ACTION_EXTRA = "basalt.action"
     private const val UPDATE_CHANNEL = "basalt-updates"

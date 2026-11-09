@@ -43,6 +43,8 @@ class KeepAliveService : Service() {
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    // Share notices Rust writes while Basalt is up without a window.
+    ShareNotices.watch(applicationContext)
     running = this
     val shown = shown() ?: lastShown
     try {

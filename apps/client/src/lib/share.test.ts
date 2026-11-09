@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest'
 import type { ChannelMessage, PresentDevice } from './api'
 import {
   KIND,
+  OFFER_TTL_MS,
   apply,
+  endedUnanswered,
+  unanswered,
   calledOf,
   isProgram,
   progressIn,
@@ -165,5 +168,44 @@ describe('how far a share has come', () => {
     expect(timeLeft(9.2)).toBe('10 s')
     expect(timeLeft(150)).toBe('3 min')
     expect(timeLeft(3_900)).toBe('1 h 5 min')
+  })
+})
+
+describe('a share nobody answers', () => {
+  const peer = { device: 'p', name: 'Phone' }
+  const files = [{ name: 'a.jpg', size: 1, path: '' }]
+  const offer = (held: boolean): OfferBody => ({
+    offer: 'o',
+    files,
+    from: peer,
+    to: { device: 'me', name: 'Me' },
+    held,
+  })
+  const at = 1_000_000
+  const sent: ShareItem = { id: 's', direction: 'out', files, peer, state: 'waiting', at }
+  const viaHost: ShareItem = { ...sent, id: 'h', reason: 'On the host until it’s back' }
+  const asked: ShareItem = { id: 'a', direction: 'in', files, peer, state: 'waiting', at, offer: offer(false) }
+  const held: ShareItem = { ...asked, id: 'k', offer: offer(true) }
+  const moving: ShareItem = { ...sent, id: 'm', state: 'moving' }
+  const all = [sent, viaHost, asked, held, moving]
+
+  it('ends after ten minutes when it went straight across, either way', () => {
+    expect(unanswered(all, at + OFFER_TTL_MS - 1)).toEqual([])
+    expect(unanswered(all, at + OFFER_TTL_MS + 1).map((i) => i.id)).toEqual(['s', 'a'])
+  })
+
+  it('leaves one kept on the host to the host, and one already moving alone', () => {
+    const ids = unanswered(all, at + 24 * 60 * OFFER_TTL_MS).map((i) => i.id)
+    expect(ids).not.toContain('h')
+    expect(ids).not.toContain('k')
+    expect(ids).not.toContain('m')
+  })
+
+  it('says why, and keeps nothing to accept', () => {
+    expect(endedUnanswered(sent)).toMatchObject({ state: 'failed', reason: 'No answer in 10 minutes.' })
+    const ended = endedUnanswered(asked)
+    expect(ended.state).toBe('failed')
+    expect(ended.offer).toBeUndefined()
+    expect(ended.reason).toMatch(/send it again/)
   })
 })

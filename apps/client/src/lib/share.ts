@@ -152,6 +152,30 @@ export function progressIn(item: ShareItem, transfers: FileMoving[], now: number
 /** How long an offer is worth answering, in ms. */
 export const OFFER_TTL_MS = 10 * 60_000
 
+/**
+ * The shares waiting past OFFER_TTL_MS at `now`: an offer straight across
+ * that nobody answered, sent from here or to here. One kept on the host
+ * (sent through it, or held for this device) waits as the host says.
+ */
+export function unanswered(items: ShareItem[], now: number): ShareItem[] {
+  return items.filter(
+    (i) =>
+      i.state === 'waiting' &&
+      now - i.at > OFFER_TTL_MS &&
+      (i.direction === 'out' ? !i.reason : !!i.offer && !i.offer.held),
+  )
+}
+
+/** What an unanswered share says once it has ended. */
+export function endedUnanswered(item: ShareItem): ShareItem {
+  return {
+    ...item,
+    state: 'failed',
+    offer: undefined,
+    reason: item.direction === 'out' ? 'No answer in 10 minutes.' : 'Not answered in 10 minutes: ask them to send it again.',
+  }
+}
+
 export type ShareState =
   /** Asked, no answer yet. */
   | 'waiting'

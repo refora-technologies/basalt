@@ -190,21 +190,11 @@ impl<R: Runtime> BasaltAndroid<R> {
             .map(|_| ())
     }
 
-    /// A share's notification, shown only with the app out of sight: for
-    /// what comes while the page isn't running (Android pauses it in the
-    /// background). `actions` are "Label|action".
-    pub fn notify_share_away(
-        &self,
-        tag: &str,
-        title: &str,
-        text: &str,
-        actions: &[&str],
-    ) -> Result<()> {
-        self.call::<serde_json::Value>(
-            "notifyShare",
-            serde_json::json!({ "tag": tag, "title": title, "text": text, "actions": actions, "ifAway": true }),
-        )
-        .map(|_| ())
+    /// Where Rust writes share notices for Android to show (ShareNotices):
+    /// told once as Basalt starts, while there is a window to ask through.
+    pub fn notices_at(&self, path: &str) -> Result<()> {
+        self.call::<serde_json::Value>("noticesAt", serde_json::json!({ "path": path }))
+            .map(|_| ())
     }
 
     /// Shows a finished download, or removes one that failed.
