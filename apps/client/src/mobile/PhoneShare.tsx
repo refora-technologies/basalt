@@ -152,7 +152,7 @@ function InboxScreen({
                       <span className="block text-[12px] text-textFaint">
                         {nearby.ready
                           ? `Ready to receive${nearby.me ? ` as ${nearby.me.name} · ${nearby.me.id}` : ''}${nearby.alwaysCode ? ', with a code' : ''}`
-                          : 'From someone who isn’t in this home: off'}
+                          : 'Receive from people outside this home: off'}
                       </span>
                     </span>
                   </button>
@@ -200,7 +200,7 @@ export function PhoneNearby({ nearby }: { nearby: Nearby }): React.JSX.Element {
   // Ready for devices nearby: kept running when left, as for the home's.
   useEffect(() => {
     if (!nearby.ready || !isAndroid()) return undefined
-    void android.keepAlive('nearby', 'Basalt', 'Ready to receive from nearby')
+    void android.keepAlive('nearby', 'Basalt', 'Receiving from devices nearby')
     return () => void android.letGo('nearby')
   }, [nearby.ready])
   useBack(open, () => {

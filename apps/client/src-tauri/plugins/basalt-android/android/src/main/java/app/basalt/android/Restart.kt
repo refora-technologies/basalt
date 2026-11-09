@@ -1,7 +1,10 @@
 package app.basalt.android
 
 import android.app.Activity
+import android.content.ClipData
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Process
 
@@ -23,8 +26,20 @@ class Restart : Activity() {
     super.onCreate(savedInstanceState)
     val old = intent.getIntExtra(OLD_PROCESS, -1)
     if (old > 0 && old != Process.myPid()) Process.killProcess(old)
-    packageManager.getLaunchIntentForPackage(packageName)?.let {
+    val launch = packageManager.getLaunchIntentForPackage(packageName)
+    // What Basalt was opened for goes on to the fresh one: files shared to it
+    // (with leave to read them), a notification's Accept or Open.
+    @Suppress("DEPRECATION")
+    val asked: Intent? =
+      if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(ORIGINAL, Intent::class.java)
+      else intent.getParcelableExtra(ORIGINAL)
+    val open = asked?.apply { component = launch?.component } ?: launch
+    open?.let {
       it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+      if (asked != null) {
+        it.clipData = intent.clipData
+        it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
       startActivity(it)
     }
     finish()
@@ -33,6 +48,18 @@ class Restart : Activity() {
 
   companion object {
     private const val OLD_PROCESS = "old-process"
+    private const val ORIGINAL = "original"
+
+    @Suppress("DEPRECATION")
+    private fun sharedUris(asked: Intent): List<Uri> {
+      val clip = asked.clipData
+      if (clip != null) return (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+      return when (asked.action) {
+        Intent.ACTION_SEND -> listOfNotNull(asked.getParcelableExtra(Intent.EXTRA_STREAM))
+        Intent.ACTION_SEND_MULTIPLE -> asked.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM) ?: emptyList()
+        else -> emptyList()
+      }
+    }
 
     /** Whether this process has opened Basalt's window before. */
     @Volatile
@@ -48,11 +75,22 @@ class Restart : Activity() {
         opened = true
         return false
       }
-      from.startActivity(
-        Intent(from, Restart::class.java)
-          .putExtra(OLD_PROCESS, Process.myPid())
-          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-      )
+      val restart = Intent(from, Restart::class.java)
+        .putExtra(OLD_PROCESS, Process.myPid())
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      from.intent?.let { asked ->
+        restart.putExtra(ORIGINAL, Intent(asked).setComponent(null))
+        // Files shared to Basalt: read leave passed along, as Android gave it
+        // to this window only.
+        val uris = sharedUris(asked)
+        if (uris.isNotEmpty()) {
+          val clip = ClipData.newRawUri("shared", uris.first())
+          uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+          restart.clipData = clip
+          restart.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+      }
+      from.startActivity(restart)
       return true
     }
   }

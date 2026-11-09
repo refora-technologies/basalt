@@ -932,6 +932,8 @@ export const api = {
   nearbyFinish: (ask: string, answer: 'done' | 'failed') => call<void>('nearby_finish', { ask, answer }),
   /** The devices nearby ready to receive, on this Wi-Fi. */
   nearbyFind: () => call<NearbyDevice[]>('nearby_find'),
+  /** Files Basalt was opened to share ("Share with Basalt" in Explorer), once. */
+  sharedAtStart: () => call<{ source: string; name: string; size: number }[]>('shared_at_start'),
   /** A step of sharing nearby, into the device's own log (Android's logcat). */
   nearbyNote: (line: string) => call<void>('nearby_note', { line }),
   /** Offers files on this device to one nearby, and waits for the answer there. */
@@ -1175,6 +1177,13 @@ export async function onNearbySent(handler: (said: { offer: string; answer: stri
   if (!inTauri()) return onPreview('nearby-sent', handler)
   const { listen } = await import('@tauri-apps/api/event')
   return listen<{ offer: string; answer: string }>('basalt://nearby-sent', (e) => handler(e.payload))
+}
+
+/** Files to share, from Explorer while Basalt runs ("Share with Basalt", Send to). */
+export async function onShareFiles(handler: (files: { source: string; name: string; size: number }[]) => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<{ source: string; name: string; size: number }[]>('basalt://share-files', (e) => handler(e.payload))
 }
 
 /** How far files on this device have gone up to the host, for a share kept there. */

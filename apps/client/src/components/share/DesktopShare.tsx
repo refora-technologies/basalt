@@ -255,7 +255,7 @@ export function InboxPage({
                   <span className="block text-[12px] text-textFaint">
                     {nearby.ready
                       ? `Ready to receive${nearby.me ? ` as ${nearby.me.name} · ${nearby.me.id}` : ''}${nearby.alwaysCode ? ', with a code' : ''}`
-                      : 'From someone who isn’t in this home, on the same Wi-Fi: off'}
+                      : 'Receive from people outside this home: off'}
                   </span>
                 </span>
               </button>

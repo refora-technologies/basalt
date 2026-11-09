@@ -63,10 +63,12 @@ import { preferPlayer, preferredPlayer, type PlayerChoice } from '@/lib/playerCh
 import {
   api,
   ApiError,
+  inTauri,
   isCancelled,
   isFinished,
   joinPath,
   parentOf,
+  onShareFiles,
   placeName,
   type MediaFile,
   type SubtitleTrack,
@@ -79,7 +81,7 @@ import { ProfileGate } from '@/components/ProfileGate'
 import { scrollKeyOf } from '@/lib/useScrollMemory'
 import { stemOf, trackInfo } from '@/lib/mediaInfo'
 import { isWaiting, useVault, waitingLabel } from '@/lib/useVault'
-import { handheldWord, isMobileShell, isTv } from '@/lib/platform'
+import { handheldWord, isAndroid, isMobileShell, isTv } from '@/lib/platform'
 import { android, type PhoneFile } from '@/lib/android'
 import { MobileApp } from '@/mobile/MobileApp'
 import { filterKind, isKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
@@ -156,6 +158,30 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
   const [viewer, setViewer] = useState<{ photos: MediaFile[]; index: number } | null>(null)
   /** Files being shared: the Share sheet is open for them. */
   const [sharing, setSharing] = useState<ShareFile[] | null>(null)
+  // Files from Explorer ("Share with Basalt", Send to): the Share sheet
+  // opens for them. Several chosen at once come one by one: gathered.
+  useEffect(() => {
+    if (!inTauri() || isAndroid()) return undefined
+    const open = (files: { source: string; name: string; size: number }[]): void => {
+      if (files.length === 0) return
+      const more: ShareFile[] = files.map((f) => ({ name: f.name, size: f.size, path: '', source: f.source }))
+      setSharing((was) => {
+        const all = [...(was ?? []).filter((f) => f.source), ...more]
+        return all.filter((f, n) => all.findIndex((g) => g.source === f.source) === n)
+      })
+    }
+    void api.sharedAtStart().then(open).catch(() => {})
+    let stop: (() => void) | null = null
+    let gone = false
+    void onShareFiles(open).then((unlisten) => {
+      if (gone) unlisten()
+      else stop = unlisten
+    })
+    return () => {
+      gone = true
+      stop?.()
+    }
+  }, [])
   const viewingIndex = viewer?.index ?? null
   const [view, setView] = useState<ViewMode>('details')
   const [sortField, setSortField] = useState<SortField>('name')
@@ -1699,6 +1725,14 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
         </div>
         <NearbyOfferCard nearby={model.nearby} />
         <NearbyDialog nearby={model.nearby} />
+        <ShareDialog
+          files={sharing}
+          presence={presence}
+          inbox={inbox}
+          nearby={model.nearby}
+          onClose={() => setSharing(null)}
+          onSaid={setShareSaid}
+        />
       </div>
     )
   }

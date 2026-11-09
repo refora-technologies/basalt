@@ -37,6 +37,9 @@ tauri-plugin-basalt-android = { path = "plugins/basalt-android" }
 # has no Android side, and the Android app brings its own.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-libmpv = "0.3.2"
+# One Basalt at a time: opened again ("Share with Basalt" in Explorer), the
+# running one is told what for.
+tauri-plugin-single-instance = "2"
 # The system's own media controls for the music: Windows' (the volume
 # flyout, the lock screen, media keys) and Linux desktops' (MPRIS). zbus
 # rather than libdbus, so nothing more to install.

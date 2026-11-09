@@ -615,14 +615,14 @@ function note(line: string): void {
 function wifiNoteFor(state: WifiState): string {
   switch (state) {
     case 'wifi':
-      return 'Turn on Wi-Fi to be found by devices with no Wi-Fi in common. You don’t need to join a network.'
+      return 'Turn on Wi-Fi so devices that aren’t on your Wi-Fi can find this one. It doesn’t need to be connected to a network.'
     case 'location':
-      return 'To be found by devices with no Wi-Fi in common, turn on Location (Android needs it to look for Wi-Fi).'
+      return 'Turn on Location so devices that aren’t on your Wi-Fi can find this one. Android needs it to look for Wi-Fi.'
     case 'ask':
     case 'denied':
-      return 'To find or be found by devices with no Wi-Fi in common, allow Basalt to find nearby devices and to use location (Android needs it to look at the Wi-Fis around).'
+      return 'To reach devices that aren’t on your Wi-Fi, allow Basalt to find nearby devices and use location. Android needs these to look for Wi-Fi.'
     case 'unsupported':
-      return 'This device can’t open a Wi-Fi of its own: only devices on the same Wi-Fi find it.'
+      return 'Only devices on the same Wi-Fi can find this one.'
     default:
       return ''
   }

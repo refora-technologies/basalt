@@ -73,14 +73,14 @@ export function NearbyDeviceRow({
         <span className="flex items-center gap-1 text-[12px] text-textFaint">
           {device.ssid ? (
             <>
-              <Wifi size={11} /> Its own Wi-Fi · a code is asked
+              <Wifi size={11} /> Direct connection · code needed
             </>
           ) : device.code ? (
             <>
-              <Lock size={11} /> Asks for a code
+              <Lock size={11} /> Code needed
             </>
           ) : (
-            'Nearby · asks to accept'
+            'On this Wi-Fi'
           )}
         </span>
       </span>
@@ -108,7 +108,7 @@ export function NearbyList({
     return (
       <p className="flex items-center gap-2 px-5 py-2.5 text-[12.5px] leading-snug text-textFaint">
         <LookingDots />
-        Looking for devices nearby… The other device turns on “Ready to receive from nearby”.
+        Looking for devices nearby… On the other device, turn on “Receive from devices nearby”.
       </p>
     )
   }
@@ -198,11 +198,11 @@ export function NearbySending({
       {sending.state === 'joining' && (
         <>
           <JoiningMark className="mx-auto text-text" />
-          <p className="mt-3 text-[14px] text-text">Joining the Wi-Fi of</p>
+          <p className="mt-3 text-[14px] text-text">Connecting to</p>
           <NearbyName device={device} className="mt-1 justify-center text-[16px] font-semibold text-text" />
           <p className="mt-2 text-[12.5px] leading-snug text-textFaint">
-            You have no Wi-Fi in common, so this device joins its own for a moment.
-            {phone ? ' Android asks first: choose Connect.' : ' This computer leaves its Wi-Fi until it’s done.'}
+            You’re not on the same Wi-Fi, so this {phone ? 'phone' : 'computer'} connects to it directly for a moment.
+            {phone ? ' If Android asks, choose Connect.' : ' Your Wi-Fi comes back when it’s done.'}
           </p>
           <button
             onClick={() => {
@@ -218,10 +218,10 @@ export function NearbySending({
       {sending.state === 'asking' && (
         <>
           <HandoffMark from={markForm(null)} to={markForm(device.form)} className="mx-auto text-text" />
-          <p className="mt-3 text-[14px] text-text">Waiting for an answer on</p>
+          <p className="mt-3 text-[14px] text-text">Waiting for them to accept on</p>
           <NearbyName device={device} className="mt-1 justify-center text-[16px] font-semibold text-text" />
           <p className="mt-2 text-[12.5px] leading-snug text-textFaint">
-            They’re asked to accept {titleOf(sending.files)}. Check it’s the device you mean by its letters.
+            {titleOf(sending.files)} is waiting for them. The 4 letters should match what their screen shows.
           </p>
           <button
             onClick={() => {
@@ -236,9 +236,9 @@ export function NearbySending({
       )}
       {sending.state === 'code' && (
         <>
-          <p className="text-[14px] text-text">Type the code shown on</p>
+          <p className="text-[14px] text-text">Enter the code shown on</p>
           <NearbyName device={device} className="mt-1 justify-center text-[16px] font-semibold text-text" />
-          <p className="mb-4 mt-1.5 text-[12.5px] leading-snug text-textFaint">Ask them for it: only that device can take it then.</p>
+          <p className="mb-4 mt-1.5 text-[12.5px] leading-snug text-textFaint">Ask the other person for the code on their screen.</p>
           <CodeBoxes
             phone={phone}
             busy={busy}
@@ -249,7 +249,7 @@ export function NearbySending({
                 .typeCode(sending.offer, code)
                 .then((answer) => {
                   if (answer.kind === 'wrong')
-                    setSaid(answer.left > 0 ? `That isn’t it. ${answer.left} ${answer.left === 1 ? 'try' : 'tries'} left.` : 'Too many wrong codes: it was stopped.')
+                    setSaid(answer.left > 0 ? `Wrong code. ${answer.left} ${answer.left === 1 ? 'try' : 'tries'} left.` : 'Too many wrong codes. Sending was stopped.')
                 })
                 .catch((e: unknown) => setSaid(e instanceof Error ? e.message : String(e)))
                 .finally(() => setBusy(false))
@@ -332,12 +332,12 @@ export function NearbyChooser({
           {error ??
             `${
               files.some((f) => !f.source)
-                ? 'From the drive, through this device.'
+                ? 'From your drive, sent through this device.'
                 : chosen?.ssid
-                  ? 'On its own Wi-Fi: this device joins it for a moment.'
-                  : 'Straight to it, on this Wi-Fi.'
+                  ? 'Connects to it directly.'
+                  : 'Over this Wi-Fi.'
             } ${
-              chosen?.code || nearby.alwaysCode ? 'They show a code, and you type it.' : 'They’re asked to accept.'
+              chosen?.code || nearby.alwaysCode ? 'They’ll see a code for you to enter.' : 'They’ll be asked to accept.'
             }`}
         </p>
       </div>
@@ -458,16 +458,16 @@ export function NearbyPrompt({
   if (offer.accepted && offer.code) {
     return (
       <div className={cn('text-center', compact ? '' : 'px-5')}>
-        <p className="text-[13px] text-textDim">Tell them this code</p>
+        <p className="text-[13px] text-textDim">Give them this code</p>
         <p className="mt-2 font-mono text-[34px] font-semibold tracking-[0.18em] text-text">
           {offer.shown ? `${offer.shown.slice(0, 3)} ${offer.shown.slice(3)}` : '··· ···'}
         </p>
         <p className="mt-1 flex items-center justify-center gap-1 text-[12.5px] text-textFaint">
-          They type it on <NearbyName device={offer.from} className="text-textDim" />
+          They enter it on <NearbyName device={offer.from} className="text-textDim" />
         </p>
         {offer.left !== undefined && (
           <p className="mt-2 text-[12.5px] text-danger">
-            A wrong code was typed there. {offer.left} {offer.left === 1 ? 'try' : 'tries'} left.
+            Wrong code entered. {offer.left} {offer.left === 1 ? 'try' : 'tries'} left.
           </p>
         )}
         <button
@@ -542,11 +542,11 @@ export function NearbySwitches({ nearby, className }: { nearby: Nearby; classNam
   return (
     <>
       <Switch
-        label="Ready to receive from nearby"
+        label="Receive from devices nearby"
         description={
           nearby.me
-            ? `Devices nearby see “${nearby.me.name} · ${nearby.me.id}” and can offer you files, on this Wi-Fi or, with none in common, on a small one of this device’s own. You accept each one.`
-            : 'Devices nearby can offer you files. You accept each one.'
+            ? `Nearby devices see this one as “${nearby.me.name} · ${nearby.me.id}” and can send you files, on the same Wi-Fi or not. You accept each one.`
+            : 'Nearby devices can send you files, on the same Wi-Fi or not. You accept each one.'
         }
         checked={nearby.ready}
         onChange={nearby.setReady}
@@ -554,7 +554,7 @@ export function NearbySwitches({ nearby, className }: { nearby: Nearby; classNam
       />
       <Switch
         label="Always ask for a code"
-        description="Before anything goes, the receiver shows a code and the sender types it, so you talk first. Asked when either side has this on."
+        description="Before a file is sent, the receiver sees a 6-digit code and the sender enters it. Good for busy places. Applies if either device has it on."
         checked={nearby.alwaysCode}
         onChange={nearby.setAlwaysCode}
         className={className}
@@ -563,9 +563,9 @@ export function NearbySwitches({ nearby, className }: { nearby: Nearby; classNam
         <div className="mx-4 my-2 flex items-start gap-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] px-3.5 py-3">
           <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-300" />
           <div className="min-w-0 flex-1">
-            <p className="text-[13px] leading-snug text-text">Windows Firewall keeps devices nearby out</p>
+            <p className="text-[13px] leading-snug text-text">Windows Firewall is blocking nearby devices</p>
             <p className="mt-0.5 text-[12px] leading-snug text-textFaint">
-              They can’t offer you files, or take what you send them, until Basalt is let through. Windows asks you first.
+              They can’t send you files, or receive yours, until Basalt is allowed. Windows will ask you to confirm.
             </p>
             {said && <p className="mt-1 text-[12px] text-danger">{said}</p>}
           </div>
@@ -581,7 +581,7 @@ export function NearbySwitches({ nearby, className }: { nearby: Nearby; classNam
             }}
             className="shrink-0 rounded-full bg-white px-3.5 py-1.5 text-[12.5px] font-semibold text-black disabled:opacity-60"
           >
-            {allowing ? 'Asking…' : 'Let it through'}
+            {allowing ? 'Asking…' : 'Allow'}
           </button>
         </div>
       )}

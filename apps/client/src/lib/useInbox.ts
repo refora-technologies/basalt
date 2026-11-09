@@ -367,10 +367,44 @@ export function useInbox(
       const body: HandoffBody = { offer: item.offer }
       const sent = await api.channelSend({ to: 'device', device: device.device }, KIND.handoff, body, 0)
       if (sent.delivered.length === 0) throw new Error(`${device.name} isn’t online.`)
-      update(item.id, (i) => ({ ...i, state: 'done', takenOn: device.name, offer: undefined }))
+      // Passed on, not taken: that device asks, and the sender hears from it.
+      update(item.id, (i) => ({ ...i, state: 'done', takenOn: device.name, reason: `Passed to ${device.name}`, offer: undefined }))
     },
     [update],
   )
+
+  // Nothing waits for ever: an offer straight across with no answer in
+  // OFFER_TTL_MS ends on both sides (the files offered from here are
+  // withdrawn). One kept on the host waits there as the host says (24 h).
+  useEffect(() => {
+    const sweep = (): void => {
+      const now = Date.now()
+      const old = (i: ShareItem): boolean => i.state === 'waiting' && now - i.at > OFFER_TTL_MS
+      const ending = itemsRef.current.filter(
+        (i) => old(i) && (i.direction === 'out' ? !i.reason : !!i.offer && !i.offer.held),
+      )
+      if (ending.length === 0) return
+      for (const i of ending) {
+        if (i.direction === 'out') void api.withdrawLocal(i.id).catch(() => {})
+      }
+      const gone = new Set(ending.map((i) => `${i.direction}:${i.id}`))
+      setItems((list) =>
+        list.map((i) =>
+          gone.has(`${i.direction}:${i.id}`)
+            ? {
+                ...i,
+                state: 'failed',
+                offer: undefined,
+                reason: i.direction === 'out' ? 'No answer in 10 minutes.' : 'Not answered in 10 minutes: ask them to send it again.',
+              }
+            : i,
+        ),
+      )
+    }
+    sweep()
+    const timer = setInterval(sweep, 30_000)
+    return () => clearInterval(timer)
+  }, [])
 
   const forget = useCallback((item: ShareItem) => {
     setItems((list) => list.filter((i) => i !== item))
