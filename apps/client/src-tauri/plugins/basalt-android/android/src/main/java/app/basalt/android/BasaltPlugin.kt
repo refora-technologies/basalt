@@ -267,7 +267,6 @@ class MpvPropertyArgs {
     ),
     Permission(strings = [Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION], alias = "location"),
     Permission(strings = [LocalNetwork.PERMISSION], alias = LocalNetwork.ALIAS),
-    Permission(strings = [LocalNetwork.TEST_PERMISSION], alias = LocalNetwork.TEST_ALIAS),
   ]
 )
 class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
