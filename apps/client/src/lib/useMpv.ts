@@ -767,6 +767,7 @@ function useAppMpv(): Mpv {
     started.current = true
 
     let stop: (() => void) | undefined
+    let unwatch: (() => void) | undefined
     void (async () => {
       try {
         await mpv.init({
@@ -793,6 +794,8 @@ function useAppMpv(): Mpv {
         })
         setState((s) => ({ ...s, ready: true }))
         await applyStyle(style.current)
+        // Set up again after its mpv went away: the look of subtitles back.
+        unwatch = mpv.whenRestarted(() => void applyStyle(style.current))
 
         stop = await mpv.observeProperties(OBSERVED, (event) => {
           const { name, data } = event as { name: string; data: unknown }
@@ -868,7 +871,10 @@ function useAppMpv(): Mpv {
       }
     })()
 
-    return () => stop?.()
+    return () => {
+      stop?.()
+      unwatch?.()
+    }
   }, [readTracks])
 
   /**

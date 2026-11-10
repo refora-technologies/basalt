@@ -55,6 +55,12 @@ export interface MusicPlayerApi {
   linked: string[]
   /** This device plays on alone; the others carry on too. */
   unlink: () => void
+  /** The others playing with this one, by name and kind: the group panel lists them. */
+  together: { device: string; name: string; form?: string | null }[]
+  /** That device stops and leaves the group; the rest play on. */
+  stopThere: (device: string) => void
+  /** The group ends: every device in it stops, this one too. */
+  stopAll: () => void
   /** Asks that device to play, pause, skip or stop. */
   steer: (session: NowSession, action: MusicCommand['action'], position?: number) => void
 }

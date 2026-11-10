@@ -31,6 +31,7 @@ import { cn } from '@/lib/utils'
 import { isMobileShell } from '@/lib/platform'
 
 import { Cover } from './Cover'
+import { GroupPanel } from './GroupPanel'
 import type { MusicLayout } from './MusicSection'
 
 /** What the bar and the full player need to know about the songs. */
@@ -112,6 +113,7 @@ function BarHere({
 }: NowPlayingProps & { path: string | null }): React.JSX.Element | null {
   const player = useMusicPlayer()
   const clock = useMusicClock()
+  const [grouping, setGrouping] = useState(false)
   if (!player || !path) return null
   const song = songOf(path)
   const isLiked = liked.has(song.path)
@@ -197,9 +199,9 @@ function BarHere({
         {player.linked.length > 0 && (
           <button
             type="button"
-            onClick={player.unlink}
+            onClick={() => setGrouping(true)}
             // Short, as the bar's corner is narrow; the whole of it in the tip.
-            title={`In sync with ${syncedWith(player)}. Click to stop syncing.`}
+            title={`In sync with ${syncedWith(player)}: see who, or stop syncing`}
             className="mr-1 flex shrink-0 items-center gap-1.5 rounded-full bg-basalt/[0.18] px-2.5 py-1 text-[11.5px] text-text transition-colors hover:bg-basalt/[0.28]"
           >
             <Link2 size={12} />
@@ -220,6 +222,7 @@ function BarHere({
           <X size={17} />
         </IconButton>
       </div>
+      <GroupPanel player={player} title={song.title} open={grouping} onClose={() => setGrouping(false)} />
     </div>
   )
 }
@@ -292,6 +295,7 @@ function FullPlayer({
   coming: string[]
 }): React.JSX.Element | null {
   const player = useMusicPlayer()
+  const [grouping, setGrouping] = useState(false)
   // Pulled down by its top or its cover, as a phone's music players are.
   const drag = useDragControls()
   const touch = layout !== 'tv' && typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
@@ -347,12 +351,12 @@ function FullPlayer({
           {player.linked.length > 0 ? (
             <button
               type="button"
-              onClick={player.unlink}
+              onClick={() => setGrouping(true)}
               className="mx-auto mt-1 flex max-w-full items-center gap-1.5 rounded-full bg-basalt/[0.18] px-2.5 py-0.5 text-[11px] text-text transition-colors hover:bg-basalt/[0.28]"
             >
               <Link2 size={11} />
               <span className="truncate">In sync with {syncedWith(player)}</span>
-              <span className="text-textDim">· stop syncing</span>
+              <ChevronDown size={11} className="shrink-0 text-textDim" />
             </button>
           ) : alsoOn && (
             <button
@@ -430,6 +434,7 @@ function FullPlayer({
           </div>
         </div>
       </div>
+      <GroupPanel player={player} title={song.title} open={grouping} onClose={() => setGrouping(false)} phone={layout === 'phone'} />
     </motion.div>
   )
 }

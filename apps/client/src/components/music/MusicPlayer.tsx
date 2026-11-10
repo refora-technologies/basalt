@@ -624,8 +624,9 @@ export function MusicPlayer({
       expanded,
       setExpanded,
       stop: () => {
-        // Put away here: the devices in sync play on, on their own.
-        if (groupRef.current && !remote.current) {
+        // Put away here, or stopped from another device ("Stop there"): it
+        // leaves the group, and the devices in sync play on, on their own.
+        if (groupRef.current) {
           leaving.current = true
           void askGroup({ action: 'leave' })
         }
@@ -640,6 +641,32 @@ export function MusicPlayer({
       // Playing together, the others in the group: as the host keeps it, or
       // as before 1.6.4.
       linked: group ? group.members.map((m) => m.device).filter((d) => d !== you.current) : linked,
+      together: group
+        ? group.members.filter((m) => m.device !== you.current)
+        : linked.map((id) => {
+            const there = others.find((s) => s.device === id)
+            return { device: id, name: there?.name ?? 'Another device', form: there?.form }
+          }),
+      stopThere: (device) => {
+        // Asked there: it stops and leaves (see `stop`); the rest play on.
+        void api.musicCommand(device, 'stop').catch(() => {})
+        setLinked((ids) => ids.filter((id) => id !== device))
+      },
+      stopAll: () => {
+        const ending = groupRef.current
+        if (ending) {
+          leaving.current = true
+          void askGroup({ action: 'end', group: ending.id })
+        } else {
+          for (const id of linked) void api.musicCommand(id, 'stop').catch(() => {})
+        }
+        membershipSettles.current = Date.now() + MEMBERSHIP_SETTLES_MS
+        setLinked([])
+        leader.current = null
+        setRate(1)
+        setQueue(null)
+        setExpanded(false)
+      },
       unlink: () => {
         if (groupRef.current) {
           leaving.current = true

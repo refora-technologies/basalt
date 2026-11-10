@@ -2955,15 +2955,20 @@ pub fn run() {
     let builder = tauri::Builder::default();
     // Opened again while running ("Share with Basalt", Send to): the window
     // comes forward, and the files are offered to share.
+    // A development copy runs beside the installed Basalt: not one of it.
     #[cfg(desktop)]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-        use tauri::Emitter;
-        tray::show(app, None);
-        let files = shared_in(&argv);
-        if !files.is_empty() {
-            let _ = app.emit("basalt://share-files", files);
-        }
-    }));
+    let builder = if dev_isolated().is_some() {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            use tauri::Emitter;
+            tray::show(app, None);
+            let files = shared_in(&argv);
+            if !files.is_empty() {
+                let _ = app.emit("basalt://share-files", files);
+            }
+        }))
+    };
     let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
