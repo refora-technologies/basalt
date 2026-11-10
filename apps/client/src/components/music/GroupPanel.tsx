@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Laptop, Link2, Smartphone, Tablet, Tv, X } from 'lucide-react'
@@ -32,6 +33,11 @@ export function GroupPanel({
     return true
   })
   const count = player.together.length + 1
+  // The last of the others stopped or left: nothing to show, so it goes.
+  const alone = player.together.length === 0
+  useEffect(() => {
+    if (open && alone) onClose()
+  }, [open, alone, onClose])
   // Over everything, whatever layer opened it (the full player moves).
   return createPortal(
     <AnimatePresence>

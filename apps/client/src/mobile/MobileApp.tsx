@@ -321,6 +321,32 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   // there with none reachable too (a café, no drive at all).
   const shareAnywhere = !TV
   const [inboxOpen, setInboxOpen] = useState(false)
+  // On a TV, the page area gives up room when something rises below it
+  // (the music bar, a transfer): the thing focused there is kept in view,
+  // however late the focus lands (a song started with OK redraws its row).
+  // Kept as state: the page area comes later than the app (after the drive
+  // and profile screens), and is watched from when it does.
+  const [pageArea, setPageArea] = useState<HTMLElement | null>(null)
+  useEffect(() => {
+    const area = pageArea
+    if (!TV || !area || typeof ResizeObserver === 'undefined') return undefined
+    let height = area.clientHeight
+    const keep = (): void => {
+      const focused = document.activeElement
+      if (focused instanceof HTMLElement && area.contains(focused)) focused.scrollIntoView({ block: 'nearest' })
+    }
+    const watch = new ResizeObserver(() => {
+      const now = area.clientHeight
+      if (now < height) {
+        keep()
+        // Once more as the focus settles.
+        setTimeout(keep, 400)
+      }
+      height = now
+    })
+    watch.observe(area)
+    return () => watch.disconnect()
+  }, [pageArea])
   const [alwaysReady] = useAlwaysReady()
   const ready =
     alwaysReady && !TV && isAndroid() && model.connected && model.presence.supported && model.presence.you !== ''
@@ -541,7 +567,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
 
         <ConnectionLine model={model} />
 
-        <main className="relative min-h-0 flex-1">
+        <main ref={setPageArea} className="relative min-h-0 flex-1">
           {tab === 'files' && (
             <FilesScreen
               model={model}
