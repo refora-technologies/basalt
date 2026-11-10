@@ -3055,6 +3055,12 @@ pub fn run() {
             if let Err(e) = tray::install(app.handle()) {
                 eprintln!("basalt: no tray icon: {e}");
             }
+            #[cfg(target_os = "linux")]
+            if tray::has_tray() {
+                if let Err(e) = tray::install(app.handle()) {
+                    eprintln!("basalt: no tray icon: {e}");
+                }
+            }
 
             app.manage(AppState {
                 client: Arc::clone(&client),

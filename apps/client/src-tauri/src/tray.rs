@@ -7,8 +7,10 @@
 //! Quitting is the tray menu's "Quit Basalt". Notifications say what arrived,
 //! with the buttons that answer it; a click brings the window back to it.
 //!
-//! Windows only for now: Linux desktops differ in what a tray is, and there
-//! the window closes as before.
+//! Windows, and Linux desktops that show tray icons (StatusNotifierItem:
+//! Ubuntu, KDE, Mint and most others; plain GNOME only with an extension).
+//! Where there is none, the window closes as before: never a Basalt running
+//! with no way back to it. Opening Basalt again brings a hidden one back too.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -21,6 +23,26 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 pub fn installed() -> bool {
     INSTALLED.load(Ordering::SeqCst)
+}
+
+/// Whether this Linux desktop shows tray icons: something answers for
+/// them on the session bus.
+#[cfg(target_os = "linux")]
+pub fn has_tray() -> bool {
+    std::process::Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.DBus",
+            "--object-path",
+            "/org/freedesktop/DBus",
+            "--method",
+            "org.freedesktop.DBus.NameHasOwner",
+            "org.kde.StatusNotifierWatcher",
+        ])
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("true"))
 }
 
 /// Puts Basalt's icon in the tray, with its menu.
@@ -123,7 +145,41 @@ pub fn notify<R: Runtime>(
             eprintln!("basalt: a notification didn't show: {e}");
         }
     }
-    #[cfg(not(windows))]
+    // The desktop's notifications (org.freedesktop.Notifications), with
+    // their buttons; one pressed is waited for on a thread of its own.
+    #[cfg(target_os = "linux")]
+    {
+        if !out_of_sight(app) {
+            return;
+        }
+        let mut note = notify_rust::Notification::new();
+        note.appname("Basalt")
+            .icon("basalt")
+            .summary(title)
+            .body(text)
+            .action("default", "Open");
+        for (label, action) in buttons {
+            note.action(action, label);
+        }
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            let Ok(shown) = note.show() else {
+                return;
+            };
+            shown.wait_for_action(|action| {
+                if action == "__closed" {
+                    return;
+                }
+                show(&handle, None);
+                let action = (action != "default").then(|| action.to_string());
+                let _ = handle.emit(
+                    "basalt://notification",
+                    serde_json::json!({ "tag": tag, "action": action }),
+                );
+            });
+        });
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (app, tag, title, text, buttons);
     }

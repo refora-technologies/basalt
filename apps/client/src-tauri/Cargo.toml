@@ -49,6 +49,9 @@ souvlaki = { version = "0.9.3", default-features = false, features = ["use_zbus"
 # src/linux_player.rs. GTK as Tauri has it; libmpv opened at run time.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+# The desktop's notifications with buttons (Accept / Decline), over zbus as
+# the media controls are.
+notify-rust = { version = "4", default-features = false, features = ["z"] }
 libloading = "0.8"
 webkit2gtk = { version = "2.0", features = ["v2_16"] }
 
