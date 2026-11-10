@@ -23,6 +23,7 @@ use tauri::{Emitter, Manager, State};
 
 #[cfg(target_os = "linux")]
 mod linux_player;
+mod linux_share;
 #[cfg(target_os = "linux")]
 mod linux_update;
 mod media_controls;
@@ -3146,6 +3147,12 @@ pub fn run() {
             // it (Linux keeps it with NetworkManager): closed.
             #[cfg(target_os = "linux")]
             std::thread::spawn(nearby_wifi::tidy);
+            // "Share with Basalt" in GNOME Files' Scripts menu (a development
+            // copy leaves the person's own alone).
+            #[cfg(target_os = "linux")]
+            if dev_isolated().is_none() {
+                std::thread::spawn(linux_share::install);
+            }
 
             // Debug builds only: a script run in the page once it has loaded,
             // and again each time the file changes, for testing the app step

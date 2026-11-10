@@ -391,6 +391,7 @@ pub fn leave(state: &State) {
 
 /// Clears what a Basalt that ended without closing left behind (Linux: its
 /// connections kept by NetworkManager).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn tidy() {
     #[cfg(target_os = "linux")]
     imp::tidy();
