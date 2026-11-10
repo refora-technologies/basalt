@@ -8,7 +8,9 @@
 //! Wi-Fi and a connect, through `netsh`; leaving connects back to the Wi-Fi
 //! it was on, and forgets the profile.
 //!
-//! Elsewhere (Linux, macOS) none of it is here yet, and says so.
+//! On Linux it is NetworkManager's, with one card doing one thing: see
+//! `nearby_wifi_linux.rs`. Elsewhere (macOS) none of it is here yet, and
+//! says so.
 
 use serde::Serialize;
 
@@ -321,7 +323,11 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "nearby_wifi_linux.rs"]
+mod imp;
+
+#[cfg(not(any(windows, target_os = "linux")))]
 mod imp {
     use super::Found;
 
@@ -381,4 +387,140 @@ pub fn join(state: &State, ssid: &str) -> Result<(), String> {
 
 pub fn leave(state: &State) {
     imp::leave(state)
+}
+
+/// Clears what a Basalt that ended without closing left behind (Linux: its
+/// connections kept by NetworkManager).
+pub fn tidy() {
+    #[cfg(target_os = "linux")]
+    imp::tidy();
+}
+
+/// A Linux computer's Wi-Fi card, as NetworkManager has it.
+#[derive(Debug, PartialEq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub struct Card {
+    pub name: String,
+    /// The connection it is on, if on one.
+    pub on: Option<String>,
+    /// Joining one now.
+    pub connecting: bool,
+}
+
+/// One line of `nmcli -t`: its fields, `\:` and `\\` taken back.
+fn terse_fields(line: &str) -> Vec<String> {
+    let mut fields = vec![String::new()];
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                if let Some(next) = chars.next() {
+                    fields.last_mut().expect("a field").push(next);
+                }
+            }
+            ':' => fields.push(String::new()),
+            c => fields.last_mut().expect("a field").push(c),
+        }
+    }
+    fields
+}
+
+/// The first Wi-Fi card in `nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn nmcli_devices(text: &str) -> Option<Card> {
+    text.lines().map(terse_fields).find_map(|f| {
+        let [name, kind, state, connection] = f.as_slice() else {
+            return None;
+        };
+        if kind != "wifi" || state.starts_with("unmanaged") {
+            return None;
+        }
+        let connecting = state.starts_with("connecting");
+        let on = (state.starts_with("connected") || connecting)
+            .then(|| connection.clone())
+            .filter(|c| !c.is_empty() && c != "--");
+        Some(Card {
+            name: name.clone(),
+            on: on.filter(|_| !connecting),
+            connecting,
+        })
+    })
+}
+
+/// The Basalt Wi-Fis in `nmcli -t -f SSID,SIGNAL device wifi list`,
+/// strongest first, each once.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn nmcli_wifi_list(text: &str, prefix: &str) -> Vec<Found> {
+    let mut found: Vec<Found> = Vec::new();
+    for fields in text.lines().map(terse_fields) {
+        let [ssid, signal] = fields.as_slice() else {
+            continue;
+        };
+        if !ssid.starts_with(prefix) {
+            continue;
+        }
+        let level = signal.trim().parse::<i32>().unwrap_or(0);
+        match found.iter_mut().find(|f| &f.ssid == ssid) {
+            Some(known) => known.level = known.level.max(level),
+            None => found.push(Found {
+                ssid: ssid.clone(),
+                level,
+            }),
+        }
+    }
+    found.sort_by_key(|f| std::cmp::Reverse(f.level));
+    found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wifi_card_and_what_it_is_on() {
+        let text = "enp0s3:ethernet:connected:Wired connection 1\n\
+                    wlp2s0:wifi:connected:Home\\: upstairs\n\
+                    p2p-dev-wlp2s0:wifi-p2p:disconnected:\n\
+                    lo:loopback:connected (externally):lo\n";
+        assert_eq!(
+            nmcli_devices(text),
+            Some(Card {
+                name: "wlp2s0".into(),
+                on: Some("Home: upstairs".into()),
+                connecting: false
+            })
+        );
+    }
+
+    #[test]
+    fn a_free_card_a_joining_one_and_none() {
+        let free = nmcli_devices("wlan0:wifi:disconnected:\n").unwrap();
+        assert_eq!(free.on, None);
+        assert!(!free.connecting);
+        let joining =
+            nmcli_devices("wlan0:wifi:connecting (getting IP configuration):Home\n").unwrap();
+        assert_eq!(joining.on, None);
+        assert!(joining.connecting);
+        assert_eq!(nmcli_devices("enp0s3:ethernet:connected:Wired\n"), None);
+        assert_eq!(nmcli_devices("wlan0:wifi:unmanaged:\n"), None);
+    }
+
+    #[test]
+    fn only_basalt_wifis_strongest_first_each_once() {
+        let text = "Home:80\n\
+                    DIRECT-bs-K7HM Pixel 8:44\n\
+                    DIRECT-bs-RW4K Maya\\:s phone:71\n\
+                    DIRECT-bs-K7HM Pixel 8:52\n\
+                    :30\n\
+                    DIRECT-xy-Printer:90\n";
+        let found = nmcli_wifi_list(text, "DIRECT-bs-");
+        let names: Vec<(&str, i32)> = found.iter().map(|f| (f.ssid.as_str(), f.level)).collect();
+        assert_eq!(
+            names,
+            vec![
+                ("DIRECT-bs-RW4K Maya:s phone", 71),
+                ("DIRECT-bs-K7HM Pixel 8", 52)
+            ]
+        );
+    }
 }

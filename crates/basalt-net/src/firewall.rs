@@ -1,5 +1,10 @@
-//! Whether Windows Firewall lets other devices reach a Basalt program, and
+//! Whether the firewall lets other devices reach a Basalt program, and
 //! letting them: for the app, which listens for devices nearby (1.6.4).
+//!
+//! On Linux it is a port, [`NEARBY_PORT`] (UDP for looks, TCP for the
+//! files), in firewalld's zones or ufw's rules; letting it in goes through
+//! `pkexec`, where the desktop asks for an administrator's password. A
+//! computer with neither, or with both off, is open.
 //!
 //! Windows asks the first time a program listens, but not always: with
 //! notifications off for the network's kind, it turns every connection away
@@ -12,6 +17,10 @@
 //! one Windows can't place, so it counts as public. The app listens only
 //! while it is ready for nearby devices or offering files, and lets in only
 //! what proves itself (TLS pinned to a key, a one-time secret, a code).
+
+/// The port the app listens on for devices nearby: looks (UDP) and, where
+/// it is free, the files (TCP).
+pub const NEARBY_PORT: u16 = 7745;
 
 /// What the firewall does with connections to the program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,9 +52,12 @@ pub enum AllowError {
 impl std::fmt::Display for AllowError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AllowError::Declined => f.write_str(
+            AllowError::Declined if cfg!(windows) => f.write_str(
                 "Windows did not allow it. Try again, and choose Yes when Windows asks.",
             ),
+            AllowError::Declined => {
+                f.write_str("It was not allowed. Try again, and enter your password when asked.")
+            }
             AllowError::Failed(why) => write!(f, "The firewall could not be changed: {why}"),
         }
     }
@@ -58,7 +70,12 @@ pub fn check(exe: &std::path::Path) -> Firewall {
     {
         windows::check(exe)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let _ = exe;
+        linux::check(NEARBY_PORT)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = exe;
         Firewall::Open
@@ -73,7 +90,13 @@ pub fn allow(exe: &std::path::Path, name: &str, description: &str) -> Result<Fir
         windows::allow(exe, name, description)?;
         Ok(windows::check(exe))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (exe, description);
+        linux::allow(NEARBY_PORT, name)?;
+        Ok(linux::check(NEARBY_PORT))
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (exe, name, description);
         Ok(Firewall::Open)
@@ -175,6 +198,184 @@ fn encode_command(script: &str) -> String {
     out
 }
 
+/// The zones firewalld has in use, from `firewall-cmd --get-active-zones`
+/// ("public" then its "  interfaces: wlp2s0" lines).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn active_zones(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| !l.is_empty() && !l.starts_with(char::is_whitespace))
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+/// Whether a zone's `--list-ports` lets `port` in over both TCP and UDP
+/// ("7745/tcp 1025-65535/udp").
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn ports_let_in(text: &str, port: u16) -> bool {
+    let covers = |proto: &str| {
+        text.split_whitespace().any(|entry| {
+            let Some((range, p)) = entry.split_once('/') else {
+                return false;
+            };
+            if p != proto {
+                return false;
+            }
+            let (low, high) = range.split_once('-').unwrap_or((range, range));
+            matches!((low.parse::<u16>(), high.parse::<u16>()), (Ok(l), Ok(h)) if l <= port && port <= h)
+        })
+    };
+    covers("tcp") && covers("udp")
+}
+
+/// Whether ufw is on, from its `/etc/ufw/ufw.conf`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn ufw_enabled(conf: &str) -> bool {
+    conf.lines()
+        .map(str::trim)
+        .any(|l| l.eq_ignore_ascii_case("ENABLED=yes"))
+}
+
+/// Whether ufw turns connections away unless a rule lets them in, from
+/// `/etc/default/ufw`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn ufw_drops(defaults: &str) -> bool {
+    defaults
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("DEFAULT_INPUT_POLICY="))
+        .map(|v| v.trim_matches('"') != "ACCEPT")
+        .unwrap_or(true)
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    use super::{AllowError, Firewall};
+
+    fn run(program: &str, args: &[&str]) -> Option<String> {
+        let out = Command::new(program)
+            .args(args)
+            .env("LC_ALL", "C")
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
+    fn firewalld_running() -> bool {
+        run("firewall-cmd", &["--state"]).is_some_and(|s| s.trim() == "running")
+    }
+
+    /// ufw's rules can only be read by root: the app remembers the port it
+    /// let in, here.
+    fn ufw_mark() -> Option<PathBuf> {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        Some(config.join("basalt").join("ufw-allowed"))
+    }
+
+    pub fn check(port: u16) -> Firewall {
+        if firewalld_running() {
+            let Some(zones) = run("firewall-cmd", &["--get-active-zones"]) else {
+                return Firewall::Unknown;
+            };
+            let zones = super::active_zones(&zones);
+            if zones.is_empty() {
+                return Firewall::Unknown;
+            }
+            for zone in zones {
+                if zone == "trusted" {
+                    continue;
+                }
+                let Some(ports) = run("firewall-cmd", &[&format!("--zone={zone}"), "--list-ports"])
+                else {
+                    return Firewall::Unknown;
+                };
+                if !super::ports_let_in(&ports, port) {
+                    return Firewall::Blocked;
+                }
+            }
+            return Firewall::Open;
+        }
+        let conf = std::fs::read_to_string("/etc/ufw/ufw.conf").unwrap_or_default();
+        if super::ufw_enabled(&conf) {
+            let defaults = std::fs::read_to_string("/etc/default/ufw").unwrap_or_default();
+            if !super::ufw_drops(&defaults) {
+                return Firewall::Open;
+            }
+            let marked = ufw_mark()
+                .and_then(|m| std::fs::read_to_string(m).ok())
+                .is_some_and(|m| m.trim() == port.to_string());
+            return if marked {
+                Firewall::Open
+            } else {
+                Firewall::Blocked
+            };
+        }
+        Firewall::Open
+    }
+
+    /// `pkexec` says 126 when the person dismissed it or was not allowed.
+    fn as_admin(script: &str) -> Result<(), AllowError> {
+        let status = Command::new("pkexec")
+            .args(["/bin/sh", "-c", script])
+            .status()
+            .map_err(|_| {
+                AllowError::Failed("this computer has no pkexec to ask for a password".into())
+            })?;
+        match status.code() {
+            Some(0) => Ok(()),
+            Some(126) => Err(AllowError::Declined),
+            other => Err(AllowError::Failed(format!(
+                "it ended with {}",
+                other.map_or("no code".to_string(), |c| c.to_string())
+            ))),
+        }
+    }
+
+    pub fn allow(port: u16, name: &str) -> Result<(), AllowError> {
+        if firewalld_running() {
+            let zones = run("firewall-cmd", &["--get-active-zones"])
+                .map(|z| super::active_zones(&z))
+                .unwrap_or_default();
+            let zones = if zones.is_empty() {
+                vec![String::new()]
+            } else {
+                zones
+            };
+            let mut script = String::new();
+            for zone in zones {
+                let zone = if zone.is_empty() {
+                    String::new()
+                } else {
+                    format!("--zone='{zone}' ")
+                };
+                script.push_str(&format!(
+                    "firewall-cmd --permanent {zone}--add-port={port}/tcp --add-port={port}/udp && "
+                ));
+            }
+            script.push_str("firewall-cmd --reload");
+            return as_admin(&script);
+        }
+        let name: String = name
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == ' ')
+            .collect();
+        as_admin(&format!("ufw allow {port} comment '{name}'"))?;
+        if let Some(mark) = ufw_mark() {
+            if let Some(dir) = mark.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(mark, port.to_string());
+        }
+        Ok(())
+    }
+}
+
 #[cfg(windows)]
 mod windows {
     use std::os::windows::process::CommandExt;
@@ -228,6 +429,32 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn firewalld_zones_in_use() {
+        let text = "FedoraWorkstation\n  interfaces: wlp2s0\npublic\n  interfaces: enp3s0\n";
+        assert_eq!(active_zones(text), vec!["FedoraWorkstation", "public"]);
+        assert!(active_zones("").is_empty());
+    }
+
+    #[test]
+    fn a_zone_lets_the_port_in_over_both() {
+        assert!(ports_let_in("7745/tcp 7745/udp", NEARBY_PORT));
+        // Fedora Workstation's own zone.
+        assert!(ports_let_in("1025-65535/udp 1025-65535/tcp", NEARBY_PORT));
+        assert!(!ports_let_in("7745/udp", NEARBY_PORT), "TCP too");
+        assert!(!ports_let_in("22/tcp 8000-7000/udp", NEARBY_PORT));
+        assert!(!ports_let_in("", NEARBY_PORT));
+    }
+
+    #[test]
+    fn ufw_on_and_turning_away() {
+        assert!(ufw_enabled("# comment\nENABLED=yes\nLOGLEVEL=low\n"));
+        assert!(!ufw_enabled("ENABLED=no\n"));
+        assert!(ufw_drops("DEFAULT_INPUT_POLICY=\"DROP\"\n"));
+        assert!(!ufw_drops("DEFAULT_INPUT_POLICY=\"ACCEPT\"\n"));
+        assert!(ufw_drops(""), "unknown: turned away");
+    }
 
     #[test]
     fn the_command_is_encoded_as_powershell_wants() {

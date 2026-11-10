@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Service
+MimeType=all/allfiles;
+Actions=share
+X-KDE-Priority=TopLevel
+
+[Desktop Action share]
+Name=Share with Basalt
+Icon=basalt
+Exec=basalt --share %F

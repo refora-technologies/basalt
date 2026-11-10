@@ -38,7 +38,7 @@ export interface Nearby {
   setAlwaysCode: (on: boolean) => void
   /** Why devices with no Wi-Fi in common can't find this one or be found, if they can't. */
   wifiNote: string | null
-  /** On a computer: Windows Firewall keeps devices nearby out (`blocked`), until let through. */
+  /** On a computer: its firewall (Windows, ufw, firewalld) keeps devices nearby out (`blocked`), until let through. */
   firewall: 'open' | 'blocked' | 'unknown'
   /** Lets them through: Windows asks for an administrator. Throws what went wrong. */
   allowFirewall: () => Promise<void>
@@ -148,7 +148,7 @@ export function useNearby(transfers: Transfers): Nearby {
     void api.nearbyReady(ready, alwaysCode).catch(() => {})
   }, [ready, alwaysCode])
 
-  // Ready on a computer: whether Windows Firewall lets devices nearby in.
+  // Ready on a computer: whether its firewall lets devices nearby in.
   useEffect(() => {
     if (!ready || isAndroid()) return
     void api

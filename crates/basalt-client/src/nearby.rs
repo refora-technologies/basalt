@@ -65,7 +65,7 @@ fn trace(line: impl FnOnce() -> String) {
 }
 
 /// Where a device ready for nearby shares answers.
-pub const READY_PORT: u16 = 7745;
+pub const READY_PORT: u16 = basalt_net::firewall::NEARBY_PORT;
 const MAGIC: &[u8; 5] = b"BSLTr";
 const VERSION: u8 = 1;
 /// Wrong codes taken before the offer ends.
@@ -305,7 +305,13 @@ impl Ready {
     ) -> Result<Self> {
         let identity = basalt_net::identity::HostIdentity::generate("basalt-nearby")?;
         let acceptor = basalt_net::tls::server_config(&identity)?;
-        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+        // The same port as the looks, where it is free, so one firewall rule
+        // lets both in (a Linux computer's: see the app's firewall card);
+        // any other where it isn't, as the port goes with each answer.
+        let listener = match TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).await {
+            Ok(listener) => listener,
+            Err(_) => TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).await?,
+        };
         // Its replies follow each connection in, whichever Wi-Fi it came
         // over: see `on_no_network`.
         on_no_network(&listener, "listener");

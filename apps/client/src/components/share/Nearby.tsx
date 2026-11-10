@@ -9,6 +9,10 @@ import { cn, formatBytes } from '@/lib/utils'
 import { HandoffMark, JoiningMark, LookingDots, markForm } from './WaitingMarks'
 import { Switch } from '@/components/Switch'
 import { openSaved, ShareStatus } from './Share'
+import { isLinuxDesktop } from '@/lib/platform'
+
+/** The desktop app on Linux: its firewall is ufw's or firewalld's, and asks for a password. */
+const LINUX = isLinuxDesktop()
 
 /**
  * Sharing with devices nearby, without a host: the devices ready around
@@ -563,9 +567,13 @@ export function NearbySwitches({ nearby, className }: { nearby: Nearby; classNam
         <div className="mx-4 my-2 flex items-start gap-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] px-3.5 py-3">
           <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-300" />
           <div className="min-w-0 flex-1">
-            <p className="text-[13px] leading-snug text-text">Windows Firewall is blocking nearby devices</p>
+            <p className="text-[13px] leading-snug text-text">
+              {LINUX ? 'This computer’s firewall is blocking nearby devices' : 'Windows Firewall is blocking nearby devices'}
+            </p>
             <p className="mt-0.5 text-[12px] leading-snug text-textFaint">
-              They can’t send you files, or receive yours, until Basalt is allowed. Windows will ask you to confirm.
+              {LINUX
+                ? 'They can’t send you files, or receive yours, until Basalt is allowed. You’ll be asked for your password.'
+                : 'They can’t send you files, or receive yours, until Basalt is allowed. Windows will ask you to confirm.'}
             </p>
             {said && <p className="mt-1 text-[12px] text-danger">{said}</p>}
           </div>

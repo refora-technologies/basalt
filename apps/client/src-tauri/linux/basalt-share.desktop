@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Share with Basalt
+GenericName=Share files
+Comment=Send files to a device nearby or to someone on your drive
+Exec=basalt --share %F
+Icon=basalt
+Terminal=false
+NoDisplay=true
+StartupWMClass=basalt
+MimeType=application/octet-stream;text/plain;inode/x-empty;

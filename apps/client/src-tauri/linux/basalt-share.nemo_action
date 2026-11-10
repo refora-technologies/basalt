@@ -1,0 +1,8 @@
+[Nemo Action]
+Name=Share with Basalt
+Comment=Send these to a device nearby or to someone on your drive
+Exec=basalt --share %F
+Icon-Name=basalt
+Selection=notnone
+Extensions=nodirs;
+Quote=double

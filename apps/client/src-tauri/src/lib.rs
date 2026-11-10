@@ -3142,6 +3142,11 @@ pub fn run() {
                 linux_player::attach(&window);
             }
 
+            // A nearby Wi-Fi left open by a Basalt that ended without closing
+            // it (Linux keeps it with NetworkManager): closed.
+            #[cfg(target_os = "linux")]
+            std::thread::spawn(nearby_wifi::tidy);
+
             // Debug builds only: a script run in the page once it has loaded,
             // and again each time the file changes, for testing the app step
             // by step where nobody is there to click.
@@ -3308,11 +3313,19 @@ pub fn run() {
             // not quit on purpose: kept running while it should stay ready.
             if let tauri::RunEvent::ExitRequested {
                 api, code: None, ..
-            } = event
+            } = &event
             {
                 if STAY_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
                     api.prevent_exit();
                 }
+            }
+            // Quitting: this computer's own Wi-Fi closed, and one joined to
+            // share left (on Linux they would stay with NetworkManager).
+            #[cfg(target_os = "linux")]
+            if let tauri::RunEvent::Exit = event {
+                let state = _app.state::<AppState>();
+                nearby_wifi::stop_host(&state.nearby_wifi);
+                nearby_wifi::leave(&state.nearby_wifi);
             }
         });
 }
