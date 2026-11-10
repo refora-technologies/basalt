@@ -21,6 +21,14 @@ import { useAlwaysReady } from '@/lib/alwaysReady'
  * Sharing on a phone: the Share sheet for the files chosen, the sheet that
  * comes up when a share arrives, and the Inbox screen.
  */
+/** Clear of the system bars on every edge: on its side, a phone's buttons are at one. */
+const SIDES = {
+  paddingTop: 'var(--inset-top, 0px)',
+  paddingBottom: 'var(--inset-bottom, 0px)',
+  paddingLeft: 'var(--inset-left, 0px)',
+  paddingRight: 'var(--inset-right, 0px)',
+}
+
 export function PhoneShare({
   model,
   inboxOpen,
@@ -117,7 +125,7 @@ function InboxScreen({
           exit={{ x: '100%' }}
           transition={{ duration: 0.28, ease: [0.32, 0.72, 0, 1] }}
           className="fixed inset-0 z-[60] flex flex-col bg-ink"
-          style={{ paddingTop: 'var(--inset-top, 0px)', paddingBottom: 'var(--inset-bottom, 0px)' }}
+          style={SIDES}
         >
           <header className="flex h-14 shrink-0 items-center gap-1 px-1.5">
             <button
@@ -217,7 +225,7 @@ export function PhoneNearby({ nearby }: { nearby: Nearby }): React.JSX.Element {
             exit={{ x: '100%' }}
             transition={{ duration: 0.28, ease: [0.32, 0.72, 0, 1] }}
             className="fixed inset-0 z-[65] flex flex-col bg-ink"
-            style={{ paddingTop: 'var(--inset-top, 0px)', paddingBottom: 'var(--inset-bottom, 0px)' }}
+            style={SIDES}
           >
             <header className="flex h-14 shrink-0 items-center gap-1 px-1.5">
               <button
