@@ -500,6 +500,11 @@ fn remember_differently(store: &std::path::Path, change: impl Fn(&mut serde_json
 // said it has.
 #[tokio::test]
 async fn a_host_is_reached_at_another_address_it_gave() {
+    // A host in a container gives no addresses on purpose (they are the
+    // container's own): nothing to try there.
+    if std::path::Path::new("/.dockerenv").exists() {
+        return;
+    }
     let fixture = start_host().await;
     let client = fixture.paired_client().await;
     let id = client.status().unwrap().host_id;
