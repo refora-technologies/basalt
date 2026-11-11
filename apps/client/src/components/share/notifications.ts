@@ -77,7 +77,9 @@ export function useShareNotifications(inbox: Inbox, presence: Presence, setNav: 
       const item = inboxRef.current.items.find((i) => i.id === tag && i.direction === 'in')
       if (item && item.state === 'waiting' && action === 'accept') inboxRef.current.accept(item)
       else if (item && item.state === 'waiting' && action === 'decline') inboxRef.current.decline(item)
-      else setNav('inbox')
+      // The window comes back with any press: on the Inbox, where the file
+      // arrives, not on whatever page it was left on (Settings, say).
+      setNav('inbox')
     }).then((stop) => (gone ? stop() : stops.push(stop)))
     void onOpenPage((page) => {
       if (page === 'inbox') setNav('inbox')
