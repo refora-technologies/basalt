@@ -36,6 +36,7 @@ import { useWatched } from '@/lib/useWatched'
 import { FileList, type Entry, type RowHandlers } from '@/components/FileList'
 import { EmptyState, ListView, TileView } from '@/components/FileViews'
 import { ViewMenu, type ViewMode } from '@/components/ViewMenu'
+import { FolderSkeleton, useAfter } from '@/components/FolderSkeleton'
 import {
   SortMenu,
   sortEntries,
@@ -1661,6 +1662,20 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
     selectedSize,
   } = model
 
+  /**
+   * A folder clicked and not here yet: the breadcrumb has moved, so the old
+   * folder's files would sit under the new name. Rows with nothing in them
+   * show instead, after a moment, so a quick folder never flashes them.
+   */
+  const folderComing = useAfter(
+    nav === 'files' &&
+      connected &&
+      vault.loading &&
+      (vault.dir !== vault.listed || entries.length === 0) &&
+      !query.trim(),
+    150,
+  )
+
   // Someone who has used Basalt already knows what it is: forgetting a drive
   // later goes straight back to the drive list, not to the introduction.
   const everPaired = vault.status?.hasPaired === true
@@ -2058,6 +2073,8 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                   onPlay={(file) => void playPath(file.path)}
                 />
               )
+            ) : folderComing ? (
+              <FolderSkeleton view={view} />
             ) : entries.length === 0 ? (
               <div
                 className="h-full"

@@ -575,6 +575,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
               selecting={selecting}
               onActions={setMenuFor}
               scrollKey={model.listKey}
+              loading={model.vault.loading && model.vault.dir !== model.vault.listed && !query.trim()}
               emptyLabel={filesEmptyLabel({
                 connected: model.connected,
                 status: model.vault.status,
