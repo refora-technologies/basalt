@@ -25,7 +25,7 @@ import { useBack } from '@/mobile/useBack'
 import { type Song, formatDuration } from '@/lib/music'
 import { type MusicPlayerApi, useMusicClock, useMusicPlayer } from '@/lib/musicPlayer'
 import type { NowSession } from '@/lib/api'
-import { livePosition, songOf as remoteSong } from '@/lib/musicNow'
+import { shownPosition, songOf as remoteSong, type AskedSeek } from '@/lib/musicNow'
 import { upNext } from '@/lib/queue'
 import { cn } from '@/lib/utils'
 import { isMobileShell } from '@/lib/platform'
@@ -476,10 +476,12 @@ function RemoteBar({
   const playing = session.report.playing
   const now = useTicking(500, playing)
   const [choices, setChoices] = useState(false)
+  // A seek asked of it from here, shown at once (F12b): see shownPosition.
+  const [asked, setAsked] = useState<AskedSeek | null>(null)
   const path = remoteSong(session)
   if (!player || !path) return null
   const song = songOf(path)
-  const at = livePosition(session, player.hostOffset, now)
+  const at = shownPosition(session, player.hostOffset, now, asked)
   const total = session.report.duration
   const fraction = total > 0 ? Math.min(1, at / total) : 0
   // Devices playing together show as one: "Laptop +2" (D27).
@@ -578,7 +580,10 @@ function RemoteBar({
             aria-label="Move it there"
             onClick={(e) => {
               const box = e.currentTarget.getBoundingClientRect()
-              if (total > 0) player.steer(session, 'seek', ((e.clientX - box.left) / box.width) * total)
+              if (total <= 0) return
+              const to = ((e.clientX - box.left) / box.width) * total
+              setAsked({ to, since: Date.now(), said: session.report.clock ?? session.at })
+              player.steer(session, 'seek', to)
             }}
             className="relative h-4 w-full"
           >

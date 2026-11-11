@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { NowSession } from './api'
-import { bestOffset, keepInStep, livePosition, smoothed, songOf, startOf } from './musicNow'
+import { bestOffset, keepInStep, livePosition, shownPosition, smoothed, songOf, startOf } from './musicNow'
 
 const session = (playing: boolean, position = 30, at = 1_000_000): NowSession => ({
   device: 'laptop',
@@ -31,6 +31,30 @@ describe('where a song on another device is now', () => {
 
   it('names the song it plays', () => {
     expect(songOf(session(true))).toBe('b.mp3')
+  })
+})
+
+describe('a seek asked of another device', () => {
+  const asked = { to: 120, since: 2_000_000, said: 1_000_000 }
+
+  it('shows the place asked for at once, moving on as the song would', () => {
+    expect(shownPosition(session(true), 0, 2_000_000, asked)).toBe(120)
+    expect(shownPosition(session(true), 0, 2_001_000, asked)).toBeCloseTo(121)
+    expect(shownPosition(session(false), 0, 2_001_000, asked)).toBe(120)
+  })
+
+  it('believes that device again once it reports being there', () => {
+    const there = session(true, 121, 2_001_000)
+    expect(shownPosition(there, 0, 2_001_500, asked)).toBeCloseTo(121.5)
+  })
+
+  it('keeps the asked place over a report from before the seek landed', () => {
+    const stale = session(true, 45, 2_000_500)
+    expect(shownPosition(stale, 0, 2_001_000, asked)).toBeCloseTo(121)
+  })
+
+  it('follows the reports again after three seconds whatever they say', () => {
+    expect(shownPosition(session(true), 0, 2_003_000, asked)).toBeCloseTo(livePosition(session(true), 0, 2_003_000))
   })
 })
 
