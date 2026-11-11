@@ -59,12 +59,10 @@ impl Stored {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(
-            &tmp,
-            serde_json::to_vec(self).map_err(std::io::Error::other)?,
-        )?;
-        std::fs::rename(&tmp, path)
+        crate::config::write_whole(
+            path,
+            &serde_json::to_vec(self).map_err(std::io::Error::other)?,
+        )
     }
 }
 
@@ -217,12 +215,10 @@ pub fn load_mine(path: &Path) -> Mine {
 }
 
 pub fn save_mine(path: &Path, mine: &Mine) -> std::io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(
-        &tmp,
-        serde_json::to_vec(mine).map_err(std::io::Error::other)?,
-    )?;
-    std::fs::rename(&tmp, path)
+    crate::config::write_whole(
+        path,
+        &serde_json::to_vec(mine).map_err(std::io::Error::other)?,
+    )
 }
 
 /// Applies a request to one profile's music and returns what it has now.

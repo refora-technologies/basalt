@@ -81,9 +81,7 @@ impl Measured {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let temp = path.with_extension("tmp");
-        std::fs::write(&temp, serde_json::to_vec(self)?)?;
-        std::fs::rename(&temp, path)
+        crate::config::write_whole(path, &serde_json::to_vec(self)?)
     }
 
     /// Whether this file has been looked at, successfully or not.

@@ -86,6 +86,9 @@ impl Cancel {
 pub struct Basalt {
     store_path: PathBuf,
     store: std::sync::Mutex<ClientStore>,
+    /// Held while the store is copied and written, so saves at once land in
+    /// the order they were made and an older copy never replaces a newer one.
+    saving: std::sync::Mutex<()>,
     pool: tokio::sync::RwLock<Option<Pool>>,
     info: std::sync::Mutex<Option<SessionInfo>>,
     /// This device's name and id, as every host sees it.
@@ -234,6 +237,7 @@ impl Basalt {
         Ok(Self {
             store_path,
             store: std::sync::Mutex::new(store),
+            saving: std::sync::Mutex::new(()),
             pool: tokio::sync::RwLock::new(None),
             info: std::sync::Mutex::new(None),
             me: Me::new(device_name, device_id),
@@ -363,6 +367,7 @@ impl Basalt {
     }
 
     fn save_store(&self) -> Result<()> {
+        let _saving = self.saving.lock().expect("saving lock");
         let snapshot = self.store.lock().expect("store lock").clone();
         snapshot.save(&self.store_path)
     }

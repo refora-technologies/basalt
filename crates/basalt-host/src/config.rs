@@ -301,11 +301,38 @@ impl HostConfig {
         let json = serde_json::to_vec_pretty(&self.sealed())
             .map_err(|e| HostError::BadRequest(format!("could not encode the config: {e}")))?;
 
-        let temp = path.with_extension("tmp");
-        write_private(&temp, &json)?;
-        replace(&temp, path)?;
-        Ok(())
+        let temp = temp_beside(path);
+        let saved = write_private(&temp, &json).and_then(|()| replace(&temp, path));
+        if saved.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        Ok(saved?)
     }
+}
+
+/// A temporary name beside `path` that no other save uses.
+///
+/// Every save wrote `<name>.tmp` and moved it over the file. Two saves of one
+/// file at once wrote the same temporary file, and the second to move it
+/// found it gone: "No such file or directory", and the request that saved
+/// failed (seen when a profile from another drive was used on a Linux host).
+pub(crate) fn temp_beside(path: &Path) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}-{n}.tmp", std::process::id()));
+    path.with_file_name(name)
+}
+
+/// Writes `bytes` to `path` whole or not at all: to a temporary file of its
+/// own, then moved over it.
+pub(crate) fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temp = temp_beside(path);
+    let written = std::fs::write(&temp, bytes).and_then(|()| replace(&temp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 /// Moves `from` over `to`. On Windows a file just written is often held open
@@ -576,6 +603,35 @@ mod tests {
             .filter(|n| n.ends_with(".tmp"))
             .collect();
         assert!(leftovers.is_empty(), "found {leftovers:?}");
+    }
+
+    #[test]
+    fn saves_at_the_same_moment_all_succeed() {
+        let dir = temp_dir();
+        let path = dir.0.join("host.json");
+        let config = HostConfig::create("laptop-b").unwrap();
+        let together = std::sync::Barrier::new(8);
+        std::thread::scope(|s| {
+            let saves: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        together.wait();
+                        (0..25).try_for_each(|_| config.save(&path))
+                    })
+                })
+                .collect();
+            for save in saves {
+                save.join().unwrap().unwrap();
+            }
+        });
+        let leftovers: Vec<_> = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "found {leftovers:?}");
+        HostConfig::load_or_create(&path, "laptop-b").unwrap();
     }
 
     #[test]

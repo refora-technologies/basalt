@@ -113,9 +113,7 @@ impl Library {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_vec(self)?;
-        let temp = path.with_extension("tmp");
-        std::fs::write(&temp, &json)?;
-        std::fs::rename(&temp, path)
+        crate::config::write_whole(path, &json)
     }
 }
 

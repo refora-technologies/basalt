@@ -30,6 +30,15 @@ use crate::traffic::Traffic;
 use crate::uploads::{Uploads, is_temp_name};
 use crate::vault::Vault;
 
+/// One lock per file the host saves from more than one request at a time:
+/// see [`Host`]'s `saving`.
+#[derive(Default)]
+struct Saving {
+    config: std::sync::Mutex<()>,
+    progress: std::sync::Mutex<()>,
+    stars: std::sync::Mutex<()>,
+}
+
 /// Everything shared between connections.
 pub struct Host {
     identity: HostIdentity,
@@ -149,6 +158,11 @@ pub struct Host {
     pub(crate) profile_links: std::sync::Mutex<Vec<crate::links::LinkRequest>>,
     /// Each profile's starred files, by profile id.
     stars: std::sync::Mutex<std::collections::HashMap<String, Vec<Star>>>,
+    /// Held while the settings, the watch progress or the stars are copied
+    /// and written, so two saves at once land in the order they were made: a
+    /// copy taken first and written last would undo the newer one (a device
+    /// just paired, a star just set).
+    saving: Saving,
     /// Finding and putting in new versions: see [`crate::updates`].
     pub(crate) updates: crate::updates::Updates,
 }
@@ -372,6 +386,7 @@ impl Host {
             profiles: std::sync::Mutex::new(profiles),
             profile_links: std::sync::Mutex::new(Vec::new()),
             stars: std::sync::Mutex::new(stars),
+            saving: Saving::default(),
             updates: crate::updates::Updates::default(),
             shares,
         });
@@ -1061,10 +1076,12 @@ impl Host {
     }
 
     fn save_progress(&self) {
+        let Some(path) = self.progress_path() else {
+            return;
+        };
+        let _saving = self.saving.progress.lock().expect("saving lock");
         let snapshot = self.progress.lock().expect("progress lock").clone();
-        if let Some(path) = self.progress_path()
-            && let Err(e) = snapshot.save(&path)
-        {
+        if let Err(e) = snapshot.save(&path) {
             tracing::warn!("could not save watch progress: {e}");
         }
     }
@@ -1641,16 +1658,13 @@ impl Host {
     }
 
     fn save_stars(&self) {
-        let snapshot = self.stars.lock().expect("stars lock").clone();
         if let Some(root) = self.vault_path() {
             let path = stars_path(self.config_dir(), &root);
+            let _saving = self.saving.stars.lock().expect("saving lock");
+            let snapshot = self.stars.lock().expect("stars lock").clone();
             let written = serde_json::to_vec(&snapshot)
                 .map_err(std::io::Error::other)
-                .and_then(|json| {
-                    let temp = path.with_extension("tmp");
-                    std::fs::write(&temp, json)?;
-                    std::fs::rename(&temp, &path)
-                });
+                .and_then(|json| crate::config::write_whole(&path, &json));
             if let Err(e) = written {
                 tracing::warn!("could not save stars: {e}");
             }
@@ -3550,6 +3564,7 @@ impl Host {
 
     /// Copies the live device list into the config and writes it out.
     pub(crate) fn persist(&self) -> Result<()> {
+        let _saving = self.saving.config.lock().expect("saving lock");
         let snapshot = {
             let devices = self
                 .registry
