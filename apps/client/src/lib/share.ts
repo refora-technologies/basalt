@@ -313,7 +313,9 @@ export function apply(items: ShareItem[], message: ChannelMessage): ShareItem[] 
       if (rank(state) < rank(item.state)) return item
       // The host removed it before it was taken ("Clear share files"): no device took it.
       const takenOn = body.answer === 'removed' ? item.takenOn : body.by.device !== item.peer.device ? body.by.name : item.takenOn
-      return { ...item, state, takenOn, reason: body.reason ?? item.reason }
+      // An answer always moves it on, so why it waited ("On the host until
+      // it's back") goes: only the answer's own reason stays.
+      return { ...item, state, takenOn, reason: body.reason }
     })
   }
   return items

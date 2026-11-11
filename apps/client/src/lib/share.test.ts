@@ -95,6 +95,16 @@ describe('answers to a share sent', () => {
     expect(removed[0]!.takenOn).toBeUndefined()
   })
 
+  it('drop why it was waiting once it moves on', () => {
+    const viaHost: ShareItem = { ...sent, reason: 'On the host until it’s back' }
+    const accepted = apply([viaHost], answer({ offer: 'o1', answer: 'accepted', by: offer.to }))
+    expect(accepted[0]!.reason).toBeUndefined()
+    const done = apply([viaHost], answer({ offer: 'o1', answer: 'done', by: offer.to }))
+    expect(done[0]!.reason).toBeUndefined()
+    const declined = apply([viaHost], answer({ offer: 'o1', answer: 'declined', by: offer.to, reason: 'Not now' }))
+    expect(declined[0]!.reason).toBe('Not now')
+  })
+
   it('never take it backwards, and leave other shares alone', () => {
     const done = apply([sent], answer({ offer: 'o1', answer: 'done', by: offer.to }))
     expect(apply(done, answer({ offer: 'o1', answer: 'accepted', by: offer.to }))[0]!.state).toBe('done')

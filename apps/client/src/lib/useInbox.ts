@@ -150,7 +150,15 @@ export function useInbox(
   }, [])
 
   const answer = useCallback(async (offer: OfferBody, reply: AnswerBody['answer'], reason?: string, unreachable?: boolean) => {
-    const by = me()
+    // Files kept on the host for this device come the moment the app opens,
+    // before the host has said who is here, this device too. The answer
+    // waits for that: sent with nobody to send it as, it never went, and the
+    // sender's Sent said "On the host until it's back" for ever.
+    let by = me()
+    for (let tries = 0; !by && tries < 40; tries++) {
+      await new Promise((settle) => setTimeout(settle, 250))
+      by = me()
+    }
     if (!by) return
     const body: AnswerBody = { offer: offer.offer, answer: reply, by, reason, ...(unreachable ? { unreachable } : {}) }
     await api.channelSend({ to: 'device', device: offer.from.device }, KIND.answer, body, OFFER_TTL_MS).catch(() => {})
