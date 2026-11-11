@@ -2971,6 +2971,9 @@ fn dev_isolated() -> Option<PathBuf> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before any window: how WebKit hands its frames to the screen.
+    #[cfg(target_os = "linux")]
+    linux_player::before_webkit();
     basalt_client::nearby::trace_to(nearby_log);
     // Asked by the uninstaller when the app's data is deleted with it: the
     // device key lives in the chip, not in that data, and would otherwise be
