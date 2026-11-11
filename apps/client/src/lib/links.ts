@@ -1,4 +1,5 @@
-import { inTauri } from '@/lib/api'
+import { api, inTauri } from '@/lib/api'
+import { isLinuxDesktop } from '@/lib/platform'
 
 /**
  * The places Basalt sends people, in one list.
@@ -26,6 +27,12 @@ export const FANART_KEY_PAGE = 'https://fanart.tv/get-an-api-key/'
 export async function openExternal(url: string): Promise<void> {
   if (!inTauri()) {
     window.open(url, '_blank')
+    return
+  }
+  // On Linux the app opens it itself: from an AppImage the browser has to be
+  // started outside the AppImage's own libraries. Same list of addresses.
+  if (isLinuxDesktop()) {
+    await api.openLink(url)
     return
   }
   const { openUrl } = await import('@tauri-apps/plugin-opener')

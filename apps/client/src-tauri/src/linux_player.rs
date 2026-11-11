@@ -613,8 +613,10 @@ thread_local! {
 pub fn attach<R: Runtime>(window: &tauri::WebviewWindow<R>) {
     let _ = window.with_webview(|webview| {
         use gtk::prelude::*;
+        use webkit2gtk::WebViewExt;
         let page = webview.inner();
         compose(&page, false);
+        page.connect_web_process_terminated(come_back);
         page.connect_scroll_event(wheel);
         PAGE.with(|slot| *slot.borrow_mut() = Some(page.clone()));
         let Some(column) = page.parent() else {
@@ -732,6 +734,39 @@ fn start_rendering() {
     unsafe {
         (player.lib.render_set_update_callback)(render, Some(on_update), std::ptr::null_mut())
     };
+}
+
+/// WebKit's page process ended: the window would stay empty for good.
+///
+/// The WebKit inside the AppImage (2.50) sometimes crashes as it starts on
+/// newer systems (Ubuntu 26.04), and the window stayed blank. A fresh one
+/// almost always starts, so the page loads again, a few times at most: one
+/// that keeps crashing is left, rather than tried for ever.
+fn come_back(page: &webkit2gtk::WebView, reason: webkit2gtk::WebProcessTerminationReason) {
+    use webkit2gtk::WebViewExt;
+    thread_local! {
+        static TRIED: std::cell::RefCell<Vec<std::time::Instant>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let again = TRIED.with(|tried| {
+        let mut tried = tried.borrow_mut();
+        tried.retain(|at| at.elapsed() < std::time::Duration::from_secs(60));
+        tried.push(std::time::Instant::now());
+        tried.len() <= 3
+    });
+    eprintln!(
+        "linux player: the page's process ended ({reason:?}){}",
+        if again {
+            "; loading it again"
+        } else {
+            "; not again"
+        }
+    );
+    if again {
+        let page = page.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+            page.reload();
+        });
+    }
 }
 
 /// From mpv's own threads: a new frame. Only queued here; drawn on GTK's.

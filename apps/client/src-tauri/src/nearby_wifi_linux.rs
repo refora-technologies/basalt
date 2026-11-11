@@ -13,7 +13,6 @@
 //! ended without.
 
 use super::{nmcli_devices, nmcli_wifi_list, Card, Found};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -38,7 +37,7 @@ pub struct State {
 }
 
 fn nmcli(args: &[&str]) -> Result<String, String> {
-    let out = Command::new("nmcli")
+    let out = basalt_net::outside::command("nmcli")
         .args(args)
         .env("LC_ALL", "C")
         .output()
@@ -141,7 +140,7 @@ fn gone(name: &str) {
 
 /// Someone on this computer's own Wi-Fi now (heard from lately).
 fn anyone_on(card: &str) -> bool {
-    let Ok(out) = Command::new("ip")
+    let Ok(out) = basalt_net::outside::command("ip")
         .args(["-4", "neigh", "show", "dev", card])
         .output()
     else {

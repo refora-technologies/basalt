@@ -29,7 +29,7 @@ pub fn installed() -> bool {
 /// them on the session bus.
 #[cfg(target_os = "linux")]
 pub fn has_tray() -> bool {
-    std::process::Command::new("gdbus")
+    basalt_net::outside::command("gdbus")
         .args([
             "call",
             "--session",

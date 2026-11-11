@@ -250,12 +250,11 @@ fn ufw_drops(defaults: &str) -> bool {
 #[cfg(target_os = "linux")]
 mod linux {
     use std::path::PathBuf;
-    use std::process::Command;
 
     use super::{AllowError, Firewall};
 
     fn run(program: &str, args: &[&str]) -> Option<String> {
-        let out = Command::new(program)
+        let out = crate::outside::command(program)
             .args(args)
             .env("LC_ALL", "C")
             .output()
@@ -321,7 +320,7 @@ mod linux {
 
     /// `pkexec` says 126 when the person dismissed it or was not allowed.
     fn as_admin(script: &str) -> Result<(), AllowError> {
-        let status = Command::new("pkexec")
+        let status = crate::outside::command("pkexec")
             .args(["/bin/sh", "-c", script])
             .status()
             .map_err(|_| {

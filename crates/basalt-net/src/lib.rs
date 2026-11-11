@@ -14,6 +14,7 @@ pub mod firewall;
 pub mod framing;
 pub mod identity;
 pub mod mdns;
+pub mod outside;
 pub mod pairing;
 pub mod pake;
 pub mod socket;

@@ -885,6 +885,8 @@ export const api = {
    * What is pressed comes back by `onNotification`, with `tag`. On a computer;
    * nothing elsewhere for now.
    */
+  /** A link opened in the browser or mail app, on Linux: only the addresses the capability file allows. */
+  openLink: (url: string) => call<void>('open_link', { url }),
   notify: (tag: string, title: string, text: string, buttons: [string, string][] = []) =>
     call<void>('notify', { tag, title, text, buttons }),
   /** Offers files on this device (paths, or a phone's content URIs) to another, straight across. */

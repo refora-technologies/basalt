@@ -773,16 +773,81 @@ fn received_open(app: tauri::AppHandle, path: String) -> Result<(), String> {
     }
     #[cfg(desktop)]
     {
-        use tauri_plugin_opener::OpenerExt;
-        app.opener()
-            .open_path(path, None::<&str>)
-            .map_err(|e| e.to_string())
+        open_outside(&app, &path, false)
     }
     #[cfg(not(desktop))]
     {
         let _ = app;
         Err("Only on a computer.".into())
     }
+}
+
+/// Opens a file, or with `link` an address, with the computer's own app for
+/// it.
+///
+/// From an AppImage, the opener's own way handed that app the AppImage's
+/// libraries: the Text Editor stopped at once ("undefined symbol") and Open
+/// did nothing. There it is started outside them (`basalt_net::outside`).
+fn open_outside(app: &tauri::AppHandle, target: &str, link: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("APPIMAGE").is_some() {
+        use std::process::Stdio;
+        let mut child = basalt_net::outside::command("xdg-open")
+            .arg(target)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("couldn’t open it ({e})"))?;
+        // Waited for, so it doesn't linger once it has handed over.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        return Ok(());
+    }
+    use tauri_plugin_opener::OpenerExt;
+    if link {
+        app.opener().open_url(target, None::<&str>)
+    } else {
+        app.opener().open_path(target, None::<&str>)
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// A link from the page, opened in the browser or the mail app: on Linux,
+/// where an AppImage must start the browser outside its own libraries. Only
+/// the addresses the app's capability file lets the opener open, the same
+/// list, read from it.
+#[tauri::command]
+fn open_link(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    if !link_allowed(&url) {
+        return Err("Basalt doesn’t open that address.".into());
+    }
+    open_outside(&app, &url, true)
+}
+
+/// Whether `url` is one of the addresses in `capabilities/default.json`'s
+/// `opener:allow-open-url`: the same, or under one ending in `*`.
+fn link_allowed(url: &str) -> bool {
+    static ALLOWED: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let allowed = ALLOWED.get_or_init(|| {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap_or_default();
+        capability["permissions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["identifier"] == "opener:allow-open-url")
+            .flat_map(|p| p["allow"].as_array().cloned().unwrap_or_default())
+            .filter_map(|a| a["url"].as_str().map(str::to_string))
+            .collect()
+    });
+    allowed
+        .iter()
+        .any(|pattern| match pattern.strip_suffix('*') {
+            Some(start) => url.starts_with(start),
+            None => url == pattern,
+        })
 }
 
 /// A file received here, shown selected in its folder.
@@ -2644,8 +2709,6 @@ async fn copy_and_open(
     remote: String,
     id: String,
 ) -> Answer<OpenResult> {
-    use tauri_plugin_opener::OpenerExt;
-
     let name = safe_local_name(&remote);
     if is_program(&name) {
         return Err(UiError {
@@ -2677,12 +2740,10 @@ async fn copy_and_open(
     mark_downloaded(&local);
 
     let shown = local.display().to_string();
-    app.opener()
-        .open_path(shown.clone(), None::<&str>)
-        .map_err(|e| UiError {
-            kind: "error".into(),
-            message: format!("couldn’t open {shown}: {e}"),
-        })?;
+    open_outside(&app, &shown, false).map_err(|e| UiError {
+        kind: "error".into(),
+        message: format!("couldn’t open {shown}: {e}"),
+    })?;
     Ok(OpenResult {
         player: "the default app".into(),
         streamed: false,
@@ -2863,7 +2924,7 @@ async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
                 kind: "error".into(),
                 message,
             })?;
-        std::process::Command::new(&next)
+        basalt_net::outside::command(&next)
             .spawn()
             .map_err(|e| UiError {
                 kind: "error".into(),
@@ -3301,6 +3362,7 @@ pub fn run() {
             platform,
             stay_running,
             notify,
+            open_link,
         ])
         // Closed while it should stay ready, with an icon in the tray to come
         // back by: hidden, not closed. The line to the host, shares and
@@ -3328,7 +3390,16 @@ pub fn run() {
                 api, code: None, ..
             } = &event
             {
-                if STAY_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+                // Only with a way back: on a computer, the icon in the tray.
+                // With none (a desktop that shows no tray icons), the window
+                // really closed, and running on would leave Basalt with no
+                // window and nothing to bring one back: opening it again did
+                // nothing at all.
+                #[cfg(any(target_os = "android", target_os = "ios"))]
+                let way_back = true;
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                let way_back = tray::installed();
+                if way_back && STAY_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
                     api.prevent_exit();
                 }
             }
@@ -3345,7 +3416,20 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_program, safe_local_name};
+    use super::{is_program, link_allowed, safe_local_name};
+
+    #[test]
+    fn links_are_only_the_ones_the_capability_file_allows() {
+        assert!(link_allowed("https://basalt.reforatech.com"));
+        assert!(link_allowed("https://basalt.reforatech.com/download/host"));
+        assert!(link_allowed(
+            "https://github.com/refora-technologies/basalt/issues/new"
+        ));
+        assert!(link_allowed("mailto:reforatech@gmail.com?subject=Basalt"));
+        assert!(!link_allowed("https://example.com"));
+        assert!(!link_allowed("https://basalt.reforatech.com.example.com"));
+        assert!(!link_allowed("file:///etc/passwd"));
+    }
 
     #[cfg(not(target_os = "android"))]
     #[test]

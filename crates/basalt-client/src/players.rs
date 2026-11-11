@@ -248,7 +248,7 @@ pub fn chosen(path: &Path) -> Option<Player> {
 
 /// Launches a player against a URL, without waiting for it to exit.
 pub fn launch(player: &Player, url: &str) -> std::io::Result<()> {
-    let mut command = std::process::Command::new(&player.path);
+    let mut command = basalt_net::outside::command(&player.path);
     command.arg(url);
 
     // MPC keeps a single instance by default and would replace whatever is
@@ -381,7 +381,7 @@ fn default_program(extension: &str) -> Option<PathBuf> {
         ".ts" => "video/mp2t",
         _ => "video/x-matroska",
     };
-    let output = std::process::Command::new("xdg-mime")
+    let output = basalt_net::outside::command("xdg-mime")
         .args(["query", "default", mime])
         .stderr(std::process::Stdio::null())
         .output()

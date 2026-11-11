@@ -6,7 +6,6 @@
 //! the administrator's password as installing software always does there.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use basalt_update::LinuxPackage;
 
@@ -20,7 +19,9 @@ pub async fn install(path: &Path) -> Result<PathBuf, String> {
                 .ok_or("no package manager here could install it")?;
             let path = path.to_path_buf();
             let status = tauri::async_runtime::spawn_blocking(move || {
-                Command::new("pkexec").args(&command).status()
+                basalt_net::outside::command("pkexec")
+                    .args(&command)
+                    .status()
             })
             .await
             .map_err(|e| e.to_string())?
