@@ -502,7 +502,11 @@ const sample: {
     requirePin: true,
     profileRules: { requireProfile: false, ownerAddsProfiles: false, claimCode: true },
     startWithWindows: false,
-    vault: null,
+    // `?shared`: a host that already shares a drive as the window opens, as
+    // after an update, rather than one being set up.
+    vault: previewFlag('shared')
+      ? { path: 'E:/', name: 'Media Drive', free: 1200 * GB, total: 3600 * GB, available: true }
+      : null,
     addresses: ['192.168.1.20'],
     deviceCount: 3,
     conversion: {

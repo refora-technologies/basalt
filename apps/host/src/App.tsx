@@ -22,6 +22,7 @@ import { Setup } from './components/Setup'
 import { TitleBar } from './components/TitleBar'
 import { Machine } from './components/Machine'
 import { SharingSettings, clearQuestion } from './components/SharingSettings'
+import { NewInVersion, noteHostStart } from './components/NewInVersion'
 import { Group } from './components/ui/Group'
 import { HexMark } from './components/HexMark'
 import { PromptDialog, type PromptRequest } from './components/ui/PromptDialog'
@@ -114,6 +115,13 @@ export function App(): React.JSX.Element {
     [apply],
   )
 
+  // Whether this host already shared a drive as it started: then it came from
+  // an older version, and the note about 1.6.4 shows once.
+  const hadDrive = status.data ? !!status.data.vault : null
+  useEffect(() => {
+    if (hadDrive !== null) noteHostStart(hadDrive)
+  }, [hadDrive])
+
   const current = status.data
   if (!current) {
     return (
@@ -167,6 +175,7 @@ export function App(): React.JSX.Element {
               <div className="mx-auto flex max-w-[1180px] flex-col gap-4 px-6 py-6">
                 <UpdateBanner />
                 <FirewallNotice />
+                <NewInVersion />
 
                 {!current.serving && current.problem && (
                   <div className="flex items-start gap-3 rounded-lg bg-dangerBg px-4 py-3">
