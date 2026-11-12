@@ -72,12 +72,10 @@ pub fn load(path: &Path) -> Store {
 }
 
 pub fn save(path: &Path, store: &Store) -> std::io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(
-        &tmp,
-        serde_json::to_vec(store).map_err(std::io::Error::other)?,
-    )?;
-    std::fs::rename(&tmp, path)
+    crate::config::write_whole(
+        path,
+        &serde_json::to_vec(store).map_err(std::io::Error::other)?,
+    )
 }
 
 /// One file to look at.

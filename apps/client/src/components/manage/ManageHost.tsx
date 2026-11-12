@@ -12,6 +12,7 @@ import { AboutHost, HostHero, Joining } from './Host'
 import { ConversionGroup, LibraryGroup, SectionsGroup } from './Media'
 import { LayoutContext, type Layout } from './parts'
 import { Profiles } from './Profiles'
+import { SharingGroup } from './Sharing'
 import type { Tools } from './tools'
 import { UpdatesGroup } from './Updates'
 
@@ -26,14 +27,14 @@ import { UpdatesGroup } from './Updates'
  */
 export function ManageHost({ layout, onClose }: { layout: Layout; onClose: () => void }): React.JSX.Element {
   const m = useManage()
-  const { confirm, dialog } = useConfirm()
+  const { confirm, choose, dialog } = useConfirm()
   const [prompt, setPrompt] = useState<PromptRequest | null>(null)
   const view = m.view
   // Older hosts say "does not", newer ones "doesn’t".
   const lost = m.error !== null && /(does not|doesn[’']t) manage this host/i.test(m.error)
 
   const tools: Tools | null = view
-    ? { m, view, confirm, prompt: setPrompt, leave: onClose }
+    ? { m, view, confirm, choose, prompt: setPrompt, leave: onClose }
     : null
 
   const body = lost ? (
@@ -153,6 +154,7 @@ function PhoneBody({ tools }: { tools: Tools }): React.JSX.Element {
       )}
       <Devices {...tools} />
       <Profiles {...tools} />
+      <SharingGroup {...tools} />
       <Joining {...tools} />
       <LibraryGroup {...tools} />
       <SectionsGroup {...tools} />
@@ -181,6 +183,7 @@ function DesktopBody({ tools }: { tools: Tools }): React.JSX.Element {
     <>
       <Devices {...tools} />
       <Profiles {...tools} />
+      <SharingGroup {...tools} />
       <Joining {...tools} />
     </>
   )

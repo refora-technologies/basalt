@@ -6,6 +6,14 @@
     <!-- Hosts announce themselves by broadcast; this lets them through. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- A nearby device's own Wi-Fi (Wi-Fi Direct): hosting it, finding it, joining it. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+    <!-- Looking at the Wi-Fis around (a nearby device's own) needs location on every Android, 13+ too. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
@@ -13,6 +21,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Ready to receive from this person's other devices on the Wi-Fi: a
+         line kept open to them, which has no daily limit, unlike data sync. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -28,7 +39,15 @@
         <service
             android:name="app.basalt.android.KeepAliveService"
             android:exported="false"
-            android:foregroundServiceType="dataSync|mediaPlayback" />
+            android:foregroundServiceType="dataSync|mediaPlayback|connectedDevice" />
+        <!-- Opens Basalt again in a fresh process, from one of its own: see Restart. -->
+        <activity
+            android:name="app.basalt.android.Restart"
+            android:exported="false"
+            android:process=":restart"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <!-- The music notification's buttons: see MediaNow. -->
         <receiver
             android:name="app.basalt.android.MediaNow$Buttons"

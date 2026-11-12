@@ -11,7 +11,12 @@ export interface ConfirmRequest {
   confirmLabel?: string
   /** Draws the action as destructive. */
   danger?: boolean
+  /** A second way to go ahead, beside the first: "Delete them". */
+  alternative?: string
 }
+
+/** Which button was pressed: the first, the alternative, or Cancel (null). */
+export type Choice = 'confirm' | 'alternative' | null
 
 /**
  * A yes/no question, asked in the app's own voice.
@@ -32,7 +37,7 @@ export function ConfirmDialog({
   onSettle,
 }: {
   request: ConfirmRequest | null
-  onSettle: (ok: boolean) => void
+  onSettle: (ok: boolean | 'alternative') => void
 }): React.JSX.Element {
   return createPortal(
     <AnimatePresence>
@@ -58,7 +63,7 @@ function Card({
   onSettle,
 }: {
   request: ConfirmRequest
-  onSettle: (ok: boolean) => void
+  onSettle: (ok: boolean | 'alternative') => void
 }): React.JSX.Element {
   // Android's back cancels, rather than going up a folder behind the dialog.
   useBack(true, () => {
@@ -102,6 +107,14 @@ function Card({
         >
           Cancel
         </button>
+        {request.alternative && (
+          <button
+            onClick={() => onSettle('alternative')}
+            className="rounded-md border border-white/[0.16] px-3 py-1.5 text-[12px] text-text transition-colors hover:bg-white/[0.06]"
+          >
+            {request.alternative}
+          </button>
+        )}
         <motion.button
           // Focused on open, so Enter and Escape both do the obvious thing
           // without anyone reaching for the mouse.
@@ -131,16 +144,18 @@ function Card({
  */
 export function useConfirm(): {
   confirm: (request: ConfirmRequest) => Promise<boolean>
+  /** For a question with two ways to go ahead (`alternative`). */
+  choose: (request: ConfirmRequest) => Promise<Choice>
   dialog: React.JSX.Element
 } {
   const [request, setRequest] = useState<ConfirmRequest | null>(null)
   // In a ref rather than in state: resolving inside a state updater would run
   // the side effect twice under StrictMode's double invocation.
-  const pending = useRef<((ok: boolean) => void) | null>(null)
+  const pending = useRef<((ok: boolean | 'alternative') => void) | null>(null)
 
-  const confirm = useCallback(
+  const ask = useCallback(
     (next: ConfirmRequest) =>
-      new Promise<boolean>((resolve) => {
+      new Promise<boolean | 'alternative'>((resolve) => {
         // A second question while one is open would strand the first promise
         // for ever, and an awaited promise that never settles is a menu item
         // that hangs rather than one that fails.
@@ -150,8 +165,17 @@ export function useConfirm(): {
       }),
     [],
   )
+  const confirm = useCallback(
+    (next: ConfirmRequest) => ask({ ...next, alternative: undefined }).then((ok) => ok === true),
+    [ask],
+  )
+  const choose = useCallback(
+    (next: ConfirmRequest) =>
+      ask(next).then((ok): Choice => (ok === 'alternative' ? 'alternative' : ok ? 'confirm' : null)),
+    [ask],
+  )
 
-  const settle = useCallback((ok: boolean) => {
+  const settle = useCallback((ok: boolean | 'alternative') => {
     const resolve = pending.current
     pending.current = null
     setRequest(null)
@@ -160,6 +184,7 @@ export function useConfirm(): {
 
   return {
     confirm,
+    choose,
     dialog: <ConfirmDialog request={request} onSettle={settle} />,
   }
 }

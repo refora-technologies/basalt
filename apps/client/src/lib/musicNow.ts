@@ -14,6 +14,38 @@ export function livePosition(session: NowSession, offset: number, nowMs: number)
   return duration > 0 ? Math.min(at, duration) : at
 }
 
+/**
+ * A seek asked of another device from here: where to (`to`, seconds), when
+ * (`since`, this device's clock), and which of its reports was the newest
+ * then (`said`).
+ */
+export interface AskedSeek {
+  to: number
+  since: number
+  said: number
+}
+
+/** How long a seek asked of another device is shown before its reports are believed again. */
+export const SEEK_SHOWN_AT_MOST_MS = 3_000
+
+/**
+ * Where to show a song on another device, with a seek asked of it from here.
+ *
+ * The bar showed the old place until that device's next report, a second or
+ * more later, as if the seek had not worked (F12b). Now the asked place shows
+ * at once, moving on as the song would, until a newer report puts it within
+ * two seconds of there, or three seconds pass.
+ */
+export function shownPosition(session: NowSession, offset: number, nowMs: number, asked: AskedSeek | null): number {
+  if (!asked || nowMs - asked.since >= SEEK_SHOWN_AT_MOST_MS) return livePosition(session, offset, nowMs)
+  const { playing, duration } = session.report
+  const expected = asked.to + (playing ? (nowMs - asked.since) / 1000 : 0)
+  const live = livePosition(session, offset, nowMs)
+  const newer = (session.report.clock ?? session.at) !== asked.said
+  if (newer && Math.abs(live - expected) < 2) return live
+  return duration > 0 ? Math.min(expected, duration) : expected
+}
+
 /** The song that device plays, by its path. */
 export function songOf(session: NowSession): string | null {
   const { queue, index } = session.report.listening
@@ -25,7 +57,7 @@ export function songOf(session: NowSession): string | null {
  * seek is heard, so closer than this they are brought together by playing
  * a little faster or slower instead.
  */
-export const SEEK_ABOVE_SECONDS = 0.25
+export const SEEK_ABOVE_SECONDS = 0.12
 /** Further apart than this, the one behind or ahead starts to make it up. */
 export const NUDGE_ABOVE_SECONDS = 0.012
 /** Closer than this, it is in step: two speakers in one room sound as one. */

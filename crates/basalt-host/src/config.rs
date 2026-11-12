@@ -155,6 +155,19 @@ pub struct HostConfig {
     /// drive as themselves. Sealed when written down.
     #[serde(default, skip_serializing_if = "crate::sealed::Secret::is_empty")]
     pub household_key: crate::sealed::Secret,
+    /// The key that locks files held for someone away (see
+    /// `crate::share_store`), hex. Sealed when written down. Made the first
+    /// time a share is held; lost with this file, the held files with it.
+    #[serde(default, skip_serializing_if = "crate::sealed::Secret::is_empty")]
+    pub share_key: crate::sealed::Secret,
+    /// Files sent through this host for someone away are kept apart from the
+    /// drive and locked (on, as it starts), or put in plain in a "Basalt
+    /// shares" folder on the drive, one per profile (off). From 1.6.4.
+    #[serde(default = "default_true")]
+    pub share_secure: bool,
+    /// How much each profile may keep here for someone away. Off as it starts.
+    #[serde(default)]
+    pub share_limits: ShareLimits,
     /// Member statements made and not yet expired: see `crate::authority`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub issued: Vec<crate::authority::Issued>,
@@ -164,6 +177,40 @@ pub struct HostConfig {
     /// An owner's device vouching for this host's key, the newest there is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endorsement: Option<crate::authority::Endorsement>,
+}
+
+/// The most each profile may keep on the host for someone away (D13).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareLimits {
+    pub on: bool,
+    /// Bytes, for a profile not set on its own: new profiles too.
+    pub new_profile: u64,
+    /// Bytes, by profile id, for those set on their own.
+    #[serde(default)]
+    pub profiles: std::collections::BTreeMap<String, u64>,
+}
+
+impl Default for ShareLimits {
+    fn default() -> Self {
+        Self {
+            on: false,
+            new_profile: 20 * 1024 * 1024 * 1024,
+            profiles: Default::default(),
+        }
+    }
+}
+
+impl ShareLimits {
+    /// What `profile` may keep, when limits are on.
+    pub fn of(&self, profile: &str) -> Option<u64> {
+        self.on.then(|| {
+            self.profiles
+                .get(profile)
+                .copied()
+                .unwrap_or(self.new_profile)
+        })
+    }
 }
 
 impl HostConfig {
@@ -201,6 +248,9 @@ impl HostConfig {
             convert_measuring: false,
             devices: Vec::new(),
             household_key: Default::default(),
+            share_key: Default::default(),
+            share_secure: true,
+            share_limits: ShareLimits::default(),
             issued: Vec::new(),
             revoked: Default::default(),
             endorsement: None,
@@ -251,11 +301,38 @@ impl HostConfig {
         let json = serde_json::to_vec_pretty(&self.sealed())
             .map_err(|e| HostError::BadRequest(format!("could not encode the config: {e}")))?;
 
-        let temp = path.with_extension("tmp");
-        write_private(&temp, &json)?;
-        replace(&temp, path)?;
-        Ok(())
+        let temp = temp_beside(path);
+        let saved = write_private(&temp, &json).and_then(|()| replace(&temp, path));
+        if saved.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        Ok(saved?)
     }
+}
+
+/// A temporary name beside `path` that no other save uses.
+///
+/// Every save wrote `<name>.tmp` and moved it over the file. Two saves of one
+/// file at once wrote the same temporary file, and the second to move it
+/// found it gone: "No such file or directory", and the request that saved
+/// failed (seen when a profile from another drive was used on a Linux host).
+pub(crate) fn temp_beside(path: &Path) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}-{n}.tmp", std::process::id()));
+    path.with_file_name(name)
+}
+
+/// Writes `bytes` to `path` whole or not at all: to a temporary file of its
+/// own, then moved over it.
+pub(crate) fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temp = temp_beside(path);
+    let written = std::fs::write(&temp, bytes).and_then(|()| replace(&temp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 /// Moves `from` over `to`. On Windows a file just written is often held open
@@ -282,6 +359,7 @@ impl HostConfig {
         let mut config = self.clone();
         config.key_der.0 = crate::sealed::seal(&config.key_der.0);
         config.household_key.0 = crate::sealed::seal(&config.household_key.0);
+        config.share_key.0 = crate::sealed::seal(&config.share_key.0);
         for profile in &mut config.profiles {
             profile.person_key.0 = crate::sealed::seal(&profile.person_key.0);
         }
@@ -313,6 +391,9 @@ impl HostConfig {
             }
         };
         open_or_drop(&mut self.household_key);
+        // Not opening here (the file moved to another computer): the held
+        // files can't be read, and a new key starts over.
+        open_or_drop(&mut self.share_key);
         for profile in &mut self.profiles {
             open_or_drop(&mut profile.person_key);
         }
@@ -522,6 +603,35 @@ mod tests {
             .filter(|n| n.ends_with(".tmp"))
             .collect();
         assert!(leftovers.is_empty(), "found {leftovers:?}");
+    }
+
+    #[test]
+    fn saves_at_the_same_moment_all_succeed() {
+        let dir = temp_dir();
+        let path = dir.0.join("host.json");
+        let config = HostConfig::create("laptop-b").unwrap();
+        let together = std::sync::Barrier::new(8);
+        std::thread::scope(|s| {
+            let saves: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        together.wait();
+                        (0..25).try_for_each(|_| config.save(&path))
+                    })
+                })
+                .collect();
+            for save in saves {
+                save.join().unwrap().unwrap();
+            }
+        });
+        let leftovers: Vec<_> = std::fs::read_dir(&dir.0)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "found {leftovers:?}");
+        HostConfig::load_or_create(&path, "laptop-b").unwrap();
     }
 
     #[test]

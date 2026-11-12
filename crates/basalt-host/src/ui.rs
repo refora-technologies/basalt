@@ -83,6 +83,65 @@ pub struct HostStatus {
     /// Running with no screen (a service, or in Docker): managed only from
     /// devices, and set up with a setup code. See [`crate::setup`].
     pub headless: bool,
+    /// Sharing between devices: files kept for someone away. From 1.6.4.
+    pub sharing: SharingView,
+}
+
+/// Files kept on the host for someone away, and the host's rules for them.
+/// Sizes only: the host never lists their names (D8).
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharingView {
+    /// Whether this host can keep files at all.
+    pub available: bool,
+    /// Kept apart and locked (on), or in "Basalt shares" on the drive (off).
+    pub secure: bool,
+    pub limits_on: bool,
+    /// Bytes each profile may keep, unless set on its own.
+    pub new_profile_limit: u64,
+    pub profiles: Vec<SharingProfile>,
+    /// Bytes kept, for everyone.
+    pub used: u64,
+    /// Of those, bytes locked in the host's own folder (the rest are in
+    /// "Basalt shares" on the drive, with the drive's files).
+    pub locked: u64,
+    /// Shares kept.
+    pub count: usize,
+    /// Profiles (and devices on their own) they're from.
+    pub from: usize,
+    /// The host's own folder is on the drive's disk: share files take from
+    /// the drive's free space.
+    pub same_disk: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharingProfile {
+    pub id: String,
+    pub name: String,
+    pub color: u8,
+    /// Bytes this profile keeps here.
+    pub used: u64,
+    /// Its own limit, when set apart from the general one.
+    pub limit: Option<u64>,
+}
+
+/// Bytes as a person reads them: "12.4 GB", "680 KB".
+pub fn bytes_said(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["bytes", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} bytes")
+    } else if value >= 100.0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 /// The system this host was built for.
@@ -489,6 +548,7 @@ mod tests {
             endorsement: None,
             platform: "windows",
             headless: false,
+            sharing: SharingView::default(),
         };
         assert_eq!(
             keys(&status),
@@ -509,6 +569,7 @@ mod tests {
                 "requirePin",
                 "sections",
                 "serving",
+                "sharing",
                 "startWithWindows",
                 "vault",
             ]

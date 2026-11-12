@@ -23,9 +23,14 @@ use tauri::{Emitter, Manager, State};
 
 #[cfg(target_os = "linux")]
 mod linux_player;
+mod linux_share;
 #[cfg(target_os = "linux")]
 mod linux_update;
 mod media_controls;
+mod music_timing;
+mod nearby_wifi;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod tray;
 #[cfg(target_os = "linux")]
 use linux_player::{
     linux_mpv_command, linux_mpv_destroy, linux_mpv_get_property, linux_mpv_init,
@@ -128,7 +133,31 @@ struct AppState {
     /// would push Continue watching minutes past where anybody has watched.
     /// Only paths in here contribute that estimate.
     external: Mutex<std::collections::HashSet<String>>,
+    /// Messages from the host's other devices not yet taken by the page: kept
+    /// here so one that comes while there is no page (on Android, the app
+    /// swiped away and staying ready) is still there when it opens.
+    channel: Mutex<std::collections::VecDeque<basalt_proto::msg::ChannelMessage>>,
+    /// Where offers and hand-offs are kept a while on disk (see `keep_share_message`).
+    kept_shares: Option<std::path::PathBuf>,
+    /// Where share notices go for Android to show (see `share_notice`).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    notices: Option<std::path::PathBuf>,
+    /// This device's listener for files it offers from itself, started the
+    /// first time it offers one.
+    direct: tokio::sync::OnceCell<Arc<basalt_client::direct::DirectServer>>,
+    /// Ready to receive from devices nearby, while it is.
+    nearby_ready: Mutex<Option<basalt_client::nearby::Ready>>,
+    /// This device's own Wi-Fi while ready, and one joined to share.
+    nearby_wifi: nearby_wifi::State,
+    /// Offers to devices nearby still waiting for their answer: a word here
+    /// drops the line, and the other side's question goes with it.
+    nearby_asking: Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+    /// Offers to devices nearby waiting for the code shown there.
+    nearby_offers: Mutex<std::collections::HashMap<String, WaitingOffer>>,
 }
+
+/// Messages kept for the page at most: past it, the oldest go.
+const CHANNEL_KEPT: usize = 200;
 
 impl AppState {
     /// Starts the media proxy the first time something needs a URL.
@@ -358,6 +387,30 @@ fn start_watching(client: &Arc<Basalt>, app: &tauri::AppHandle) {
             // What the profile's other devices play changed: the window asks.
             basalt_client::WatchNotice::MusicNow => {
                 let _ = told.emit("basalt://music-now", ());
+            }
+            // A message from another of the host's devices, and who is online.
+            basalt_client::WatchNotice::Channel(message) => {
+                if let Some(state) = told.try_state::<AppState>() {
+                    let mut kept = state.channel.lock().expect("channel lock");
+                    kept.push_back(message.clone());
+                    while kept.len() > CHANNEL_KEPT {
+                        kept.pop_front();
+                    }
+                }
+                #[cfg(target_os = "android")]
+                share_offer_notice(&told, &message);
+                if message.kind == "share.offer" || message.kind == "share.handoff" {
+                    let path = told
+                        .try_state::<AppState>()
+                        .and_then(|state| state.kept_shares.clone());
+                    if let Some(path) = path {
+                        keep_share_message(&path, &message);
+                    }
+                }
+                let _ = told.emit("basalt://channel", message);
+            }
+            basalt_client::WatchNotice::PresenceChanged => {
+                let _ = told.emit("basalt://presence", ());
             }
             notice => {
                 if let basalt_client::WatchNotice::Removed(removed) = notice {
@@ -664,6 +717,1361 @@ async fn music_now(
     Ok(state.client.music_now(request).await?)
 }
 
+/// Whether the app goes on running when its window closes: set while it is
+/// ready to receive, with Android's service keeping it going. Then the exit a
+/// closed window asks for is refused, and the line to the host, the heartbeat
+/// and anything moving carry on without a window. A window opened again finds
+/// them still there.
+static STAY_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+fn stay_running(on: bool) {
+    STAY_RUNNING.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A notification from the system, with up to two buttons: see `tray::notify`.
+#[tauri::command]
+fn notify(
+    app: tauri::AppHandle,
+    tag: String,
+    title: String,
+    text: String,
+    buttons: Vec<(String, String)>,
+) {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    tray::notify(&app, tag, &title, &text, &buttons);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = (app, tag, title, text, buttons);
+}
+
+/// The messages from other devices the page has not taken yet, now handed
+/// over: at start, and as each one is told (`basalt://channel`).
+#[tauri::command]
+fn channel_take(state: State<'_, AppState>) -> Vec<basalt_proto::msg::ChannelMessage> {
+    state
+        .channel
+        .lock()
+        .expect("channel lock")
+        .drain(..)
+        .collect()
+}
+
+/// A file received here, opened with what the computer opens it with. A
+/// program never is: it is shown in its folder instead, for the person to
+/// decide.
+#[tauri::command]
+fn received_open(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let file = std::path::Path::new(&path);
+    if !file.is_file() {
+        return Err("It’s no longer there.".into());
+    }
+    let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if is_program(name) {
+        return Err(
+            "A program is never opened by Basalt: it’s shown in its folder instead.".into(),
+        );
+    }
+    #[cfg(desktop)]
+    {
+        open_outside(&app, &path, false)
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Err("Only on a computer.".into())
+    }
+}
+
+/// Opens a file, or with `link` an address, with the computer's own app for
+/// it.
+///
+/// From an AppImage, the opener's own way handed that app the AppImage's
+/// libraries: the Text Editor stopped at once ("undefined symbol") and Open
+/// did nothing. There it is started outside them (`basalt_net::outside`).
+fn open_outside(app: &tauri::AppHandle, target: &str, link: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("APPIMAGE").is_some() {
+        use std::process::Stdio;
+        let mut child = basalt_net::outside::command("xdg-open")
+            .arg(target)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("couldn’t open it ({e})"))?;
+        // Waited for, so it doesn't linger once it has handed over.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        return Ok(());
+    }
+    use tauri_plugin_opener::OpenerExt;
+    if link {
+        app.opener().open_url(target, None::<&str>)
+    } else {
+        app.opener().open_path(target, None::<&str>)
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// A link from the page, opened in the browser or the mail app: on Linux,
+/// where an AppImage must start the browser outside its own libraries. Only
+/// the addresses the app's capability file lets the opener open, the same
+/// list, read from it.
+#[tauri::command]
+fn open_link(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    if !link_allowed(&url) {
+        return Err("Basalt doesn’t open that address.".into());
+    }
+    open_outside(&app, &url, true)
+}
+
+/// Whether `url` is one of the addresses in `capabilities/default.json`'s
+/// `opener:allow-open-url`: the same, or under one ending in `*`.
+fn link_allowed(url: &str) -> bool {
+    static ALLOWED: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let allowed = ALLOWED.get_or_init(|| {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap_or_default();
+        capability["permissions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["identifier"] == "opener:allow-open-url")
+            .flat_map(|p| p["allow"].as_array().cloned().unwrap_or_default())
+            .filter_map(|a| a["url"].as_str().map(str::to_string))
+            .collect()
+    });
+    allowed
+        .iter()
+        .any(|pattern| match pattern.strip_suffix('*') {
+            Some(start) => url.starts_with(start),
+            None => url == pattern,
+        })
+}
+
+/// A file received here, shown selected in its folder.
+#[tauri::command]
+fn received_show(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let file = std::path::Path::new(&path);
+    if !file.exists() {
+        return Err("It’s no longer there.".into());
+    }
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .reveal_item_in_dir(file)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Err("Only on a computer.".into())
+    }
+}
+
+/// Where a file shared with this device landed.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Received {
+    /// Where somebody would look for it: a folder and a name.
+    shown_as: String,
+    /// On a computer, the file itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    /// On a phone, what opens or shares it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uri: Option<String>,
+}
+
+/// Takes a file shared with this device from the drive into its received
+/// folder: a computer's Downloads\Basalt unless another is chosen, a phone's
+/// Download/Basalt. Never over a file already there: a second copy is
+/// "name (1).ext".
+#[tauri::command]
+async fn receive_file(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    remote: String,
+    id: String,
+    folder: Option<String>,
+) -> Answer<Received> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = folder;
+        let saved = download_to_phone(app, state, remote, id).await?;
+        Ok(Received {
+            shown_as: saved.shown_as,
+            path: None,
+            uri: Some(saved.uri),
+        })
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let dir = match folder.filter(|f| !f.trim().is_empty()) {
+            Some(folder) => PathBuf::from(folder),
+            None => received_folder(&app)?,
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t make the folder {}: {e}", dir.display()),
+        })?;
+        let local = free_name(&dir, &safe_local_name(&remote));
+        let shown_as = local.display().to_string();
+        download(app, state, remote, shown_as.clone(), id).await?;
+        Ok(Received {
+            shown_as: shown_as.clone(),
+            path: Some(shown_as),
+            uri: None,
+        })
+    }
+}
+
+/// The folder shared files land in unless another is chosen.
+#[cfg(not(target_os = "android"))]
+fn received_folder(app: &tauri::AppHandle) -> Answer<PathBuf> {
+    app.path()
+        .download_dir()
+        .map(|d| d.join("Basalt"))
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t find the Downloads folder: {e}"),
+        })
+}
+
+/// The received folder, for Settings to show.
+#[tauri::command]
+fn default_received_folder(app: tauri::AppHandle) -> Answer<String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        Ok("Download/Basalt".into())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(received_folder(&app)?.display().to_string())
+    }
+}
+
+/// `name` in `dir`, or "name (1).ext", "name (2).ext"... whichever is free.
+#[cfg(not(target_os = "android"))]
+fn free_name(dir: &std::path::Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    (1..)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|p| !p.exists())
+        .expect("a free name")
+}
+
+/// Opens a file this device offers: a path on a computer, a content URI on
+/// a phone.
+fn open_local(app: &tauri::AppHandle) -> basalt_client::direct::Opener {
+    #[cfg(target_os = "android")]
+    {
+        let app = app.clone();
+        Arc::new(move |source: &str| {
+            use tauri_plugin_basalt_android::BasaltAndroidExt;
+            let fd = app
+                .basalt_android()
+                .open_fd(source, "r")
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            Ok(owned_file(fd))
+        })
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Arc::new(|source: &str| std::fs::File::open(source))
+    }
+}
+
+/// This device's listener for files it offers, started now: files on it, and
+/// files on the drive passed on from the host as they come (`drive:<path>`),
+/// for a device nearby that isn't on the host.
+async fn start_direct(
+    app: &tauri::AppHandle,
+    client: Arc<Basalt>,
+) -> basalt_client::Result<Arc<basalt_client::direct::DirectServer>> {
+    let server = basalt_client::direct::DirectServer::start(open_local(app)).await?;
+    server.set_relay(Arc::new(move |path: String, from: u64| {
+        let client = Arc::clone(&client);
+        Box::pin(async move {
+            let (total, read) = client
+                .read_stream(&path, from)
+                .await
+                .map_err(std::io::Error::other)?;
+            Ok((
+                total,
+                Box::new(read) as Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+            ))
+        })
+    }));
+    Ok(server)
+}
+
+/// Offers files on this device to another, straight across the Wi-Fi: where
+/// to take them from, and the secret that does. `sources` are paths, or a
+/// phone's content URIs.
+#[tauri::command]
+async fn share_local(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    offer: String,
+    sources: Vec<String>,
+) -> Answer<serde_json::Value> {
+    let server = state
+        .direct
+        .get_or_try_init(|| start_direct(&app, Arc::clone(&state.client)))
+        .await?;
+    let token = server.offer(&offer, sources);
+    Ok(serde_json::json!({ "endpoint": server.endpoint(), "token": token }))
+}
+
+/// This device as others nearby see it: its name, kind and short id.
+fn nearby_me(state: &AppState) -> basalt_client::nearby::Me {
+    basalt_client::nearby::Me {
+        id: basalt_client::nearby::short_id(state.client.device_id().as_bytes()),
+        name: state.client.device_name().to_string(),
+        form: Some(
+            if cfg!(target_os = "android") {
+                "phone"
+            } else {
+                "computer"
+            }
+            .to_string(),
+        ),
+    }
+}
+
+/// This device's name and short id, as devices nearby see them.
+#[tauri::command]
+fn nearby_whoami(state: State<'_, AppState>) -> basalt_client::nearby::Me {
+    nearby_me(&state)
+}
+
+/// Ready to receive from devices nearby, or not; `always_code` asks every
+/// sender for a code. What happens comes as `basalt://nearby-ready` events.
+#[tauri::command]
+async fn nearby_ready(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    on: bool,
+    always_code: bool,
+) -> Answer<()> {
+    use tauri::Emitter;
+    // The last one stops first, so its port is free for this one.
+    let before = state.nearby_ready.lock().expect("nearby lock").take();
+    drop(before);
+    if !on {
+        return Ok(());
+    }
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let ready = basalt_client::nearby::Ready::start(
+        nearby_me(&state),
+        always_code,
+        tx,
+        basalt_client::nearby::READY_PORT,
+    )
+    .await?;
+    *state.nearby_ready.lock().expect("nearby lock") = Some(ready);
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            #[cfg(target_os = "android")]
+            nearby_offer_notice(&app, &event);
+            let _ = app.emit("basalt://nearby-ready", &event);
+        }
+    });
+    Ok(())
+}
+
+/// How long an offer or hand-off is kept on disk for a page that isn't
+/// there yet: a phone's app reopened from its notification starts afresh,
+/// and what was only in memory would be gone. As long as an offer is worth
+/// answering (OFFER_TTL_MS on the page).
+const KEPT_SHARES_FOR_MS: u128 = 10 * 60_000;
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// Adds `message` to those kept at `path`, dropping any too old.
+fn keep_share_message(path: &std::path::Path, message: &basalt_proto::msg::ChannelMessage) {
+    let mut kept: Vec<serde_json::Value> = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let now = now_ms();
+    kept.retain(|k| {
+        k["at"]
+            .as_u64()
+            .is_some_and(|at| now.saturating_sub(u128::from(at)) < KEPT_SHARES_FOR_MS)
+    });
+    kept.push(serde_json::json!({ "at": now as u64, "message": message }));
+    let start = kept.len().saturating_sub(20);
+    if let Ok(bytes) = serde_json::to_vec(&kept[start..]) {
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
+/// The offers and hand-offs kept at `path` still worth answering: what the
+/// page finds waiting when it starts (it skips any it already has).
+fn kept_share_messages(
+    path: &std::path::Path,
+) -> std::collections::VecDeque<basalt_proto::msg::ChannelMessage> {
+    let kept: Vec<serde_json::Value> = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let now = now_ms();
+    kept.into_iter()
+        .filter(|k| {
+            k["at"]
+                .as_u64()
+                .is_some_and(|at| now.saturating_sub(u128::from(at)) < KEPT_SHARES_FOR_MS)
+        })
+        .filter_map(|k| serde_json::from_value(k["message"].clone()).ok())
+        .collect()
+}
+
+/// A share offered by a device of this home, told by Android itself while
+/// the app is out of sight: with the app swiped away there is no page to
+/// tell it. The offer's own tag, so the page's fuller one (Accept, Decline)
+/// takes its place when the page is there to make it.
+#[cfg(target_os = "android")]
+fn share_offer_notice(app: &tauri::AppHandle, message: &basalt_proto::msg::ChannelMessage) {
+    use tauri_plugin_basalt_android::BasaltAndroidExt;
+    // An offer, or one passed on by another of this person's devices to be
+    // taken here ("Accept on"): the offer itself is inside.
+    let (body, passed) = match message.kind.as_str() {
+        "share.offer" => (&message.body, false),
+        "share.handoff" => (&message.body["offer"], true),
+        _ => return,
+    };
+    let Some(offer) = body["offer"].as_str() else {
+        return;
+    };
+    let names: Vec<&str> = body["files"]
+        .as_array()
+        .map(|files| files.iter().filter_map(|f| f["name"].as_str()).collect())
+        .unwrap_or_default();
+    let what = match names.as_slice() {
+        [one] => (*one).to_string(),
+        [] => "a file".to_string(),
+        many => format!("{} files", many.len()),
+    };
+    let from = body["from"]["profileName"]
+        .as_str()
+        .or(body["from"]["name"].as_str())
+        .unwrap_or(&message.from_name);
+    let (title, text) = if passed {
+        (
+            format!("{what} from {from}: tap to take it here"),
+            format!("Passed on from {}", message.from_name),
+        )
+    } else {
+        (
+            format!("{from} wants to send you {what}"),
+            format!("From {}", message.from_name),
+        )
+    };
+    share_notice(app, offer, &title, &text, &[]);
+}
+
+/// An offer from a device nearby, told by Android itself while the app is
+/// out of sight: the page doesn't run then, so it can't. The same tag and
+/// buttons as the page's own (nearbyNotifications.ts), so a tap answers it.
+#[cfg(target_os = "android")]
+fn nearby_offer_notice(app: &tauri::AppHandle, event: &basalt_client::nearby::ReadyEvent) {
+    let basalt_client::nearby::ReadyEvent::Offer {
+        ask,
+        from,
+        files,
+        code,
+    } = event
+    else {
+        return;
+    };
+    let what = match files.as_slice() {
+        [one] => one.name.clone(),
+        many => format!("{} files", many.len()),
+    };
+    let title = format!("{} · {} wants to send you {what}", from.name, from.id);
+    let text = if *code {
+        "A device nearby · a code is asked"
+    } else {
+        "A device nearby"
+    };
+    share_notice(
+        app,
+        &format!("nearby-{ask}"),
+        &title,
+        text,
+        &["Accept|accept", "Decline|decline"],
+    );
+    nearby_log(&format!("offer {ask}: notice written"));
+}
+
+/// A share's notice, for Android to show while Basalt isn't on screen
+/// (ShareNotices watches the file): written, never asked of the plugin,
+/// which fails with Basalt swiped away. The last 20 are kept.
+#[cfg(target_os = "android")]
+fn share_notice(app: &tauri::AppHandle, tag: &str, title: &str, text: &str, actions: &[&str]) {
+    let Some(path) = app
+        .try_state::<AppState>()
+        .and_then(|state| state.notices.clone())
+    else {
+        return;
+    };
+    let mut kept: Vec<serde_json::Value> = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    kept.push(serde_json::json!({
+        "at": now_ms() as u64,
+        "tag": tag,
+        "title": title,
+        "text": text,
+        "actions": actions,
+    }));
+    let start = kept.len().saturating_sub(20);
+    let Ok(bytes) = serde_json::to_vec(&kept[start..]) else {
+        return;
+    };
+    // Whole, then moved into place: the watcher reads it complete.
+    let fresh = path.with_extension("json.new");
+    if std::fs::write(&fresh, bytes).is_ok() {
+        let _ = std::fs::rename(&fresh, &path);
+    }
+}
+
+/// Accept or Decline for an offer from a device nearby. False if it's gone.
+#[tauri::command]
+fn nearby_reply(state: State<'_, AppState>, ask: String, accept: bool) -> bool {
+    state
+        .nearby_ready
+        .lock()
+        .expect("nearby lock")
+        .as_ref()
+        .is_some_and(|ready| ready.answer(&ask, accept))
+}
+
+/// How taking the files from a device nearby went: `done` or `failed`.
+#[tauri::command]
+fn nearby_finish(state: State<'_, AppState>, ask: String, answer: String) {
+    if let Some(ready) = state.nearby_ready.lock().expect("nearby lock").as_ref() {
+        ready.finish(&ask, &answer);
+    }
+}
+
+/// This device's own Wi-Fi, as others find it: its name and passphrase.
+#[tauri::command]
+fn nearby_wifi_own(state: State<'_, AppState>) -> nearby_wifi::Own {
+    nearby_wifi::own(&nearby_me(&state))
+}
+
+/// The passphrase of a Basalt Wi-Fi found around, from its name.
+#[tauri::command]
+fn nearby_wifi_passphrase(ssid: String) -> Answer<String> {
+    let (id, _) = basalt_client::nearby::wifi_device(&ssid).ok_or_else(|| UiError {
+        kind: "error".into(),
+        message: "that isn't a Basalt Wi-Fi".into(),
+    })?;
+    Ok(basalt_client::nearby::wifi_passphrase(&id))
+}
+
+fn wifi_error(message: String) -> UiError {
+    UiError {
+        kind: "error".into(),
+        message,
+    }
+}
+
+/// Hosts this computer's own Wi-Fi while it is ready, for devices with no
+/// network in common; or stops.
+#[tauri::command]
+async fn nearby_wifi_host(app: tauri::AppHandle, on: bool) -> Answer<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        if on {
+            nearby_wifi::host(&state.nearby_wifi, &nearby_me(&state)).map_err(wifi_error)
+        } else {
+            nearby_wifi::stop_host(&state.nearby_wifi);
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// The Basalt Wi-Fis around: devices ready with no network in common.
+#[tauri::command]
+async fn nearby_wifi_scan() -> Answer<Vec<nearby_wifi::Found>> {
+    tauri::async_runtime::spawn_blocking(nearby_wifi::scan)
+        .await
+        .map_err(|e| wifi_error(e.to_string()))?
+        .map_err(wifi_error)
+}
+
+/// Joins a Basalt Wi-Fi found around, to share with the device hosting it.
+#[tauri::command]
+async fn nearby_wifi_join(app: tauri::AppHandle, ssid: String) -> Answer<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        nearby_wifi::join(&app.state::<AppState>().nearby_wifi, &ssid).map_err(wifi_error)
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// Leaves a Basalt Wi-Fi joined to share: back to the Wi-Fi before.
+#[tauri::command]
+async fn nearby_wifi_leave(app: tauri::AppHandle) -> Answer<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        nearby_wifi::leave(&app.state::<AppState>().nearby_wifi)
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))
+}
+
+/// Whether Windows Firewall lets devices nearby reach this app: `open`,
+/// `blocked` or `unknown` (always `open` elsewhere).
+#[tauri::command]
+async fn nearby_firewall() -> Answer<String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let exe = std::env::current_exe().map_err(|e| wifi_error(e.to_string()))?;
+        Ok(basalt_net::firewall::check(&exe).as_str().to_string())
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// Lets devices nearby reach this app through Windows Firewall, after
+/// Windows asks for an administrator; what it does now.
+#[tauri::command]
+async fn nearby_firewall_allow() -> Answer<String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let exe = std::env::current_exe().map_err(|e| wifi_error(e.to_string()))?;
+        // The development copy's own name, never the real app's rule.
+        let name = if dev_isolated().is_some() {
+            "Basalt (development copy)"
+        } else {
+            "Basalt"
+        };
+        basalt_net::firewall::allow(
+            &exe,
+            name,
+            "Lets devices nearby offer you files, and take the ones you send them.",
+        )
+        .map(|state| state.as_str().to_string())
+        .map_err(|e| wifi_error(e.to_string()))
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// An offer to a device nearby waiting for its code: the line, where each
+/// file is (`drive:` for one on the drive), and their size together.
+type WaitingOffer = (basalt_client::nearby::Offering, Vec<String>, u64);
+
+/// The files after `--share` in a command line ("Share with Basalt" in
+/// Explorer, Send to): each that is a file here, with its name and size.
+fn shared_in(args: &[String]) -> Vec<LocalFile> {
+    let Some(at) = args.iter().position(|a| a == "--share") else {
+        return Vec::new();
+    };
+    args[at + 1..]
+        .iter()
+        .filter_map(|path| {
+            let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
+            let name = std::path::Path::new(path)
+                .file_name()?
+                .to_string_lossy()
+                .into_owned();
+            Some(LocalFile {
+                source: path.clone(),
+                name,
+                size: meta.len(),
+            })
+        })
+        .collect()
+}
+
+/// Files Basalt was opened to share ("Share with Basalt" with it closed),
+/// once: the page asks as it starts.
+#[tauri::command]
+fn shared_at_start() -> Vec<LocalFile> {
+    static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if TAKEN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Vec::new();
+    }
+    shared_in(&std::env::args().collect::<Vec<_>>())
+}
+
+/// One line of what sharing nearby did, for the device's own log: Android's
+/// logcat (tag "BasaltNearby"), or the console on a computer.
+fn nearby_log(line: &str) {
+    #[cfg(target_os = "android")]
+    {
+        unsafe extern "C" {
+            fn __android_log_write(
+                priority: std::ffi::c_int,
+                tag: *const std::ffi::c_char,
+                text: *const std::ffi::c_char,
+            ) -> std::ffi::c_int;
+        }
+        const INFO: std::ffi::c_int = 4;
+        let text = std::ffi::CString::new(line.replace('\0', " ")).unwrap_or_default();
+        // SAFETY: both are NUL-terminated strings that outlive the call.
+        unsafe {
+            __android_log_write(INFO, c"BasaltNearby".as_ptr(), text.as_ptr());
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    eprintln!("nearby: {line}");
+}
+
+/// A step of sharing nearby, as the page saw it: into the same log.
+#[tauri::command]
+fn nearby_note(line: String) {
+    nearby_log(&format!(
+        "page: {}",
+        line.chars().take(500).collect::<String>()
+    ));
+}
+
+/// The devices nearby ready to receive, on this Wi-Fi.
+#[tauri::command]
+async fn nearby_find(
+    state: State<'_, AppState>,
+) -> Answer<Vec<basalt_client::nearby::NearbyDevice>> {
+    let me = nearby_me(&state);
+    let mut found = basalt_client::nearby::find(
+        basalt_client::nearby::READY_PORT,
+        basalt_client::nearby::LOOK_FOR,
+    )
+    .await?;
+    // Never this device itself, ready on its own.
+    found.retain(|d| d.id != me.id);
+    Ok(found)
+}
+
+/// Offers files on this device (or the drive's, `drive:<path>`) to a device
+/// nearby, and waits for its answer: accepted (the files go down the same line,
+/// `basalt://nearby-progress` says how far, `basalt://nearby-sent` how it
+/// ended), declined, or a code wanted (then `nearby_code`).
+#[tauri::command]
+async fn nearby_offer(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    device: basalt_client::nearby::NearbyDevice,
+    offer: String,
+    files: Vec<LocalFile>,
+    always_code: bool,
+) -> Answer<basalt_client::nearby::Said> {
+    let listed: Vec<basalt_client::nearby::NearbyFile> = files
+        .iter()
+        .map(|f| basalt_client::nearby::NearbyFile {
+            name: f.name.clone(),
+            size: f.size,
+        })
+        .collect();
+    let me = nearby_me(&state);
+    // Taken back while it waits (Cancel): the line drops, and the question
+    // on the other device goes with it, rather than staying to be accepted.
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    state
+        .nearby_asking
+        .lock()
+        .expect("nearby lock")
+        .insert(offer.clone(), stop);
+    let asked = tokio::select! {
+        answered = basalt_client::nearby::offer(&device, &me, &listed, always_code) => Some(answered),
+        _ = stopped => None,
+    };
+    state
+        .nearby_asking
+        .lock()
+        .expect("nearby lock")
+        .remove(&offer);
+    let (said, offering) = match asked {
+        Some(Ok(answered)) => answered,
+        Some(Err(e)) => return Err(e.into()),
+        None => {
+            return Err(UiError {
+                kind: "cancelled".into(),
+                message: "Cancelled.".into(),
+            });
+        }
+    };
+    let sources: Vec<String> = files.into_iter().map(|f| f.source).collect();
+    let total: u64 = listed.iter().map(|f| f.size).sum();
+    match said {
+        basalt_client::nearby::Said::Accepted => nearby_serve(app, offer, offering, sources, total),
+        basalt_client::nearby::Said::Code => {
+            state
+                .nearby_offers
+                .lock()
+                .expect("nearby lock")
+                .insert(offer, (offering, sources, total));
+        }
+        basalt_client::nearby::Said::Declined => {}
+    }
+    Ok(said)
+}
+
+/// Sends an agreed offer's files down its line as they're asked for, then
+/// says how it ended.
+fn nearby_serve(
+    app: tauri::AppHandle,
+    offer: String,
+    offering: basalt_client::nearby::Offering,
+    sources: Vec<String>,
+    total: u64,
+) {
+    use tauri::Emitter;
+    tauri::async_runtime::spawn(async move {
+        let opener = open_local(&app);
+        let client = Arc::clone(&app.state::<AppState>().client);
+        let open = move |file: usize| {
+            let source = sources.get(file).cloned();
+            let opener = Arc::clone(&opener);
+            let client = Arc::clone(&client);
+            async move {
+                let source = source.ok_or_else(|| std::io::Error::other("no such file"))?;
+                // A file on the drive: passed on from the host as it comes.
+                if let Some(path) = source.strip_prefix(basalt_client::direct::DRIVE_SOURCE) {
+                    let (length, read) = client
+                        .read_stream(path, 0)
+                        .await
+                        .map_err(std::io::Error::other)?;
+                    return Ok((length, Box::new(read) as basalt_client::nearby::Source));
+                }
+                let file = tokio::task::spawn_blocking(move || opener(&source))
+                    .await
+                    .map_err(std::io::Error::other)??;
+                let length = file.metadata()?.len();
+                Ok((
+                    length,
+                    Box::new(tokio::fs::File::from_std(file)) as basalt_client::nearby::Source,
+                ))
+            }
+        };
+        let told = app.clone();
+        let progress_offer = offer.clone();
+        let last = std::sync::Mutex::new(std::time::Instant::now());
+        let answer = offering
+            .serve(open, move |sent| {
+                // About four times a second is plenty for a bar.
+                let mut at = last.lock().expect("progress lock");
+                if at.elapsed() < std::time::Duration::from_millis(250) && sent < total {
+                    return;
+                }
+                *at = std::time::Instant::now();
+                let _ = told.emit(
+                    "basalt://nearby-progress",
+                    serde_json::json!({ "offer": progress_offer, "done": sent, "total": total.max(sent) }),
+                );
+            })
+            .await;
+        let _ = app.emit(
+            "basalt://nearby-sent",
+            serde_json::json!({ "offer": offer, "answer": answer }),
+        );
+    });
+}
+
+/// The code shown on the device nearby, typed here.
+#[tauri::command]
+async fn nearby_code(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    offer: String,
+    code: String,
+) -> Answer<basalt_client::nearby::CodeSaid> {
+    let taken = state
+        .nearby_offers
+        .lock()
+        .expect("nearby lock")
+        .remove(&offer);
+    let Some((mut offering, sources, total)) = taken else {
+        return Err(UiError {
+            kind: "error".into(),
+            message: "that offer has ended: send it again".into(),
+        });
+    };
+    let said = offering.code(&code).await?;
+    match said {
+        basalt_client::nearby::CodeSaid::Right => {
+            nearby_serve(app, offer, offering, sources, total)
+        }
+        basalt_client::nearby::CodeSaid::Wrong { left } if left > 0 => {
+            state
+                .nearby_offers
+                .lock()
+                .expect("nearby lock")
+                .insert(offer, (offering, sources, total));
+        }
+        basalt_client::nearby::CodeSaid::Wrong { .. } => {}
+    }
+    Ok(said)
+}
+
+/// Stops an offer to a device nearby: nobody can take it any more.
+#[tauri::command]
+fn nearby_cancel(state: State<'_, AppState>, offer: String) {
+    if let Some(stop) = state
+        .nearby_asking
+        .lock()
+        .expect("nearby lock")
+        .remove(&offer)
+    {
+        let _ = stop.send(());
+    }
+    state
+        .nearby_offers
+        .lock()
+        .expect("nearby lock")
+        .remove(&offer);
+}
+
+/// Takes an offer back: nobody can take its files any more.
+#[tauri::command]
+fn withdraw_local(state: State<'_, AppState>, offer: String) {
+    if let Some(server) = state.direct.get() {
+        server.withdraw(&offer);
+    }
+}
+
+/// Files picked on this computer, with their names and sizes, to offer.
+#[tauri::command]
+fn local_files(paths: Vec<String>) -> Vec<serde_json::Value> {
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let meta = std::fs::metadata(&path).ok().filter(|m| m.is_file())?;
+            let name = std::path::Path::new(&path)
+                .file_name()?
+                .to_string_lossy()
+                .into_owned();
+            Some(serde_json::json!({ "source": path, "name": name, "size": meta.len() }))
+        })
+        .collect()
+}
+
+/// Takes one file of an offer straight from the device that offers it,
+/// across the Wi-Fi, into this device's received folder.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn receive_direct(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    endpoint: basalt_client::direct::Endpoint,
+    offer: String,
+    token: String,
+    file: usize,
+    name: String,
+    id: String,
+    folder: Option<String>,
+) -> Answer<Received> {
+    let shown = name.clone();
+    receive_into(
+        app,
+        &state,
+        name,
+        id,
+        folder,
+        move |out, report, cancel| async move {
+            basalt_client::direct::fetch(
+                &endpoint,
+                &offer,
+                &token,
+                file,
+                &shown,
+                out,
+                Some(report),
+                Some(cancel),
+            )
+            .await
+        },
+    )
+    .await
+}
+
+/// Takes one file of an offer from a device nearby, agreed: it comes down
+/// the line its offer came up.
+#[tauri::command]
+async fn nearby_take_file(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    ask: String,
+    file: usize,
+    name: String,
+    id: String,
+    folder: Option<String>,
+) -> Answer<Received> {
+    let link = state
+        .nearby_ready
+        .lock()
+        .expect("nearby lock")
+        .as_ref()
+        .and_then(|ready| ready.link(&ask))
+        .ok_or_else(|| UiError {
+            kind: "error".into(),
+            message: "the device that sent it has gone".into(),
+        })?;
+    let shown = name.clone();
+    receive_into(
+        app,
+        &state,
+        name,
+        id,
+        folder,
+        move |out, report, cancel| async move {
+            link.take_file(file, &shown, out, Some(report), Some(cancel))
+                .await
+        },
+    )
+    .await
+}
+
+async fn receive_into<F, Fut>(
+    app: tauri::AppHandle,
+    state: &AppState,
+    name: String,
+    id: String,
+    folder: Option<String>,
+    take: F,
+) -> Answer<Received>
+where
+    F: FnOnce(std::fs::File, basalt_client::client::ProgressFn, Cancel) -> Fut,
+    Fut: std::future::Future<Output = basalt_client::Result<u64>>,
+{
+    let cancel = Cancel::new();
+    state
+        .transfers
+        .lock()
+        .expect("transfers lock")
+        .insert(id.clone(), cancel.clone());
+    let report = progress_reporter(app.clone(), id.clone(), name.clone(), "download");
+    let safe = safe_local_name(&name);
+    #[cfg(target_os = "android")]
+    let outcome = {
+        let _ = folder;
+        use tauri_plugin_basalt_android::BasaltAndroidExt;
+        let handle = app.clone();
+        let wanted = safe.clone();
+        let created = tokio::task::spawn_blocking(move || {
+            handle.basalt_android().create_download(&wanted, "")
+        })
+        .await
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: e.to_string(),
+        })?
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t save to Downloads: {e}"),
+        })?;
+        let result = take(owned_file(created.fd), report, cancel).await;
+        let ok = result.is_ok();
+        let handle = app.clone();
+        let uri = created.uri.clone();
+        let _ =
+            tokio::task::spawn_blocking(move || handle.basalt_android().finish_download(&uri, ok))
+                .await;
+        result.map(|_| Received {
+            shown_as: created.shown_as,
+            path: None,
+            uri: Some(created.uri),
+        })
+    };
+    #[cfg(not(target_os = "android"))]
+    let outcome = {
+        let dir = match folder.filter(|f| !f.trim().is_empty()) {
+            Some(folder) => PathBuf::from(folder),
+            None => received_folder(&app)?,
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t make the folder {}: {e}", dir.display()),
+        })?;
+        let local = free_name(&dir, &safe);
+        let out = std::fs::File::create(&local).map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t write {}: {e}", local.display()),
+        })?;
+        let result = take(out, report, cancel).await;
+        if result.is_err() {
+            let _ = std::fs::remove_file(&local);
+        } else {
+            mark_downloaded(&local);
+        }
+        let shown = local.display().to_string();
+        result.map(|_| Received {
+            shown_as: shown.clone(),
+            path: Some(shown),
+            uri: None,
+        })
+    };
+    state.transfers.lock().expect("transfers lock").remove(&id);
+    Ok(outcome?)
+}
+
+/// Keeps files on the drive on the host for a device that is away.
+#[tauri::command]
+async fn share_hold(
+    state: State<'_, AppState>,
+    id: String,
+    to: String,
+    keep: bool,
+    paths: Vec<String>,
+) -> Answer<basalt_proto::msg::HeldShare> {
+    Ok(state
+        .client
+        .share_hold(basalt_proto::msg::ShareHoldRequest {
+            id,
+            to,
+            keep,
+            paths,
+            staged: Vec::new(),
+        })
+        .await?)
+}
+
+/// A file on this device to keep on the host for a device that is away.
+#[derive(serde::Deserialize, serde::Serialize, Clone)]
+struct LocalFile {
+    source: String,
+    name: String,
+    size: u64,
+}
+
+/// Keeps files on this device on the host for a device that is away: each
+/// uploaded first (`basalt://share-sending` says how far), then kept there.
+#[tauri::command]
+async fn share_hold_local(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    to: String,
+    keep: bool,
+    files: Vec<LocalFile>,
+) -> Answer<basalt_proto::msg::HeldShare> {
+    use tauri::Emitter;
+    let open = open_local(&app);
+    let total: u64 = files.iter().map(|f| f.size).sum();
+    let mut before = 0u64;
+    let mut staged = Vec::new();
+    for file in &files {
+        let source = {
+            let open = Arc::clone(&open);
+            let at = file.source.clone();
+            tokio::task::spawn_blocking(move || open(&at))
+                .await
+                .map_err(|e| std::io::Error::other(e.to_string()))
+                .and_then(|opened| opened)
+                // About this device's file, not the host: said as such.
+                .map_err(|e| {
+                    basalt_client::ClientError::Config(format!(
+                        "{} couldn't be opened on this device: {e}",
+                        file.name
+                    ))
+                })?
+        };
+        let told = app.clone();
+        let offer = id.clone();
+        let from = before;
+        let progress: basalt_client::client::ProgressFn = Arc::new(move |p| {
+            let _ = told.emit(
+                "basalt://share-sending",
+                serde_json::json!({ "offer": offer, "done": from + p.transferred, "total": total }),
+            );
+        });
+        let stage = state
+            .client
+            .stage_for_share(source, file.size, &file.name, Some(progress), None)
+            .await?;
+        before += file.size;
+        staged.push(basalt_proto::msg::StagedFile {
+            stage,
+            name: file.name.clone(),
+            size: file.size,
+        });
+    }
+    Ok(state
+        .client
+        .share_hold(basalt_proto::msg::ShareHoldRequest {
+            id,
+            to,
+            keep,
+            paths: Vec::new(),
+            staged,
+        })
+        .await?)
+}
+
+/// This device's answer to a share the host kept for it.
+#[tauri::command]
+async fn share_answer(state: State<'_, AppState>, id: String, accepted: bool) -> Answer<()> {
+    Ok(state.client.share_answer(&id, accepted).await?)
+}
+
+/// What this profile has kept on the host.
+#[tauri::command]
+async fn share_held(state: State<'_, AppState>) -> Answer<basalt_proto::msg::ShareHeldResponse> {
+    Ok(state.client.share_held().await?)
+}
+
+/// Deletes a share kept on the host, moves its files onto the drive, or
+/// shares it again with another device (`again`: the new share's id).
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn share_manage(
+    state: State<'_, AppState>,
+    action: String,
+    id: String,
+    folder: String,
+    to: Option<String>,
+    again: Option<String>,
+    keep: Option<bool>,
+) -> Answer<()> {
+    Ok(state
+        .client
+        .share_manage(basalt_proto::msg::ShareManageRequest {
+            action,
+            id,
+            folder,
+            to: to.unwrap_or_default(),
+            again: again.unwrap_or_default(),
+            keep: keep.unwrap_or(false),
+        })
+        .await?)
+}
+
+/// Takes one file of a share the host kept for this device into its
+/// received folder.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn receive_held(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    share: String,
+    file: usize,
+    name: String,
+    size: u64,
+    id: String,
+    folder: Option<String>,
+) -> Answer<Received> {
+    let cancel = Cancel::new();
+    state
+        .transfers
+        .lock()
+        .expect("transfers lock")
+        .insert(id.clone(), cancel.clone());
+    let report = progress_reporter(app.clone(), id.clone(), name.clone(), "download");
+    let safe = safe_local_name(&name);
+    #[cfg(target_os = "android")]
+    let outcome = {
+        let _ = folder;
+        use tauri_plugin_basalt_android::BasaltAndroidExt;
+        let handle = app.clone();
+        let wanted = safe.clone();
+        let created = tokio::task::spawn_blocking(move || {
+            handle.basalt_android().create_download(&wanted, "")
+        })
+        .await
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: e.to_string(),
+        })?
+        .map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t save to Downloads: {e}"),
+        })?;
+        let result = state
+            .client
+            .download_held(
+                &share,
+                file,
+                size,
+                &name,
+                owned_file(created.fd),
+                Some(report),
+                Some(cancel),
+            )
+            .await;
+        let ok = result.is_ok();
+        let handle = app.clone();
+        let uri = created.uri.clone();
+        let _ =
+            tokio::task::spawn_blocking(move || handle.basalt_android().finish_download(&uri, ok))
+                .await;
+        result.map(|_| Received {
+            shown_as: created.shown_as,
+            path: None,
+            uri: Some(created.uri),
+        })
+    };
+    #[cfg(not(target_os = "android"))]
+    let outcome = {
+        let dir = match folder.filter(|f| !f.trim().is_empty()) {
+            Some(folder) => PathBuf::from(folder),
+            None => received_folder(&app)?,
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t make the folder {}: {e}", dir.display()),
+        })?;
+        let local = free_name(&dir, &safe);
+        let out = std::fs::File::create(&local).map_err(|e| UiError {
+            kind: "error".into(),
+            message: format!("couldn’t write {}: {e}", local.display()),
+        })?;
+        let result = state
+            .client
+            .download_held(&share, file, size, &name, out, Some(report), Some(cancel))
+            .await;
+        if result.is_err() {
+            let _ = std::fs::remove_file(&local);
+        } else {
+            mark_downloaded(&local);
+        }
+        let shown = local.display().to_string();
+        result.map(|_| Received {
+            shown_as: shown.clone(),
+            path: Some(shown),
+            uri: None,
+        })
+    };
+    state.transfers.lock().expect("transfers lock").remove(&id);
+    Ok(outcome?)
+}
+
+/// The host's devices, and who of them is online now.
+#[tauri::command]
+async fn presence(state: State<'_, AppState>) -> Answer<basalt_proto::msg::PresenceResponse> {
+    Ok(state.client.presence().await?)
+}
+
+/// Passes a message to another of the host's devices, or a profile's.
+#[tauri::command]
+async fn channel_send(
+    state: State<'_, AppState>,
+    request: basalt_proto::msg::ChannelSendRequest,
+) -> Answer<basalt_proto::msg::ChannelSendResponse> {
+    Ok(state.client.channel_send(request).await?)
+}
+
 /// Asks another of the profile's devices, playing, to do something.
 #[tauri::command]
 async fn music_command(
@@ -671,6 +2079,15 @@ async fn music_command(
     request: basalt_proto::msg::MusicCommandRequest,
 ) -> Answer<()> {
     Ok(state.client.music_command(request).await?)
+}
+
+/// Asks about a group of the profile's devices playing together.
+#[tauri::command]
+async fn music_group(
+    state: State<'_, AppState>,
+    request: basalt_proto::msg::MusicGroupRequest,
+) -> Answer<basalt_proto::msg::MusicGroupResponse> {
+    Ok(state.client.music_group(request).await?)
 }
 
 /// Whether a film's timeline pictures are made, and how they are laid out.
@@ -1292,8 +2709,6 @@ async fn copy_and_open(
     remote: String,
     id: String,
 ) -> Answer<OpenResult> {
-    use tauri_plugin_opener::OpenerExt;
-
     let name = safe_local_name(&remote);
     if is_program(&name) {
         return Err(UiError {
@@ -1325,12 +2740,10 @@ async fn copy_and_open(
     mark_downloaded(&local);
 
     let shown = local.display().to_string();
-    app.opener()
-        .open_path(shown.clone(), None::<&str>)
-        .map_err(|e| UiError {
-            kind: "error".into(),
-            message: format!("couldn’t open {shown}: {e}"),
-        })?;
+    open_outside(&app, &shown, false).map_err(|e| UiError {
+        kind: "error".into(),
+        message: format!("couldn’t open {shown}: {e}"),
+    })?;
     Ok(OpenResult {
         player: "the default app".into(),
         streamed: false,
@@ -1511,7 +2924,7 @@ async fn install_update(app: tauri::AppHandle, path: String) -> Answer<()> {
                 kind: "error".into(),
                 message,
             })?;
-        std::process::Command::new(&next)
+        basalt_net::outside::command(&next)
             .spawn()
             .map_err(|e| UiError {
                 kind: "error".into(),
@@ -1558,6 +2971,10 @@ fn dev_isolated() -> Option<PathBuf> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before any window: how WebKit hands its frames to the screen.
+    #[cfg(target_os = "linux")]
+    linux_player::before_webkit();
+    basalt_client::nearby::trace_to(nearby_log);
     // Asked by the uninstaller when the app's data is deleted with it: the
     // device key lives in the chip, not in that data, and would otherwise be
     // left there for good. Done, and gone, before any window.
@@ -1600,7 +3017,24 @@ pub fn run() {
         );
     }
 
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Opened again while running ("Share with Basalt", Send to): the window
+    // comes forward, and the files are offered to share.
+    // A development copy runs beside the installed Basalt: not one of it.
+    #[cfg(desktop)]
+    let builder = if dev_isolated().is_some() {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            use tauri::Emitter;
+            tray::show(app, None);
+            let files = shared_in(&argv);
+            if !files.is_empty() {
+                let _ = app.emit("basalt://share-files", files);
+            }
+        }))
+    };
+    let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
     // Not on Linux, where the app draws the picture itself: see linux_player.
@@ -1634,6 +3068,15 @@ pub fn run() {
             #[cfg(desktop)]
             let hint: Option<String> =
                 dev_isolated().map(|folder| format!("development copy {}", folder.display()));
+            let kept_shares = store_path.with_file_name("share-messages.json");
+            let notices = store_path.with_file_name("share-notices.json");
+            // Told now, while there is a window to ask Android through: later,
+            // with Basalt swiped away, there may be none.
+            #[cfg(target_os = "android")]
+            {
+                use tauri_plugin_basalt_android::BasaltAndroidExt;
+                let _ = app.basalt_android().notices_at(&notices.to_string_lossy());
+            }
             // The device's key goes in the phone's hardware key store there;
             // on Windows the client finds the TPM by itself.
             #[cfg(mobile)]
@@ -1670,12 +3113,33 @@ pub fn run() {
                 });
             }
 
+            // The tray icon, so closing the window can leave Basalt ready.
+
+            #[cfg(windows)]
+            if let Err(e) = tray::install(app.handle()) {
+                eprintln!("basalt: no tray icon: {e}");
+            }
+            #[cfg(target_os = "linux")]
+            if tray::has_tray() {
+                if let Err(e) = tray::install(app.handle()) {
+                    eprintln!("basalt: no tray icon: {e}");
+                }
+            }
+
             app.manage(AppState {
                 client: Arc::clone(&client),
                 proxy: tokio::sync::Mutex::new(None),
                 transfers: Mutex::new(HashMap::new()),
                 watch: Mutex::new(None),
                 external: Mutex::new(std::collections::HashSet::new()),
+                channel: Mutex::new(kept_share_messages(&kept_shares)),
+                kept_shares: Some(kept_shares.clone()),
+                notices: Some(notices.clone()),
+                direct: tokio::sync::OnceCell::new(),
+                nearby_ready: Mutex::new(None),
+                nearby_wifi: nearby_wifi::State::default(),
+                nearby_asking: Mutex::new(std::collections::HashMap::new()),
+                nearby_offers: Mutex::new(std::collections::HashMap::new()),
             });
 
             // Feed the throughput trace from the one counter that sees every
@@ -1747,6 +3211,17 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             if let Some(window) = app.webview_windows().into_values().next() {
                 linux_player::attach(&window);
+            }
+
+            // A nearby Wi-Fi left open by a Basalt that ended without closing
+            // it (Linux keeps it with NetworkManager): closed.
+            #[cfg(target_os = "linux")]
+            std::thread::spawn(nearby_wifi::tidy);
+            // "Share with Basalt" in GNOME Files' Scripts menu (a development
+            // copy leaves the person's own alone).
+            #[cfg(target_os = "linux")]
+            if dev_isolated().is_none() {
+                std::thread::spawn(linux_share::install);
             }
 
             // Debug builds only: a script run in the page once it has loaded,
@@ -1821,6 +3296,48 @@ pub fn run() {
             music_mine,
             music_now,
             music_command,
+            music_group,
+            received_open,
+            received_show,
+            music_timing::music_clock,
+            music_timing::music_play_at,
+            music_timing::music_pause_at,
+            music_timing::music_cancel,
+            music_timing::music_set_rate,
+            presence,
+            channel_send,
+            channel_take,
+            receive_file,
+            share_local,
+            withdraw_local,
+            local_files,
+            receive_direct,
+            share_hold,
+            share_hold_local,
+            nearby_whoami,
+            nearby_ready,
+            nearby_reply,
+            nearby_finish,
+            nearby_take_file,
+            nearby_note,
+            shared_at_start,
+            nearby_wifi_own,
+            nearby_firewall,
+            nearby_firewall_allow,
+            nearby_wifi_passphrase,
+            nearby_wifi_host,
+            nearby_wifi_scan,
+            nearby_wifi_join,
+            nearby_wifi_leave,
+            nearby_find,
+            nearby_offer,
+            nearby_code,
+            nearby_cancel,
+            share_answer,
+            share_held,
+            share_manage,
+            receive_held,
+            default_received_folder,
             segments,
             speed_test,
             previews,
@@ -1846,14 +3363,100 @@ pub fn run() {
             upload_from_phone,
             download_to_phone,
             platform,
+            stay_running,
+            notify,
+            open_link,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Basalt");
+        // Closed while it should stay ready, with an icon in the tray to come
+        // back by: hidden, not closed. The line to the host, shares and
+        // transfers go on.
+        .on_window_event(|window, event| {
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main"
+                    && tray::installed()
+                    && STAY_RUNNING.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            let _ = (window, event);
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building Basalt")
+        .run(|_app, event| {
+            // The window closed by itself (on Android, the app swiped away),
+            // not quit on purpose: kept running while it should stay ready.
+            if let tauri::RunEvent::ExitRequested {
+                api, code: None, ..
+            } = &event
+            {
+                // Only with a way back: on a computer, the icon in the tray.
+                // With none (a desktop that shows no tray icons), the window
+                // really closed, and running on would leave Basalt with no
+                // window and nothing to bring one back: opening it again did
+                // nothing at all.
+                #[cfg(any(target_os = "android", target_os = "ios"))]
+                let way_back = true;
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                let way_back = tray::installed();
+                if way_back && STAY_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
+            }
+            // Quitting: this computer's own Wi-Fi closed, and one joined to
+            // share left (on Linux they would stay with NetworkManager).
+            #[cfg(target_os = "linux")]
+            if let tauri::RunEvent::Exit = event {
+                let state = _app.state::<AppState>();
+                nearby_wifi::stop_host(&state.nearby_wifi);
+                nearby_wifi::leave(&state.nearby_wifi);
+            }
+        });
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_program, safe_local_name};
+    use super::{is_program, link_allowed, safe_local_name};
+
+    #[test]
+    fn links_are_only_the_ones_the_capability_file_allows() {
+        assert!(link_allowed("https://basalt.reforatech.com"));
+        assert!(link_allowed("https://basalt.reforatech.com/download/host"));
+        assert!(link_allowed(
+            "https://github.com/refora-technologies/basalt/issues/new"
+        ));
+        assert!(link_allowed("mailto:reforatech@gmail.com?subject=Basalt"));
+        assert!(!link_allowed("https://example.com"));
+        assert!(!link_allowed("https://basalt.reforatech.com.example.com"));
+        assert!(!link_allowed("file:///etc/passwd"));
+    }
+
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn a_received_file_never_replaces_one_already_there() {
+        let dir = std::env::temp_dir().join(format!("basalt-free-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            super::free_name(&dir, "Holiday.mkv"),
+            dir.join("Holiday.mkv")
+        );
+        std::fs::write(dir.join("Holiday.mkv"), b"x").unwrap();
+        assert_eq!(
+            super::free_name(&dir, "Holiday.mkv"),
+            dir.join("Holiday (1).mkv")
+        );
+        std::fs::write(dir.join("Holiday (1).mkv"), b"x").unwrap();
+        assert_eq!(
+            super::free_name(&dir, "Holiday.mkv"),
+            dir.join("Holiday (2).mkv")
+        );
+        std::fs::write(dir.join("README"), b"x").unwrap();
+        assert_eq!(super::free_name(&dir, "README"), dir.join("README (1)"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     // The attack these guard: a file on the drive named to climb out of the
     // folder it is saved in, or a program dressed as a photo.

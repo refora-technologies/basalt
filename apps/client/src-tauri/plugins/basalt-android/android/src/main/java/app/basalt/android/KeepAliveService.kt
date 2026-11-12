@@ -43,15 +43,12 @@ class KeepAliveService : Service() {
   override fun onBind(intent: Intent?): IBinder? = null
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    // Share notices Rust writes while Basalt is up without a window.
+    ShareNotices.watch(applicationContext)
     running = this
-    val playback = reasons.containsKey("playback") || reasons.containsKey("music")
     val shown = shown() ?: lastShown
-    val type = if (Build.VERSION.SDK_INT >= 29) {
-      if (playback) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-      else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-    } else 0
     try {
-      ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(this, shown), type)
+      ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(this, shown), type())
       foreground = true
     } catch (e: Exception) {
       // Refused — past the day's data-sync allowance, most likely. The work
@@ -66,8 +63,36 @@ class KeepAliveService : Service() {
 
   override fun onTimeout(startId: Int, fgsType: Int) {
     // Android 15's limit for data-sync: stop, as asked, or be stopped harder.
+    // Still needed for something else (music, being ready): carried on as
+    // that alone, which has no such limit.
     reasons.remove("transfer")
-    if (reasons.isEmpty()) finish()
+    if (reasons.isEmpty()) {
+      finish()
+      return
+    }
+    runCatching {
+      ServiceCompat.startForeground(this, NOTIFICATION_ID, notification(this, shown() ?: lastShown), type())
+    }.onFailure { finish() }
+  }
+
+  /**
+   * The kinds of work it is doing, as Android counts them: playing, a
+   * transfer, and being ready to receive. Each has its own rules; only a
+   * transfer has a daily limit.
+   */
+  private fun type(): Int {
+    if (Build.VERSION.SDK_INT < 29) return 0
+    var type = 0
+    if (reasons.containsKey("playback") || reasons.containsKey("music")) {
+      type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+    }
+    if (reasons.containsKey("transfer")) type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+    // Ready for the home's devices, or for devices nearby: the same kind of work.
+    if (reasons.containsKey("ready") || reasons.containsKey("nearby")) {
+      type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+    }
+    // Nothing left by the time it starts: data sync, as before, and it stops.
+    return if (type == 0) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else type
   }
 
   override fun onDestroy() {
@@ -86,8 +111,13 @@ class KeepAliveService : Service() {
 
   companion object {
     private const val CHANNEL = "basalt-activity"
+    /** Only being ready to receive: the quietest Android allows, folded away. */
+    private const val READY_CHANNEL = "basalt-ready"
     private const val NOTIFICATION_ID = 7742
     private val reasons = linkedMapOf<String, Shown>()
+
+    /** Kept running for something (ready, music, a transfer): the page has work in the back too. */
+    fun keepingAlive(): Boolean = reasons.isNotEmpty()
     private var lastShown = Shown("Basalt", "", -1)
     private var running: KeepAliveService? = null
     private var foreground = false
@@ -100,12 +130,14 @@ class KeepAliveService : Service() {
      * What the notification says: music, else a film handed to another
      * player, else a transfer.
      */
-    private fun shown(): Shown? = reasons["music"] ?: reasons["playback"] ?: reasons["transfer"]
+    private fun shown(): Shown? =
+      reasons["music"] ?: reasons["playback"] ?: reasons["transfer"] ?: reasons["ready"] ?: reasons["nearby"]
 
     fun hold(context: Context, reason: String, title: String, text: String, progress: Int) {
       main.removeCallbacks(stopLater)
       val fresh = !reasons.containsKey(reason)
       reasons[reason] = Shown(title, text, progress).also { lastShown = it }
+      // A new kind of work changes what Android is told the service does.
       if (fresh || running == null) {
         val intent = Intent(context, KeepAliveService::class.java)
         runCatching {
@@ -192,6 +224,25 @@ class KeepAliveService : Service() {
           )
           .addAction(button(android.R.drawable.ic_media_next, "Next", "next"))
           .setStyle(Notification.MediaStyle().setMediaSession(token).setShowActionsInCompactView(0, 1, 2))
+          .build()
+      }
+      if (reasons.keys.all { it == "ready" || it == "nearby" }) {
+        if (Build.VERSION.SDK_INT >= 26 && manager.getNotificationChannel(READY_CHANNEL) == null) {
+          manager.createNotificationChannel(
+            NotificationChannel(READY_CHANNEL, "Ready to receive", NotificationManager.IMPORTANCE_MIN).apply {
+              description = "Shown while Basalt stays ready for files from your other devices."
+              setShowBadge(false)
+            }
+          )
+        }
+        return NotificationCompat.Builder(context, READY_CHANNEL)
+          .setSmallIcon(icon)
+          .setContentTitle(shown.title)
+          .setContentText(shown.text)
+          .setOngoing(true)
+          .setSilent(true)
+          .setPriority(NotificationCompat.PRIORITY_MIN)
+          .setContentIntent(tap)
           .build()
       }
       return NotificationCompat.Builder(context, CHANNEL)

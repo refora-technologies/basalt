@@ -1,6 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { ApiError, api, inTauri, onMusicNow, type Listening, type MusicCommand, type NowReport, type NowSession } from '@/lib/api'
+import {
+  ApiError,
+  api,
+  inTauri,
+  onChannel,
+  onMusicNow,
+  onPresence,
+  type Listening,
+  type MusicCommand,
+  type MusicGroup,
+  type MusicGroupRequest,
+  type NowReport,
+  type NowSession,
+} from '@/lib/api'
+import { groupPosition, groupSong, isHostGroup, stepFor } from '@/lib/musicGroup'
+import { syncLog } from '@/lib/syncLog'
 import {
   MusicClockContext,
   MusicPlayerContext,
@@ -139,14 +154,23 @@ export function MusicPlayer({
    * and kept, as it is the device's own.
    */
   const startLag = useRef(readStartLag())
+  /**
+   * Counts every pause, seek and group change: a start's check that comes
+   * after one of them measures that, not the start. (A pause a second after
+   * a play was once read as the player starting late, again and again,
+   * until the phone started 0.25 s before the others.)
+   */
+  const moves = useRef(0)
   /** A start at a moment: a second on, where it got to says how late it really began. */
   const checkStart = (position: number, at: number): void => {
+    const since = moves.current
     setTimeout(() => {
+      if (moves.current !== since || latest.current.paused || rate.current !== 1) return
       void measure.current().then((exact) => {
-        if (!exact) return
+        if (!exact || moves.current !== since || latest.current.paused) return
         const late = position + (exact.at - at) / 1000 - exact.position
         // Far off is something else (a seek, a stall): not the player's own lag.
-        if (Math.abs(late) > 0.5) return
+        if (Math.abs(late) > MOST_START_MISS_S) return
         startLag.current = Math.max(0, Math.min(MAX_START_LAG_MS, startLag.current + late * 1000 * 0.7))
         saveStartLag(startLag.current)
       })
@@ -171,6 +195,21 @@ export function MusicPlayer({
   const report = useRef<() => NowReport | null>(() => null)
   const whoRef = useRef(who)
   whoRef.current = who
+
+  // ---- Playing together, as the host keeps it (1.6.4) ----
+  /** The group this device plays in, whose state every member plays. */
+  const [group, setGroupState] = useState<MusicGroup | null>(null)
+  const groupRef = useRef(group)
+  /** Whether the host keeps groups: null until asked, false for a host before 1.6.4. */
+  const groupsOk = useRef<boolean | null>(null)
+  /** This device asked to leave: a group gone is not a reason to stop. */
+  const leaving = useRef(false)
+  /** The group's version last played here. */
+  const applied = useRef<{ id: string; version: number } | null>(null)
+  /** This device's id, to tell it from the others in its group. */
+  const you = useRef('')
+  /** Opened paused: a song of a group that is paused. Taken by the player as it opens. */
+  const openPaused = useRef(false)
 
   // ---- Playing in sync with others ----
   /** The devices playing in sync with this one: the same song, the same second. */
@@ -205,7 +244,8 @@ export function MusicPlayer({
   /** The gaps found at the last checks, since the last seek. */
   const gaps = useRef<number[]>([])
   const setRate = useCallback((next: number) => {
-    if (next === rate.current) return
+    // Not 1: asked again each time, as a speed lasts only a few seconds unless renewed.
+    if (next === rate.current && next === 1) return
     rate.current = next
     controls.current?.setRate(next)
   }, [])
@@ -251,6 +291,8 @@ export function MusicPlayer({
 
 
   const clockSamples = useRef<ClockSample[]>([])
+  /** When each device was last steered from here, on the host's clock. */
+  const steeredAt = useRef(new Map<string, number>())
   const exchange = useCallback(async (request: { report?: NowReport; stopped?: boolean }) => {
     const asked = whoRef.current
     if (!asked || unknown.current) return
@@ -267,7 +309,16 @@ export function MusicPlayer({
       const offset = bestOffset(clockSamples.current, back) ?? answer.now - back
       offsetRef.current = offset
       setHostOffset((was) => (Math.abs(was - offset) < 1 ? was : offset))
-      setOthers(answer.sessions)
+      // A device just steered from here shows what it was asked at once; a
+      // word from it older than that is not taken over it (F4: the button
+      // flipped back, then forward again).
+      setOthers((shown) =>
+        answer.sessions.map((s) => {
+          const asked = steeredAt.current.get(s.device)
+          if (asked === undefined || s.at >= asked) return s
+          return shown.find((o) => o.device === s.device) ?? s
+        }),
+      )
       // The devices in sync with this one, and the one all of them keep to,
       // as the host keeps them: however many there are, each knows all the
       // others. Just after joining or leaving, the host may not have heard
@@ -322,6 +373,152 @@ export function MusicPlayer({
     })()
   }, [exchange])
 
+  /**
+   * Plays the group's state here: another song, play or pause, a seek, at
+   * the moment the host stamped. The device that asked does it the same
+   * way as the others, so none undoes another (F5) and all start together.
+   */
+  const applyGroup = (next: MusicGroup | null, ended = false): void => {
+    const was = groupRef.current
+    if (!next) {
+      groupRef.current = null
+      setGroupState(null)
+      applied.current = null
+      setRate(1)
+      // Ended from elsewhere ("Play here" on another device): stopped here.
+      // Left alone, or leaving: plays on, on its own.
+      if (was && ended && !leaving.current) {
+        remote.current = true
+        try {
+          latest.current.stop()
+        } finally {
+          remote.current = false
+        }
+      }
+      leaving.current = false
+      return
+    }
+    // An older word than one already had: not gone back to.
+    if (was && was.id === next.id && next.version < was.version) return
+    groupRef.current = next
+    setGroupState(next)
+    if (applied.current?.id === next.id && applied.current.version === next.version) return
+    applied.current = { id: next.id, version: next.version }
+    const music = latest.current
+    const now = Date.now()
+    const step = stepFor(next, { song: music.current, playing: !music.paused || holdingRef.current, position: positionNow() }, offsetRef.current, now)
+    syncLog(
+      `group ${next.id} v${next.version} ${next.playing ? 'playing' : 'paused'} song ${next.listening.index + 1} at ${next.listening.position.toFixed(2)} s, ` +
+        `${next.at - offsetRef.current - now} ms ahead, ${next.members.length} devices; here: ${step.do}` +
+        (step.do === 'playAt' || step.do === 'open' ? ` from ${step.from.toFixed(2)} s` : ''),
+    )
+    gaps.current = []
+    checkLanding.current = false
+    moves.current += 1
+    setRate(1)
+    remote.current = true
+    try {
+      switch (step.do) {
+        case 'open': {
+          const { queue: there } = fromListening({ ...next.listening, position: step.from })
+          if (there.songs.length === 0) break
+          if (step.at !== null) {
+            holdUntil.current = step.at
+            setHolding(true)
+          }
+          openPaused.current = step.paused
+          begin(there, step.from)
+          if (step.paused) setPaused(true)
+          corrected.current = Math.max(now, step.at ?? now)
+          break
+        }
+        case 'playAt':
+          setHolding(true)
+          controls.current?.playAt(step.from, step.at)
+          corrected.current = step.at
+          break
+        case 'pause':
+          // At the moment, timed outside the page.
+          controls.current?.pauseAt(step.position, step.at)
+          corrected.current = step.at
+          break
+        case 'nothing':
+          break
+      }
+    } finally {
+      remote.current = false
+    }
+    // Said to the others once it lands, so their bars move at once (F12).
+    setTimeout(() => tellRef.current(), Math.max(0, corrected.current - Date.now()) + 400)
+  }
+  const applyRef = useRef(applyGroup)
+  applyRef.current = applyGroup
+  const tellRef = useRef(tell)
+  tellRef.current = tell
+
+  /**
+   * Out of the group without having left it: the host took it out while its
+   * line was down, and the word never came. Back in, through a member still
+   * playing; false if none could take it.
+   */
+  const rejoin = useCallback(async (was: MusicGroup): Promise<boolean> => {
+    for (const member of was.members) {
+      if (member.device === you.current) continue
+      try {
+        const answer = await api.musicGroup({ action: 'start', with: member.device })
+        if (!answer.group) continue
+        syncLog(`out of group ${was.id} without leaving: back in through ${member.name}`)
+        applied.current = null
+        applyRef.current(answer.group)
+        return true
+      } catch {
+        // Not playing any more: the next one.
+      }
+    }
+    syncLog(`out of group ${was.id} without leaving: none of it to join again, playing on here`)
+    return false
+  }, [])
+
+  /** Asks the host about the group; the answer is played at once. False if it couldn't be. */
+  const askGroup = useCallback(
+    async (request: MusicGroupRequest, again = true): Promise<boolean> => {
+      if (groupsOk.current === false || !whoRef.current) return false
+      try {
+        const sent = Date.now()
+        const answer = await api.musicGroup(request)
+        const back = Date.now()
+        groupsOk.current = true
+        if (request.action !== 'view') syncLog(`asked ${describeAsk(request)}: done in ${back - sent} ms`)
+        clockSamples.current = [
+          ...clockSamples.current.slice(-19),
+          { offset: answer.now - (sent + back) / 2, took: back - sent, at: back },
+        ]
+        offsetRef.current = bestOffset(clockSamples.current, back) ?? answer.now - back
+        const was = groupRef.current
+        if (request.action === 'view' && !answer.group && was && !leaving.current && again) {
+          if (await rejoin(was)) return true
+        }
+        applyRef.current(answer.group ?? null)
+        return true
+      } catch (e) {
+        if (e instanceof ApiError && (e.kind === 'unsupported' || e.kind === 'incompatible')) groupsOk.current = false
+        const said = e instanceof Error ? e.message : String(e)
+        syncLog(`asked ${describeAsk(request)}: refused (${said})`)
+        // A change asked of a group the host no longer has this device in:
+        // back in, then asked again, so the press reaches every one of them.
+        const was = groupRef.current
+        if (again && was && request.action === 'set' && /isn.t playing in a group|no such group/.test(said)) {
+          if (await rejoin(was)) return askGroup({ ...request, group: undefined, expect: undefined }, false)
+          applyRef.current(null)
+        }
+        return false
+      }
+    },
+    [rejoin],
+  )
+  /** In a group, and asked by a hand here (not applying the group's own word). */
+  const byHandInGroup = (): boolean => groupRef.current !== null && !remote.current
+
   const api_: MusicPlayerApi = useMemo(
     () => ({
       queue,
@@ -331,6 +528,11 @@ export function MusicPlayer({
       paused: paused && !holding,
       play: (paths, index, from, shuffle = false) => {
         if (paths.length === 0) return
+        if (byHandInGroup()) {
+          const chosen = queueOf(paths, index, from, shuffle)
+          void askGroup({ action: 'set', listening: toListening(chosen, 0, Math.floor(Date.now() / 1000)), playing: true, leadMs: START_TOGETHER_MS })
+          return
+        }
         handChanged.current = !remote.current
         startTogether()
         begin(queueOf(paths, index, from, shuffle))
@@ -338,6 +540,10 @@ export function MusicPlayer({
       resume: (listening) => {
         const { queue: resumed, position } = fromListening(listening)
         if (resumed.songs.length === 0) return
+        if (byHandInGroup()) {
+          void askGroup({ action: 'set', listening: toListening(resumed, position, Math.floor(Date.now() / 1000)), playing: true, leadMs: START_TOGETHER_MS })
+          return
+        }
         handChanged.current = !remote.current
         startTogether()
         begin(resumed, position)
@@ -346,6 +552,11 @@ export function MusicPlayer({
       addToQueue: (paths) => setQueue((q) => (q ? queueAdd(q, paths) : q)),
       togglePause: () => {
         if (!queue) return
+        // Playing together: the group plays or pauses, all at one moment.
+        if (byHandInGroup()) {
+          void askGroup({ action: 'set', playing: paused && !holding, leadMs: paused ? RESUME_TOGETHER_MS : PAUSE_TOGETHER_MS })
+          return
+        }
         // Played again with devices in sync: from here, a moment from now,
         // on all of them at once.
         if (paused && !remote.current && linkedRef.current.length > 0) {
@@ -360,6 +571,11 @@ export function MusicPlayer({
         toLinked(paused ? 'play' : 'pause')
       },
       next: () => {
+        if (byHandInGroup() && queue) {
+          const moved = nextOf(queue)
+          if (moved) void askGroup({ action: 'set', listening: toListening(moved, 0, Math.floor(Date.now() / 1000)), playing: true, leadMs: START_TOGETHER_MS })
+          return
+        }
         handChanged.current = !remote.current
         startTogether()
         setQueue((q) => {
@@ -372,6 +588,14 @@ export function MusicPlayer({
       previous: () => {
         if (!queue) return
         const { queue: back, restart } = previousOf(queue, clockRef.current.position)
+        if (byHandInGroup()) {
+          void askGroup(
+            restart
+              ? { action: 'set', position: 0, leadMs: SEEK_TOGETHER_MS }
+              : { action: 'set', listening: toListening(back, 0, Math.floor(Date.now() / 1000)), playing: true, leadMs: START_TOGETHER_MS },
+          )
+          return
+        }
         if (restart) {
           controls.current?.seek(0)
           toLinked('seek', 0)
@@ -383,6 +607,11 @@ export function MusicPlayer({
         }
       },
       seek: (seconds) => {
+        if (byHandInGroup()) {
+          void askGroup({ action: 'set', position: seconds, leadMs: SEEK_TOGETHER_MS })
+          return
+        }
+        moves.current += 1
         controls.current?.seek(seconds)
         toLinked('seek', seconds)
         // Others see the jump at once, not at the next report.
@@ -395,7 +624,12 @@ export function MusicPlayer({
       expanded,
       setExpanded,
       stop: () => {
-        // Put away here: the devices in sync play on, on their own.
+        // Put away here, or stopped from another device ("Stop there"): it
+        // leaves the group, and the devices in sync play on, on their own.
+        if (groupRef.current) {
+          leaving.current = true
+          void askGroup({ action: 'leave' })
+        }
         toLinked('unlink')
         membershipSettles.current = Date.now() + MEMBERSHIP_SETTLES_MS
         setLinked([])
@@ -404,8 +638,40 @@ export function MusicPlayer({
         setQueue(null)
         setExpanded(false)
       },
-      linked,
+      // Playing together, the others in the group: as the host keeps it, or
+      // as before 1.6.4.
+      linked: group ? group.members.map((m) => m.device).filter((d) => d !== you.current) : linked,
+      together: group
+        ? group.members.filter((m) => m.device !== you.current)
+        : linked.map((id) => {
+            const there = others.find((s) => s.device === id)
+            return { device: id, name: there?.name ?? 'Another device', form: there?.form }
+          }),
+      stopThere: (device) => {
+        // Asked there: it stops and leaves (see `stop`); the rest play on.
+        void api.musicCommand(device, 'stop').catch(() => {})
+        setLinked((ids) => ids.filter((id) => id !== device))
+      },
+      stopAll: () => {
+        const ending = groupRef.current
+        if (ending) {
+          leaving.current = true
+          void askGroup({ action: 'end', group: ending.id })
+        } else {
+          for (const id of linked) void api.musicCommand(id, 'stop').catch(() => {})
+        }
+        membershipSettles.current = Date.now() + MEMBERSHIP_SETTLES_MS
+        setLinked([])
+        leader.current = null
+        setRate(1)
+        setQueue(null)
+        setExpanded(false)
+      },
       unlink: () => {
+        if (groupRef.current) {
+          leaving.current = true
+          void askGroup({ action: 'leave' })
+        }
         toLinked('unlink')
         membershipSettles.current = Date.now() + MEMBERSHIP_SETTLES_MS
         setLinked([])
@@ -423,11 +689,72 @@ export function MusicPlayer({
         setLinked([])
         leader.current = null
         setRate(1)
+        // A group playing together: it ends, and every one of them stops (U12).
+        if (isHostGroup(session.group)) {
+          if (groupRef.current?.id === session.group) leaving.current = true
+          void askGroup({ action: 'end', group: session.group })
+        } else void api.musicCommand(session.device, 'stop').catch(() => {})
         begin(there, position)
-        void api.musicCommand(session.device, 'stop').catch(() => {})
       },
       playBoth: (asked) => {
         if (asked.report.listening.queue.length === 0) return
+        // As the host keeps it: one group, both playing, even one paused (F7).
+        if (groupsOk.current !== false) {
+          setHolding(true)
+          void askGroup({ action: 'start', with: asked.device, playing: true, leadMs: START_TOGETHER_MS }).then((done) => {
+            if (!done) {
+              setHolding(false)
+              playBothBefore(asked)
+            }
+          })
+          return
+        }
+        playBothBefore(asked)
+      },
+      steer: (session, action, position = 0) => {
+        // A group playing together is steered as one: every one of them (F6).
+        if (isHostGroup(session.group) && groupsOk.current !== false) {
+          const group = session.group
+          const listening = session.report.listening
+          const ask = ((): MusicGroupRequest | null => {
+            const now = Math.floor(Date.now() / 1000)
+            switch (action) {
+              case 'play':
+              case 'pause':
+                return { action: 'set', group, playing: action === 'play', leadMs: action === 'play' ? RESUME_TOGETHER_MS : PAUSE_TOGETHER_MS }
+              case 'seek':
+                return { action: 'set', group, position, leadMs: SEEK_TOGETHER_MS }
+              case 'next': {
+                const moved = nextOf(fromListening(listening).queue)
+                return moved ? { action: 'set', group, listening: toListening(moved, 0, now), playing: true, leadMs: START_TOGETHER_MS } : null
+              }
+              case 'previous': {
+                const { queue: back } = previousOf(fromListening(listening).queue, 0)
+                return { action: 'set', group, listening: toListening(back, 0, now), playing: true, leadMs: START_TOGETHER_MS }
+              }
+              case 'stop':
+                return { action: 'end', group }
+              default:
+                return null
+            }
+          })()
+          if (ask) {
+            void api.musicGroup(ask).then(
+              () => void tell(),
+              () => void tell(),
+            )
+            return
+          }
+        }
+        steerBefore(session, action, position)
+      },
+    }),
+    [queue, paused, holding, reconnecting, expanded, begin, others, hostOffset, tell, linked, toLinked, setRate, group, askGroup],
+  )
+
+  /** Playing together with another, as before 1.6.4: this one keeps to that one. */
+  function playBothBefore(asked: NowSession): void {
+    {
         // In sync from now on: this one keeps to that one, and tells it so.
         leader.current = asked.device
         corrected.current = Date.now() + START_TOGETHER_MS + CLOCK_CHECK_MS
@@ -455,20 +782,31 @@ export function MusicPlayer({
           corrected.current = at
           begin(there, livePosition(session, offset, at))
         })()
-      },
-      steer: (session, action, position = 0) => {
+    }
+  }
+
+  /** Another device steered on its own, as before 1.6.4. */
+  function steerBefore(session: NowSession, action: MusicCommand['action'], position = 0): void {
+    {
         // Shown at once; the device's own next report puts it right.
-        if (action === 'play' || action === 'pause') {
+        if (action === 'play' || action === 'pause' || action === 'seek') {
+          const now = Date.now() + hostOffset
+          steeredAt.current.set(session.device, now)
           setOthers((list) =>
             list.map((s) =>
               s.device === session.device
                 ? {
                     ...s,
-                    at: Date.now() + hostOffset,
+                    at: now,
                     report: {
                       ...s.report,
-                      playing: action === 'play',
-                      listening: { ...s.report.listening, position: livePosition(s, hostOffset, Date.now()) },
+                      playing: action === 'seek' ? s.report.playing : action === 'play',
+                      // From this moment: the second counts on from now, not from its last word.
+                      clock: now,
+                      listening: {
+                        ...s.report.listening,
+                        position: action === 'seek' ? position : livePosition(s, hostOffset, Date.now()),
+                      },
                     },
                   }
                 : s,
@@ -476,10 +814,8 @@ export function MusicPlayer({
           )
         }
         void api.musicCommand(session.device, action, position).catch(() => void tell())
-      },
-    }),
-    [queue, paused, holding, reconnecting, expanded, begin, others, hostOffset, tell, linked, toLinked, setRate],
-  )
+    }
+  }
 
   // Where it is this instant: the player tells its clock a few times a
   // second (a phone four), so the last one told is up to that much behind.
@@ -646,6 +982,7 @@ export function MusicPlayer({
       if (step.do === 'seek') {
         gaps.current = []
         setRate(1)
+        moves.current += 1
         controls.current?.seek(step.to)
         corrected.current = Date.now()
         checkLanding.current = true
@@ -661,12 +998,138 @@ export function MusicPlayer({
     return () => clearInterval(timer)
   }, [following, setRate])
 
+  // Keeping to the group's state: the same song, play or pause as it says,
+  // and the same second, by the host's clock. Every member does the same.
+  const inGroup = group !== null && queue !== null
+  useEffect(() => {
+    if (!inGroup) return undefined
+    let busy = false
+    const follow = async (): Promise<void> => {
+      const g = groupRef.current
+      if (!g || holdingRef.current || Date.now() - corrected.current < SETTLE_MS) return
+      const music = latest.current
+      // Not as it says (a start that didn't come, a pause missed): played again.
+      if (groupSong(g) !== music.current || g.playing === music.paused) {
+        applied.current = null
+        applyRef.current(g)
+        return
+      }
+      if (!g.playing) {
+        setRate(1)
+        return
+      }
+      const mine = (await measure.current()) ?? { position: position.current(), at: Date.now() }
+      const now = groupRef.current
+      if (!now || now.version !== g.version || Date.now() - corrected.current < SETTLE_MS) return
+      const theirs = groupPosition(g, mine.at + offsetRef.current)
+      const step = keepInStep({
+        theirSong: groupSong(g),
+        mySong: latest.current.current,
+        theirs,
+        mine: mine.position,
+        lead: lead.current,
+        landed: checkLanding.current,
+        rate: rate.current,
+        before: gaps.current,
+      })
+      if (step.do === 'load') return
+      syncLog(
+        `check: ${((theirs - mine.position) * 1000).toFixed(0)} ms behind the group` +
+          (step.do === 'seek' ? `, seek to ${step.to.toFixed(2)} s (lead ${step.lead.toFixed(2)} s)` : `, speed ${step.rate}`),
+      )
+      checkLanding.current = false
+      lead.current = step.lead
+      gaps.current = [...gaps.current.slice(-4), theirs - mine.position]
+      if (step.do === 'seek') {
+        gaps.current = []
+        setRate(1)
+        moves.current += 1
+        controls.current?.seek(step.to)
+        corrected.current = Date.now()
+        checkLanding.current = true
+      } else setRate(step.rate)
+    }
+    const timer = setInterval(() => {
+      if (busy) return
+      busy = true
+      void follow().finally(() => {
+        busy = false
+      })
+    }, FOLLOW_EVERY_MS)
+    return () => clearInterval(timer)
+  }, [inGroup, setRate])
+
+  // In a group, asked now and then whether it still is: a word lost while
+  // the line was down is found within seconds, not at the next press.
+  useEffect(() => {
+    if (!inGroup) return undefined
+    const timer = setInterval(() => void askGroup({ action: 'view' }), GROUP_CHECK_EVERY_MS)
+    return () => clearInterval(timer)
+  }, [inGroup, askGroup])
+
+  // The group's every change, as it happens, down the device channel.
+  useEffect(() => {
+    let stop: (() => void) | null = null
+    let gone = false
+    void onChannel((message) => {
+      if (message.kind !== 'music.group') return
+      const body = message.body as { group?: MusicGroup | null; ended?: boolean }
+      applyRef.current(body.group ?? null, body.ended === true)
+    }).then((unlisten) => {
+      if (gone) unlisten()
+      else stop = unlisten
+    })
+    return () => {
+      gone = true
+      stop?.()
+    }
+  }, [])
+
+  // The group this device is in, as the host keeps it: at the start, with
+  // another profile or drive, and back in front (a change may have been
+  // missed while away, F3).
+  useEffect(() => {
+    groupsOk.current = null
+    applyRef.current(null)
+    if (!who) return undefined
+    void api
+      .presence()
+      .then((p) => (you.current = p.you))
+      .catch(() => {})
+    void askGroup({ action: 'view' })
+    const back = (): void => {
+      if (document.visibilityState === 'visible') void askGroup({ action: 'view' })
+    }
+    document.addEventListener('visibilitychange', back)
+    return () => document.removeEventListener('visibilitychange', back)
+  }, [who, askGroup])
+
   // Another profile, another drive, or none: the last one's devices go, and
   // the new one's are asked for.
   useEffect(() => {
     setOthers([])
     unknown.current = false
     if (who) tell()
+  }, [who, tell])
+  // Asked again when it may have missed something (F3): back in front, and
+  // when a device comes or goes (this one's own connection back included).
+  useEffect(() => {
+    if (!who) return undefined
+    const back = (): void => {
+      if (document.visibilityState === 'visible') tell()
+    }
+    document.addEventListener('visibilitychange', back)
+    let stop: (() => void) | null = null
+    let gone = false
+    void onPresence(() => tell()).then((unlisten) => {
+      if (gone) unlisten()
+      else stop = unlisten
+    })
+    return () => {
+      document.removeEventListener('visibilitychange', back)
+      gone = true
+      stop?.()
+    }
   }, [who, tell])
 
   // Told when something changes on the profile's other devices.
@@ -802,6 +1265,7 @@ export function MusicPlayer({
             startAt={startAt}
             holdUntil={holdUntil}
             startLag={startLag}
+            openPaused={openPaused}
             onStarted={(position, at) => {
               setHolding(false)
               if (position !== null) checkStart(position, at)
@@ -835,6 +1299,24 @@ export function MusicPlayer({
               })
             }
             onEnded={() => {
+              // Playing together: the group moves on, once, whoever asks
+              // first; the others' "next" as of the same version is refused.
+              const playingGroup = groupRef.current
+              if (playingGroup && queue) {
+                const moved = nextOf(queue, true)
+                void askGroup(
+                  moved
+                    ? {
+                        action: 'set',
+                        expect: playingGroup.version,
+                        listening: toListening(moved, 0, Math.floor(Date.now() / 1000)),
+                        playing: true,
+                        leadMs: NEXT_TOGETHER_MS,
+                      }
+                    : { action: 'set', expect: playingGroup.version, playing: false, leadMs: 0 },
+                )
+                return
+              }
               // Following another: it says what comes next, and when, so both
               // start it together. Not heard from in a few seconds, on alone.
               if (leader.current && linkedRef.current.length > 0) {
@@ -872,6 +1354,17 @@ export function MusicPlayer({
   )
 }
 
+/** A request to the group, in a few words, for the sync log. */
+function describeAsk(request: MusicGroupRequest): string {
+  const parts: string[] = [request.action]
+  if (request.listening) parts.push(`song ${request.listening.index + 1}`)
+  if (request.position !== undefined) parts.push(`seek ${request.position.toFixed(2)} s`)
+  if (request.playing !== undefined) parts.push(request.playing ? 'play' : 'pause')
+  if (request.expect !== undefined) parts.push(`as of v${request.expect}`)
+  if (request.leadMs) parts.push(`${request.leadMs} ms ahead`)
+  return parts.join(' ')
+}
+
 /**
  * How far ahead a song started together is started: time for each device
  * to open it and have it ready, paused at its first second.
@@ -879,6 +1372,12 @@ export function MusicPlayer({
 const START_TOGETHER_MS = 1_800
 /** The same, for playing on after a pause: the song is open already. */
 const RESUME_TOGETHER_MS = 500
+/** A pause, a moment ahead: every device in a group pauses at the same second. */
+const PAUSE_TOGETHER_MS = 250
+/** A seek, ahead by the time it takes each device to land there. */
+const SEEK_TOGETHER_MS = 600
+/** The next song when one ends, playing together: a moment to open it everywhere. */
+const NEXT_TOGETHER_MS = 1_200
 /** The longest a start at a moment is waited for. */
 const HOLD_AT_MOST_MS = 8_000
 /** Following another, how long a song ended waits for it to say what is next. */
@@ -924,11 +1423,18 @@ const CATCH_UP_MARGIN_S = 0.8
 /** How long after a start at a moment it checks where it got to. */
 const START_CHECK_MS = 1_200
 /** The most a player is taken to need to make sound once unpaused. */
-const MAX_START_LAG_MS = 400
+const MAX_START_LAG_MS = 300
+/** A start found further off than this, in seconds, was something else: not learnt from. */
+const MOST_START_MISS_S = 0.3
+/**
+ * Where it is kept. Named anew in 1.6.4: the name before held lags learnt
+ * wrongly from pauses (up to 0.4 s), so every device learns its own again.
+ */
+const START_LAG_KEY = 'basalt.music.startLag.2'
 
 function readStartLag(): number {
   try {
-    const kept = Number(localStorage.getItem('basalt.music.startLag'))
+    const kept = Number(localStorage.getItem(START_LAG_KEY))
     return Number.isFinite(kept) ? Math.max(0, Math.min(MAX_START_LAG_MS, kept)) : 0
   } catch {
     return 0
@@ -937,11 +1443,14 @@ function readStartLag(): number {
 
 function saveStartLag(ms: number): void {
   try {
-    localStorage.setItem('basalt.music.startLag', String(Math.round(ms)))
+    localStorage.setItem(START_LAG_KEY, String(Math.round(ms)))
   } catch {
     // Not kept: learnt again next time.
   }
 }
+
+/** How often a device in a group asks the host whether it still is. */
+const GROUP_CHECK_EVERY_MS = 10_000
 
 /** How often a device in sync checks it keeps to the other. */
 const FOLLOW_EVERY_MS = 1_000
@@ -969,10 +1478,16 @@ interface EngineControls {
   setRate: (rate: number) => void
   /** Paused at `position`, then playing from it at `at` (Unix ms). */
   playAt: (position: number, at: number) => void
+  /** Paused or playing, as asked; a start waited for is given up. */
+  setPaused: (paused: boolean) => void
+  /** Paused at `position` at `at` (Unix ms). */
+  pauseAt: (position: number, at: number) => void
 }
 
 /** Reads of the player's clock taken to work out the second: about a fifth of a second's worth. */
 const CLOCK_READS = 16
+/** A speed other than 1 lasts this long unless asked again: past the next check or two. */
+const RATE_HOLDS_MS = 4_000
 
 /**
  * mpv, playing the song at `path`. Mounted only while there is a queue, so
@@ -985,6 +1500,7 @@ function Engine({
   startAt,
   holdUntil,
   startLag,
+  openPaused,
   onStarted,
   controls,
   onClock,
@@ -1002,6 +1518,8 @@ function Engine({
   holdUntil: React.MutableRefObject<number | null>
   /** How long the player takes to make sound once unpaused (ms): unpaused that much early. */
   startLag: React.MutableRefObject<number>
+  /** The song opened next stays paused: a group that is paused. Taken as it opens. */
+  openPaused: React.MutableRefObject<boolean>
   /** A song held for its moment has started: from where, and at what moment; or nothing was held. */
   onStarted: (position: number | null, at: number) => void
   controls: React.MutableRefObject<EngineControls | null>
@@ -1042,6 +1560,13 @@ function Engine({
       started.current(null, at)
       return
     }
+    // Timed outside the page, so a hidden page (screen off, the tray)
+    // starts on time too.
+    const native = await api.musicPlayAt(position, at, startLag.current).catch(() => null)
+    if (native) {
+      if (!native.gone && waiting.current === mine) started.current(native.position, native.at)
+      return
+    }
     if (!(await ready(mine))) return
     // `target` is played from at `when`: where the others are then.
     let target = position
@@ -1080,6 +1605,9 @@ function Engine({
     },
     read: async () => {
       if (!inTauri()) return null
+      // Read outside the page: a hidden page's timers would spread these over seconds.
+      const native = await api.musicClock(CLOCK_READS).catch(() => null)
+      if (native) return native
       const readings: Reading[] = []
       for (let i = 0; i < CLOCK_READS; i++) {
         const sent = Date.now()
@@ -1090,16 +1618,41 @@ function Engine({
       }
       return readings
     },
+    setPaused: (paused) => {
+      ++waiting.current
+      if (inTauri()) void api.musicCancel().catch(() => {})
+      void mpv.setPaused(paused)
+    },
+    pauseAt: (position, at) => {
+      const mine = ++waiting.current
+      if (!inTauri()) return
+      void api.musicPauseAt(position, at).catch(() => {
+        // Not in this app: timed by the page.
+        setTimeout(() => {
+          if (waiting.current !== mine) return
+          void mpv.setPaused(true).then(() => seekTo(position))
+        }, Math.max(0, at - Date.now()))
+      })
+    },
     playAt: (position, at) => {
       const mine = ++waiting.current
+      if (inTauri()) {
+        void release(position, at, mine)
+        return
+      }
       void mpv
         .setPaused(true)
         .then(() => seekTo(Math.max(0, position)))
         .then(() => release(position, at, mine))
     },
-    // mpv keeps the pitch at a speed this close to 1.
+    // mpv keeps the pitch at a speed this close to 1. Back to 1 by itself
+    // unless asked again: a hidden page that stops checking never leaves it
+    // running fast or slow.
     setRate: (rate) => {
-      if (inTauri()) void mpvBackend.command('set', ['speed', rate.toFixed(4)]).catch(() => {})
+      if (!inTauri()) return
+      void api.musicSetRate(rate, RATE_HOLDS_MS).catch(() => {
+        void mpvBackend.command('set', ['speed', rate.toFixed(4)]).catch(() => {})
+      })
     },
   }
 
@@ -1111,6 +1664,8 @@ function Engine({
     // To start at an agreed moment: opened paused, and played then.
     const at = holdUntil.current
     holdUntil.current = null
+    const paused = openPaused.current
+    openPaused.current = false
     const mine = ++waiting.current
     // Opened at once: any wait for a moment before it is over.
     if (at === null) started.current(null, Date.now())
@@ -1119,7 +1674,7 @@ function Engine({
       // At music's own volume, as last set: not the film's, nor full.
       await setVolume(rememberedVolume('music'))
       if (cancelled) return
-      void load(url, from, undefined, true, at !== null).then(() => {
+      void load(url, from, undefined, true, at !== null || paused).then(() => {
         if (at !== null) void release(from, at, mine)
       })
     })

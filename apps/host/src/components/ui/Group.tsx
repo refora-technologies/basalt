@@ -110,6 +110,7 @@ export function ActionRow({
   onClick,
   disabled,
   end,
+  danger,
 }: {
   icon: React.ReactNode
   title: string
@@ -117,6 +118,8 @@ export function ActionRow({
   onClick: () => void
   disabled?: boolean
   end?: React.ReactNode
+  /** Something that can't be undone: its words in red. */
+  danger?: boolean
 }): React.JSX.Element {
   return (
     <button
@@ -129,7 +132,7 @@ export function ActionRow({
         {icon}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-[13px] text-text">{title}</span>
+        <span className={cn('block text-[13px]', danger ? 'text-danger' : 'text-text')}>{title}</span>
         {detail && <span className="mt-0.5 block text-[11.5px] leading-snug text-textFaint">{detail}</span>}
       </span>
       {end}

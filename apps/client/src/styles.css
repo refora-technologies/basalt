@@ -169,6 +169,13 @@ html.tv [role='row']:focus,
 html.tv [data-player] [data-remote-scope] button:focus {
   background-color: rgba(255, 255, 255, 0.1);
 }
+/* A page's back bar over a list scrolling under it: solid on a TV, whose
+   webview draws no blur, so a white Play button doesn't show through
+   under the arrow. */
+html.tv [data-page-head] {
+  background-color: #0b0b0c;
+  backdrop-filter: none;
+}
 /* The highlight rings these itself. */
 html.tv [data-focus-ring] {
   --tw-ring-color: transparent !important;
@@ -369,4 +376,126 @@ html[data-shape] .shadow-lift {
     animation: none;
     opacity: 0.4;
   }
+}
+
+/* A share accepted, its first bytes not yet here: a light along the line. */
+.share-starting {
+  animation: share-starting 1.2s ease-in-out infinite;
+}
+@keyframes share-starting {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+/* Waiting while sharing (WaitingMarks.tsx). The offer on its way: theirs
+   answers each light that lands with a ring, and a little lift. */
+.handoff-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  opacity: 0;
+  animation: handoff-ring 1.8s ease-out infinite;
+}
+@keyframes handoff-ring {
+  0%,
+  58% {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  64% {
+    opacity: 0.55;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.15);
+  }
+}
+.handoff-to {
+  animation: handoff-to 1.8s ease-in-out infinite;
+}
+@keyframes handoff-to {
+  0%,
+  56%,
+  100% {
+    transform: translateY(0);
+  }
+  66% {
+    transform: translateY(-1.5px);
+  }
+}
+/* Joining a Wi-Fi: the arcs light outwards, then rest together. */
+.joining-arc {
+  opacity: 0.18;
+  animation: joining-arc 1.8s ease-in-out infinite;
+}
+.joining-arc-2 {
+  animation-delay: 0.2s;
+}
+.joining-arc-3 {
+  animation-delay: 0.4s;
+}
+@keyframes joining-arc {
+  0%,
+  100% {
+    opacity: 0.18;
+  }
+  30%,
+  60% {
+    opacity: 1;
+  }
+}
+/* Looking around: three dots in a slow wave. */
+.looking-dots > span {
+  width: 4px;
+  height: 4px;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0.25;
+  animation: looking-dot 1.2s ease-in-out infinite;
+}
+.looking-dots > span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.looking-dots > span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes looking-dot {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  35% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .handoff-ring,
+  .handoff-to,
+  .joining-arc,
+  .looking-dots > span {
+    animation: none;
+  }
+  .handoff-light {
+    display: none;
+  }
+  .joining-arc {
+    opacity: 0.7;
+  }
+}
+
+/*
+ * A small mark on an icon (a status badge, an online dot) is ringed in the
+ * colour of what it sits on, so it reads as cut out of the icon, whatever
+ * the surface: the page, a window, a phone's sheet. Each sets --surface.
+ */
+:root {
+  --surface: #0b0b0c;
+}
+.surface-ring {
+  box-shadow: 0 0 0 2px var(--surface);
 }

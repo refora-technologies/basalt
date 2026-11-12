@@ -42,6 +42,52 @@ async function invoke<T>(command: string, args: Record<string, unknown>): Promis
 
 const LINUX = isLinuxDesktop()
 
+/**
+ * The desktop player, set up again if it has gone (1.6.4).
+ *
+ * It is set up once for the window's life. If its mpv goes away underneath
+ * (another program took the graphics card, a driver reset), every request
+ * after fails with "mpv instance … not found", and only restarting Basalt
+ * helped. Now such a failure sets it up again with the same options, tells
+ * whoever asked (the player puts its subtitle style back), and tries the
+ * request once more. Listeners carry on: they listen to the window.
+ */
+let lastConfig: MpvConfig | null = null
+let restarting: Promise<void> | null = null
+const onRestart = new Set<() => void>()
+
+/** Called after the desktop player was set up again; returns a way to stop. */
+export function whenRestarted(callback: () => void): () => void {
+  onRestart.add(callback)
+  return () => onRestart.delete(callback)
+}
+
+/** Whether a failure says the player itself is gone, not that a request was bad. */
+export function playerGone(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error)
+  return /instance.*not found|not initiali[sz]ed|no mpv instance/i.test(text)
+}
+
+async function healing<T>(request: () => Promise<T>): Promise<T> {
+  try {
+    return await request()
+  } catch (e) {
+    if (!lastConfig || !playerGone(e)) throw e
+    if (!restarting) {
+      const config = lastConfig
+      restarting = (async () => {
+        await desktop.destroy().catch(() => {})
+        await desktop.init(config)
+        for (const callback of onRestart) callback()
+      })().finally(() => {
+        restarting = null
+      })
+    }
+    await restarting
+    return request()
+  }
+}
+
 export async function init(config: MpvConfig): Promise<void> {
   if (LINUX) {
     const options: Record<string, string> = {}
@@ -52,6 +98,7 @@ export async function init(config: MpvConfig): Promise<void> {
     return
   }
   if (!isAndroid()) {
+    lastConfig = config
     await desktop.init(config)
     return
   }
@@ -93,7 +140,7 @@ export async function command(
   args: Array<string | number | boolean> = [],
 ): Promise<void> {
   if (LINUX) return api.linuxMpvCommand([name, ...args.map(asText)])
-  if (!isAndroid()) return desktop.command(name, args)
+  if (!isAndroid()) return healing(() => desktop.command(name, args))
   // Where the sound goes is Android's business, not the player's.
   if (name === 'set' && args[0] === 'audio-device') return
   // A file from the phone's picker is an address mpv cannot open itself.
@@ -106,7 +153,7 @@ export async function command(
 
 export async function setProperty(name: string, value: string | number | boolean): Promise<void> {
   if (LINUX) return api.linuxMpvSetProperty(name, asText(value))
-  if (!isAndroid()) return desktop.setProperty(name, value)
+  if (!isAndroid()) return healing(() => desktop.setProperty(name, value))
   await invoke('mpv_set_property', { name, value: asText(value) })
 }
 
@@ -114,7 +161,7 @@ export async function getProperty(
   name: string,
   format: 'string' | 'flag' | 'int64' | 'double',
 ): Promise<unknown> {
-  if (!isAndroid() && !LINUX) return desktop.getProperty(name, format)
+  if (!isAndroid() && !LINUX) return healing(() => desktop.getProperty(name, format))
   const reply = LINUX
     ? await api.linuxMpvGetProperty(name, format)
     : await invoke<{ value?: unknown }>('mpv_get_property', { name, format })
@@ -123,7 +170,10 @@ export async function getProperty(
 
 export async function destroy(): Promise<void> {
   if (LINUX) return api.linuxMpvDestroy()
-  if (!isAndroid()) return desktop.destroy()
+  if (!isAndroid()) {
+    lastConfig = null
+    return desktop.destroy()
+  }
   await invoke('mpv_destroy', {})
 }
 

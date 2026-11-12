@@ -1,5 +1,10 @@
 # Measured facts
 
+> **Old measurements.** Taken in September 2026 on the first prototype, before Basalt
+> was an app, on two particular laptops and one Wi-Fi network. Basalt has changed a lot
+> since, and some details here no longer describe it. Kept for anyone curious about why
+> it was built the way it is; not a statement of how fast Basalt is today.
+
 Everything here came off the real hardware: **laptop B** (old, low-end, hard
 drive attached, the NAS) serving **laptop A** (the client), both on 5 GHz Wi-Fi.
 These numbers replace the estimates the original plan was built on. Where a

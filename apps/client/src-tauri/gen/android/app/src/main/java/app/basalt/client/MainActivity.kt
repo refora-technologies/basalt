@@ -5,9 +5,17 @@ import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.Lifecycle
 import app.basalt.android.BasaltPlugin
+import app.basalt.android.Restart
 
 class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
+    // Opened again in a process that stayed running without a window (ready
+    // to receive): started over in a fresh one instead. See Restart.
+    if (Restart.instead(this)) {
+      super.onCreate(savedInstanceState)
+      finish()
+      return
+    }
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
   }

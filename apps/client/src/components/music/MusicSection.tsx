@@ -578,7 +578,7 @@ function ArtistCard({
 
 function PageHead({ onBack, children }: { onBack: () => void; children?: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="sticky top-0 z-[1] -mx-1 flex h-11 items-center bg-ink/90 backdrop-blur">
+    <div data-page-head="" className="sticky top-0 z-[1] -mx-1 flex h-11 items-center bg-ink/90 backdrop-blur">
       <button
         onClick={onBack}
         aria-label="Back"
@@ -679,7 +679,7 @@ function ArtistPage(
         onShuffle={() => player?.play(paths, Math.floor(Math.random() * paths.length), artist.name, true)}
         onQueue={() => player?.addToQueue(paths)}
       />
-      <h3 className="mb-1 mt-2 text-[15px] font-semibold text-text">Songs</h3>
+      <h3 className="mb-1 mt-4 text-[15px] font-semibold text-text">Songs</h3>
       <SongList {...props} songs={all ? artist.songs : artist.songs.slice(0, 5)} from={artist.name} />
       {artist.songs.length > 5 && (
         <button onClick={() => setAll((a) => !a)} className="mt-1 text-[12.5px] font-semibold text-textDim hover:text-text">
@@ -943,6 +943,7 @@ function SongList({
             >
               <button
                 onClick={() => player?.play(paths, i, from)}
+                data-remote-key={`song:${song.path}`}
                 className="flex min-w-0 flex-1 items-center gap-3 text-left"
               >
                 <span className="flex w-6 shrink-0 justify-end text-[12px] tabular-nums text-textFaint">

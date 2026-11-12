@@ -37,13 +37,23 @@
         "depends": [
           "libmpv2 | libmpv1",
           "ca-certificates"
-        ]
+        ],
+        "files": {
+          "/usr/share/kio/servicemenus/basalt-share.desktop": "linux/basalt-share-kde.desktop",
+          "/usr/share/kservices5/ServiceMenus/basalt-share.desktop": "linux/basalt-share-kde.desktop",
+          "/usr/share/nemo/actions/basalt-share.nemo_action": "linux/basalt-share.nemo_action"
+        }
       },
       "rpm": {
         "depends": [
           "mpv-libs",
           "ca-certificates"
-        ]
+        ],
+        "files": {
+          "/usr/share/kio/servicemenus/basalt-share.desktop": "linux/basalt-share-kde.desktop",
+          "/usr/share/kservices5/ServiceMenus/basalt-share.desktop": "linux/basalt-share-kde.desktop",
+          "/usr/share/nemo/actions/basalt-share.nemo_action": "linux/basalt-share.nemo_action"
+        }
       }
     }
   }

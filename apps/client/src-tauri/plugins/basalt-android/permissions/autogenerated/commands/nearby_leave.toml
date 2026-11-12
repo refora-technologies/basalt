@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-nearby-leave"
+description = "Enables the nearby_leave command without any pre-configured scope."
+commands.allow = ["nearby_leave"]
+
+[[permission]]
+identifier = "deny-nearby-leave"
+description = "Denies the nearby_leave command without any pre-configured scope."
+commands.deny = ["nearby_leave"]

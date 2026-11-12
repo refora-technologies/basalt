@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { AlertTriangle, FolderOpen, HardDrive, Pencil, Repeat } from 'lucide-react'
 import type { DeviceView, HostStatus } from '@/lib/api'
 import { cn, formatBytes, formatRate } from '@/lib/utils'
+import { shareBytesOnDrive } from './SharingSettings'
 import { HexMark } from './HexMark'
 import { Pill } from './ui/Group'
 
@@ -144,6 +145,11 @@ function Drive({
   const vault = status.vault
   if (!vault) return null
   const used = vault.total > 0 ? (vault.total - vault.free) / vault.total : 0
+  // Share files on the drive's disk, shown apart within what's used.
+  const shareBytes = Math.min(shareBytesOnDrive(status.sharing), vault.total - vault.free)
+  const shares = vault.total > 0 ? shareBytes / vault.total : 0
+  // Share files kept locked in the host's own folder, on another disk than the drive's.
+  const apart = (status.sharing?.used ?? 0) - shareBytes
 
   return (
     <div className="flex shrink-0 flex-col border-t border-line px-6 py-5 min-[860px]:w-[330px] min-[860px]:border-l min-[860px]:border-t-0">
@@ -191,18 +197,49 @@ function Drive({
           )}
           {vault.total > 0 ? (
             <>
-              <div className="mt-4 h-[6px] w-full overflow-hidden rounded-full bg-ink2">
+              <div className="mt-4 flex h-[6px] w-full overflow-hidden rounded-full bg-ink2">
                 <motion.div
-                  className="h-full rounded-full bg-basaltDeep"
+                  className="h-full bg-basaltDeep"
                   initial={{ width: 0 }}
-                  animate={{ width: `${Math.round(used * 100)}%` }}
+                  animate={{ width: `${(used - shares) * 100}%` }}
                   transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
                 />
+                {shares > 0 && (
+                  <motion.div
+                    className="h-full bg-amber-300/85"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${Math.max(shares * 100, 0.8)}%` }}
+                    transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+                  />
+                )}
               </div>
               <div className="tnum mt-2 flex items-baseline justify-between font-mono text-[11px]">
                 <span className="text-textDim">{formatBytes(vault.free)} free</span>
                 <span className="text-textFaint">of {formatBytes(vault.total)}</span>
               </div>
+              {(shareBytes > 0 || apart > 0) && (
+                <div className="tnum mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10.5px] text-textFaint">
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-[7px] w-[7px] rounded-full bg-basaltDeep" />
+                    Files {formatBytes(Math.max(0, vault.total - vault.free - shareBytes))}
+                  </span>
+                  {shareBytes > 0 && (
+                    <span className="flex items-center gap-1.5" title="Files kept for devices that were away, on the drive's disk">
+                      <span className="h-[7px] w-[7px] rounded-full bg-amber-300/85" />
+                      Share files {formatBytes(shareBytes)}
+                    </span>
+                  )}
+                </div>
+              )}
+              {apart > 0 && (
+                <div
+                  className="mt-2 flex items-center gap-2 rounded-md bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-textDim"
+                  title="Kept locked in Basalt Host's own folder, never on the shared drive"
+                >
+                  <span className="h-[7px] w-[7px] shrink-0 rounded-full border border-amber-300/85" />
+                  <span className="min-w-0 flex-1 truncate">{formatBytes(apart)} of share files, locked, on this computer</span>
+                </div>
+              )}
             </>
           ) : (
             // Some USB enclosures decline to report a size; the gauge would lie.

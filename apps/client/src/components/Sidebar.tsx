@@ -7,6 +7,7 @@ import {
   ChevronsUpDown,
   HardDrive,
   Image,
+  Inbox,
   Laptop,
   LogOut,
   Repeat,
@@ -21,6 +22,8 @@ import {
 import { UpdateCard } from './UpdateCard'
 import { cn, formatBytes } from '@/lib/utils'
 import { Avatar } from './ProfileGate'
+import { YourDevices } from './YourDevices'
+import type { PresentDevice } from '@/lib/api'
 
 export type NavKey =
   | 'files'
@@ -33,6 +36,7 @@ export type NavKey =
   | 'photos'
   | 'settings'
   | 'manage'
+  | 'inbox'
 
 const NAV: { key: NavKey; label: string; icon: typeof FolderOpen }[] = [
   { key: 'files', label: 'Files', icon: FolderOpen },
@@ -64,7 +68,10 @@ export function Sidebar({
   who,
   onChangeDrive,
   canManage,
+  inbox,
 }: {
+  /** The Inbox, on a host that passes shares between devices: how many wait for an answer. */
+  inbox?: { waiting: number }
   /** The host lets this device manage it: "Manage host" is offered. */
   canManage?: boolean
   /** Library sections the host's owner has chosen not to show. */
@@ -102,6 +109,16 @@ export function Sidebar({
             onNavigate={onNavigate}
           />
         ))}
+        {inbox && (
+          <NavItem
+            navKey="inbox"
+            label="Inbox"
+            icon={Inbox}
+            active={active}
+            onNavigate={onNavigate}
+            count={inbox.waiting}
+          />
+        )}
       </nav>
 
       {LIBRARY.some((item) => !hidden?.has(item.key)) && <SectionLabel>Library</SectionLabel>}
@@ -169,12 +186,15 @@ function NavItem({
   icon: Icon,
   active,
   onNavigate,
+  count = 0,
 }: {
   navKey: NavKey
   label: string
   icon: typeof FolderOpen
   active: NavKey
   onNavigate: (key: NavKey) => void
+  /** Waiting for this person, shown as a count. */
+  count?: number
 }): React.JSX.Element {
   const isActive = active === navKey
 
@@ -200,6 +220,11 @@ function NavItem({
       )}
       <Icon size={18} className="relative z-10" />
       <span className="relative z-10">{label}</span>
+      {count > 0 && (
+        <span className="relative z-10 ml-auto rounded-full bg-white px-1.5 font-mono text-[10.5px] font-semibold leading-[17px] text-black">
+          {count}
+        </span>
+      )}
     </button>
   )
 }
@@ -281,6 +306,9 @@ export interface WhoProps {
   onSignIn: () => void
   onSwitch: () => void
   onSignOut: () => void
+  /** This profile's devices, with who is online; empty on an older host. */
+  devices: PresentDevice[]
+  you: string
 }
 
 /**
@@ -290,7 +318,8 @@ export interface WhoProps {
  * avatar and name, or the device on its own. The menu opens upwards, the only
  * way there is room for it.
  */
-function WhoChip({ profile, onSignIn, onSwitch, onSignOut }: WhoProps): React.JSX.Element {
+function WhoChip({ profile, onSignIn, onSwitch, onSignOut, devices, you }: WhoProps): React.JSX.Element {
+  const online = devices.filter((d) => d.online && d.device !== you).length
   const [open, setOpen] = useState(false)
   const choose = (action: () => void) => () => {
     setOpen(false)
@@ -317,7 +346,11 @@ function WhoChip({ profile, onSignIn, onSwitch, onSignOut }: WhoProps): React.JS
             {profile ? profile.name : 'This device'}
           </span>
           <span className="block truncate font-mono text-[9.5px] text-textFaint">
-            {profile ? 'profile' : 'not signed in'}
+            {profile
+              ? online > 0
+                ? `${online + 1} devices online`
+                : 'profile'
+              : 'not signed in'}
           </span>
         </span>
         <ChevronsUpDown size={13} className="shrink-0 text-textFaint" />
@@ -335,6 +368,14 @@ function WhoChip({ profile, onSignIn, onSwitch, onSignOut }: WhoProps): React.JS
               style={{ transformOrigin: 'bottom left' }}
               className="absolute bottom-full left-0 right-0 z-40 mb-1.5 overflow-hidden rounded-lg border border-white/10 bg-panel2 p-1 shadow-lift"
             >
+              {profile && devices.length > 1 && (
+                <div className="mb-1 border-b border-white/[0.06] pb-1">
+                  <div className="px-2.5 pb-0.5 pt-1.5 font-mono text-[9.5px] uppercase tracking-[0.16em] text-textFaint">
+                    Your devices
+                  </div>
+                  <YourDevices devices={devices} you={you} compact />
+                </div>
+              )}
               {profile ? (
                 <>
                   <WhoItem icon={Repeat} label="Switch profile" onClick={choose(onSwitch)} />

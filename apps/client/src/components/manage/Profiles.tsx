@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Check, Copy, KeyRound, Loader2, Lock, Plus, Trash2, UserPlus, Users, X } from 'lucide-react'
 import type { ManagedProfile } from '@/lib/manage'
 import { PROFILE_COLORS } from '@/lib/useIdentity'
-import { cn } from '@/lib/utils'
+import { cn, formatBytes } from '@/lib/utils'
 import { copyText } from '@/lib/copyText'
 import { Avatar, Card, Group, Pill, Row, Rows, Segmented, Tag, Toggle, ago, useLayout } from './parts'
 import { Surface } from './Surface'
@@ -174,7 +174,7 @@ function ProfileDetail({
   profile: ManagedProfile
   onDone: () => void
 }): React.JSX.Element {
-  const { m, confirm } = tools
+  const { m, confirm, choose } = tools
   const phone = useLayout() === 'phone'
 
   const resetPin = async (): Promise<void> => {
@@ -187,6 +187,19 @@ function ProfileDetail({
   }
 
   const remove = async (): Promise<void> => {
+    // Files it keeps on the host for someone away: moved onto the drive, or deleted (D14).
+    const held = tools.view.status.sharing?.profiles.find((p) => p.id === profile.id)?.used ?? 0
+    if (held > 0) {
+      const choice = await choose({
+        title: `Remove ${profile.name}?`,
+        message: `The history and stars of ${profile.name} on this host go with it. ${profile.name} also keeps ${formatBytes(held)} on the host for devices that were away: move it into “Basalt shares/${profile.name}” on the drive, where everyone who uses the drive sees it, or delete it.`,
+        confirmLabel: 'Move to the drive',
+        alternative: 'Delete them',
+        danger: true,
+      })
+      if (choice && (await m.act({ do: 'removeProfile', id: profile.id, shares: choice === 'alternative' ? 'delete' : 'move' }))) onDone()
+      return
+    }
     const ok = await confirm({
       title: `Remove ${profile.name}?`,
       message: `The history and stars of ${profile.name} on this host go with it. Nothing on the drive changes.`,

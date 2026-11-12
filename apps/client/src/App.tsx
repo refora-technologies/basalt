@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Scissors,
   Search,
+  Send,
   SquarePen,
   Star,
   Trash2,
@@ -35,6 +36,7 @@ import { useWatched } from '@/lib/useWatched'
 import { FileList, type Entry, type RowHandlers } from '@/components/FileList'
 import { EmptyState, ListView, TileView } from '@/components/FileViews'
 import { ViewMenu, type ViewMode } from '@/components/ViewMenu'
+import { FolderSkeleton, useAfter } from '@/components/FolderSkeleton'
 import {
   SortMenu,
   sortEntries,
@@ -62,10 +64,12 @@ import { preferPlayer, preferredPlayer, type PlayerChoice } from '@/lib/playerCh
 import {
   api,
   ApiError,
+  inTauri,
   isCancelled,
   isFinished,
   joinPath,
   parentOf,
+  onShareFiles,
   placeName,
   type MediaFile,
   type SubtitleTrack,
@@ -78,7 +82,7 @@ import { ProfileGate } from '@/components/ProfileGate'
 import { scrollKeyOf } from '@/lib/useScrollMemory'
 import { stemOf, trackInfo } from '@/lib/mediaInfo'
 import { isWaiting, useVault, waitingLabel } from '@/lib/useVault'
-import { handheldWord, isMobileShell, isTv } from '@/lib/platform'
+import { handheldWord, isAndroid, isMobileShell, isTv } from '@/lib/platform'
 import { android, type PhoneFile } from '@/lib/android'
 import { MobileApp } from '@/mobile/MobileApp'
 import { filterKind, isKind, recentOf, useLibraryScan } from '@/lib/useLibrary'
@@ -92,6 +96,14 @@ import { MusicSection } from '@/components/music/MusicSection'
 import { MusicBar, NowPlaying } from '@/components/music/NowPlaying'
 import { MusicBridge, SystemMedia, useMusicProps } from '@/components/music/useMusicActions'
 import { useMusicMine } from '@/lib/useMusicMine'
+import { ownDevices, usePresence } from '@/lib/usePresence'
+import { useInbox } from '@/lib/useInbox'
+import type { ShareFile } from '@/lib/share'
+import { InboxPage, NearbyDialog, NearbyOfferCard, OfferCard, ShareDialog, ShareSaid } from '@/components/share/DesktopShare'
+import { useNearby } from '@/lib/useNearby'
+import { useNearbyNotifications } from '@/components/share/nearbyNotifications'
+import { useAlwaysReady } from '@/lib/alwaysReady'
+import { useShareNotifications } from '@/components/share/notifications'
 import { entriesToMedia, isMediaFile, nextEpisodes } from '@/lib/media'
 import type { MediaItem } from '@/lib/mockMedia'
 import {
@@ -113,6 +125,7 @@ const MEDIA_KEYS: NavKey[] = ['movies', 'series']
 
 const TITLES: Record<NavKey, string> = {
   files: 'Files',
+  inbox: 'Inbox',
   recent: 'Recent',
   starred: 'Starred',
   movies: 'Movies',
@@ -144,6 +157,32 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
   const [playing, setPlaying] = useState<MediaItem | null>(null)
   /** The photo viewer: the photos it steps through, and which one is open. */
   const [viewer, setViewer] = useState<{ photos: MediaFile[]; index: number } | null>(null)
+  /** Files being shared: the Share sheet is open for them. */
+  const [sharing, setSharing] = useState<ShareFile[] | null>(null)
+  // Files from Explorer ("Share with Basalt", Send to): the Share sheet
+  // opens for them. Several chosen at once come one by one: gathered.
+  useEffect(() => {
+    if (!inTauri() || isAndroid()) return undefined
+    const open = (files: { source: string; name: string; size: number }[]): void => {
+      if (files.length === 0) return
+      const more: ShareFile[] = files.map((f) => ({ name: f.name, size: f.size, path: '', source: f.source }))
+      setSharing((was) => {
+        const all = [...(was ?? []).filter((f) => f.source), ...more]
+        return all.filter((f, n) => all.findIndex((g) => g.source === f.source) === n)
+      })
+    }
+    void api.sharedAtStart().then(open).catch(() => {})
+    let stop: (() => void) | null = null
+    let gone = false
+    void onShareFiles(open).then((unlisten) => {
+      if (gone) unlisten()
+      else stop = unlisten
+    })
+    return () => {
+      gone = true
+      stop?.()
+    }
+  }, [])
   const viewingIndex = viewer?.index ?? null
   const [view, setView] = useState<ViewMode>('details')
   const [sortField, setSortField] = useState<SortField>('name')
@@ -195,6 +234,20 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
   // playlists and Continue listening.
   const music = useMusic(settled, collections.collections.music)
   const musicMine = useMusicMine(vault.status?.hostId, profileId, settled !== null)
+  // Who of the host's devices is online: the profile's own devices, and later
+  // the places a file can be shared to.
+  const presence = usePresence(
+    settled !== null && vault.status?.hostId ? `${vault.status.hostId}/${profileId ?? ''}` : null,
+  )
+  // Shares coming in and going out, kept on this device per host and profile.
+  const inbox = useInbox(
+    settled !== null && vault.status?.hostId ? `${vault.status.hostId}/${profileId ?? ''}` : null,
+    presence,
+    transfers,
+    profileId ?? undefined,
+  )
+  // Sharing with devices nearby, no host needed: before a drive too.
+  const nearby = useNearby(transfers)
   // Only for a host too old to sort the drive itself.
   const needsScan =
     collections.unsupported && (nav === 'recent' || LIBRARY_KEYS.includes(nav))
@@ -998,6 +1051,17 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         run: () => void downloadMany(chosen),
       })
 
+      // To another of the host's devices: one of this person's, or someone
+      // else's in the home. Files for now; a folder is a later build.
+      const shareable = chosen.filter((e) => e.kind === 'file')
+      if (!tv && presence.supported && presence.you !== '') items.push({
+        id: 'share',
+        label: many ? `Share ${shareable.length} files…` : 'Share…',
+        icon: Send,
+        disabled: shareable.length === 0,
+        run: () => setSharing(shareable.map((e) => ({ name: e.name, size: e.size, path: e.id }))),
+      })
+
       if (writable && !tv) {
         items.push(
           {
@@ -1084,6 +1148,8 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
       actions,
       askRename,
       stars,
+      presence.supported,
+      presence.you,
     ],
   )
 
@@ -1149,7 +1215,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
         setPaletteOpen((v) => !v)
         return
       }
-      if (typing || nav === 'settings' || nav === 'manage' || prompt) return
+      if (typing || nav === 'settings' || nav === 'manage' || nav === 'inbox' || prompt) return
 
       const chosen = entries.filter((en) => selected.has(en.id))
 
@@ -1387,6 +1453,11 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     collections,
     music,
     musicMine,
+    presence,
+    inbox,
+    nearby,
+    sharing,
+    setSharing,
     mediaBase,
     needsScan,
     scan,
@@ -1503,6 +1574,17 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
     }
   }
   const [introducing, setIntroducing] = useState(() => !onboarded())
+  const { presence, inbox, sharing, setSharing } = model
+  const [shareSaid, setShareSaid] = useState<string | null>(null)
+  // Always ready: closing the window keeps Basalt in the tray, its line to
+  // the host open, so shares still reach it.
+  const [alwaysReady] = useAlwaysReady()
+  const keepRunning = alwaysReady && presence.supported && presence.you !== ''
+  useEffect(() => {
+    void api.stayRunning(keepRunning).catch(() => {})
+  }, [keepRunning])
+  useShareNotifications(inbox, presence, model.setNav)
+  useNearbyNotifications(model.nearby)
   const {
     vault,
     transfers,
@@ -1580,6 +1662,20 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
     selectedSize,
   } = model
 
+  /**
+   * A folder clicked and not here yet: the breadcrumb has moved, so the old
+   * folder's files would sit under the new name. Rows with nothing in them
+   * show instead, after a moment, so a quick folder never flashes them.
+   */
+  const folderComing = useAfter(
+    nav === 'files' &&
+      connected &&
+      vault.loading &&
+      (vault.dir !== vault.listed || entries.length === 0) &&
+      !query.trim(),
+    150,
+  )
+
   // Someone who has used Basalt already knows what it is: forgetting a drive
   // later goes straight back to the drive list, not to the introduction.
   const everPaired = vault.status?.hasPaired === true
@@ -1616,6 +1712,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
               setIntroducing(false)
             }}
             onLeave={onboarded() ? () => setIntroducing(false) : undefined}
+            onNearby={() => model.nearby.setScreenOpen(true)}
           />
         </div>
       </div>
@@ -1633,6 +1730,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
             notice={vault.removed}
             onBack={changingDrive ? () => setChangingDrive(false) : undefined}
             currentHostId={changingDrive ? vault.status.hostId : null}
+            onNearby={() => model.nearby.setScreenOpen(true)}
             onPaired={(next) => {
               setChangingDrive(false)
               setNav('files')
@@ -1640,6 +1738,16 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
             }}
           />
         </div>
+        <NearbyOfferCard nearby={model.nearby} />
+        <NearbyDialog nearby={model.nearby} />
+        <ShareDialog
+          files={sharing}
+          presence={presence}
+          inbox={inbox}
+          nearby={model.nearby}
+          onClose={() => setSharing(null)}
+          onSaid={setShareSaid}
+        />
       </div>
     )
   }
@@ -1753,10 +1861,13 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                       await identity.refresh()
                     })
                   },
+                  devices: ownDevices(model.presence),
+                  you: model.presence.you,
                 }
               : undefined
           }
           hidden={hiddenSections}
+          inbox={presence.supported && presence.you !== '' ? { waiting: inbox.waiting.length } : undefined}
           canManage={canManage}
           active={nav}
           onNavigate={setNav}
@@ -1768,7 +1879,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
         />
 
         <main className="flex min-w-0 min-h-0 flex-1 flex-col">
-          {nav !== 'settings' && nav !== 'manage' && (
+          {nav !== 'settings' && nav !== 'manage' && nav !== 'inbox' && (
             <div className="drag flex h-12 shrink-0 items-center gap-3 border-b border-line px-4">
               {nav === 'files' ? (
                 <Breadcrumbs
@@ -1883,12 +1994,28 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
           >
             {nav === 'manage' ? (
               <ManageHost layout="desktop" onClose={() => setNav('files')} />
+            ) : nav === 'inbox' ? (
+              <InboxPage
+                presence={presence}
+                inbox={inbox}
+                nearby={model.nearby}
+                onSendLocal={() =>
+                  void pickFiles()
+                    .then((paths) => (paths.length > 0 ? api.localFiles(paths) : []))
+                    .then((files) => {
+                      if (files.length > 0) setSharing(files.map((f) => ({ name: f.name, size: f.size, path: '', source: f.source })))
+                    })
+                }
+              />
             ) : nav === 'settings' ? (
               <SettingsView
                 status={vault.status}
                 space={vault.space}
                 onForget={forgetVault}
                 onChangeDrive={() => setChangingDrive(true)}
+                inbox={presence.supported && presence.you !== '' ? inbox : undefined}
+                nearby={model.nearby}
+                presence={presence}
               />
             ) : noDrive ? (
               <NoDrive
@@ -1946,6 +2073,8 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                   onPlay={(file) => void playPath(file.path)}
                 />
               )
+            ) : folderComing ? (
+              <FolderSkeleton view={view} />
             ) : entries.length === 0 ? (
               <div
                 className="h-full"
@@ -1988,7 +2117,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
             <DropOverlay active={dropActive && nav === 'files'} dir={dropInto ?? vault.dir} />
           </motion.div>
 
-          {nav !== 'settings' && nav !== 'manage' && !isLibrary && !isMedia && (
+          {nav !== 'settings' && nav !== 'manage' && nav !== 'inbox' && !isLibrary && !isMedia && (
             <StatusBar
               total={entries.length}
               filtered={query.trim().length > 0}
@@ -2023,6 +2152,19 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <ShareDialog
+        files={sharing}
+        presence={presence}
+        inbox={inbox}
+        nearby={model.nearby}
+        onClose={() => setSharing(null)}
+        onSaid={setShareSaid}
+      />
+      <OfferCard presence={presence} inbox={inbox} />
+      <NearbyOfferCard nearby={model.nearby} />
+      <NearbyDialog nearby={model.nearby} />
+      <ShareSaid said={shareSaid} onGone={() => setShareSaid(null)} />
 
       <CommandPalette
         open={paletteOpen}

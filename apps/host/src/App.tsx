@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { AlertTriangle, MonitorSmartphone, Users } from 'lucide-react'
 import { api, type DeviceView, type HostStatus } from '@/lib/api'
 import { usePoll } from '@/lib/usePoll'
+import { formatBytes } from '@/lib/utils'
 import { DeviceList, OwnerLine } from './components/DeviceList'
 import { PairingRequests } from './components/PairingRequests'
 import {
@@ -20,6 +21,7 @@ import { AddProfileDialog } from './components/AddProfileDialog'
 import { Setup } from './components/Setup'
 import { TitleBar } from './components/TitleBar'
 import { Machine } from './components/Machine'
+import { SharingSettings, clearQuestion } from './components/SharingSettings'
 import { Group } from './components/ui/Group'
 import { HexMark } from './components/HexMark'
 import { PromptDialog, type PromptRequest } from './components/ui/PromptDialog'
@@ -48,6 +50,9 @@ export function App(): React.JSX.Element {
   const [message, setMessage] = useState<MessageRequest | null>(null)
   // Turning the PIN off is asked about first, as Manage host on a phone asks.
   const [askNoPin, setAskNoPin] = useState(false)
+  const [askClear, setAskClear] = useState(false)
+  // A profile being removed that keeps share files: what becomes of them (D14).
+  const [removing, setRemoving] = useState<{ id: string; name: string; bytes: number } | null>(null)
   const [adding, setAdding] = useState(false)
   /** Why the last change to the profile rules was refused. */
   const [rulesError, setRulesError] = useState<string | null>(null)
@@ -306,7 +311,9 @@ export function App(): React.JSX.Element {
                             // With its watch history and stars. The files on the
                             // drive are not touched.
                             onConfirm: () => {
-                              void api.removeProfile(profile.id).then(apply)
+                              const held = current.sharing?.profiles.find((p) => p.id === profile.id)?.used ?? 0
+                              if (held > 0) setRemoving({ id: profile.id, name: profile.name, bytes: held })
+                              else void api.removeProfile(profile.id).then(apply)
                             },
                           })
                         }
@@ -415,6 +422,22 @@ export function App(): React.JSX.Element {
                         void api.setSections(sections).then(apply)
                       }}
                     />
+                    <SharingSettings
+                      status={current}
+                      onSecure={(secure) => {
+                        void api.setShareSecure(secure).then(apply)
+                      }}
+                      onLimits={(on) => {
+                        void api.setShareLimits({ on }).then(apply)
+                      }}
+                      onNewProfileLimit={(bytes) => {
+                        void api.setShareLimits({ newProfile: bytes }).then(apply)
+                      }}
+                      onProfileLimit={(profile, limit) => {
+                        void api.setShareLimits({ profile, limit }).then(apply)
+                      }}
+                      onClear={() => setAskClear(true)}
+                    />
                   </div>
                 </div>
               </div>
@@ -440,6 +463,44 @@ export function App(): React.JSX.Element {
         onAnswer={(yes) => {
           setAskNoPin(false)
           if (yes) setRequirePin(false)
+        }}
+      />
+      <ConfirmDialog
+        request={
+          removing
+            ? {
+                title: `${removing.name}’s share files`,
+                message: `${removing.name} keeps ${formatBytes(removing.bytes)} on this host for devices that were away. Move it into “Basalt shares/${removing.name}” on the drive, where everyone who uses the drive sees it, or delete it. Then ${removing.name} is removed.`,
+                confirmLabel: 'Move to the drive',
+                alternative: 'Delete them',
+              }
+            : null
+        }
+        onAnswer={(yes) => {
+          const which = removing
+          setRemoving(null)
+          if (yes && which) void api.removeProfile(which.id, 'move').then(apply).catch((e: unknown) => setMessage({ title: `${which.name} wasn’t removed`, message: reason(e) }))
+        }}
+        onAlternative={() => {
+          const which = removing
+          setRemoving(null)
+          if (which) void api.removeProfile(which.id, 'delete').then(apply).catch((e: unknown) => setMessage({ title: `${which.name} wasn’t removed`, message: reason(e) }))
+        }}
+      />
+      <ConfirmDialog
+        request={
+          askClear && current?.sharing
+            ? { ...clearQuestion(current.sharing), confirmLabel: 'Clear share files', danger: true }
+            : null
+        }
+        onAnswer={(yes) => {
+          setAskClear(false)
+          if (yes) {
+            void api
+              .clearShares()
+              .then(apply)
+              .catch((e: unknown) => setMessage({ title: 'Share files weren’t cleared', message: reason(e) }))
+          }
         }}
       />
       {current && (

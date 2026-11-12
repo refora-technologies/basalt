@@ -38,8 +38,29 @@ export interface Insets {
 async function plugin<T>(command: string, args?: Record<string, unknown>): Promise<T | null> {
   if (!inTauri() || !isAndroid()) return null
   const { invoke } = await import('@tauri-apps/api/core')
-  return invoke<T>(`plugin:basalt-android|${command}`, args ?? {})
+  try {
+    return await invoke<T>(`plugin:basalt-android|${command}`, args ?? {})
+  } catch (raw: unknown) {
+    // Android's refusals come as objects ({ message }), not Errors: said
+    // plainly, never "[object Object]".
+    throw new Error(pluginReason(raw))
+  }
 }
+
+/** The words in whatever a plugin call threw. */
+export function pluginReason(raw: unknown): string {
+  if (raw instanceof Error) return raw.message
+  if (typeof raw === 'string') return raw
+  if (raw && typeof raw === 'object' && 'message' in raw && typeof raw.message === 'string') return raw.message
+  try {
+    return JSON.stringify(raw)
+  } catch {
+    return 'Something went wrong.'
+  }
+}
+
+/** Why the app keeps running in the background. */
+export type KeepReason = 'transfer' | 'playback' | 'music' | 'ready' | 'nearby'
 
 export const android = {
   /** Photos and videos, or any files, from the phone's own picker. */
@@ -73,11 +94,13 @@ export const android = {
   /**
    * Keeps the app running with the screen off, with a notification: a
    * transfer, a film handed to another player (`playback`), or music, whose
-   * notification is the media player (see `systemMedia`).
+   * notification is the media player (see `systemMedia`); or being `ready`
+   * to receive from the person's other devices, which keeps the line to the
+   * host open, quietly.
    */
-  keepAlive: (reason: 'transfer' | 'playback' | 'music', title: string, text: string, progress = -1) =>
+  keepAlive: (reason: KeepReason, title: string, text: string, progress = -1) =>
     plugin<void>('keep_alive', { reason, title, text, progress }),
-  letGo: (reason: 'transfer' | 'playback' | 'music') => plugin<void>('let_go', { reason }),
+  letGo: (reason: KeepReason) => plugin<void>('let_go', { reason }),
   requestNotifications: () => plugin<{ granted: boolean }>('request_notifications'),
 
   setImmersive: (on: boolean) => plugin<void>('set_immersive', { on }),
@@ -114,6 +137,28 @@ export const android = {
   /** "Basalt <version> is available", as a phone notification. Whether it showed. */
   notifyUpdate: async (version: string) =>
     (await plugin<{ shown: boolean }>('notify_update', { version }))?.shown ?? false,
+  /**
+   * A share, as a notification on top: one offered (buttons "Label|action"),
+   * or one that arrived. Tapped, the app opens at its Inbox.
+   */
+  notifyShare: async (tag: string, title: string, text: string, actions: string[] = [], ifAway = false) =>
+    (await plugin<{ shown: boolean }>('notify_share', { tag, title, text, actions, ifAway }))?.shown ?? false,
+  /** Whether a nearby device's own Wi-Fi can be hosted, found and joined: `granted`, or what's missing. */
+  nearbyWifiState: async () => (await plugin<{ state: string }>('nearby_wifi_state'))?.state ?? 'unsupported',
+  /** Android's question for it: location before Android 13, nearby devices after. */
+  requestNearbyWifi: async () => (await plugin<{ state: string }>('request_nearby_wifi'))?.state ?? 'denied',
+  /** Hosts this phone's own Wi-Fi (Wi-Fi Direct) by that name and passphrase. */
+  nearbyHost: (ssid: string, passphrase: string) => plugin<void>('nearby_host', { ssid, passphrase }),
+  nearbyHostStop: () => plugin<void>('nearby_host_stop'),
+  /** The Basalt Wi-Fis around, from a fresh look. */
+  nearbyScan: async () => (await plugin<{ found: { ssid: string; level: number }[] }>('nearby_scan'))?.found ?? [],
+  /** Joins one, for this app: Android asks first. */
+  nearbyJoin: (ssid: string, passphrase: string) => plugin<void>('nearby_join', { ssid, passphrase }),
+  nearbyLeave: () => plugin<void>('nearby_leave'),
+  /** Wi-Fi off: turned on, or Android's Wi-Fi panel brought up to do it. */
+  nearbyWifiTurnOn: () => plugin<void>('nearby_wifi_turn_on'),
+  /** A share's notification taken away. */
+  cancelShare: (tag: string) => plugin<void>('cancel_share', { tag }),
   /** What a notification tap asked the app to open, once. */
   takeAction: async () => (await plugin<{ action: string | null }>('take_action'))?.action ?? null,
   canInstallApks: async () => (await plugin<{ can: boolean }>('can_install_apks'))?.can ?? false,

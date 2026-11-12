@@ -10,7 +10,9 @@
 //! against a real host in one process.
 
 pub mod client;
+pub mod direct;
 pub mod keys;
+pub mod nearby;
 pub mod players;
 pub mod pool;
 pub mod proxy;

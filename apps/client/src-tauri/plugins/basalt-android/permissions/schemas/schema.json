@@ -319,6 +319,18 @@
           "markdownDescription": "Denies the can_install_apks command without any pre-configured scope."
         },
         {
+          "description": "Enables the cancel_share command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-cancel-share",
+          "markdownDescription": "Enables the cancel_share command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the cancel_share command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-cancel-share",
+          "markdownDescription": "Denies the cancel_share command without any pre-configured scope."
+        },
+        {
           "description": "Enables the compose_email command without any pre-configured scope.",
           "type": "string",
           "const": "allow-compose-email",
@@ -619,6 +631,102 @@
           "markdownDescription": "Denies the mpv_subtitle_font command without any pre-configured scope."
         },
         {
+          "description": "Enables the nearby_host command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-nearby-host",
+          "markdownDescription": "Enables the nearby_host command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the nearby_host command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-nearby-host",
+          "markdownDescription": "Denies the nearby_host command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the nearby_host_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-nearby-host-stop",
+          "markdownDescription": "Enables the nearby_host_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the nearby_host_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-nearby-host-stop",
+          "markdownDescription": "Denies the nearby_host_stop command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the nearby_join command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-nearby-join",
+          "markdownDescription": "Enables the nearby_join command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the nearby_join command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-nearby-join",
+          "markdownDescription": "Denies the nearby_join command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the nearby_leave command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-nearby-leave",
+          "markdownDescription": "Enables the nearby_leave command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the nearby_leave command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-nearby-leave",
+          "markdownDescription": "Denies the nearby_leave command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the nearby_scan command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-nearby-scan",
+          "markdownDescription": "Enables the nearby_scan command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the nearby_scan command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-nearby-scan",
+          "markdownDescription": "Denies the nearby_scan command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the nearby_wifi_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-nearby-wifi-state",
+          "markdownDescription": "Enables the nearby_wifi_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the nearby_wifi_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-nearby-wifi-state",
+          "markdownDescription": "Denies the nearby_wifi_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the nearby_wifi_turn_on command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-nearby-wifi-turn-on",
+          "markdownDescription": "Enables the nearby_wifi_turn_on command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the nearby_wifi_turn_on command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-nearby-wifi-turn-on",
+          "markdownDescription": "Denies the nearby_wifi_turn_on command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notify_share command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notify-share",
+          "markdownDescription": "Enables the notify_share command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notify_share command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notify-share",
+          "markdownDescription": "Denies the notify_share command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notify_update command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notify-update",
@@ -835,6 +943,18 @@
           "markdownDescription": "Denies the request_local_network command without any pre-configured scope."
         },
         {
+          "description": "Enables the request_nearby_wifi command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-request-nearby-wifi",
+          "markdownDescription": "Enables the request_nearby_wifi command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the request_nearby_wifi command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-request-nearby-wifi",
+          "markdownDescription": "Denies the request_nearby_wifi command without any pre-configured scope."
+        },
+        {
           "description": "Enables the request_notifications command without any pre-configured scope.",
           "type": "string",
           "const": "allow-request-notifications",
@@ -955,10 +1075,10 @@
           "markdownDescription": "Denies the take_shared command without any pre-configured scope."
         },
         {
-          "description": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-media-session`\n- `allow-media-session-end`\n- `allow-set-immersive`\n- `allow-set-pip`\n- `allow-local-network`\n- `allow-request-local-network`\n- `allow-open-app-settings`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-subtitle-font`\n- `allow-mpv-destroy`",
+          "description": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-media-session`\n- `allow-media-session-end`\n- `allow-set-immersive`\n- `allow-set-pip`\n- `allow-local-network`\n- `allow-request-local-network`\n- `allow-open-app-settings`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-notify-share`\n- `allow-nearby-wifi-state`\n- `allow-request-nearby-wifi`\n- `allow-nearby-host`\n- `allow-nearby-host-stop`\n- `allow-nearby-scan`\n- `allow-nearby-join`\n- `allow-nearby-leave`\n- `allow-nearby-wifi-turn-on`\n- `allow-cancel-share`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-subtitle-font`\n- `allow-mpv-destroy`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-media-session`\n- `allow-media-session-end`\n- `allow-set-immersive`\n- `allow-set-pip`\n- `allow-local-network`\n- `allow-request-local-network`\n- `allow-open-app-settings`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-subtitle-font`\n- `allow-mpv-destroy`"
+          "markdownDescription": "What the Basalt interface may ask of Android directly. Opening files and creating downloads are Rust's alone, so no page can reach a file descriptor.\n#### This default permission set includes:\n\n- `allow-pick-files`\n- `allow-pick-folder`\n- `allow-list-folder`\n- `allow-open-with`\n- `allow-open-download`\n- `allow-share-download`\n- `allow-take-shared`\n- `allow-keep-alive`\n- `allow-let-go`\n- `allow-media-session`\n- `allow-media-session-end`\n- `allow-set-immersive`\n- `allow-set-pip`\n- `allow-local-network`\n- `allow-request-local-network`\n- `allow-open-app-settings`\n- `allow-set-orientation`\n- `allow-minimize`\n- `allow-install-apk`\n- `allow-can-install-apks`\n- `allow-open-install-settings`\n- `allow-haptic`\n- `allow-player-levels`\n- `allow-set-brightness`\n- `allow-set-volume`\n- `allow-notify-update`\n- `allow-notify-share`\n- `allow-nearby-wifi-state`\n- `allow-request-nearby-wifi`\n- `allow-nearby-host`\n- `allow-nearby-host-stop`\n- `allow-nearby-scan`\n- `allow-nearby-join`\n- `allow-nearby-leave`\n- `allow-nearby-wifi-turn-on`\n- `allow-cancel-share`\n- `allow-take-action`\n- `allow-app-version`\n- `allow-share-text`\n- `allow-compose-email`\n- `allow-play-available`\n- `allow-play-update-check`\n- `allow-play-update-start`\n- `allow-play-update-state`\n- `allow-play-update-complete`\n- `allow-play-review`\n- `allow-request-notifications`\n- `allow-insets`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-mpv-init`\n- `allow-mpv-command`\n- `allow-mpv-set-property`\n- `allow-mpv-get-property`\n- `allow-mpv-add-subtitle`\n- `allow-mpv-subtitle-font`\n- `allow-mpv-destroy`"
         }
       ]
     }

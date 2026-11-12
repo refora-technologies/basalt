@@ -69,8 +69,9 @@ impl Host {
             }
             ManageAction::SetSections { sections } => self.set_sections(sections).await?,
             ManageAction::AddProfile { name, color } => self.add_profile(&name, color)?,
-            ManageAction::RemoveProfile { id } => {
-                self.remove_profile(&id)?;
+            ManageAction::RemoveProfile { id, shares } => {
+                self.remove_profile_and_shares(&id, shares.as_deref() != Some("delete"))
+                    .await?;
             }
             ManageAction::ResetProfilePin { id } => {
                 self.reset_profile_pin(&id)?;
@@ -114,6 +115,16 @@ impl Host {
             ManageAction::ApproveProfileLink { id } => self.approve_profile_link(&id)?,
             ManageAction::DenyProfileLink { id } => {
                 self.deny_profile_link(&id);
+            }
+            ManageAction::SetShareSecure { secure } => self.set_share_secure(secure)?,
+            ManageAction::SetShareLimits {
+                on,
+                new_profile,
+                profile,
+                limit,
+            } => self.set_share_limits(on, new_profile, profile.map(|p| (p, limit)))?,
+            ManageAction::ClearShares => {
+                self.clear_shares()?;
             }
         }
         let mut view = self.view(drives, by).await;

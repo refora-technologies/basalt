@@ -960,6 +960,10 @@ impl Notices {
                 basalt_client::WatchNotice::AccessChanged => "access".to_string(),
                 basalt_client::WatchNotice::ProfilesChanged => "profiles".to_string(),
                 basalt_client::WatchNotice::MusicNow => "music".to_string(),
+                basalt_client::WatchNotice::Channel(m) => {
+                    format!("message {} from {}: {}", m.kind, m.from_device, m.body)
+                }
+                basalt_client::WatchNotice::PresenceChanged => "presence".to_string(),
             };
             inner.lock().expect("notices lock").push(said);
         }
@@ -1035,6 +1039,728 @@ async fn a_watching_device_hears_at_once_that_its_access_changed_or_it_was_remov
         "the pairing is dropped here"
     );
     assert!(!client.is_connected());
+}
+
+// ---------------------------------------------------------------------------
+// The line between devices
+// ---------------------------------------------------------------------------
+
+/// Three devices of one host: who is online follows their watches, a message
+/// reaches a device online at once, and one sent to a device away waits for
+/// it and arrives when it comes back.
+#[tokio::test]
+async fn devices_see_who_is_online_and_pass_each_other_messages() {
+    use basalt_proto::msg::{Address, ChannelSendRequest};
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let phone = fixture.paired_client().await;
+    let tablet = fixture.paired_client().await;
+
+    let laptop_heard = Notices::default();
+    let phone_heard = Notices::default();
+    let _laptop_watch = laptop.watch_with(|_| {}, laptop_heard.record());
+    let phone_watch = phone.watch_with(|_| {}, phone_heard.record());
+
+    // Both watches open in their own time, later on a busy machine.
+    let mut seen = laptop.presence().await.expect("presence");
+    for _ in 0..200 {
+        if seen.devices.iter().filter(|d| d.online).count() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        seen = laptop.presence().await.expect("presence");
+    }
+    assert_eq!(seen.devices.len(), 3, "every device of the host is listed");
+    let me = seen.you.clone();
+    let online: Vec<&str> = seen
+        .devices
+        .iter()
+        .filter(|d| d.online)
+        .map(|d| d.device.as_str())
+        .collect();
+    assert_eq!(online.len(), 2, "the two watching are online: {online:?}");
+    assert!(online.contains(&me.as_str()));
+    let tablet_id = seen
+        .devices
+        .iter()
+        .find(|d| !d.online)
+        .map(|d| d.device.clone())
+        .expect("the tablet, not watching, is offline");
+    let phone_id = online
+        .iter()
+        .find(|d| **d != me)
+        .map(|d| d.to_string())
+        .expect("the phone");
+
+    // To the phone, online: it arrives down its watch.
+    let sent = laptop
+        .channel_send(ChannelSendRequest {
+            to: Address::Device {
+                device: phone_id.clone(),
+            },
+            kind: "offer".into(),
+            body: serde_json::json!({ "name": "Holiday.mkv" }),
+            ttl_ms: 60_000,
+        })
+        .await
+        .expect("sent");
+    assert_eq!(sent.delivered, vec![phone_id.clone()]);
+    assert!(!sent.waiting);
+    assert!(
+        phone_heard
+            .wait_for(|n| n.starts_with("message offer from") && n.contains("Holiday.mkv"))
+            .await,
+        "the phone hears the offer"
+    );
+
+    // To the tablet, away: it waits, and comes with the tablet.
+    let waiting = laptop
+        .channel_send(ChannelSendRequest {
+            to: Address::Device {
+                device: tablet_id.clone(),
+            },
+            kind: "offer".into(),
+            body: serde_json::json!({ "name": "Recipes.pdf" }),
+            ttl_ms: 60_000,
+        })
+        .await
+        .expect("sent");
+    assert!(waiting.delivered.is_empty() && waiting.waiting);
+    let tablet_heard = Notices::default();
+    let _tablet_watch = tablet.watch_with(|_| {}, tablet_heard.record());
+    assert!(
+        tablet_heard.wait_for(|n| n.contains("Recipes.pdf")).await,
+        "the tablet gets what waited for it"
+    );
+    assert!(
+        laptop_heard.wait_for(|n| n == "presence").await,
+        "the laptop hears someone came online"
+    );
+
+    // The phone stops watching: it is offline.
+    drop(phone_watch);
+    let mut gone = false;
+    for _ in 0..100 {
+        let now = laptop.presence().await.expect("presence");
+        if now
+            .devices
+            .iter()
+            .any(|d| d.device == phone_id && !d.online && d.last_seen > 0)
+        {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        gone,
+        "a device whose watch closed is offline, last seen just now"
+    );
+
+    // Nothing to an address the host doesn't have.
+    let err = laptop
+        .channel_send(ChannelSendRequest {
+            to: Address::Device {
+                device: "nobody".into(),
+            },
+            kind: "offer".into(),
+            body: serde_json::Value::Null,
+            ttl_ms: 0,
+        })
+        .await
+        .expect_err("no such device");
+    assert_eq!(err.kind(), "notfound", "got: {err}");
+}
+
+/// A file on the drive sent to a device that is away: the host keeps a
+/// locked copy apart, offers it when the device comes online, and lets only
+/// that device read it. Answered, it is gone.
+#[tokio::test]
+async fn a_share_waits_on_the_host_for_a_device_that_is_away() {
+    use basalt_proto::msg::ShareHoldRequest;
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let tablet = fixture.paired_client().await;
+    let stranger = fixture.paired_client().await;
+    let body: Vec<u8> = (0..5_000_000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::write(fixture.vault_path("films/Holiday.mkv"), &body).unwrap();
+
+    let seen = laptop.presence().await.expect("presence");
+    let me = seen.you.clone();
+    let tablet_id = {
+        let mine = tablet.presence().await.expect("presence");
+        mine.you
+    };
+    assert_ne!(me, tablet_id);
+
+    let held = laptop
+        .share_hold(ShareHoldRequest {
+            id: "share1".into(),
+            to: tablet_id.clone(),
+            keep: false,
+            paths: vec!["films/Holiday.mkv".into()],
+            staged: Vec::new(),
+        })
+        .await
+        .expect("held for the tablet");
+    assert_eq!(held.files[0].size, body.len() as u64);
+    assert_eq!(
+        laptop.share_held().await.unwrap().held.len(),
+        1,
+        "the laptop sees what it sent"
+    );
+
+    // Nobody else reads it, not even the sender.
+    let out = || std::fs::File::create(fixture.dir.join("out")).unwrap();
+    assert!(
+        stranger
+            .download_held("share1", 0, body.len() as u64, "x", out(), None, None)
+            .await
+            .is_err()
+    );
+    assert!(
+        laptop
+            .download_held("share1", 0, body.len() as u64, "x", out(), None, None)
+            .await
+            .is_err()
+    );
+
+    // The tablet comes online: the offer comes down its watch.
+    let heard = Notices::default();
+    let _watch = tablet.watch_with(|_| {}, heard.record());
+    assert!(
+        heard
+            .wait_for(|n| n.starts_with("message share.offer")
+                && n.contains("Holiday.mkv")
+                && n.contains("\"held\":true"))
+            .await,
+        "the held share is offered when the tablet comes online"
+    );
+
+    let into = fixture.dir.join("received.mkv");
+    let got = tablet
+        .download_held(
+            "share1",
+            0,
+            body.len() as u64,
+            "Holiday.mkv",
+            std::fs::File::create(&into).unwrap(),
+            None,
+            None,
+        )
+        .await
+        .expect("the tablet takes it");
+    assert_eq!(got, body.len() as u64);
+    assert_eq!(std::fs::read(&into).unwrap(), body);
+
+    tablet.share_answer("share1", true).await.expect("answered");
+    assert!(
+        laptop.share_held().await.unwrap().held.is_empty(),
+        "answered and not kept: gone"
+    );
+}
+
+/// The host's rules for what it keeps for someone away: a profile's limit
+/// refuses a share that doesn't fit, and says so before it is sent; with
+/// secure mode off a share goes in plain into "Basalt shares" on the drive;
+/// "Clear share files" removes everything and tells the sender.
+#[tokio::test]
+async fn the_host_limits_keeps_in_plain_and_clears_what_it_holds() {
+    use basalt_proto::msg::ShareHoldRequest;
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let maya = laptop
+        .create_profile("Maya", "2468", 0, true)
+        .await
+        .expect("a profile");
+    let tablet = fixture.paired_client().await;
+    let tablet_id = tablet.presence().await.expect("presence").you;
+    std::fs::write(fixture.vault_path("big.bin"), vec![7u8; 3_000_000]).unwrap();
+    std::fs::write(fixture.vault_path("small.txt"), b"a small note").unwrap();
+    let hold = |id: &str, path: &str| ShareHoldRequest {
+        id: id.into(),
+        to: tablet_id.clone(),
+        keep: false,
+        paths: vec![path.into()],
+        staged: Vec::new(),
+    };
+
+    // A limit of 2 MB for Maya: the big file doesn't fit, and she is told.
+    fixture
+        .host
+        .set_share_limits(Some(true), None, Some((maya.id.clone(), Some(2_000_000))))
+        .unwrap();
+    let room = laptop
+        .share_held()
+        .await
+        .unwrap()
+        .room
+        .expect("the room said");
+    assert_eq!(room, 2_000_000, "all of the limit, before anything is kept");
+    let refused = laptop.share_hold(hold("big1", "big.bin")).await;
+    let why = refused.expect_err("over the limit").to_string();
+    assert!(why.contains("more than this profile may keep"), "{why}");
+    laptop
+        .share_hold(hold("small1", "small.txt"))
+        .await
+        .expect("a small one fits");
+    let view = fixture.host.sharing_view();
+    let mine = view.profiles.iter().find(|p| p.id == maya.id).unwrap();
+    assert_eq!(mine.used, 12);
+    assert_eq!((view.count, view.used, view.locked), (1, 12, 12));
+
+    // Secure mode off: in plain, in Maya's folder of "Basalt shares".
+    fixture
+        .host
+        .set_share_limits(Some(false), None, None)
+        .unwrap();
+    fixture.host.set_share_secure(false).unwrap();
+    assert_eq!(laptop.share_held().await.unwrap().secure, Some(false));
+    laptop
+        .share_hold(hold("big2", "big.bin"))
+        .await
+        .expect("no limit now");
+    let plain = fixture.vault_path("Basalt shares/Maya/big.bin");
+    assert_eq!(std::fs::read(&plain).unwrap(), vec![7u8; 3_000_000]);
+    let view = fixture.host.sharing_view();
+    assert_eq!(
+        (view.count, view.locked),
+        (2, 12),
+        "the plain one isn't locked away"
+    );
+
+    // The tablet still takes it the same way.
+    let into = fixture.dir.join("plain.bin");
+    let got = tablet
+        .download_held(
+            "big2",
+            0,
+            3_000_000,
+            "big.bin",
+            std::fs::File::create(&into).unwrap(),
+            None,
+            None,
+        )
+        .await
+        .expect("the tablet takes the plain one");
+    assert_eq!(got, 3_000_000);
+
+    // Cleared: all gone, the plain copy too, and the laptop is told.
+    let heard = Notices::default();
+    let _watch = laptop.watch_with(|_| {}, heard.record());
+    assert_eq!(fixture.host.clear_shares().unwrap(), 2);
+    assert!(!plain.exists(), "its copy on the drive goes with it");
+    assert_eq!(fixture.host.sharing_view().count, 0);
+    assert!(
+        heard
+            .wait_for(|n| n.starts_with("message share.answer") && n.contains("removed"))
+            .await,
+        "the sender hears the host removed what was waiting"
+    );
+}
+
+/// Removing a profile that keeps files on the host for someone away: they
+/// are moved onto the drive, into "Basalt shares/<name>", or deleted (D14).
+#[tokio::test]
+async fn a_removed_profiles_share_files_go_to_the_drive_or_away() {
+    use basalt_proto::msg::ShareHoldRequest;
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let tablet = fixture.paired_client().await;
+    let tablet_id = tablet.presence().await.expect("presence").you;
+    std::fs::write(fixture.vault_path("note.txt"), b"for the tablet").unwrap();
+    let hold = |id: &str| ShareHoldRequest {
+        id: id.into(),
+        to: tablet_id.clone(),
+        keep: false,
+        paths: vec!["note.txt".into()],
+        staged: Vec::new(),
+    };
+
+    // Maya's, locked: moved onto the drive as she goes.
+    let maya = laptop
+        .create_profile("Maya", "2468", 0, true)
+        .await
+        .expect("a profile");
+    laptop.share_hold(hold("m1")).await.expect("held");
+    assert!(
+        fixture
+            .host
+            .remove_profile_and_shares(&maya.id, true)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        std::fs::read(fixture.vault_path("Basalt shares/Maya/note.txt")).unwrap(),
+        b"for the tablet",
+        "unlocked onto the drive"
+    );
+    assert_eq!(
+        fixture.host.sharing_view().count,
+        0,
+        "and no longer on the host"
+    );
+
+    // Sam's: deleted with him.
+    let sam = laptop
+        .create_profile("Sam", "1357", 1, true)
+        .await
+        .expect("another profile");
+    laptop.share_hold(hold("s1")).await.expect("held");
+    assert_eq!(fixture.host.sharing_view().count, 1);
+    assert!(
+        fixture
+            .host
+            .remove_profile_and_shares(&sam.id, false)
+            .await
+            .unwrap()
+    );
+    assert_eq!(fixture.host.sharing_view().count, 0);
+    assert!(
+        !fixture.vault_path("Basalt shares/Sam").exists(),
+        "nothing of Sam's put on the drive"
+    );
+}
+
+/// A share kept after its answer, shared again with another device: a copy
+/// of its own, offered to that device, which takes it as any other (D12).
+#[tokio::test]
+async fn a_kept_share_is_shared_again_with_another_device() {
+    use basalt_proto::msg::{ShareHoldRequest, ShareManageRequest};
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let tablet = fixture.paired_client().await;
+    let phone = fixture.paired_client().await;
+    let tablet_id = tablet.presence().await.expect("presence").you;
+    let phone_id = phone.presence().await.expect("presence").you;
+    let body: Vec<u8> = (0..1_500_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(fixture.vault_path("clip.mp4"), &body).unwrap();
+
+    laptop
+        .share_hold(ShareHoldRequest {
+            id: "first".into(),
+            to: tablet_id,
+            keep: true,
+            paths: vec!["clip.mp4".into()],
+            staged: Vec::new(),
+        })
+        .await
+        .expect("held");
+    tablet.share_answer("first", true).await.expect("answered");
+    assert_eq!(
+        laptop.share_held().await.unwrap().held.len(),
+        1,
+        "kept after its answer"
+    );
+
+    // Only its sender shares it again.
+    let again = |by_id: &str| ShareManageRequest {
+        action: "again".into(),
+        id: "first".into(),
+        folder: String::new(),
+        to: phone_id.clone(),
+        again: by_id.into(),
+        keep: false,
+    };
+    assert!(tablet.share_manage(again("nope")).await.is_err());
+    laptop
+        .share_manage(again("second"))
+        .await
+        .expect("shared again");
+    let held = laptop.share_held().await.unwrap().held;
+    assert_eq!(held.len(), 2);
+    assert!(
+        held.iter()
+            .any(|h| h.id == "second" && h.to == phone_id && h.state == "waiting")
+    );
+
+    let heard = Notices::default();
+    let _watch = phone.watch_with(|_| {}, heard.record());
+    assert!(
+        heard
+            .wait_for(|n| n.starts_with("message share.offer") && n.contains("clip.mp4"))
+            .await,
+        "offered to the phone"
+    );
+    let into = fixture.dir.join("again.mp4");
+    phone
+        .download_held(
+            "second",
+            0,
+            body.len() as u64,
+            "clip.mp4",
+            std::fs::File::create(&into).unwrap(),
+            None,
+            None,
+        )
+        .await
+        .expect("the phone takes it");
+    assert_eq!(std::fs::read(&into).unwrap(), body);
+}
+
+/// A file only on the sending device, for a device that is away: uploaded
+/// to the host, kept there apart from the drive, and taken by the device
+/// when it is back. Nothing of it is ever on the drive.
+#[tokio::test]
+async fn a_file_on_this_device_waits_on_the_host_for_one_that_is_away() {
+    use basalt_proto::msg::{ShareHoldRequest, StagedFile};
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let tablet = fixture.paired_client().await;
+    let tablet_id = tablet.presence().await.expect("presence").you;
+    // Over one upload piece, so it takes more than one.
+    let body: Vec<u8> = (0..9_000_000u32).map(|i| (i % 241) as u8).collect();
+    let local = fixture.dir.join("on-the-laptop.mov");
+    std::fs::write(&local, &body).unwrap();
+
+    let stage = laptop
+        .stage_for_share(
+            std::fs::File::open(&local).unwrap(),
+            body.len() as u64,
+            "Beach.mov",
+            None,
+            None,
+        )
+        .await
+        .expect("uploaded");
+    // Said wrong, it isn't kept.
+    let wrong = laptop
+        .share_hold(ShareHoldRequest {
+            id: "local0".into(),
+            to: tablet_id.clone(),
+            keep: false,
+            paths: Vec::new(),
+            staged: vec![StagedFile {
+                stage: stage.clone(),
+                name: "Beach.mov".into(),
+                size: 5,
+            }],
+        })
+        .await;
+    assert!(wrong.is_err(), "a size that isn't what came");
+    let held = laptop
+        .share_hold(ShareHoldRequest {
+            id: "local1".into(),
+            to: tablet_id,
+            keep: false,
+            paths: Vec::new(),
+            staged: vec![StagedFile {
+                stage: stage.clone(),
+                name: "Beach.mov".into(),
+                size: body.len() as u64,
+            }],
+        })
+        .await
+        .expect("held from the upload");
+    assert_eq!(held.files[0].name, "Beach.mov");
+    assert_eq!(fixture.host.sharing_view().locked, body.len() as u64);
+
+    let into = fixture.dir.join("taken.mov");
+    tablet
+        .download_held(
+            "local1",
+            0,
+            body.len() as u64,
+            "Beach.mov",
+            std::fs::File::create(&into).unwrap(),
+            None,
+            None,
+        )
+        .await
+        .expect("the tablet takes it");
+    assert_eq!(std::fs::read(&into).unwrap(), body);
+    assert!(
+        walk(&fixture.vault_path(""))
+            .iter()
+            .all(|p| !p.ends_with("Beach.mov")),
+        "never on the drive"
+    );
+}
+
+/// Every file under `dir`.
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(at) = todo.pop() {
+        for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                todo.push(path);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// Two of a profile's devices playing together: the host keeps the group's
+/// state, every member hears every change, stamped a moment ahead, and one
+/// gone off the network leaves it (1.6.4).
+#[tokio::test]
+async fn a_profiles_devices_play_together_by_the_hosts_state() {
+    use basalt_proto::msg::{Listening, MusicGroupRequest, MusicNowRequest, NowReport};
+
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let maya = laptop
+        .create_profile("Maya", "2468", 0, true)
+        .await
+        .expect("a profile");
+    let phone = fixture.paired_client().await;
+    phone
+        .sign_in_profile(&maya.id, "2468", true)
+        .await
+        .expect("the phone signs in as Maya");
+    let laptop_id = laptop.presence().await.expect("presence").you;
+
+    // Both online, each listening down its watch.
+    let at_laptop = Notices::default();
+    let laptop_watch = laptop.watch_with(|_| {}, at_laptop.record());
+    let at_phone = Notices::default();
+    let _phone_watch = phone.watch_with(|_| {}, at_phone.record());
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while phone
+        .presence()
+        .await
+        .unwrap()
+        .devices
+        .iter()
+        .filter(|d| d.online)
+        .count()
+        < 2
+    {
+        assert!(std::time::Instant::now() < deadline, "both online");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // The laptop plays, paused at 40 s.
+    laptop
+        .music_now(MusicNowRequest {
+            report: Some(NowReport {
+                listening: Listening {
+                    queue: vec!["Music/a.mp3".into(), "Music/b.mp3".into()],
+                    index: 0,
+                    position: 40.0,
+                    ..Listening::default()
+                },
+                playing: false,
+                duration: 200.0,
+                clock: None,
+            }),
+            stopped: false,
+        })
+        .await
+        .unwrap();
+
+    // "Play on both" from the phone: a group of the two, playing both (F7).
+    let started = phone
+        .music_group(MusicGroupRequest {
+            action: "start".into(),
+            with: laptop_id.clone(),
+            playing: Some(true),
+            lead_ms: 800,
+            ..MusicGroupRequest::default()
+        })
+        .await
+        .expect("a group");
+    let group = started.group.expect("the phone is in it");
+    assert_eq!(group.members.len(), 2);
+    assert!(group.playing);
+    assert_eq!(group.listening.position, 40.0);
+    assert!(group.at >= started.now + 700, "stamped a moment ahead");
+    assert!(
+        at_laptop
+            .wait_for(|n| n.starts_with("message music.group") && n.contains("\"playing\":true"))
+            .await,
+        "the laptop hears it and plays too"
+    );
+
+    // The laptop pauses the group: the phone hears it.
+    let paused = laptop
+        .music_group(MusicGroupRequest {
+            action: "set".into(),
+            playing: Some(false),
+            lead_ms: 300,
+            ..MusicGroupRequest::default()
+        })
+        .await
+        .unwrap()
+        .group
+        .unwrap();
+    assert!(!paused.playing);
+    assert_eq!(paused.version, group.version + 1);
+    assert!(
+        at_phone
+            .wait_for(|n| n.starts_with("message music.group")
+                && n.contains(&format!("\"version\":{}", paused.version)))
+            .await,
+        "the phone hears the pause"
+    );
+    // Asked as of an older version: refused.
+    assert!(
+        phone
+            .music_group(MusicGroupRequest {
+                action: "set".into(),
+                expect: Some(group.version),
+                position: Some(0.0),
+                ..MusicGroupRequest::default()
+            })
+            .await
+            .is_err()
+    );
+
+    // The laptop's line drops for a moment (its Wi-Fi blinks): it stays in
+    // the group, and back on the line it is told the group as it is.
+    drop(laptop_watch);
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    let kept = phone
+        .music_group(MusicGroupRequest {
+            action: "view".into(),
+            ..MusicGroupRequest::default()
+        })
+        .await
+        .unwrap()
+        .group
+        .expect("still a group through a blink");
+    assert_eq!(kept.members.len(), 2);
+    let back_at_laptop = Notices::default();
+    let _laptop_back = laptop.watch_with(|_| {}, back_at_laptop.record());
+    assert!(
+        back_at_laptop
+            .wait_for(|n| n.starts_with("message music.group") && n.contains(&kept.id))
+            .await,
+        "back on the line, the laptop hears its group"
+    );
+
+    // The laptop leaves: the phone is on its own again.
+    laptop
+        .music_group(MusicGroupRequest {
+            action: "leave".into(),
+            ..MusicGroupRequest::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        at_phone
+            .wait_for(|n| n.starts_with("message music.group") && n.contains("\"group\":null"))
+            .await,
+        "the group ends with the laptop gone"
+    );
+    let seen = phone
+        .music_group(MusicGroupRequest {
+            action: "view".into(),
+            ..MusicGroupRequest::default()
+        })
+        .await
+        .unwrap();
+    assert!(seen.group.is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -1840,4 +2566,53 @@ fn claim_code(fixture: &Fixture, id: &str) -> String {
         .find(|p| p.id == id)
         .and_then(|p| p.claim_code)
         .expect("a profile waiting for its PIN has a code")
+}
+
+// ---------------------------------------------------------------------------
+// A drive file passed on to a device nearby
+// ---------------------------------------------------------------------------
+
+/// A device nearby isn't on the host: a file on the drive goes to it through
+/// a device that is, passed on as it comes.
+#[tokio::test]
+async fn a_drive_file_is_passed_on_to_a_device_nearby() {
+    use basalt_client::direct::{DRIVE_SOURCE, DirectServer, Relay};
+
+    let fixture = start_host().await;
+    let body: Vec<u8> = (0..9_000_000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::create_dir_all(fixture.vault_path("films")).unwrap();
+    std::fs::write(fixture.vault_path("films/trip.mkv"), &body).unwrap();
+    let laptop = fixture.paired_client().await;
+
+    let opener: basalt_client::direct::Opener =
+        Arc::new(|source: &str| std::fs::File::open(source));
+    let server = DirectServer::start(opener).await.unwrap();
+    let client = Arc::clone(&laptop);
+    let relay: Relay = Arc::new(move |path: String, from: u64| {
+        let client = Arc::clone(&client);
+        Box::pin(async move {
+            let (total, read) = client
+                .read_stream(&path, from)
+                .await
+                .map_err(std::io::Error::other)?;
+            Ok((
+                total,
+                Box::new(read) as Box<dyn tokio::io::AsyncRead + Send + Unpin>,
+            ))
+        })
+    });
+    server.set_relay(relay);
+    let token = server.offer("o1", vec![format!("{DRIVE_SOURCE}films/trip.mkv")]);
+    let mut endpoint = server.endpoint();
+    endpoint.addresses = vec!["127.0.0.1".into()];
+
+    // The device nearby: no host, only the offer.
+    let into = fixture.dir.join("taken.mkv");
+    let out = std::fs::File::create(&into).unwrap();
+    let bytes =
+        basalt_client::direct::fetch(&endpoint, "o1", &token, 0, "trip.mkv", out, None, None)
+            .await
+            .unwrap();
+    assert_eq!(bytes, body.len() as u64);
+    assert_eq!(std::fs::read(&into).unwrap(), body, "the same bytes");
 }

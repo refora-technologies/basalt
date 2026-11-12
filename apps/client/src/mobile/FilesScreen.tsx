@@ -9,6 +9,7 @@ import { cn, formatBytes } from '@/lib/utils'
 import { android } from '@/lib/android'
 import { isTv } from '@/lib/platform'
 import { useScrollMemory } from '@/lib/useScrollMemory'
+import { FolderSkeleton, useAfter } from '@/components/FolderSkeleton'
 import { useLongPress } from '@/lib/useLongPress'
 
 const ROW = 64
@@ -28,6 +29,7 @@ export function FilesScreen({
   emptyLabel,
   showPath,
   scrollKey,
+  loading = false,
 }: {
   model: AppModel
   entries: Entry[]
@@ -39,6 +41,8 @@ export function FilesScreen({
   showPath?: boolean
   /** What is on show, so the list keeps its place per folder; see `useScrollMemory`. */
   scrollKey: string
+  /** A folder asked for and not here yet: rows with nothing in them show, not the last folder. */
+  loading?: boolean
 }): React.JSX.Element {
   const { selected, setSelected, openEntry, mediaBase, cutPaths, stars } = model
 
@@ -87,17 +91,15 @@ export function FilesScreen({
     [toggle, onActions],
   )
 
+  const coming = useAfter(loading, 150)
   const scroll = useScrollMemory(scrollKey)
   const pull = usePullToRefresh(model.vault.refresh, scroll.handle)
 
+  if (coming || (entries.length === 0 && model.vault.loading)) return <FolderSkeleton view="phone" />
   if (entries.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center px-10 text-center">
-        {model.vault.loading ? (
-          <Loader2 size={20} className="animate-spin text-textFaint" />
-        ) : (
-          <span className="text-[14px] text-textFaint">{emptyLabel}</span>
-        )}
+        <span className="text-[14px] text-textFaint">{emptyLabel}</span>
       </div>
     )
   }

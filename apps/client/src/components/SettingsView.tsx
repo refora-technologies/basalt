@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
-  FolderOpen, HardDrive, Info, Laptop, Shield, Volume2, Wifi } from 'lucide-react'
+  FolderOpen, HardDrive, Info, Laptop, Radio, Send, Shield, Volume2, Wifi } from 'lucide-react'
+import type { Nearby } from '@/lib/useNearby'
+import { NearbySwitches } from '@/components/share/Nearby'
 import { Switch } from './Switch'
 import { setShowHidden, useShowHidden } from '@/lib/showHidden'
-import type { KeyKind, Status } from '@/lib/api'
+import { api, type KeyKind, type Status } from '@/lib/api'
+import type { Inbox } from '@/lib/useInbox'
+import type { Presence } from '@/lib/usePresence'
+import { useAlwaysReady } from '@/lib/alwaysReady'
+import { HeldList } from './share/Held'
+import { SyncLogPanel } from './music/SyncLog'
 import {
   audioDevices,
   savedAudioDevice,
@@ -66,7 +73,16 @@ export function SettingsView({
   space,
   onForget,
   onChangeDrive,
+  inbox,
+  presence,
+  nearby,
 }: {
+  /** Sharing between the host's devices, on a host that passes shares. */
+  inbox?: Inbox
+  /** Sharing with devices nearby, without a host. */
+  nearby?: Nearby
+  /** Who is online, for sharing again. */
+  presence?: Presence
   status: Status | null
   space: [number, number] | null
   /** Unpairs from this vault; pairing with another starts from there. */
@@ -100,9 +116,12 @@ export function SettingsView({
           <Action label="Forget this drive" danger onClick={onForget} />
         </Section>
 
-        <Section icon={Info} title="About" hint="Basalt, by Refora Technologies">
-          <About product="Basalt" />
-        </Section>
+        {inbox && <SharingSection inbox={inbox} presence={presence} />}
+        {nearby && (
+          <Section icon={Radio} title="Nearby" hint="Devices around you that aren’t on your host">
+            <NearbySwitches nearby={nearby} className="rounded-none px-4 py-2.5" />
+          </Section>
+        )}
 
         <Section icon={FolderOpen} title="Files" hint="What folders show">
           <Switch
@@ -124,6 +143,7 @@ export function SettingsView({
             <span className="text-textDim">Automatic</span> follows your computer’s
             sound setting.
           </Note>
+          <SyncLogPanel />
         </Section>
 
         <Section icon={Wifi} title="Connection" hint="Between this computer and the host">
@@ -166,6 +186,10 @@ export function SettingsView({
             This computer only connects to the host it paired with, and proves who
             it is with its own key, which never leaves it.
           </Note>
+        </Section>
+
+        <Section icon={Info} title="About" hint="Basalt, by Refora Technologies">
+          <About product="Basalt" />
         </Section>
       </div>
     </div>
@@ -267,5 +291,65 @@ function Action({
 function Note({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
     <div className="px-4 py-2.5 text-[11px] leading-relaxed text-textFaint">{children}</div>
+  )
+}
+
+/** Sharing: whether the home's other profiles ask first, and where files land. */
+function SharingSection({ inbox, presence }: { inbox: Inbox; presence?: Presence }): React.JSX.Element {
+  const [usual, setUsual] = useState('')
+  const [alwaysReady, setAlwaysReady] = useAlwaysReady()
+  useEffect(() => {
+    void api
+      .defaultReceivedFolder()
+      .then(setUsual)
+      .catch(() => {})
+  }, [])
+  const choose = async (): Promise<void> => {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const picked = await open({ directory: true, multiple: false, title: 'Where shared files go' })
+    if (typeof picked === 'string') inbox.setFolder(picked)
+  }
+  return (
+    <Section icon={Send} title="Sharing" hint="Between your devices and this home">
+      <Switch
+        label="Always ready to receive"
+        description="When you close Basalt, a small part keeps running in the tray, to receive files and tell you when something comes. Quit it from the tray icon."
+        checked={alwaysReady}
+        onChange={setAlwaysReady}
+        className="rounded-none px-4 py-2.5"
+      />
+      <Switch
+        label="Accept files from this home without asking"
+        description="From the other profiles on this host. Your own devices never ask."
+        checked={inbox.acceptFromHome}
+        onChange={inbox.setAcceptFromHome}
+        className="rounded-none px-4 py-2.5"
+      />
+      <Switch
+        label="Remove from the host once answered"
+        description="When someone accepts or declines what you sent through the host. You can change it for one send."
+        checked={inbox.removeOnAnswer}
+        onChange={inbox.setRemoveOnAnswer}
+        className="rounded-none px-4 py-2.5"
+      />
+      <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+        <span className="min-w-0">
+          <span className="block text-[13px] text-textDim">Received files go to</span>
+          <span className="block truncate font-mono text-[12px] text-text">{inbox.folder || usual || '…'}</span>
+        </span>
+        <span className="flex shrink-0 gap-2">
+          {inbox.folder && (
+            <button onClick={() => inbox.setFolder('')} className="rounded-md px-2.5 py-1.5 text-[12px] text-textDim hover:bg-white/[0.05] hover:text-text">
+              Usual folder
+            </button>
+          )}
+          <button onClick={() => void choose()} className="rounded-md border border-white/10 px-2.5 py-1.5 text-[12px] text-text hover:bg-white/[0.05]">
+            Change…
+          </button>
+        </span>
+      </div>
+      <div className="px-4 pb-1 pt-2 text-[13px] text-textDim">Shared through host</div>
+      <HeldList inbox={inbox} presence={presence} />
+    </Section>
   )
 }

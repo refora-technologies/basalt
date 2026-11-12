@@ -30,6 +30,16 @@ What the Basalt interface may ask of Android directly. Opening files and creatin
 - `allow-set-brightness`
 - `allow-set-volume`
 - `allow-notify-update`
+- `allow-notify-share`
+- `allow-nearby-wifi-state`
+- `allow-request-nearby-wifi`
+- `allow-nearby-host`
+- `allow-nearby-host-stop`
+- `allow-nearby-scan`
+- `allow-nearby-join`
+- `allow-nearby-leave`
+- `allow-nearby-wifi-turn-on`
+- `allow-cancel-share`
 - `allow-take-action`
 - `allow-app-version`
 - `allow-share-text`
@@ -109,6 +119,32 @@ Enables the can_install_apks command without any pre-configured scope.
 <td>
 
 Denies the can_install_apks command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-cancel-share`
+
+</td>
+<td>
+
+Enables the cancel_share command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-cancel-share`
+
+</td>
+<td>
+
+Denies the cancel_share command without any pre-configured scope.
 
 </td>
 </tr>
@@ -766,6 +802,214 @@ Denies the mpv_subtitle_font command without any pre-configured scope.
 <tr>
 <td>
 
+`basalt-android:allow-nearby-host`
+
+</td>
+<td>
+
+Enables the nearby_host command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-nearby-host`
+
+</td>
+<td>
+
+Denies the nearby_host command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-nearby-host-stop`
+
+</td>
+<td>
+
+Enables the nearby_host_stop command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-nearby-host-stop`
+
+</td>
+<td>
+
+Denies the nearby_host_stop command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-nearby-join`
+
+</td>
+<td>
+
+Enables the nearby_join command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-nearby-join`
+
+</td>
+<td>
+
+Denies the nearby_join command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-nearby-leave`
+
+</td>
+<td>
+
+Enables the nearby_leave command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-nearby-leave`
+
+</td>
+<td>
+
+Denies the nearby_leave command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-nearby-scan`
+
+</td>
+<td>
+
+Enables the nearby_scan command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-nearby-scan`
+
+</td>
+<td>
+
+Denies the nearby_scan command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-nearby-wifi-state`
+
+</td>
+<td>
+
+Enables the nearby_wifi_state command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-nearby-wifi-state`
+
+</td>
+<td>
+
+Denies the nearby_wifi_state command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-nearby-wifi-turn-on`
+
+</td>
+<td>
+
+Enables the nearby_wifi_turn_on command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-nearby-wifi-turn-on`
+
+</td>
+<td>
+
+Denies the nearby_wifi_turn_on command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-notify-share`
+
+</td>
+<td>
+
+Enables the notify_share command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-notify-share`
+
+</td>
+<td>
+
+Denies the notify_share command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `basalt-android:allow-notify-update`
 
 </td>
@@ -1227,6 +1471,32 @@ Enables the request_local_network command without any pre-configured scope.
 <td>
 
 Denies the request_local_network command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-request-nearby-wifi`
+
+</td>
+<td>
+
+Enables the request_nearby_wifi command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-request-nearby-wifi`
+
+</td>
+<td>
+
+Denies the request_nearby_wifi command without any pre-configured scope.
 
 </td>
 </tr>

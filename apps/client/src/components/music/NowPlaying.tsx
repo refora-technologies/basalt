@@ -25,11 +25,13 @@ import { useBack } from '@/mobile/useBack'
 import { type Song, formatDuration } from '@/lib/music'
 import { type MusicPlayerApi, useMusicClock, useMusicPlayer } from '@/lib/musicPlayer'
 import type { NowSession } from '@/lib/api'
-import { livePosition, songOf as remoteSong } from '@/lib/musicNow'
+import { shownPosition, songOf as remoteSong, type AskedSeek } from '@/lib/musicNow'
 import { upNext } from '@/lib/queue'
 import { cn } from '@/lib/utils'
+import { isMobileShell } from '@/lib/platform'
 
 import { Cover } from './Cover'
+import { GroupPanel } from './GroupPanel'
 import type { MusicLayout } from './MusicSection'
 
 /** What the bar and the full player need to know about the songs. */
@@ -111,6 +113,7 @@ function BarHere({
 }: NowPlayingProps & { path: string | null }): React.JSX.Element | null {
   const player = useMusicPlayer()
   const clock = useMusicClock()
+  const [grouping, setGrouping] = useState(false)
   if (!player || !path) return null
   const song = songOf(path)
   const isLiked = liked.has(song.path)
@@ -196,9 +199,9 @@ function BarHere({
         {player.linked.length > 0 && (
           <button
             type="button"
-            onClick={player.unlink}
+            onClick={() => setGrouping(true)}
             // Short, as the bar's corner is narrow; the whole of it in the tip.
-            title={`In sync with ${syncedWith(player)}. Click to stop syncing.`}
+            title={`In sync with ${syncedWith(player)}: see who, or stop syncing`}
             className="mr-1 flex shrink-0 items-center gap-1.5 rounded-full bg-basalt/[0.18] px-2.5 py-1 text-[11.5px] text-text transition-colors hover:bg-basalt/[0.28]"
           >
             <Link2 size={12} />
@@ -211,12 +214,15 @@ function BarHere({
         <IconButton label="Queue" onClick={() => player.setExpanded(true)}>
           <ListMusic size={17} />
         </IconButton>
-        {layout === 'wide' && <Volume />}
+        {/* Phones and tablets, any way up: their own buttons set the volume,
+            as in the film player; never a slider of ours (F15, D28). */}
+        {layout === 'wide' && !isMobileShell() && <Volume />}
         {/* Put away: the music stops, and Continue listening keeps where it was. */}
         <IconButton label="Close the player" onClick={player.stop}>
           <X size={17} />
         </IconButton>
       </div>
+      <GroupPanel player={player} title={song.title} open={grouping} onClose={() => setGrouping(false)} />
     </div>
   )
 }
@@ -289,6 +295,7 @@ function FullPlayer({
   coming: string[]
 }): React.JSX.Element | null {
   const player = useMusicPlayer()
+  const [grouping, setGrouping] = useState(false)
   // Pulled down by its top or its cover, as a phone's music players are.
   const drag = useDragControls()
   const touch = layout !== 'tv' && typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches
@@ -344,12 +351,12 @@ function FullPlayer({
           {player.linked.length > 0 ? (
             <button
               type="button"
-              onClick={player.unlink}
+              onClick={() => setGrouping(true)}
               className="mx-auto mt-1 flex max-w-full items-center gap-1.5 rounded-full bg-basalt/[0.18] px-2.5 py-0.5 text-[11px] text-text transition-colors hover:bg-basalt/[0.28]"
             >
               <Link2 size={11} />
               <span className="truncate">In sync with {syncedWith(player)}</span>
-              <span className="text-textDim">· stop syncing</span>
+              <ChevronDown size={11} className="shrink-0 text-textDim" />
             </button>
           ) : alsoOn && (
             <button
@@ -427,6 +434,7 @@ function FullPlayer({
           </div>
         </div>
       </div>
+      <GroupPanel player={player} title={song.title} open={grouping} onClose={() => setGrouping(false)} phone={layout === 'phone'} />
     </motion.div>
   )
 }
@@ -468,16 +476,22 @@ function RemoteBar({
   const playing = session.report.playing
   const now = useTicking(500, playing)
   const [choices, setChoices] = useState(false)
+  // A seek asked of it from here, shown at once (F12b): see shownPosition.
+  const [asked, setAsked] = useState<AskedSeek | null>(null)
   const path = remoteSong(session)
   if (!player || !path) return null
   const song = songOf(path)
-  const at = livePosition(session, player.hostOffset, now)
+  const at = shownPosition(session, player.hostOffset, now, asked)
   const total = session.report.duration
   const fraction = total > 0 ? Math.min(1, at / total) : 0
+  // Devices playing together show as one: "Laptop +2" (D27).
+  const together = session.group ? player.others.filter((s) => s.group === session.group).length : 1
+  const named = together > 1 ? `${session.name} +${together - 1}` : session.name
+  const join = together > 1 ? 'Join' : 'Play on both'
   const where = (
     <span className="flex min-w-0 items-center gap-1 text-basalt">
       <DeviceIcon form={session.form} size={12} />
-      <span className="truncate">Playing on {session.name}</span>
+      <span className="truncate">Playing on {named}</span>
     </span>
   )
 
@@ -518,7 +532,7 @@ function RemoteBar({
                 onClick={() => player.playBoth(session)}
                 className="my-2 flex-1 rounded-full border border-white/[0.16] py-2 text-[13px] text-text"
               >
-                Play on both
+                {join}
               </button>
             </motion.div>
           )}
@@ -566,7 +580,10 @@ function RemoteBar({
             aria-label="Move it there"
             onClick={(e) => {
               const box = e.currentTarget.getBoundingClientRect()
-              if (total > 0) player.steer(session, 'seek', ((e.clientX - box.left) / box.width) * total)
+              if (total <= 0) return
+              const to = ((e.clientX - box.left) / box.width) * total
+              setAsked({ to, since: Date.now(), said: session.report.clock ?? session.at })
+              player.steer(session, 'seek', to)
             }}
             className="relative h-4 w-full"
           >
@@ -583,7 +600,7 @@ function RemoteBar({
           onClick={() => player.playBoth(session)}
           className="rounded-full px-3 py-1.5 text-[12px] text-textDim transition-colors hover:bg-white/[0.06] hover:text-text"
         >
-          Play on both
+          {join}
         </button>
         <button
           type="button"
@@ -654,7 +671,53 @@ function Scrubber({ compact }: { compact?: boolean }): React.JSX.Element {
   const player = useMusicPlayer()
   const clock = useMusicClock()
   const [held, setHeld] = useState<number | null>(null)
-  const at = held ?? clock.position
+  const heldRef = useRef(held)
+  heldRef.current = held
+  /**
+   * A seek asked for and not there yet: in a group it lands a moment ahead,
+   * on another device over the network. Shown where it was let go, moving on
+   * as the song would, until the song gets there; never the old place first.
+   */
+  const [landing, setLanding] = useState<{ to: number; since: number } | null>(null)
+  /** The place let go of: moved there, and the line follows the song again. */
+  const commit = (): void => {
+    const to = heldRef.current
+    heldRef.current = null
+    setHeld(null)
+    if (to !== null) {
+      setLanding({ to, since: Date.now() })
+      player?.seek(to)
+    }
+  }
+  const commitRef = useRef(commit)
+  commitRef.current = commit
+  // Let go anywhere: a mouse released off the line, or a touch the system
+  // took back as a scroll (pointercancel) never reached the line itself, and
+  // left the timeline frozen at the held place (F12).
+  const holding = held !== null
+  useEffect(() => {
+    if (!holding) return undefined
+    const letGo = (): void => commitRef.current()
+    window.addEventListener('pointerup', letGo)
+    window.addEventListener('pointercancel', letGo)
+    return () => {
+      window.removeEventListener('pointerup', letGo)
+      window.removeEventListener('pointercancel', letGo)
+    }
+  }, [holding])
+  const playing = player ? !player.paused : false
+  const landingAt = landing ? landing.to + (playing ? (Date.now() - landing.since) / 1000 : 0) : null
+  // There (within a second of it), or given up on after a while: the song's own clock again.
+  useEffect(() => {
+    if (!landing) return undefined
+    if (landingAt !== null && Math.abs(clock.position - landingAt) < 1) {
+      setLanding(null)
+      return undefined
+    }
+    const giveUp = setTimeout(() => setLanding(null), Math.max(0, LANDING_AT_MOST_MS - (Date.now() - landing.since)))
+    return () => clearTimeout(giveUp)
+  }, [landing, landingAt, clock.position])
+  const at = held ?? landingAt ?? clock.position
   const total = clock.duration
   // Not known until the song has opened: a light along the line meanwhile.
   if (total <= 0) {
@@ -684,14 +747,10 @@ function Scrubber({ compact }: { compact?: boolean }): React.JSX.Element {
         value={Math.min(at, total || 1)}
         aria-label="Position in the song"
         onChange={(e) => setHeld(Number(e.target.value))}
-        onPointerUp={() => {
-          if (held !== null) player?.seek(held)
-          setHeld(null)
-        }}
-        onKeyUp={() => {
-          if (held !== null) player?.seek(held)
-          setHeld(null)
-        }}
+        onPointerUp={commit}
+        onPointerCancel={commit}
+        onKeyUp={commit}
+        onBlur={commit}
         className="music-range w-full"
         style={{ ['--fill' as string]: `${total > 0 ? (at / total) * 100 : 0}%` }}
       />
@@ -706,6 +765,9 @@ function Scrubber({ compact }: { compact?: boolean }): React.JSX.Element {
     </div>
   )
 }
+
+/** How long the line waits for a seek to land before it follows the song's clock again. */
+const LANDING_AT_MOST_MS = 3_000
 
 /** A time, or a dash while it is not known yet. */
 function Time({ value, minus }: { value: number | null; minus?: boolean }): React.JSX.Element {

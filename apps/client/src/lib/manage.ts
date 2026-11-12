@@ -179,6 +179,23 @@ export interface ManagedHostStatus {
   platform: 'windows' | 'linux' | 'macos' | 'other'
   /** Running with no screen: a service, or in Docker. Absent from older hosts. */
   headless?: boolean
+  /** Files kept for someone away, and the rules for them. Absent from hosts before 1.6.4. */
+  sharing?: ManagedSharing
+}
+
+/** Sharing between devices on the host: sizes only, never names. Mirrors `basalt_host::ui::SharingView`. */
+export interface ManagedSharing {
+  available: boolean
+  secure: boolean
+  limitsOn: boolean
+  newProfileLimit: number
+  profiles: Array<{ id: string; name: string; color: number; used: number; limit: number | null }>
+  used: number
+  /** Of `used`, in the host's own folder; the rest is in "Basalt shares" on the drive. */
+  locked: number
+  count: number
+  from: number
+  sameDisk: boolean
 }
 
 /** The host after an action: the window's views, and which device is this one. */
@@ -247,7 +264,7 @@ export type ManageAction =
   | { do: 'measureConversion' }
   | { do: 'setSections'; sections: LibrarySections }
   | { do: 'addProfile'; name: string; color: number }
-  | { do: 'removeProfile'; id: string }
+  | { do: 'removeProfile'; id: string; shares?: 'move' | 'delete' }
   | { do: 'resetProfilePin'; id: string }
   | { do: 'setRequireProfile'; require: boolean }
   | { do: 'setOwnerAddsProfiles'; ownerOnly: boolean }
@@ -262,6 +279,9 @@ export type ManageAction =
   | { do: 'setAutomaticUpdates'; enabled: boolean }
   | { do: 'approveProfileLink'; id: string }
   | { do: 'denyProfileLink'; id: string }
+  | { do: 'setShareSecure'; secure: boolean }
+  | { do: 'setShareLimits'; on?: boolean; newProfile?: number; profile?: string; limit?: number | null }
+  | { do: 'clearShares' }
 
 /** The folders in one place on the host's computer, to choose one to share. */
 export interface HostFolders {

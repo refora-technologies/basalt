@@ -5,9 +5,10 @@
 //! not work: WebKitGTK draws into the window itself, so mpv's window would
 //! cover the page, controls and all, and on Wayland mpv cannot be handed a
 //! window at all. So the app draws the picture itself: mpv's render API
-//! (`vo=libmpv`) in a GL context of its own, and each frame painted onto the
-//! window just before GTK draws the page over it (see `attach`). The page is
-//! unchanged: transparent where the picture is, as on Windows.
+//! (`vo=libmpv`) in a GL context of its own, on a thread of its own, and each
+//! frame painted onto the window just before GTK draws the page over it (see
+//! `attach`). The page is unchanged: transparent where the picture is, as on
+//! Windows.
 //!
 //! libmpv is opened when the player starts, `libmpv.so.2` then `.so.1`, so
 //! the packages depend on the system's mpv library rather than carrying one.
@@ -18,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_double, c_int, c_void, CStr, CString};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use gtk::glib;
@@ -408,8 +409,8 @@ pub fn linux_mpv_command(args: Vec<String>) -> Result<(), String> {
     let player = player()?;
     // A film after the player last closed: the picture's output again
     // first, or mpv opens the film with none and drops its video.
-    if args.first().is_some_and(|a| a == "loadfile") && RENDER.with(|r| r.get()).is_null() {
-        on_gtk(start_rendering);
+    if args.first().is_some_and(|a| a == "loadfile") && !RENDERING.load(Ordering::SeqCst) {
+        start_rendering();
     }
     let args = for_this_mpv(args, player.loadfile_index);
     let owned = args.iter().map(|a| c(a)).collect::<Result<Vec<_>, _>>()?;
@@ -422,7 +423,7 @@ pub fn linux_mpv_command(args: Vec<String>) -> Result<(), String> {
     }
     // The page stops mpv as the player closes.
     if args.first().is_some_and(|a| a == "stop") {
-        on_gtk(stop_rendering);
+        stop_rendering();
     }
     Ok(())
 }
@@ -507,19 +508,76 @@ pub fn linux_mpv_destroy() -> Result<(), String> {
     Ok(())
 }
 
-/// Runs `f` on GTK's thread, which owns the drawing, and waits for it.
-fn on_gtk(f: fn()) {
-    let context = glib::MainContext::default();
-    if context.is_owner() {
-        f();
-        return;
-    }
-    let (done, wait) = std::sync::mpsc::channel();
-    context.invoke(move || {
-        f();
-        let _ = done.send(());
+// ---------------------------------------------------------------------------
+// The render thread
+// ---------------------------------------------------------------------------
+
+/// What the render thread is asked to do.
+enum Job {
+    /// Make mpv's render context if there is none, then say so.
+    Start(std::sync::mpsc::Sender<()>),
+    /// Let go of it and the GL behind it, then say so.
+    Stop(std::sync::mpsc::Sender<()>),
+    /// mpv has something for the thread that draws (a new frame, say).
+    Update,
+    /// Draw the frame again, at the size the window wants now.
+    Again,
+}
+
+/// The way to the render thread, started the first time a film plays.
+///
+/// mpv's GL context lives there and only there. It used to be made current
+/// on GTK's thread for each frame and let go again; GTK remembers which of
+/// its own GL contexts it made current there and doesn't make it current
+/// again, and WebKit 2.50 (Ubuntu 22.04, the AppImage) draws the window with
+/// GL on that thread. So once mpv's had been made current, the window drew
+/// into nothing and froze while the page went on underneath: clicks worked,
+/// nothing showed (U1, F16). On its own thread, mpv's context is never in the
+/// way of GTK's.
+static JOBS: OnceLock<Mutex<std::sync::mpsc::Sender<Job>>> = OnceLock::new();
+/// An `Update` already on its way: mpv signals faster than frames are drawn.
+static UPDATE_QUEUED: AtomicBool = AtomicBool::new(false);
+/// Whether mpv's render context is there.
+static RENDERING: AtomicBool = AtomicBool::new(false);
+/// The size, in pixels, the window wants frames at: width above, height below.
+static WANTED: AtomicU64 = AtomicU64::new(0);
+/// The latest frame, read back on the render thread for GTK's to paint.
+static SHOT: Mutex<Option<Shot>> = Mutex::new(None);
+
+/// A frame read back from mpv's framebuffer, as cairo keeps an RGB image.
+struct Shot {
+    w: c_int,
+    h: c_int,
+    stride: i32,
+    pixels: Vec<u8>,
+    /// Not yet taken in by GTK's thread.
+    fresh: bool,
+}
+
+fn send(job: Job) {
+    let jobs = JOBS.get_or_init(|| {
+        let (jobs, work) = std::sync::mpsc::channel();
+        let started = std::thread::Builder::new()
+            .name("basalt-render".into())
+            .spawn(move || render_thread(&work));
+        if let Err(e) = started {
+            eprintln!("linux player: no thread to draw on: {e}");
+        }
+        Mutex::new(jobs)
     });
+    let _ = jobs.lock().expect("jobs lock").send(job);
+}
+
+/// Asks for `job` and waits for it, five seconds at most.
+fn send_and_wait(job: fn(std::sync::mpsc::Sender<()>) -> Job) {
+    let (done, wait) = std::sync::mpsc::channel();
+    send(job(done));
     let _ = wait.recv_timeout(std::time::Duration::from_secs(5));
+}
+
+/// Makes mpv's render context, once mpv has started.
+fn start_rendering() {
+    send_and_wait(Job::Start);
 }
 
 /// Lets go of everything drawing took once the player closes: mpv's render
@@ -527,26 +585,226 @@ fn on_gtk(f: fn()) {
 /// with them, which the system would otherwise not get back. A film after
 /// that makes them again (see `linux_mpv_command`).
 fn stop_rendering() {
-    let Some(player) = PLAYER.get() else { return };
-    let render = RENDER.with(|r| r.replace(std::ptr::null_mut()));
-    if !render.is_null() {
-        let current = OFFSCREEN.with(|o| o.borrow().as_ref().is_some_and(Offscreen::make_current));
-        if current {
-            // SAFETY: the render context made in `start_rendering`, freed
-            // once, on this thread, with its GL context current; mpv takes
-            // down its video output first.
-            unsafe { (player.lib.render_free)(render) };
+    send_and_wait(Job::Stop);
+}
+
+/// The frame drawn again, at the window's size now.
+fn render_again() {
+    send(Job::Again);
+}
+
+/// Asks GTK's thread to paint the window again.
+fn repaint() {
+    glib::MainContext::default().invoke(|| {
+        COLUMN.with(|column| {
+            if let Some(column) = column.borrow().as_ref() {
+                use gtk::prelude::*;
+                column.queue_draw();
+            }
+        });
+    });
+}
+
+fn render_thread(work: &std::sync::mpsc::Receiver<Job>) {
+    let mut renderer = Renderer {
+        offscreen: None,
+        render: std::ptr::null_mut(),
+        spare: Vec::new(),
+    };
+    while let Ok(job) = work.recv() {
+        match job {
+            Job::Start(done) => {
+                renderer.start();
+                let _ = done.send(());
+            }
+            Job::Stop(done) => {
+                renderer.stop();
+                let _ = done.send(());
+            }
+            Job::Update => {
+                UPDATE_QUEUED.store(false, Ordering::SeqCst);
+                renderer.update(false);
+            }
+            Job::Again => renderer.update(true),
         }
     }
-    TARGET.with(|t| t.set((0, 0, 0, 0)));
-    FRAME.with(|f| f.borrow_mut().take());
-    OFFSCREEN.with(|o| o.borrow_mut().take());
-    extern "C" {
-        fn malloc_trim(pad: usize) -> c_int;
+}
+
+/// What the render thread holds: mpv's GL context, current on it for good,
+/// and mpv's render context.
+struct Renderer {
+    offscreen: Option<Offscreen>,
+    render: Handle,
+    /// The last frame's buffer, handed back by GTK's side, to read the next into.
+    spare: Vec<u8>,
+}
+
+impl Renderer {
+    fn start(&mut self) {
+        let Some(player) = PLAYER.get() else { return };
+        if !self.render.is_null() {
+            return;
+        }
+        if self.offscreen.is_none() {
+            match Offscreen::new() {
+                Ok(offscreen) => self.offscreen = Some(offscreen),
+                Err(e) => {
+                    eprintln!("linux player: no GL here: {e}");
+                    return;
+                }
+            }
+        }
+        if !self.offscreen.as_ref().is_some_and(Offscreen::make_current) {
+            return;
+        }
+        let mut init = OpenGlInitParams {
+            get_proc_address: gl_proc,
+            get_proc_address_ctx: std::ptr::null_mut(),
+            extra_exts: std::ptr::null(),
+        };
+        let api = c"opengl";
+        let mut params = [
+            RenderParam {
+                kind: RENDER_PARAM_API_TYPE,
+                data: api.as_ptr() as *mut c_void,
+            },
+            RenderParam {
+                kind: RENDER_PARAM_OPENGL_INIT_PARAMS,
+                data: (&raw mut init).cast(),
+            },
+            RenderParam {
+                kind: RENDER_PARAM_INVALID,
+                data: std::ptr::null_mut(),
+            },
+        ];
+        let mut render: Handle = std::ptr::null_mut();
+        // SAFETY: mpv's GL context is current on this thread, and the
+        // parameters live through the call.
+        let code =
+            unsafe { (player.lib.render_create)(&mut render, player.handle, params.as_mut_ptr()) };
+        if code < 0 || render.is_null() {
+            eprintln!("mpv could not draw here: {}", player.lib.error(code));
+            return;
+        }
+        self.render = render;
+        RENDERING.store(true, Ordering::SeqCst);
+        eprintln!("linux player: drawing with GL");
+        // SAFETY: a context just made; the callback only queues work.
+        unsafe {
+            (player.lib.render_set_update_callback)(render, Some(on_update), std::ptr::null_mut())
+        };
     }
-    // SAFETY: glibc's own call; it only hands free memory back.
-    unsafe { malloc_trim(0) };
-    eprintln!("linux player: drawing let go");
+
+    fn stop(&mut self) {
+        let Some(player) = PLAYER.get() else { return };
+        if !self.render.is_null() {
+            if self.offscreen.as_ref().is_some_and(Offscreen::make_current) {
+                // SAFETY: the render context made in `start`, freed once, on
+                // this thread, with its GL context current; mpv takes down
+                // its video output first.
+                unsafe { (player.lib.render_free)(self.render) };
+            }
+            self.render = std::ptr::null_mut();
+            RENDERING.store(false, Ordering::SeqCst);
+        }
+        TARGET.with(|t| t.set((0, 0, 0, 0)));
+        self.offscreen = None;
+        self.spare = Vec::new();
+        *SHOT.lock().expect("shot lock") = None;
+        glib::MainContext::default().invoke(|| {
+            FRAME.with(|f| f.borrow_mut().take());
+        });
+        extern "C" {
+            fn malloc_trim(pad: usize) -> c_int;
+        }
+        // SAFETY: glibc's own call; it only hands free memory back.
+        unsafe { malloc_trim(0) };
+        eprintln!("linux player: drawing let go");
+    }
+
+    /// What mpv has left for the thread that draws done, as mpv asks after
+    /// each of its signals (a new picture size, a new format); left undone,
+    /// mpv gave up on the frames waiting on it, and from mpv 0.41 the picture
+    /// often stayed black under the subtitles. Then, with a new frame or
+    /// `again`, the frame drawn and handed to GTK's thread. A new frame is
+    /// drawn as soon as mpv has it, not as the window draws: drawn only as
+    /// the window drew, mpv took its frames for late and dropped a fifth of
+    /// them where windows are slow to show.
+    fn update(&mut self, again: bool) {
+        let Some(player) = PLAYER.get() else { return };
+        if self.render.is_null() {
+            return;
+        }
+        // SAFETY: a live render context, on the thread it was made on, with
+        // its GL context current.
+        let flags = unsafe { (player.lib.render_update)(self.render) };
+        if !PICTURE.load(Ordering::SeqCst) || (flags & UPDATE_FRAME == 0 && !again) {
+            return;
+        }
+        let wanted = WANTED.load(Ordering::SeqCst);
+        let (w, h) = ((wanted >> 32) as c_int, (wanted & 0xFFFF_FFFF) as c_int);
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let gl = gl();
+        let Some((fbo, _)) = gl.target(w, h) else {
+            return;
+        };
+        let mut target = OpenGlFbo {
+            fbo: fbo as c_int,
+            w,
+            h,
+            internal_format: 0,
+        };
+        // As GL keeps it, bottom row first; read back from the top, it comes
+        // out the right way up, as cairo keeps an image.
+        let mut flip: c_int = 0;
+        // Not waiting for the frame's moment to come: mpv paces itself.
+        let mut wait: c_int = 0;
+        let mut params = [
+            RenderParam {
+                kind: RENDER_PARAM_OPENGL_FBO,
+                data: (&raw mut target).cast(),
+            },
+            RenderParam {
+                kind: RENDER_PARAM_FLIP_Y,
+                data: (&raw mut flip).cast(),
+            },
+            RenderParam {
+                kind: RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+                data: (&raw mut wait).cast(),
+            },
+            RenderParam {
+                kind: RENDER_PARAM_INVALID,
+                data: std::ptr::null_mut(),
+            },
+        ];
+        // SAFETY: mpv's GL context is current, and the parameters live
+        // through the call.
+        unsafe { (player.lib.render_render)(self.render, params.as_mut_ptr()) };
+        let Ok(stride) = gtk::cairo::Format::Rgb24.stride_for_width(w as u32) else {
+            return;
+        };
+        // The buffer GTK's side last gave back: a new one for each frame was
+        // a few megabytes made and thrown away 24 times a second.
+        let mut pixels = std::mem::take(&mut self.spare);
+        pixels.resize((stride * h) as usize, 0);
+        gl.read(fbo, w, h, stride, &mut pixels);
+        // SAFETY: the render context just drawn with, on this thread: tells
+        // mpv the frame is out, for its timing.
+        unsafe { (player.lib.render_report_swap)(self.render) };
+        let before = SHOT.lock().expect("shot lock").replace(Shot {
+            w,
+            h,
+            stride,
+            pixels,
+            fresh: true,
+        });
+        if let Some(before) = before {
+            self.spare = before.pixels;
+        }
+        repaint();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -588,14 +846,10 @@ thread_local! {
     /// The column Tauri put the page in. The picture is painted onto it,
     /// before GTK draws the page over it.
     static COLUMN: std::cell::RefCell<Option<gtk::Widget>> = const { std::cell::RefCell::new(None) };
-    /// mpv's own GL context, out of sight of GTK and WebKit.
-    static OFFSCREEN: std::cell::RefCell<Option<Offscreen>> = const { std::cell::RefCell::new(None) };
-    /// mpv's render context, made on the GTK thread with that context
-    /// current, and let go of when the player closes.
-    static RENDER: std::cell::Cell<Handle> = const { std::cell::Cell::new(std::ptr::null_mut()) };
-    /// The image each frame is read back into, kept between frames.
+    /// The latest frame as GTK paints it, kept between frames (GTK's thread).
     static FRAME: std::cell::RefCell<Option<gtk::cairo::ImageSurface>> = const { std::cell::RefCell::new(None) };
-    /// What mpv draws into: a framebuffer, its texture, and their size.
+    /// What mpv draws into, on the render thread: a framebuffer, its
+    /// texture, and their size.
     static TARGET: std::cell::Cell<(u32, u32, c_int, c_int)> = const { std::cell::Cell::new((0, 0, 0, 0)) };
 }
 
@@ -613,8 +867,19 @@ thread_local! {
 pub fn attach<R: Runtime>(window: &tauri::WebviewWindow<R>) {
     let _ = window.with_webview(|webview| {
         use gtk::prelude::*;
+        use webkit2gtk::WebViewExt;
         let page = webview.inner();
-        compose(&page, false);
+        // On WebKit before 2.52 its own way is left as it is, for good:
+        // switched as the window was first drawn, the window sometimes stayed
+        // empty from the start (Ubuntu 22.04), as a switch at a wrong moment
+        // stopped it drawing before (see `redraw`). Its own way is composited
+        // there, which films need anyway.
+        if composite_for_films() {
+            COMPOSITED.with(|c| c.set(true));
+        } else {
+            compose(&page, false);
+        }
+        page.connect_web_process_terminated(come_back);
         page.connect_scroll_event(wheel);
         PAGE.with(|slot| *slot.borrow_mut() = Some(page.clone()));
         let Some(column) = page.parent() else {
@@ -678,65 +943,45 @@ fn wheel(page: &webkit2gtk::WebView, event: &gtk::gdk::EventScroll) -> glib::Pro
     glib::Propagation::Stop
 }
 
-/// Makes mpv's render context, once mpv has started.
-fn start_rendering() {
-    let Some(player) = PLAYER.get() else { return };
-    if !RENDER.with(|r| r.get()).is_null() {
-        return;
+/// WebKit's page process ended: the window would stay empty for good.
+///
+/// The WebKit inside the AppImage (2.50) sometimes crashes as it starts on
+/// newer systems (Ubuntu 26.04), and the window stayed blank. A fresh one
+/// almost always starts, so the page loads again, a few times at most: one
+/// that keeps crashing is left, rather than tried for ever.
+fn come_back(page: &webkit2gtk::WebView, reason: webkit2gtk::WebProcessTerminationReason) {
+    use webkit2gtk::WebViewExt;
+    thread_local! {
+        static TRIED: std::cell::RefCell<Vec<std::time::Instant>> = const { std::cell::RefCell::new(Vec::new()) };
     }
-    let ready = OFFSCREEN.with(|o| {
-        let mut slot = o.borrow_mut();
-        if slot.is_none() {
-            match Offscreen::new() {
-                Ok(offscreen) => *slot = Some(offscreen),
-                Err(e) => eprintln!("linux player: no GL here: {e}"),
-            }
-        }
-        slot.as_ref().is_some_and(Offscreen::make_current)
+    let again = TRIED.with(|tried| {
+        let mut tried = tried.borrow_mut();
+        tried.retain(|at| at.elapsed() < std::time::Duration::from_secs(60));
+        tried.push(std::time::Instant::now());
+        tried.len() <= 3
     });
-    if !ready {
-        return;
+    eprintln!(
+        "linux player: the page's process ended ({reason:?}){}",
+        if again {
+            "; loading it again"
+        } else {
+            "; not again"
+        }
+    );
+    if again {
+        let page = page.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+            page.reload();
+        });
     }
-    let mut init = OpenGlInitParams {
-        get_proc_address: gl_proc,
-        get_proc_address_ctx: std::ptr::null_mut(),
-        extra_exts: std::ptr::null(),
-    };
-    let api = c"opengl";
-    let mut params = [
-        RenderParam {
-            kind: RENDER_PARAM_API_TYPE,
-            data: api.as_ptr() as *mut c_void,
-        },
-        RenderParam {
-            kind: RENDER_PARAM_OPENGL_INIT_PARAMS,
-            data: (&raw mut init).cast(),
-        },
-        RenderParam {
-            kind: RENDER_PARAM_INVALID,
-            data: std::ptr::null_mut(),
-        },
-    ];
-    let mut render: Handle = std::ptr::null_mut();
-    // SAFETY: mpv's GL context is current, and the parameters live through
-    // the call.
-    let code =
-        unsafe { (player.lib.render_create)(&mut render, player.handle, params.as_mut_ptr()) };
-    if code < 0 || render.is_null() {
-        eprintln!("mpv could not draw here: {}", player.lib.error(code));
-        return;
-    }
-    RENDER.with(|r| r.set(render));
-    eprintln!("linux player: drawing with GL");
-    // SAFETY: a context just made; the callback only queues a redraw.
-    unsafe {
-        (player.lib.render_set_update_callback)(render, Some(on_update), std::ptr::null_mut())
-    };
 }
 
-/// From mpv's own threads: a new frame. Only queued here; drawn on GTK's.
+/// From mpv's own threads: something for the render thread. Only queued
+/// here, once however often mpv signals before it is done.
 unsafe extern "C" fn on_update(_: *mut c_void) {
-    redraw();
+    if !UPDATE_QUEUED.swap(true, Ordering::SeqCst) {
+        send(Job::Update);
+    }
 }
 
 /// Whether the page is composited while a film plays, which depends on the
@@ -783,13 +1028,57 @@ fn composites_for_films((major, minor): (u32, u32)) -> bool {
     (major, minor) < (2, 52)
 }
 
+/// Before WebKit starts: on WebKit before 2.52, its frames reach the screen
+/// through shared memory rather than DMA-BUF, and its tiles are painted on
+/// the processor rather than the graphics card.
+///
+/// On Ubuntu 22.04 (WebKit 2.50, in a VMware machine) the window froze or
+/// stayed empty while the page went on underneath: clicks worked, nothing
+/// showed (U1, F16); and over a film, parts of the controls stayed unpainted
+/// (a 512-pixel tile of the timeline, the Previous button's triangle) until
+/// the mouse went over them. The same is known from WebKitGTK on NVIDIA cards
+/// and in other machines, and the AppImage carries 2.50 everywhere. With both,
+/// everything showed. From 2.52 the graphics card's way works, and is left
+/// alone. Never over what the person set themselves.
+pub fn before_webkit() {
+    // SAFETY: plain reads of the version of the WebKit that is loaded.
+    let version = unsafe {
+        (
+            webkit2gtk::ffi::webkit_get_major_version(),
+            webkit2gtk::ffi::webkit_get_minor_version(),
+        )
+    };
+    if !shared_memory_frames(version) {
+        return;
+    }
+    let set = |name: &str| {
+        if std::env::var_os(name).is_none() {
+            // SAFETY: at the very start of the program, before any other thread.
+            std::env::set_var(name, "1");
+        }
+    };
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        set("WEBKIT_DMABUF_RENDERER_FORCE_SHM");
+    }
+    set("WEBKIT_SKIA_ENABLE_CPU_RENDERING");
+    eprintln!(
+        "linux player: WebKit {}.{}, so frames go through shared memory, painted on the processor",
+        version.0, version.1
+    );
+}
+
+/// See `before_webkit`.
+fn shared_memory_frames((major, minor): (u32, u32)) -> bool {
+    (major, minor) < (2, 52)
+}
+
 fn redraw() {
     glib::idle_add_once(|| {
         let picture = PICTURE.load(Ordering::SeqCst);
         if picture && !COMPOSITED.with(|c| c.get()) && composite_for_films() {
             COMPOSITED.with(|c| c.set(true));
             PAGE.with(|page| page.borrow().as_ref().map(|page| compose(page, true)));
-        } else if !picture && COMPOSITED.with(|c| c.get()) {
+        } else if !picture && COMPOSITED.with(|c| c.get()) && !composite_for_films() {
             // Back to drawing directly once the page has closed the player
             // and is opaque again: switched while it was still see-through,
             // WebKit drew nothing at all from then on.
@@ -800,130 +1089,21 @@ fn redraw() {
                 }
             });
         }
-        // What mpv has left for this thread (a new picture size, a new
-        // format) is done here, as mpv asks after each of its signals. Left
-        // undone, mpv gave up on the frames waiting on it, and from mpv 0.41
-        // the picture often stayed black under the subtitles.
-        // A new frame is drawn and read back as soon as mpv has it, and
-        // the window shows the latest whenever it next draws. Drawn only as
-        // the window drew, mpv waited on the window, took its frames for
-        // late and dropped a fifth of them where windows are slow to show.
-        let new_frame = update_render() & UPDATE_FRAME != 0;
         COLUMN.with(|column| {
             if let Some(column) = column.borrow().as_ref() {
                 use gtk::prelude::*;
-                if picture && new_frame {
-                    render_frame(column);
-                }
                 column.queue_draw();
             }
         })
     });
+    // A picture now: one drawn for it at once, also while paused.
+    if PICTURE.load(Ordering::SeqCst) {
+        render_again();
+    }
 }
 
 /// mpv_render_context_update's flag: there is a new frame to draw.
 const UPDATE_FRAME: u64 = 1;
-
-/// Runs what mpv has queued for the thread that draws, in mpv's GL context.
-/// What mpv says is to be done now (a new frame, say).
-fn update_render() -> u64 {
-    let render = RENDER.with(|r| r.get());
-    let Some(player) = PLAYER.get() else { return 0 };
-    if render.is_null()
-        || !OFFSCREEN.with(|o| o.borrow().as_ref().is_some_and(Offscreen::make_current))
-    {
-        return 0;
-    }
-    // SAFETY: a live render context, on the thread that draws, with its GL
-    // context current.
-    let flags = unsafe { (player.lib.render_update)(render) };
-    release_gl();
-    flags
-}
-
-/// mpv's frame drawn offscreen and read back into the image the window
-/// shows (`FRAME`), at the column's size.
-fn render_frame(column: &gtk::Widget) {
-    use gtk::prelude::*;
-    let render = RENDER.with(|r| r.get());
-    let Some(player) = PLAYER.get() else { return };
-    if render.is_null()
-        || !OFFSCREEN.with(|o| o.borrow().as_ref().is_some_and(Offscreen::make_current))
-    {
-        return;
-    }
-    let gl = gl();
-    let scale = column.scale_factor();
-    let (w, h) = (
-        column.allocated_width() * scale,
-        column.allocated_height() * scale,
-    );
-    if w <= 0 || h <= 0 {
-        return;
-    }
-    let Some((fbo, _)) = gl.target(w, h) else {
-        return;
-    };
-    let mut target = OpenGlFbo {
-        fbo: fbo as c_int,
-        w,
-        h,
-        internal_format: 0,
-    };
-    // As GL keeps it, bottom row first; read back from the top, it comes
-    // out the right way up, as cairo keeps an image.
-    let mut flip: c_int = 0;
-    // Not waiting for the frame's moment to come: mpv paces itself, and
-    // waiting here held the window up.
-    let mut wait: c_int = 0;
-    let mut params = [
-        RenderParam {
-            kind: RENDER_PARAM_OPENGL_FBO,
-            data: (&raw mut target).cast(),
-        },
-        RenderParam {
-            kind: RENDER_PARAM_FLIP_Y,
-            data: (&raw mut flip).cast(),
-        },
-        RenderParam {
-            kind: RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
-            data: (&raw mut wait).cast(),
-        },
-        RenderParam {
-            kind: RENDER_PARAM_INVALID,
-            data: std::ptr::null_mut(),
-        },
-    ];
-    // SAFETY: mpv's GL context is current, and the parameters live through
-    // the call.
-    unsafe { (player.lib.render_render)(render, params.as_mut_ptr()) };
-
-    // One image, kept from frame to frame while the size stays: a new one
-    // each time was a few megabytes made and thrown away 24 times a second.
-    let kept = FRAME.with(|f| f.borrow_mut().take());
-    let mut frame = match kept {
-        Some(frame) if frame.width() == w && frame.height() == h => frame,
-        _ => match gtk::cairo::ImageSurface::create(gtk::cairo::Format::Rgb24, w, h) {
-            Ok(frame) => frame,
-            Err(_) => return,
-        },
-    };
-    let stride = frame.stride();
-    {
-        let Ok(mut pixels) = frame.data() else {
-            release_gl();
-            return;
-        };
-        gl.read(fbo, w, h, stride, &mut pixels);
-    }
-    release_gl();
-    frame.mark_dirty();
-    frame.set_device_scale(f64::from(scale), f64::from(scale));
-    // SAFETY: the render context just drawn with, on this thread: tells mpv
-    // the frame is out, for its timing.
-    unsafe { (player.lib.render_report_swap)(render) };
-    FRAME.with(|f| *f.borrow_mut() = Some(frame));
-}
 
 /// The picture, under the page: the latest frame mpv drew, painted where the
 /// page is about to be drawn. Nothing while there is no picture.
@@ -932,21 +1112,42 @@ fn draw(column: &gtk::Widget, cr: &gtk::cairo::Context) {
     if !PICTURE.load(Ordering::SeqCst) {
         return;
     }
-    // None yet, or the window changed size: drawn again for it now (paused,
-    // mpv sends no new frame).
+    // The size frames are wanted at; changed, one is drawn for it now
+    // (paused, mpv sends no new frame).
     let scale = column.scale_factor();
-    let size = (
+    let (w, h) = (
         column.allocated_width() * scale,
         column.allocated_height() * scale,
     );
-    let fits = FRAME.with(|f| {
-        f.borrow()
-            .as_ref()
-            .is_some_and(|frame| (frame.width(), frame.height()) == size)
-    });
-    if !fits {
-        let _ = update_render();
-        render_frame(column);
+    let wanted = (u64::from(w as u32) << 32) | u64::from(h as u32);
+    if WANTED.swap(wanted, Ordering::SeqCst) != wanted {
+        render_again();
+    }
+    // A frame the render thread finished since, at this size: taken in.
+    if let Some(shot) = SHOT
+        .lock()
+        .expect("shot lock")
+        .as_mut()
+        .filter(|shot| shot.fresh && (shot.w, shot.h) == (w, h))
+    {
+        shot.fresh = false;
+        FRAME.with(|f| {
+            let kept = f.borrow_mut().take();
+            let frame = match kept {
+                Some(frame) if (frame.width(), frame.height()) == (w, h) => Some(frame),
+                _ => gtk::cairo::ImageSurface::create(gtk::cairo::Format::Rgb24, w, h).ok(),
+            };
+            let Some(mut frame) = frame else { return };
+            if frame.stride() == shot.stride {
+                if let Ok(mut data) = frame.data() {
+                    let n = data.len().min(shot.pixels.len());
+                    data[..n].copy_from_slice(&shot.pixels[..n]);
+                }
+            }
+            frame.mark_dirty();
+            frame.set_device_scale(f64::from(scale), f64::from(scale));
+            *f.borrow_mut() = Some(frame);
+        });
     }
     FRAME.with(|f| {
         let Some(frame) = f.borrow().clone() else {
@@ -1088,24 +1289,6 @@ impl Offscreen {
         // SAFETY: the display, surface (or none) and context this made.
         unsafe { (self.make_current)(self.display, self.surface, self.surface, self.context) != 0 }
     }
-
-    /// Lets go of the context on this thread, which GTK draws on too: left
-    /// current, GTK's own GL (the composited page) could land in it.
-    fn release(&self) {
-        let none = std::ptr::null_mut();
-        // SAFETY: the display this made; no surface or context is current
-        // after it.
-        unsafe { (self.make_current)(self.display, none, none, none) };
-    }
-}
-
-/// Lets go of mpv's GL context, if there is one.
-fn release_gl() {
-    OFFSCREEN.with(|o| {
-        if let Some(offscreen) = o.borrow().as_ref() {
-            offscreen.release();
-        }
-    });
 }
 
 impl Drop for Offscreen {
@@ -1260,7 +1443,7 @@ struct Gl {
     pixel_store: Option<unsafe extern "C" fn(u32, c_int)>,
     read_pixels: Option<unsafe extern "C" fn(c_int, c_int, c_int, c_int, u32, u32, *mut c_void)>,
 }
-// SAFETY: function pointers into system libraries, used on GTK's thread.
+// SAFETY: function pointers into system libraries, used on the render thread.
 unsafe impl Send for Gl {}
 unsafe impl Sync for Gl {}
 
@@ -1457,6 +1640,14 @@ mod tests {
         assert!(!composites_for_films((2, 52)));
         assert!(!composites_for_films((2, 54)));
         assert!(!composites_for_films((3, 0)));
+    }
+
+    #[test]
+    fn frames_go_through_shared_memory_only_before_webkit_2_52() {
+        assert!(shared_memory_frames((2, 44)));
+        assert!(shared_memory_frames((2, 50)));
+        assert!(!shared_memory_frames((2, 52)));
+        assert!(!shared_memory_frames((3, 0)));
     }
 
     #[test]

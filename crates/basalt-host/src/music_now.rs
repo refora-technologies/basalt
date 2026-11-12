@@ -124,6 +124,32 @@ impl Live {
         sessions
     }
 
+    /// What `device` of `profile` plays, as of `now`: its name, its kind,
+    /// what it plays with the second moved on to `now`, and whether playing.
+    /// None for a device not playing there, or not heard from lately.
+    pub fn playing_now(
+        &self,
+        profile: &str,
+        device: &str,
+        now: i64,
+    ) -> Option<(String, Option<String>, basalt_proto::msg::Listening, bool)> {
+        let entry = self.playing.get(profile)?.get(device)?;
+        if now - entry.at >= STALE_MS {
+            return None;
+        }
+        let mut listening = entry.report.listening.clone();
+        if entry.report.playing {
+            let said = entry.report.clock.unwrap_or(entry.at);
+            listening.position += (now - said).max(0) as f64 / 1000.0;
+        }
+        Some((
+            entry.name.clone(),
+            entry.form.clone(),
+            listening,
+            entry.report.playing,
+        ))
+    }
+
     /// What `device` was asked to do, oldest first, now handed over.
     pub fn take_commands(&mut self, device: &str) -> Vec<MusicCommand> {
         self.commands.remove(device).unwrap_or_default()

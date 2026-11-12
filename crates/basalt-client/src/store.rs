@@ -166,10 +166,18 @@ impl ClientStore {
         }
         let json = serde_json::to_vec_pretty(&self.clone().sealed())
             .map_err(|e| ClientError::Config(format!("could not encode the store: {e}")))?;
-        let temp = path.with_extension("tmp");
-        again(|| std::fs::write(&temp, &json))?;
-        replace(&temp, path)?;
-        Ok(())
+        // A name of its own: two saves at once each wrote `client.tmp`, and
+        // the second to move it over found it gone.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(format!(".{}-{n}.tmp", std::process::id()));
+        let temp = path.with_file_name(name);
+        let saved = again(|| std::fs::write(&temp, &json)).and_then(|()| replace(&temp, path));
+        if saved.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        Ok(saved?)
     }
 
     /// Every token encrypted for this Windows user, as it goes to disk.

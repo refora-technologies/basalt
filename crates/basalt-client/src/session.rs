@@ -858,6 +858,16 @@ impl Session {
     }
 
     /// Asks another of the profile's devices to pause, play, skip or stop.
+    /// Asks about a group of devices playing together.
+    pub async fn music_group(
+        &mut self,
+        request: &basalt_proto::msg::MusicGroupRequest,
+    ) -> Result<basalt_proto::msg::MusicGroupResponse> {
+        call_json(&mut self.stream, Op::MusicGroup, request)
+            .await
+            .map_err(Into::into)
+    }
+
     pub async fn music_command(
         &mut self,
         request: &basalt_proto::msg::MusicCommandRequest,
@@ -868,6 +878,80 @@ impl Session {
         write_request(&mut self.stream, Op::MusicCommand, &body).await?;
         read_response(&mut self.stream).await?;
         Ok(())
+    }
+
+    /// Keeps files on the drive for a device that is away.
+    pub async fn share_hold(
+        &mut self,
+        request: &basalt_proto::msg::ShareHoldRequest,
+    ) -> Result<basalt_proto::msg::HeldShare> {
+        call_json(&mut self.stream, Op::ShareHold, request)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Part of a file uploaded to be held for someone away.
+    pub async fn share_stage(&mut self, stage: &[u8; 16], offset: u64, data: &[u8]) -> Result<()> {
+        let payload = basalt_proto::msg::encode_chunk(stage, offset, data);
+        write_request(&mut self.stream, Op::ShareStage, &payload).await?;
+        read_response(&mut self.stream).await?;
+        Ok(())
+    }
+
+    /// Part of a file held for this device, as plain bytes.
+    pub async fn share_read(
+        &mut self,
+        request: &basalt_proto::msg::ShareReadRequest,
+    ) -> Result<Vec<u8>> {
+        let body = serde_json::to_vec(request)
+            .map_err(|e| ClientError::Protocol(format!("could not encode the read: {e}")))?;
+        write_request(&mut self.stream, Op::ShareRead, &body).await?;
+        Ok(read_response(&mut self.stream).await?)
+    }
+
+    pub async fn share_answer(
+        &mut self,
+        request: &basalt_proto::msg::ShareAnswerRequest,
+    ) -> Result<()> {
+        let body = serde_json::to_vec(request)
+            .map_err(|e| ClientError::Protocol(format!("could not encode the answer: {e}")))?;
+        write_request(&mut self.stream, Op::ShareAnswer, &body).await?;
+        read_response(&mut self.stream).await?;
+        Ok(())
+    }
+
+    pub async fn share_held(&mut self) -> Result<basalt_proto::msg::ShareHeldResponse> {
+        call_json(&mut self.stream, Op::ShareHeld, &serde_json::json!({}))
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn share_manage(
+        &mut self,
+        request: &basalt_proto::msg::ShareManageRequest,
+    ) -> Result<()> {
+        let body = serde_json::to_vec(request)
+            .map_err(|e| ClientError::Protocol(format!("could not encode the change: {e}")))?;
+        write_request(&mut self.stream, Op::ShareManage, &body).await?;
+        read_response(&mut self.stream).await?;
+        Ok(())
+    }
+
+    /// The host's devices, and who of them is online.
+    pub async fn presence(&mut self) -> Result<basalt_proto::msg::PresenceResponse> {
+        call_json(&mut self.stream, Op::Presence, &serde_json::json!({}))
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Passes a message to another of the host's devices, or a profile's.
+    pub async fn channel_send(
+        &mut self,
+        request: &basalt_proto::msg::ChannelSendRequest,
+    ) -> Result<basalt_proto::msg::ChannelSendResponse> {
+        call_json(&mut self.stream, Op::ChannelSend, request)
+            .await
+            .map_err(Into::into)
     }
 
     /// Whether a film's timeline pictures are made, and how they are laid out.
@@ -1133,6 +1217,7 @@ impl Session {
             &serde_json::to_vec(&WatchRequest {
                 profiles: true,
                 music: true,
+                channel: true,
             })
             .map_err(|e| ClientError::Protocol(e.to_string()))?,
         )

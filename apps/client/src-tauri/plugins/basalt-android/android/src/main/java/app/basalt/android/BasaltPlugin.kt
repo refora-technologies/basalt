@@ -166,6 +166,32 @@ class NotifyUpdateArgs {
 }
 
 @InvokeArg
+class NoticesAtArgs {
+  lateinit var path: String
+}
+
+class NotifyShareArgs {
+  lateinit var tag: String
+  lateinit var title: String
+  var text: String = ""
+  /** Buttons, each "Label|action". */
+  var actions: Array<String> = emptyArray()
+  /** Only while the app isn't in front: there, the page says it already. */
+  var ifAway: Boolean = false
+}
+
+@InvokeArg
+class CancelShareArgs {
+  lateinit var tag: String
+}
+
+@InvokeArg
+class NearbyWifiArgs {
+  var ssid: String = ""
+  var passphrase: String = ""
+}
+
+@InvokeArg
 class ShareTextArgs {
   lateinit var text: String
   var title: String? = null
@@ -232,11 +258,31 @@ class MpvPropertyArgs {
 @TauriPlugin(
   permissions = [
     Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications"),
+    // Finding and joining a nearby device's own Wi-Fi: Android 13 asks for
+    // "nearby devices", before that for location.
+    // Android 13+: its own Wi-Fi needs "nearby devices", and looking at the Wi-Fis around still location.
+    Permission(
+      strings = [Manifest.permission.NEARBY_WIFI_DEVICES, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION],
+      alias = "nearbyWifi",
+    ),
+    Permission(strings = [Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION], alias = "location"),
     Permission(strings = [LocalNetwork.PERMISSION], alias = LocalNetwork.ALIAS),
-    Permission(strings = [LocalNetwork.TEST_PERMISSION], alias = LocalNetwork.TEST_ALIAS),
   ]
 )
 class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
+  /** The app on screen, between Android's resume and pause. */
+  @Volatile
+  private var inFront = true
+
+  /**
+   * Whether the app is on screen now, from the activity itself: the
+   * plugins' own pause comes from the whole process's lifecycle, late or not
+   * at all with a service keeping the process up.
+   */
+  internal fun onScreen(): Boolean {
+    val owner = activity as? androidx.lifecycle.LifecycleOwner ?: return inFront
+    return owner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+  }
   private var webView: WebView? = null
   private var multicast: WifiManager.MulticastLock? = null
   private var wifiCallback: ConnectivityManager.NetworkCallback? = null
@@ -295,10 +341,12 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   override fun onResume() {
+    inFront = true
     acquireMulticast()
   }
 
   override fun onPause() {
+    inFront = false
     // Only while the app is in front: it keeps the Wi-Fi radio awake for
     // broadcasts, which costs battery for nothing once nobody is looking.
     multicast?.let { if (it.isHeld) it.release() }
@@ -439,12 +487,14 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   fun pictureInPicture(active: Boolean, closed: Boolean) = pip.changed(active, closed)
 
   /**
-   * Keeps the page drawing in the small window. The activity pauses it as it
-   * goes there, as for any app in the back, and the page has to redraw once
-   * without its controls.
+   * Keeps the page running when the app goes into the back, where the
+   * activity pauses it as for any app. In the small window, it has to redraw
+   * without its controls; kept running for a reason (ready to receive, music
+   * in a group, a transfer), it is what answers: an offer, a press on another
+   * device, the next file. Nothing is drawn for nobody; its work goes on.
    */
   fun keepPageRunning() {
-    if (pip.inPip()) webView?.onResume()
+    if (pip.inPip() || KeepAliveService.keepingAlive()) webView?.onResume()
   }
 
   /** Back at the top level: to the home screen, as every app does, not closed. */
@@ -1136,6 +1186,128 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     invoke.resolve(JSObject().put("shown", true))
   }
 
+  // ---------------------------------------------------------------------------
+  // Shares
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A share for this person: one offered (with Accept and Decline), or one
+   * that arrived. It shows on top, as a message would, on its own channel
+   * ("Shared files"), so it can be turned down in Android's settings without
+   * silencing anything else. Tapped, the app opens at its Inbox; a button
+   * opens it with that answer, which the page takes as "share-accept:<tag>".
+   */
+  @Command
+  fun notifyShare(invoke: Invoke) {
+    val args = invoke.parseArgs(NotifyShareArgs::class.java)
+    val context = activity.applicationContext
+    // Whether the app is in front is known here, not in the page: Android's
+    // web view may say "visible" with the app behind another.
+    if (args.ifAway && onScreen()) {
+      invoke.resolve(JSObject().put("shown", false))
+      return
+    }
+    val shown = ShareNotices.post(context, args.tag, args.title, args.text, args.actions.toList())
+    invoke.resolve(JSObject().put("shown", shown))
+  }
+
+  /** Where Rust writes share notices for the service to show: see [ShareNotices]. */
+  @Command
+  fun noticesAt(invoke: Invoke) {
+    val args = invoke.parseArgs(NoticesAtArgs::class.java)
+    ShareNotices.setPath(activity.applicationContext, args.path)
+    invoke.resolve()
+  }
+
+  // ---------------------------------------------------------------------------
+  // A nearby device's own Wi-Fi: see NearbyWifi
+  // ---------------------------------------------------------------------------
+
+  private val nearbyWifi: NearbyWifi by lazy { NearbyWifi(activity.applicationContext) }
+
+  private fun nearbyAlias(): String = if (Build.VERSION.SDK_INT >= 33) "nearbyWifi" else "location"
+
+  /** Whether hosting, finding and joining a nearby Wi-Fi may be done: `granted`, or what's missing. */
+  @Command
+  fun nearbyWifiState(invoke: Invoke) {
+    val granted = getPermissionState(nearbyAlias()).toString() == "granted"
+    invoke.resolve(JSObject().put("state", nearbyState(granted)))
+  }
+
+  /** What stands in the way, in the order to put it right: permission, Wi-Fi, then Location. */
+  private fun nearbyState(granted: Boolean): String = when {
+    Build.VERSION.SDK_INT < 29 -> "unsupported"
+    !granted -> "ask"
+    !nearbyWifi.wifiOn() -> "wifi"
+    !nearbyWifi.locationOn() -> "location"
+    else -> "granted"
+  }
+
+  /** Wi-Fi off: turned on, or Android's Wi-Fi panel brought up to do it. */
+  @Command
+  fun nearbyWifiTurnOn(invoke: Invoke) {
+    activity.runOnUiThread {
+      nearbyWifi.turnWifiOn(activity)
+      invoke.resolve()
+    }
+  }
+
+  @Command
+  fun requestNearbyWifi(invoke: Invoke) {
+    requestPermissionForAlias(nearbyAlias(), invoke, "nearbyWifiAnswered")
+  }
+
+  @PermissionCallback
+  fun nearbyWifiAnswered(invoke: Invoke) {
+    val granted = getPermissionState(nearbyAlias()).toString() == "granted"
+    invoke.resolve(JSObject().put("state", if (!granted) "denied" else nearbyState(true)))
+  }
+
+  @Command
+  fun nearbyHost(invoke: Invoke) {
+    val args = invoke.parseArgs(NearbyWifiArgs::class.java)
+    nearbyWifi.host(args.ssid, args.passphrase) { why ->
+      if (why == null) invoke.resolve() else invoke.reject(why)
+    }
+  }
+
+  @Command
+  fun nearbyHostStop(invoke: Invoke) {
+    nearbyWifi.stopHost { invoke.resolve() }
+  }
+
+  @Command
+  fun nearbyScan(invoke: Invoke) {
+    nearbyWifi.scan { found ->
+      val list = JSArray()
+      for ((ssid, level) in found) list.put(JSObject().put("ssid", ssid).put("level", level))
+      invoke.resolve(JSObject().put("found", list))
+    }
+  }
+
+  @Command
+  fun nearbyJoin(invoke: Invoke) {
+    val args = invoke.parseArgs(NearbyWifiArgs::class.java)
+    nearbyWifi.join(args.ssid, args.passphrase) { why ->
+      if (why == null) invoke.resolve() else invoke.reject(why)
+    }
+  }
+
+  @Command
+  fun nearbyLeave(invoke: Invoke) {
+    nearbyWifi.leave { invoke.resolve() }
+  }
+
+  /** A share's notification taken away: answered here, or nothing more to say. */
+  @Command
+  fun cancelShare(invoke: Invoke) {
+    val args = invoke.parseArgs(CancelShareArgs::class.java)
+    val context = activity.applicationContext
+    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    manager.cancel(SHARE_NOTIFICATIONS + (args.tag.hashCode() and 0xffff))
+    invoke.resolve()
+  }
+
   /**
    * Android's id for this app on this phone, which survives a reinstall and
    * clearing the app's data, and changes only with a factory reset. The
@@ -1258,10 +1430,13 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
       .build()
     val callback = object : ConnectivityManager.NetworkCallback() {
       override fun onAvailable(network: Network) {
+        // Sharing over a nearby device's own Wi-Fi: left on it until done.
+        if (NearbyWifi.joinedNow) return
         connectivity().bindProcessToNetwork(network)
       }
 
       override fun onLost(network: Network) {
+        if (NearbyWifi.joinedNow) return
         if (connectivity().boundNetworkForProcess == network) {
           connectivity().bindProcessToNetwork(null)
         }
@@ -1393,8 +1568,14 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     @Volatile
     var current: BasaltPlugin? = null
 
+    /** Basalt on screen now: false with no window at all (swiped away). */
+    fun onScreenNow(): Boolean = current?.onScreen() ?: false
+
     private const val ACTION_EXTRA = "basalt.action"
     private const val UPDATE_CHANNEL = "basalt-updates"
     private const val UPDATE_NOTIFICATION = 7301
+    private const val SHARE_CHANNEL = "basalt-shares"
+    /** Share notifications' ids start here, one per share. */
+    private const val SHARE_NOTIFICATIONS = 0x10000
   }
 }

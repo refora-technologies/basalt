@@ -44,6 +44,10 @@ pub const CHUNK_BYTES: u64 = 4 * 1024 * 1024;
 /// without asking either end to hold much.
 pub const IN_FLIGHT: usize = 3;
 
+/// How long a download cut off part-way keeps being taken up again with no
+/// byte coming, before it is given up.
+const RESUME_DOWNLOAD_FOR: std::time::Duration = std::time::Duration::from_secs(120);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransferKind {
@@ -82,6 +86,9 @@ impl Cancel {
 pub struct Basalt {
     store_path: PathBuf,
     store: std::sync::Mutex<ClientStore>,
+    /// Held while the store is copied and written, so saves at once land in
+    /// the order they were made and an older copy never replaces a newer one.
+    saving: std::sync::Mutex<()>,
     pool: tokio::sync::RwLock<Option<Pool>>,
     info: std::sync::Mutex<Option<SessionInfo>>,
     /// This device's name and id, as every host sees it.
@@ -230,6 +237,7 @@ impl Basalt {
         Ok(Self {
             store_path,
             store: std::sync::Mutex::new(store),
+            saving: std::sync::Mutex::new(()),
             pool: tokio::sync::RwLock::new(None),
             info: std::sync::Mutex::new(None),
             me: Me::new(device_name, device_id),
@@ -359,6 +367,7 @@ impl Basalt {
     }
 
     fn save_store(&self) -> Result<()> {
+        let _saving = self.saving.lock().expect("saving lock");
         let snapshot = self.store.lock().expect("store lock").clone();
         snapshot.save(&self.store_path)
     }
@@ -1687,7 +1696,215 @@ impl Basalt {
         lease.check(result)
     }
 
+    /// Keeps files on the drive for a device that is away: the host locks a
+    /// copy apart and offers it when that device comes online.
+    pub async fn share_hold(
+        &self,
+        request: basalt_proto::msg::ShareHoldRequest,
+    ) -> Result<basalt_proto::msg::HeldShare> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.share_hold(&request).await;
+        lease.check(result)
+    }
+
+    /// This device's answer to a share the host held for it.
+    pub async fn share_answer(&self, id: &str, accepted: bool) -> Result<()> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let request = basalt_proto::msg::ShareAnswerRequest {
+            id: id.to_string(),
+            accepted,
+        };
+        let result = lease.share_answer(&request).await;
+        lease.check(result)
+    }
+
+    /// What this profile has held on the host.
+    pub async fn share_held(&self) -> Result<basalt_proto::msg::ShareHeldResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.share_held().await;
+        lease.check(result)
+    }
+
+    pub async fn share_manage(&self, request: basalt_proto::msg::ShareManageRequest) -> Result<()> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.share_manage(&request).await;
+        lease.check(result)
+    }
+
+    /// Uploads a file on this device to the host, to be held for someone
+    /// away: answers its stage id, for [`ShareHoldRequest::staged`]. Read
+    /// from `source` to its end, `total` bytes as said.
+    ///
+    /// [`ShareHoldRequest::staged`]: basalt_proto::msg::ShareHoldRequest
+    pub async fn stage_for_share(
+        &self,
+        source: std::fs::File,
+        total: u64,
+        name: &str,
+        progress: Option<ProgressFn>,
+        cancel: Option<Cancel>,
+    ) -> Result<String> {
+        use tokio::io::AsyncReadExt;
+        let mut stage = [0u8; 16];
+        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut stage)
+            .map_err(|_| ClientError::Protocol("no random numbers to name the upload".into()))?;
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let mut source = tokio::fs::File::from_std(source);
+        let mut buffer = vec![0u8; HELD_PIECE as usize];
+        let mut done = 0u64;
+        loop {
+            if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                return Err(ClientError::Cancelled);
+            }
+            let mut filled = 0;
+            while filled < buffer.len() {
+                let n = source.read(&mut buffer[filled..]).await?;
+                if n == 0 {
+                    break;
+                }
+                filled += n;
+            }
+            if filled == 0 && done > 0 {
+                break;
+            }
+            let result = lease.share_stage(&stage, done, &buffer[..filled]).await;
+            lease.check(result)?;
+            done += filled as u64;
+            self.count(filled as u64);
+            if let Some(report) = &progress {
+                report(Progress {
+                    kind: TransferKind::Upload,
+                    path: name.to_string(),
+                    transferred: done,
+                    total,
+                });
+            }
+            if filled < buffer.len() {
+                break;
+            }
+        }
+        if done != total {
+            return Err(ClientError::Protocol(format!(
+                "{name} changed while it was sent: {done} of {total} bytes"
+            )));
+        }
+        Ok(basalt_proto::hex::encode(&stage))
+    }
+
+    /// Takes file `file` of a share held for this device into `out`, whole.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn download_held(
+        &self,
+        id: &str,
+        file: usize,
+        total: u64,
+        name: &str,
+        out: std::fs::File,
+        progress: Option<ProgressFn>,
+        cancel: Option<Cancel>,
+    ) -> Result<u64> {
+        use tokio::io::AsyncWriteExt;
+        let mut out = tokio::fs::File::from_std(out);
+        let mut done = 0u64;
+        let mut moved_since = std::time::Instant::now();
+        let mut lease = None;
+        while done < total {
+            if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                return Err(ClientError::Cancelled);
+            }
+            let request = basalt_proto::msg::ShareReadRequest {
+                id: id.to_string(),
+                file,
+                offset: done,
+                length: HELD_PIECE,
+            };
+            let asked: Result<Vec<u8>> = async {
+                if lease.is_none() {
+                    lease = Some(self.pool().await?.acquire().await?);
+                }
+                let line = lease.as_mut().expect("just made");
+                let result = line.share_read(&request).await;
+                line.check(result)
+            }
+            .await;
+            let piece = match asked {
+                Ok(piece) => piece,
+                // The line dropped part-way: taken up again from this piece,
+                // on a new connection, while bytes keep coming now and then.
+                Err(e @ (ClientError::Io(_) | ClientError::Net(_)))
+                    if done > 0 && moved_since.elapsed() < RESUME_DOWNLOAD_FOR =>
+                {
+                    if let Some(mut gone) = lease.take() {
+                        gone.discard();
+                    }
+                    tracing::info!(
+                        "{name} stopped at {done} of {total} bytes ({e}); taking it up again"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
+            moved_since = std::time::Instant::now();
+            if piece.is_empty() {
+                return Err(ClientError::Protocol("the held file ended early".into()));
+            }
+            out.write_all(&piece).await?;
+            done += piece.len() as u64;
+            self.count(piece.len() as u64);
+            if let Some(report) = &progress {
+                report(Progress {
+                    kind: TransferKind::Download,
+                    path: name.to_string(),
+                    transferred: done,
+                    total,
+                });
+            }
+        }
+        out.flush().await?;
+        out.sync_all().await?;
+        Ok(done)
+    }
+
+    /// The host's devices, and who of them is online now.
+    pub async fn presence(&self) -> Result<basalt_proto::msg::PresenceResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.presence().await;
+        lease.check(result)
+    }
+
+    /// Passes a message to another of the host's devices, or to every device
+    /// of a profile: at once to those online, kept for the rest until it
+    /// expires.
+    pub async fn channel_send(
+        &self,
+        request: basalt_proto::msg::ChannelSendRequest,
+    ) -> Result<basalt_proto::msg::ChannelSendResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.channel_send(&request).await;
+        lease.check(result)
+    }
+
     /// Asks another of the profile's devices, playing, to do something.
+    /// Asks about a group of devices playing together: see
+    /// [`basalt_proto::msg::MusicGroupRequest`].
+    pub async fn music_group(
+        &self,
+        request: basalt_proto::msg::MusicGroupRequest,
+    ) -> Result<basalt_proto::msg::MusicGroupResponse> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.music_group(&request).await;
+        lease.check(result)
+    }
+
     pub async fn music_command(
         &self,
         request: basalt_proto::msg::MusicCommandRequest,
@@ -1979,13 +2196,32 @@ impl Basalt {
         }
         session.watch_begin().await?;
 
+        // Every so often, "still here": a watch can stay open with nobody
+        // behind it (a phone Android froze), so the host counts a device as
+        // online only while it hears from it. Asked on another connection;
+        // a host from before 1.6.4 doesn't know the question, and is asked no
+        // more.
+        let mut still_here = tokio::time::interval(STILL_HERE_EVERY);
+        still_here.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        still_here.tick().await;
+        let mut host_knows = true;
+
         loop {
             tokio::select! {
                 _ = stop.notified() => return Ok(WatchEnd::Stopped),
+                _ = still_here.tick(), if host_knows => {
+                    if let Err(e) = self.presence().await
+                        && matches!(e.kind(), "unsupported" | "incompatible")
+                    {
+                        host_knows = false;
+                    }
+                }
                 _ = profile_changes.changed() => return Ok(WatchEnd::ProfileChanged),
                 change = session.watch_next() => match change? {
                     Change::ProfilesChanged => on_notice(WatchNotice::ProfilesChanged),
                     Change::MusicNow => on_notice(WatchNotice::MusicNow),
+                    Change::Channel { message } => on_notice(WatchNotice::Channel(message)),
+                    Change::PresenceChanged => on_notice(WatchNotice::PresenceChanged),
                     change => on_change(change),
                 },
             }
@@ -2099,6 +2335,61 @@ impl Basalt {
         Ok(done)
     }
 
+    /// A file on the drive as a stream, from byte `from` on (from the start
+    /// if `from` is past its end): its size, and its bytes as they come from
+    /// the host. For passing a drive file on to a device nearby that isn't
+    /// on the host. Stops when the reader is dropped.
+    pub async fn read_stream(
+        self: &Arc<Self>,
+        remote: &str,
+        from: u64,
+    ) -> Result<(u64, tokio::io::DuplexStream)> {
+        let total = self.stat(remote).await?.size;
+        let start = if from <= total { from } else { 0 };
+        let (mut write, read) = tokio::io::duplex(CHUNK_BYTES as usize);
+        let client = Arc::clone(self);
+        let remote = remote.to_string();
+        tokio::spawn(async move {
+            let streamed: Result<()> = async {
+                let pool = client.pool().await?;
+                let mut lease = pool.acquire().await?;
+                let mut asked: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
+                let mut requested = start;
+                let mut done = start;
+                let outcome: Result<()> = async {
+                    while done < total {
+                        while asked.len() < IN_FLIGHT && requested < total {
+                            let want = CHUNK_BYTES.min(total - requested);
+                            lease.send_read(&remote, requested, want).await?;
+                            asked.push_back(want);
+                            requested += want;
+                        }
+                        let expected = asked.pop_front().expect("a range is always in flight here");
+                        let got = lease.receive_read_into(&mut write).await?;
+                        client.count(got);
+                        if got != expected {
+                            return Err(ClientError::Protocol(format!(
+                                "{remote} changed while it was being passed on"
+                            )));
+                        }
+                        done += got;
+                    }
+                    Ok(())
+                }
+                .await;
+                if outcome.is_err() {
+                    lease.discard();
+                }
+                outcome
+            }
+            .await;
+            if let Err(e) = streamed {
+                tracing::info!("passing {remote} on stopped: {e}");
+            }
+        });
+        Ok((total, read))
+    }
+
     /// Downloads into a file somebody else has already opened.
     ///
     /// For Android, where a download is saved through the system — into
@@ -2122,7 +2413,10 @@ impl Basalt {
         Ok(done)
     }
 
-    /// The download itself: every byte of `remote`, written to `file`.
+    /// The download itself: every byte of `remote`, written to `file`. A
+    /// line that drops part-way (the Wi-Fi gone a moment, the host's
+    /// computer asleep briefly) is taken up again from where it got to, for
+    /// as long as [`RESUME_DOWNLOAD_FOR`] passes without a byte.
     async fn download_into(
         &self,
         remote: &str,
@@ -2131,16 +2425,65 @@ impl Basalt {
         progress: Option<ProgressFn>,
         cancel: Option<Cancel>,
     ) -> Result<u64> {
+        let mut done = 0u64;
+        let mut moved_since = std::time::Instant::now();
+        loop {
+            let before = done;
+            let error = match self
+                .download_part(remote, total, file, &progress, &cancel, &mut done)
+                .await
+            {
+                Ok(()) => return Ok(done),
+                Err(e) => e,
+            };
+            // Only the line dropping is tried again; a cancel, a file that
+            // changed, or a host that says no is said at once.
+            let dropped = matches!(error, ClientError::Io(_) | ClientError::Net(_));
+            if !dropped || done == 0 {
+                return Err(error);
+            }
+            if done > before {
+                moved_since = std::time::Instant::now();
+            }
+            if moved_since.elapsed() > RESUME_DOWNLOAD_FOR {
+                return Err(error);
+            }
+            tracing::info!(
+                "{remote} stopped at {done} of {total} bytes ({error}); taking it up again"
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+                return Err(ClientError::Cancelled);
+            }
+        }
+    }
+
+    /// From `done` bytes to the end, on one connection; `done` moves as the
+    /// bytes land, so a try that fails says how far it got.
+    async fn download_part(
+        &self,
+        remote: &str,
+        total: u64,
+        file: &mut tokio::fs::File,
+        progress: &Option<ProgressFn>,
+        cancel: &Option<Cancel>,
+        done: &mut u64,
+    ) -> Result<()> {
         let pool = self.pool().await?;
         let mut lease = pool.acquire().await?;
+        // A try cut off mid-answer may have written part of a range past
+        // `done`: written again from there, over it.
+        {
+            use tokio::io::AsyncSeekExt;
+            file.seek(std::io::SeekFrom::Start(*done)).await?;
+        }
 
-        let outcome: Result<u64> = async {
+        let outcome: Result<()> = async {
             // Ranges asked for and not yet read back, oldest first.
             let mut asked: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
-            let mut requested = 0u64;
-            let mut done = 0u64;
+            let mut requested = *done;
 
-            while done < total {
+            while *done < total {
                 while asked.len() < IN_FLIGHT && requested < total {
                     let want = CHUNK_BYTES.min(total - requested);
                     lease.send_read(remote, requested, want).await?;
@@ -2163,18 +2506,18 @@ impl Basalt {
                         "{remote} changed while it was downloading ({done} of {total} bytes)"
                     )));
                 }
-                done += got;
+                *done += got;
 
-                if let Some(report) = &progress {
+                if let Some(report) = progress {
                     report(Progress {
                         kind: TransferKind::Download,
                         path: remote.to_string(),
-                        transferred: done,
+                        transferred: *done,
                         total,
                     });
                 }
             }
-            Ok(done)
+            Ok(())
         }
         .await;
 
@@ -2647,6 +2990,13 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
+/// How much of a held file is asked for at a time.
+const HELD_PIECE: u32 = 4 * 1024 * 1024;
+
+/// How often a watching device tells the host it is still there: well inside
+/// the 90 seconds after which the host takes it as away.
+const STILL_HERE_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// What a watch says besides changes to the drive.
 #[derive(Debug)]
 pub enum WatchNotice {
@@ -2660,6 +3010,10 @@ pub enum WatchNotice {
     ProfilesChanged,
     /// What the profile's other devices play changed: [`Basalt::music_now`].
     MusicNow,
+    /// A message for this device from another of the host's devices.
+    Channel(basalt_proto::msg::ChannelMessage),
+    /// A device came online or went: [`Basalt::presence`].
+    PresenceChanged,
 }
 
 /// Why one watch connection ended without failing.

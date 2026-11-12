@@ -1,5 +1,10 @@
 # Basalt — Phase 0 benchmarks
 
+> **Old measurements.** Taken in September 2026 on the first prototype, before Basalt
+> was an app, on two particular laptops and one Wi-Fi network. Basalt has changed a lot
+> since, and some details here no longer describe it. Kept for anyone curious about why
+> it was built the way it is; not a statement of how fast Basalt is today.
+
 _Generated 2026-09-15 17:09:08_
 
 ## Machine

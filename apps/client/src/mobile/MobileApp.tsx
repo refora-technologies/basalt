@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeftRight,
   KeyRound,
@@ -14,6 +14,7 @@ import {
   FolderOpen,
   FolderPlus,
   Images,
+  Inbox,
   Library,
   Loader2,
   MoreHorizontal,
@@ -22,7 +23,9 @@ import {
   Plus,
   Scissors,
   Search,
+  Send,
   SlidersHorizontal,
+  Smartphone,
   Star,
   Trash2,
   Tv,
@@ -33,6 +36,7 @@ import {
 } from 'lucide-react'
 import { Switch } from '@/components/Switch'
 import { filesEmptyLabel } from '@/lib/useVault'
+import { calledOf, isProgram, titleOf } from '@/lib/share'
 import { setShowHidden, useShowHidden } from '@/lib/showHidden'
 import { wrongHostText } from '@/lib/wrongHost'
 import type { AppModel } from '@/App'
@@ -74,6 +78,11 @@ import { handheldWord, isAndroid, isTv } from '@/lib/platform'
 import { offerPlay } from '@/lib/playMove'
 import { offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
 import { ActionSheet, Sheet } from './Sheet'
+import { YourDevices } from '@/components/YourDevices'
+import { ownDevices } from '@/lib/usePresence'
+import { PhoneNearby, PhoneShare, SharingCard } from './PhoneShare'
+import { useNearbyNotifications } from '@/components/share/nearbyNotifications'
+import { useAlwaysReady } from '@/lib/alwaysReady'
 import { remaining, type Resumable } from '@/components/ContinueWatching'
 import { useLongPress } from '@/lib/useLongPress'
 import { useBack } from './useBack'
@@ -166,6 +175,7 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
             setIntroducing(false)
           }}
           onLeave={onboarded() ? () => setIntroducing(false) : undefined}
+          onNearby={TV ? undefined : () => model.nearby.setScreenOpen(true)}
         />
       </Safe>
     )
@@ -179,11 +189,13 @@ export function MobileApp({ model }: { model: AppModel }): React.JSX.Element {
           notice={vault.removed}
           onBack={changingDrive ? () => setChangingDrive(false) : undefined}
           currentHostId={changingDrive ? vault.status.hostId : null}
+          onNearby={TV ? undefined : () => model.nearby.setScreenOpen(true)}
           onPaired={(next) => {
             setChangingDrive(false)
             vault.switchTo(next)
           }}
         />
+        {!TV && <PhoneNearby nearby={model.nearby} />}
       </Safe>
     )
   }
@@ -298,6 +310,55 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   // Managing the host is done from a phone or computer, not a television.
   const canManage = vault.status?.canManage === true && !TV
   const [managing, setManaging] = useState(false)
+  // Ready to receive: while connected to a host that keeps the line between
+  // devices, Android keeps the app running when it is left or the screen goes
+  // off, with a quiet notification, so its line to the host stays open. Not
+  // on a TV, which never receives files.
+  // Sharing with the host's other devices: not on a TV, and only on a host
+  // that passes shares.
+  const sharingHere = !TV && model.presence.supported && model.presence.you !== ''
+  // Devices nearby need no host: the Inbox, Send and the share sheet are
+  // there with none reachable too (a café, no drive at all).
+  const shareAnywhere = !TV
+  const [inboxOpen, setInboxOpen] = useState(false)
+  // On a TV, the page area gives up room when something rises below it
+  // (the music bar, a transfer): the thing focused there is kept in view,
+  // however late the focus lands (a song started with OK redraws its row).
+  // Kept as state: the page area comes later than the app (after the drive
+  // and profile screens), and is watched from when it does.
+  const [pageArea, setPageArea] = useState<HTMLElement | null>(null)
+  useEffect(() => {
+    const area = pageArea
+    if (!TV || !area || typeof ResizeObserver === 'undefined') return undefined
+    let height = area.clientHeight
+    const keep = (): void => {
+      const focused = document.activeElement
+      if (focused instanceof HTMLElement && area.contains(focused)) focused.scrollIntoView({ block: 'nearest' })
+    }
+    const watch = new ResizeObserver(() => {
+      const now = area.clientHeight
+      if (now < height) {
+        keep()
+        // Once more as the focus settles.
+        setTimeout(keep, 400)
+      }
+      height = now
+    })
+    watch.observe(area)
+    return () => watch.disconnect()
+  }, [pageArea])
+  const [alwaysReady] = useAlwaysReady()
+  const ready =
+    alwaysReady && !TV && isAndroid() && model.connected && model.presence.supported && model.presence.you !== ''
+  useEffect(() => {
+    if (!ready) return undefined
+    void android.keepAlive('ready', 'Basalt', 'Ready to receive')
+    void api.stayRunning(true).catch(() => {})
+    return () => {
+      void android.letGo('ready')
+      void api.stayRunning(false).catch(() => {})
+    }
+  }, [ready])
   useEffect(() => {
     if (!canManage) setManaging(false)
   }, [canManage])
@@ -403,7 +464,29 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   const update = useUpdate()
   const [bannerGone, setBannerGone] = useState<string | null>(() => remembered(BANNER_DISMISSED))
   useUpdateNotification(update)
-  useNotificationTaps(openWhatsNew)
+  useNotificationTaps(openWhatsNew, (action) => {
+    // "share:<id>" opens the Inbox; "share-accept:<id>" and the like answer it too.
+    const [what, id] = [action.slice(0, action.indexOf(':')), action.slice(action.indexOf(':') + 1)]
+    // From a device nearby: answered here, and its sheet shows (a code, if one is asked).
+    if (id.startsWith('nearby-')) {
+      const ask = id.slice('nearby-'.length)
+      if (what === 'share-accept') model.nearby.accept(ask)
+      else if (what === 'share-decline') model.nearby.decline(ask)
+      return
+    }
+    const item =
+      model.inbox.items.find((i) => i.id === id && i.direction === 'in') ??
+      model.nearby.items.find((i) => i.id === id && i.direction === 'in')
+    if (item && what === 'share-accept' && item.state === 'waiting') model.inbox.accept(item)
+    else if (item && what === 'share-decline' && item.state === 'waiting') model.inbox.decline(item)
+    else if (item && what === 'share-open' && item.saved?.[0]?.uri) {
+      void android.openDownload(item.saved[0].uri)
+      return
+    }
+    if (shareAnywhere) setInboxOpen(true)
+  })
+  usePhoneShareNotifications(model)
+  useNearbyNotifications(model.nearby)
 
   const active = transfers.active
 
@@ -425,6 +508,16 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
             onClose={() => setSelected(new Set())}
             onSelectAll={() => setSelected(new Set(entries.map((e) => e.id)))}
             onDownload={() => void model.downloadMany(chosen)}
+            onShare={
+              sharingHere && chosen.some((e) => e.kind === 'file')
+                ? () => {
+                    model.setSharing(
+                      chosen.filter((e) => e.kind === 'file').map((e) => ({ name: e.name, size: e.size, path: e.id })),
+                    )
+                    setSelected(new Set())
+                  }
+                : undefined
+            }
             onCut={writable ? () => {
               actions.cut(chosen.map((e) => e.id))
               setSelected(new Set())
@@ -450,6 +543,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
             }}
             query={query}
             onQuery={setQuery}
+            onInbox={shareAnywhere ? () => setInboxOpen(true) : undefined}
           />
         )}
 
@@ -473,7 +567,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
 
         <ConnectionLine model={model} />
 
-        <main className="relative min-h-0 flex-1">
+        <main ref={setPageArea} className="relative min-h-0 flex-1">
           {tab === 'files' && (
             <FilesScreen
               model={model}
@@ -481,6 +575,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
               selecting={selecting}
               onActions={setMenuFor}
               scrollKey={model.listKey}
+              loading={model.vault.loading && model.vault.dir !== model.vault.listed && !query.trim()}
               emptyLabel={filesEmptyLabel({
                 connected: model.connected,
                 status: model.vault.status,
@@ -565,6 +660,15 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
                 setTransfersOpen(true)
               }}
               onDismiss={() => setShared([])}
+              onSend={
+                shareAnywhere
+                  ? () => {
+                      const files = shared
+                      setShared([])
+                      model.setSharing(files.map((f) => ({ name: f.name, size: Math.max(0, f.size), path: '', source: f.uri })))
+                    }
+                  : undefined
+              }
             />
         </Rise>
         <Rise show={offered(update) && tab !== 'more' && bannerGone !== update.release.version}>
@@ -593,7 +697,7 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       <WhatsNew />
 
       <Rise
-        show={notice !== null}
+        show={!!notice}
         onClick={() => setNotice(null)}
         className="fixed inset-x-4 z-[70] mx-auto max-w-[480px] rounded-xl border border-white/[0.1] bg-[#1c1c1f] px-4 py-3 text-[13.5px] leading-snug text-text shadow-lift"
         style={{ bottom: `calc(var(--inset-bottom, 0px) + ${wide ? 20 : 84}px)` }}
@@ -619,6 +723,9 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       />
 
       <TransfersSheet model={model} open={transfersOpen} onClose={() => setTransfersOpen(false)} />
+
+      {shareAnywhere && <PhoneShare model={model} inboxOpen={inboxOpen} onCloseInbox={() => setInboxOpen(false)} />}
+      {!TV && <PhoneNearby nearby={model.nearby} />}
 
       <PhoneManagePanel open={managing} onClose={() => setManaging(false)} />
 
@@ -795,6 +902,7 @@ function TopBar({
   onCloseSearch,
   query,
   onQuery,
+  onInbox,
 }: {
   model: AppModel
   tab: Tab
@@ -803,9 +911,12 @@ function TopBar({
   onCloseSearch: () => void
   query: string
   onQuery: (query: string) => void
+  /** Opens the Inbox; none where there is no Inbox. */
+  onInbox?: () => void
 }): React.JSX.Element {
   const { vault } = model
   const inFolder = tab === 'files' && vault.dir !== ''
+  const waiting = model.inbox.waiting.length
   const title =
     tab === 'files'
       ? inFolder
@@ -852,6 +963,18 @@ function TopBar({
       <h1 className="min-w-0 flex-1 truncate px-1 text-[20px] font-semibold tracking-tight text-text">
         {title}
       </h1>
+      {onInbox && (
+        <IconButton label={waiting > 0 ? `Inbox, ${waiting} waiting` : 'Inbox'} onClick={onInbox}>
+          <span className="relative">
+            <Inbox size={21} />
+            {waiting > 0 && (
+              <span className="absolute -right-2 -top-1.5 min-w-[16px] rounded-full bg-white px-1 text-center font-mono text-[10px] font-bold leading-[16px] text-black">
+                {waiting}
+              </span>
+            )}
+          </span>
+        </IconButton>
+      )}
       {tab !== 'more' && (
         <IconButton label="Search" onClick={onSearch}>
           <Search size={20} />
@@ -866,6 +989,7 @@ function SelectionBar({
   onClose,
   onSelectAll,
   onDownload,
+  onShare,
   onCut,
   onCopy,
   onDelete,
@@ -875,6 +999,8 @@ function SelectionBar({
   onClose: () => void
   onSelectAll: () => void
   onDownload: () => void
+  /** To another of the host's devices; none where there is nobody to share with. */
+  onShare?: () => void
   onCut?: () => void
   onCopy: () => void
   onDelete?: () => void
@@ -892,6 +1018,11 @@ function SelectionBar({
       <IconButton label="Download" onClick={onDownload}>
         <Download size={20} />
       </IconButton>
+      {onShare && (
+        <IconButton label="Share" onClick={onShare}>
+          <Send size={20} />
+        </IconButton>
+      )}
       {onCut && (
         <IconButton label="Move" onClick={onCut}>
           <Scissors size={20} />
@@ -1087,12 +1218,15 @@ function SharedBar({
   vaultName,
   onUpload,
   onDismiss,
+  onSend,
 }: {
   files: PhoneFile[]
   into: string
   vaultName: string
   onUpload: () => void
   onDismiss: () => void
+  /** To another of the host's devices, straight from this phone. */
+  onSend?: () => void
 }): React.JSX.Element {
   const where = into ? into.split('/').pop() : vaultName
   const what = files.length === 1 ? files[0]!.name : `${files.length} files`
@@ -1105,7 +1239,7 @@ function SharedBar({
         <div className="min-w-0 flex-1">
           <div className="truncate text-[14px] text-text">{what}</div>
           <div className="mt-0.5 text-[12px] leading-snug text-textFaint">
-            Shared from another app. Open the folder it belongs in, then upload.
+            Shared from another app. Open the folder it belongs in, then upload{onSend ? '. Or send it to a device.' : '.'}
           </div>
         </div>
       </div>
@@ -1116,6 +1250,15 @@ function SharedBar({
         >
           Not now
         </button>
+        {onSend && (
+          <button
+            onClick={onSend}
+            className="flex items-center gap-1.5 rounded-full border border-white/[0.16] px-3.5 py-2 text-[13px] text-text active:bg-white/[0.08]"
+          >
+            <Send size={14} />
+            Send
+          </button>
+        )}
         <button onClick={onUpload} className="rounded-full bg-basalt px-4 py-2 text-[13px] font-medium text-ink">
           Upload to {where}
         </button>
@@ -1212,11 +1355,15 @@ function useUpdateNotification(update: UpdateState): void {
 }
 
 /** A tap on the update notification opens the update, whether the app was running or not. */
-function useNotificationTaps(showUpdate: () => void): void {
+function useNotificationTaps(showUpdate: () => void, onShare: (action: string) => void): void {
+  const share = useRef(onShare)
+  share.current = onShare
   useEffect(() => {
     if (!isAndroid()) return undefined
     const take = async (): Promise<void> => {
-      if ((await android.takeAction().catch(() => null)) === 'update') showUpdate()
+      const action = await android.takeAction().catch(() => null)
+      if (action === 'update') showUpdate()
+      else if (action?.startsWith('share')) share.current(action)
     }
     void take()
     const onVisible = (): void => {
@@ -1371,13 +1518,87 @@ function TransfersSheet({
  * Keeps the app alive while anything is moving, with a notification that
  * says what and how far — and lets go the moment nothing is.
  */
+/**
+ * The phone's notifications for shares, while Basalt is out of sight: one
+ * offered, with Accept and Decline, and one that arrived, with Open. Each is
+ * told once, and taken away once answered here.
+ */
+function usePhoneShareNotifications(model: AppModel): void {
+  const { inbox, presence } = model
+  const seen = useRef(new Map<string, string>())
+  const started = useRef(Date.now())
+  const myProfile = presence.devices.find((d) => d.device === presence.you)?.profile
+  useEffect(() => {
+    if (!isAndroid()) return
+    // Each shown only with the app out of sight: Android knows (see notifyShare).
+    for (const item of inbox.items) {
+      if (item.direction === 'out') {
+        // Sent from here: told how it went there, while away.
+        const key = `out-${item.id}`
+        const was = seen.current.get(key)
+        seen.current.set(key, item.state)
+        if (was === undefined || was === item.state) continue
+        const to = calledOf(item.peer, myProfile)
+        const said =
+          item.state === 'done'
+            ? `${titleOf(item.files)} arrived on ${item.takenOn ?? to}`
+            : item.state === 'declined'
+              ? `${to} declined ${titleOf(item.files)}`
+              : item.state === 'failed'
+                ? `${titleOf(item.files)} didn’t arrive`
+                : null
+        if (said) void android.notifyShare(key, said, item.reason ?? '', [], true).catch(() => {})
+        continue
+      }
+      if (item.direction !== 'in') continue
+      const before = seen.current.get(item.id)
+      seen.current.set(item.id, item.state)
+      if (before === item.state) continue
+      if (before === undefined && item.at < started.current) continue
+      const from = calledOf(item.peer, myProfile)
+      if (item.state === 'waiting' && item.offer) {
+        void android
+          .notifyShare(
+            item.id,
+            `${item.peer.profileName ?? item.peer.name} wants to send you ${titleOf(item.files)}`,
+            `From ${from}`,
+            ['Accept|accept', 'Decline|decline'],
+            true,
+          )
+          .catch(() => {})
+      } else if (item.state === 'done' && !item.takenOn) {
+        const one = item.saved?.length === 1 && !isProgram(item.saved[0]!.name)
+        void android
+          .notifyShare(item.id, `${titleOf(item.files)} arrived`, `From ${from} · ${item.savedAs ?? 'Download/Basalt'}`, one ? ['Open|open'] : [], true)
+          .catch(() => {})
+      } else if (before === 'waiting') {
+        // Answered here, or moving now: the offer's notification has said its piece.
+        void android.cancelShare(item.id).catch(() => {})
+      }
+    }
+  }, [inbox.items, myProfile])
+}
+
 function useKeepAliveForTransfers(model: AppModel): void {
   const active = model.transfers.active
-  const total = active.reduce((sum, t) => sum + t.total, 0)
-  const done = active.reduce((sum, t) => sum + t.transferred, 0)
+  // Shares sent from this phone move too: how far, as the other side says.
+  const sendingHome = model.inbox.items.filter((i) => i.direction === 'out' && i.state === 'moving')
+  const sendingNearby = model.nearby.items.filter((i) => i.direction === 'out' && i.state === 'moving')
+  const sending = [...sendingHome, ...sendingNearby]
+  const sent = [
+    ...sendingHome.map((i) => model.inbox.progressOf(i)),
+    ...sendingNearby.map((i) => model.nearby.progressOf(i)),
+  ].filter((p) => p !== null)
+  const total = active.reduce((sum, t) => sum + t.total, 0) + sent.reduce((sum, p) => sum + p.total, 0)
+  const done = active.reduce((sum, t) => sum + t.transferred, 0) + sent.reduce((sum, p) => sum + p.done, 0)
   const percent = total > 0 ? Math.floor((done / total) * 100) : -1
-  const count = active.length
-  const first = active[0]?.name ?? ''
+  const count = active.length + sent.length
+  // A share coming in says so: "Receiving holiday.mp4".
+  const first = active[0]
+    ? `${active[0].id.startsWith('share-') ? 'Receiving ' : ''}${active[0].name}`
+    : sending[0]
+      ? `Sending ${titleOf(sending[0].files)}`
+      : ''
   const [asked, setAsked] = useState(false)
 
   useEffect(() => {
@@ -1593,9 +1814,17 @@ function MoreScreen({
     await identity.reloadProfiles()
     await identity.refresh()
   }
+  // The profile's devices, with who is online.
+  const mine = ownDevices(model.presence)
+  const [devicesOpen, setDevicesOpen] = useState(false)
 
   return (
     <div className="h-full overflow-y-auto px-4 pb-10">
+      <Sheet open={devicesOpen} onClose={() => setDevicesOpen(false)} title="Your devices">
+        <div className="px-4 pb-6">
+          <YourDevices devices={mine} you={model.presence.you} />
+        </div>
+      </Sheet>
       <div className="mx-auto max-w-[560px] space-y-3 pt-1">
         {identity.supported && (
           <Card>
@@ -1621,6 +1850,17 @@ function MoreScreen({
                 </div>
               </div>
             </div>
+            {profile && mine.length > 1 && (
+              <button
+                onClick={() => setDevicesOpen(true)}
+                className="mt-3.5 flex w-full items-center gap-2.5 rounded-xl bg-white/[0.05] px-3 py-2.5 text-left active:bg-white/[0.09]"
+              >
+                <Smartphone size={16} className="shrink-0 text-textDim" />
+                <span className="flex-1 text-[14px] text-text">Your devices</span>
+                <span className="font-mono text-[11.5px] text-textFaint">{mine.filter((d) => d.online).length} online</span>
+                <ChevronRight size={15} className="shrink-0 text-textFaint" />
+              </button>
+            )}
             <div className="mt-3.5 flex gap-2">
               {profile ? (
                 <>
@@ -1692,6 +1932,8 @@ function MoreScreen({
             </div>
           )}
         </Card>
+
+        {!isTv() && model.presence.supported && model.presence.you !== '' && <SharingCard model={model} />}
 
         {onManage && (
           <Card onClick={onManage}>

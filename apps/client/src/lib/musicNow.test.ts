@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { NowSession } from './api'
-import { bestOffset, keepInStep, livePosition, smoothed, songOf, startOf } from './musicNow'
+import { bestOffset, keepInStep, livePosition, shownPosition, smoothed, songOf, startOf } from './musicNow'
 
 const session = (playing: boolean, position = 30, at = 1_000_000): NowSession => ({
   device: 'laptop',
@@ -34,6 +34,30 @@ describe('where a song on another device is now', () => {
   })
 })
 
+describe('a seek asked of another device', () => {
+  const asked = { to: 120, since: 2_000_000, said: 1_000_000 }
+
+  it('shows the place asked for at once, moving on as the song would', () => {
+    expect(shownPosition(session(true), 0, 2_000_000, asked)).toBe(120)
+    expect(shownPosition(session(true), 0, 2_001_000, asked)).toBeCloseTo(121)
+    expect(shownPosition(session(false), 0, 2_001_000, asked)).toBe(120)
+  })
+
+  it('believes that device again once it reports being there', () => {
+    const there = session(true, 121, 2_001_000)
+    expect(shownPosition(there, 0, 2_001_500, asked)).toBeCloseTo(121.5)
+  })
+
+  it('keeps the asked place over a report from before the seek landed', () => {
+    const stale = session(true, 45, 2_000_500)
+    expect(shownPosition(stale, 0, 2_001_000, asked)).toBeCloseTo(121)
+  })
+
+  it('follows the reports again after three seconds whatever they say', () => {
+    expect(shownPosition(session(true), 0, 2_003_000, asked)).toBeCloseTo(livePosition(session(true), 0, 2_003_000))
+  })
+})
+
 describe('keeping two devices in step', () => {
   const step = (theirs: number, mine: number, lead = 0, landed = false, rate = 1) =>
     keepInStep({ theirSong: 'a.mp3', mySong: 'a.mp3', theirs, mine, lead, landed, rate })
@@ -53,7 +77,7 @@ describe('keeping two devices in step', () => {
     expect(step(60, 60.04)).toEqual({ do: 'rate', rate: 0.99, lead: 0 })
     // Never more than a little over 1% for a small gap; 2% for a wider one.
     expect(step(60.045, 60)).toEqual({ do: 'rate', rate: 1.0113, lead: 0 })
-    expect(step(60.2, 60)).toEqual({ do: 'rate', rate: 1.02, lead: 0 })
+    expect(step(60.1, 60)).toEqual({ do: 'rate', rate: 1.02, lead: 0 })
   })
 
   it('keeps making it up until within a few milliseconds, then plays at its own speed', () => {

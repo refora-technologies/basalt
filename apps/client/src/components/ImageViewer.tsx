@@ -10,6 +10,11 @@ import { Sheet } from '@/mobile/Sheet'
 
 /** Fingers rather than a pointer; see `Stage` for the gestures. */
 const TOUCH = isMobileShell()
+/** The bars clear of a phone's buttons bar, at a side edge when it is on its side. */
+const SIDES = {
+  paddingLeft: 'calc(var(--inset-left, 0px) + 16px)',
+  paddingRight: 'calc(var(--inset-right, 0px) + 16px)',
+}
 /** On a television: see `lib/remote.ts`. */
 const TV = isTv()
 
@@ -89,7 +94,7 @@ export function ImageViewer({
                 : 'drag h-12 border-b border-white/[0.05]',
               TOUCH && !chrome && 'pointer-events-none opacity-0',
             )}
-            style={TOUCH ? { paddingTop: 'calc(var(--inset-top, 0px) + 6px)' } : undefined}
+            style={TOUCH ? { paddingTop: 'calc(var(--inset-top, 0px) + 6px)', ...SIDES } : undefined}
           >
             {TOUCH && <ToolButton icon={ChevronLeft} label="Back" onClick={onClose} />}
             <div className="min-w-0">
@@ -176,7 +181,7 @@ export function ImageViewer({
                 TOUCH && 'absolute inset-x-0 bottom-0 z-20 bg-black/70 transition-opacity duration-200',
                 TOUCH && !chrome && 'pointer-events-none opacity-0',
               )}
-              style={TOUCH ? { paddingBottom: 'var(--inset-bottom, 0px)' } : undefined}
+              style={TOUCH ? { paddingBottom: 'var(--inset-bottom, 0px)', ...SIDES } : undefined}
             >
               <Filmstrip photos={photos} index={index} base={base} onPick={onIndexChange} />
             </div>

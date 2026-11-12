@@ -706,6 +706,15 @@ Section Install
     WriteRegStr SHCTX "Software\Classes\\{{protocol}}\shell\open\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"%1$\""
   {{/each}}
 
+  !if "${MAINBINARYNAME}" == "basalt-client-shell"
+  ; Share with Basalt: in Explorer's menu for any file, and in Send to.
+  WriteRegStr SHCTX "Software\Classes\*\shell\BasaltShare" "MUIVerb" "Share with Basalt"
+  WriteRegStr SHCTX "Software\Classes\*\shell\BasaltShare" "Icon" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\",0"
+  WriteRegStr SHCTX "Software\Classes\*\shell\BasaltShare" "MultiSelectModel" "Player"
+  WriteRegStr SHCTX "Software\Classes\*\shell\BasaltShare\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" --share $\"%1$\""
+  CreateShortCut "$SENDTO\Basalt.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "--share" "$INSTDIR\${MAINBINARYNAME}.exe" 0
+  !endif
+
   ; Create uninstaller
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
@@ -827,6 +836,10 @@ Section Uninstall
   ; Delete the app directory and its content from disk
   ; Copy main executable
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"
+  !if "${MAINBINARYNAME}" == "basalt-client-shell"
+  DeleteRegKey SHCTX "Software\Classes\*\shell\BasaltShare"
+  Delete "$SENDTO\Basalt.lnk"
+  !endif
 
   ; Delete resources
   {{#each resources}}

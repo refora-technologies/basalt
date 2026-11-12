@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-nearby-wifi-state"
+description = "Enables the nearby_wifi_state command without any pre-configured scope."
+commands.allow = ["nearby_wifi_state"]
+
+[[permission]]
+identifier = "deny-nearby-wifi-state"
+description = "Denies the nearby_wifi_state command without any pre-configured scope."
+commands.deny = ["nearby_wifi_state"]

@@ -1,6 +1,6 @@
 [package]
 name = "basalt-client-shell"
-version = "1.6.3"
+version = "1.6.4"
 edition = "2021"
 description = "Basalt client shell: Windows, Linux and Android"
 rust-version = "1.82"
@@ -18,10 +18,11 @@ tauri-build = { version = "2", features = [] }
 # `cargo test` — and so the pre-commit hook — stays a few seconds rather than a
 # few minutes.
 basalt-client = { path = "../../../crates/basalt-client" }
+basalt-net = { path = "../../../crates/basalt-net" }
 basalt-proto = { path = "../../../crates/basalt-proto" }
 basalt-update = { path = "../../../crates/basalt-update" }
 
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
@@ -36,6 +37,9 @@ tauri-plugin-basalt-android = { path = "plugins/basalt-android" }
 # has no Android side, and the Android app brings its own.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-libmpv = "0.3.2"
+# One Basalt at a time: opened again ("Share with Basalt" in Explorer), the
+# running one is told what for.
+tauri-plugin-single-instance = "2"
 # The system's own media controls for the music: Windows' (the volume
 # flyout, the lock screen, media keys) and Linux desktops' (MPRIS). zbus
 # rather than libdbus, so nothing more to install.
@@ -45,5 +49,23 @@ souvlaki = { version = "0.9.3", default-features = false, features = ["use_zbus"
 # src/linux_player.rs. GTK as Tauri has it; libmpv opened at run time.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+# The desktop's notifications with buttons (Accept / Decline), over zbus as
+# the media controls are.
+notify-rust = { version = "4", default-features = false, features = ["z"] }
 libloading = "0.8"
 webkit2gtk = { version = "2.0", features = ["v2_16"] }
+
+# Notifications with buttons on Windows: an offer to Accept or Decline, from
+# the tray. Tauri's own notification plugin can't tell which was pressed.
+[target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.8"
+# A nearby device's own Wi-Fi: hosting it (Wi-Fi Direct) and looking for one (WLAN).
+windows = { version = "0.61", features = [
+    "Devices_Radios",
+    "Devices_WiFiDirect",
+    "Foundation_Collections",
+    "Security_Credentials",
+    "Foundation",
+    "Win32_Foundation",
+    "Win32_NetworkManagement_WiFi",
+] }

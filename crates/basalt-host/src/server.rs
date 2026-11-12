@@ -30,6 +30,15 @@ use crate::traffic::Traffic;
 use crate::uploads::{Uploads, is_temp_name};
 use crate::vault::Vault;
 
+/// One lock per file the host saves from more than one request at a time:
+/// see [`Host`]'s `saving`.
+#[derive(Default)]
+struct Saving {
+    config: std::sync::Mutex<()>,
+    progress: std::sync::Mutex<()>,
+    stars: std::sync::Mutex<()>,
+}
+
 /// Everything shared between connections.
 pub struct Host {
     identity: HostIdentity,
@@ -62,8 +71,18 @@ pub struct Host {
     /// What each profile's devices are playing now, and what they ask of
     /// each other.
     music_live: std::sync::Mutex<crate::music_now::Live>,
+    /// Devices playing together, each group's state: see `crate::music_groups`.
+    music_groups: std::sync::Mutex<crate::music_groups::Groups>,
     /// A profile whose devices' music changed, for their watches to say so.
     music_changes: tokio::sync::broadcast::Sender<String>,
+    /// Who is online, and the messages devices pass each other.
+    line: std::sync::Mutex<crate::channel::Line>,
+    /// Files held for devices that are away. None if the host's folder can't
+    /// take them.
+    shares: Option<crate::share_store::ShareStore>,
+    /// A message for a device online now, or a device come or gone, for the
+    /// watches to pass on: see [`stream_changes`].
+    line_events: tokio::sync::broadcast::Sender<LineEvent>,
     /// The household's key, and the member statements made and taken back.
     authority: std::sync::Mutex<crate::authority::Authority>,
     /// This host's public key, as an owner's endorsement names it.
@@ -139,13 +158,38 @@ pub struct Host {
     pub(crate) profile_links: std::sync::Mutex<Vec<crate::links::LinkRequest>>,
     /// Each profile's starred files, by profile id.
     stars: std::sync::Mutex<std::collections::HashMap<String, Vec<Star>>>,
+    /// Held while the settings, the watch progress or the stars are copied
+    /// and written, so two saves at once land in the order they were made: a
+    /// copy taken first and written last would undo the newer one (a device
+    /// just paired, a star just set).
+    saving: Saving,
     /// Finding and putting in new versions: see [`crate::updates`].
     pub(crate) updates: crate::updates::Updates,
 }
 
 impl Host {
     pub fn new(config: HostConfig, config_path: std::path::PathBuf) -> Result<Arc<Self>> {
+        let mut config = config;
         let identity = config.identity()?;
+        // Files held for someone away, locked with a key of the host's own,
+        // made the first time and kept in its settings: see share_store.
+        let made_share_key = share_key(&config).is_none();
+        if made_share_key {
+            let mut key = [0u8; 32];
+            ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut key).map_err(
+                |_| HostError::Io(std::io::Error::other("no randomness for the share key")),
+            )?;
+            config.share_key.0 = basalt_proto::hex::encode(&key);
+        }
+        let shares = share_key(&config).and_then(|key| {
+            let dir = config_path
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("shares");
+            crate::share_store::ShareStore::open(dir, key)
+                .map_err(|e| tracing::warn!("files held for others can't be kept: {e}"))
+                .ok()
+        });
         let mut registry = Registry::new(config.devices.clone(), config.require_pin);
         let abandoned = registry.forget_abandoned(unix_now());
 
@@ -302,7 +346,10 @@ impl Host {
             access_changes: tokio::sync::broadcast::Sender::new(16),
             profile_changes: tokio::sync::broadcast::Sender::new(16),
             music_live: std::sync::Mutex::new(crate::music_now::Live::default()),
+            music_groups: std::sync::Mutex::new(crate::music_groups::Groups::default()),
             music_changes: tokio::sync::broadcast::Sender::new(64),
+            line: std::sync::Mutex::new(crate::channel::Line::default()),
+            line_events: tokio::sync::broadcast::Sender::new(256),
             authority: std::sync::Mutex::new(authority),
             host_key,
             drive_lost: std::sync::atomic::AtomicBool::new(drive_lost),
@@ -339,14 +386,22 @@ impl Host {
             profiles: std::sync::Mutex::new(profiles),
             profile_links: std::sync::Mutex::new(Vec::new()),
             stars: std::sync::Mutex::new(stars),
+            saving: Saving::default(),
             updates: crate::updates::Updates::default(),
+            shares,
         });
         if abandoned > 0 {
             tracing::info!("let go of {abandoned} devices that never came back");
         }
         // Keys made now are written now: a statement made with a key that was
         // never saved would speak for nobody after a restart.
-        if abandoned > 0 || made_person_keys || made_claim_codes || made_household || pruned {
+        if abandoned > 0
+            || made_person_keys
+            || made_claim_codes
+            || made_household
+            || pruned
+            || made_share_key
+        {
             host.persist()?;
         }
         Ok(host)
@@ -1021,10 +1076,12 @@ impl Host {
     }
 
     fn save_progress(&self) {
+        let Some(path) = self.progress_path() else {
+            return;
+        };
+        let _saving = self.saving.progress.lock().expect("saving lock");
         let snapshot = self.progress.lock().expect("progress lock").clone();
-        if let Some(path) = self.progress_path()
-            && let Err(e) = snapshot.save(&path)
-        {
+        if let Err(e) = snapshot.save(&path) {
             tracing::warn!("could not save watch progress: {e}");
         }
     }
@@ -1601,16 +1658,13 @@ impl Host {
     }
 
     fn save_stars(&self) {
-        let snapshot = self.stars.lock().expect("stars lock").clone();
         if let Some(root) = self.vault_path() {
             let path = stars_path(self.config_dir(), &root);
+            let _saving = self.saving.stars.lock().expect("saving lock");
+            let snapshot = self.stars.lock().expect("stars lock").clone();
             let written = serde_json::to_vec(&snapshot)
                 .map_err(std::io::Error::other)
-                .and_then(|json| {
-                    let temp = path.with_extension("tmp");
-                    std::fs::write(&temp, json)?;
-                    std::fs::rename(&temp, &path)
-                });
+                .and_then(|json| crate::config::write_whole(&path, &json));
             if let Err(e) = written {
                 tracing::warn!("could not save stars: {e}");
             }
@@ -3128,6 +3182,7 @@ impl Host {
             endorsement: self.endorsement_view(),
             platform: crate::ui::platform(),
             headless: self.is_headless(),
+            sharing: self.sharing_view(),
         }
     }
 
@@ -3493,6 +3548,8 @@ impl Host {
                 let mut authority = self.authority.lock().expect("authority lock");
                 authority.revoke_device(&key);
                 authority.drop_endorsement_by(&key);
+                // Nothing more waits for it on the line.
+                self.line.lock().expect("line lock").forget_device(&key);
             }
             removed
         };
@@ -3507,6 +3564,7 @@ impl Host {
 
     /// Copies the live device list into the config and writes it out.
     pub(crate) fn persist(&self) -> Result<()> {
+        let _saving = self.saving.config.lock().expect("saving lock");
         let snapshot = {
             let devices = self
                 .registry
@@ -3603,6 +3661,943 @@ fn load_stars(path: &std::path::Path) -> std::collections::HashMap<String, Vec<S
 }
 
 /// The time in Unix milliseconds, for what changes within a second.
+/// What the line tells the watches: see [`Host::line_events`].
+#[derive(Debug, Clone)]
+enum LineEvent {
+    /// For this device.
+    Message {
+        to: String,
+        message: Box<basalt_proto::msg::ChannelMessage>,
+    },
+    /// Somebody came online or went.
+    Presence,
+}
+
+/// A device online for as long as this lives: a watch with the channel.
+struct OnLine {
+    host: Arc<Host>,
+    device: String,
+    /// What waited for it, to send down the watch first.
+    waiting: Vec<basalt_proto::msg::ChannelMessage>,
+}
+
+impl OnLine {
+    fn open(host: &Arc<Host>, device: String, profile: Option<String>) -> Self {
+        let (came, mut waiting) =
+            host.line
+                .lock()
+                .expect("line lock")
+                .open(&device, profile.as_deref(), unix_ms());
+        waiting.extend(host.held_offers(&device));
+        // Back on the line: its group as it is now, for any change missed
+        // while it was off.
+        waiting.extend(host.group_now(&device));
+        if came {
+            let _ = host.line_events.send(LineEvent::Presence);
+        }
+        Self {
+            host: host.clone(),
+            device,
+            waiting,
+        }
+    }
+}
+
+impl Drop for OnLine {
+    fn drop(&mut self) {
+        let gone = self
+            .host
+            .line
+            .lock()
+            .expect("line lock")
+            .close(&self.device, unix_ms());
+        if gone {
+            let _ = self.host.line_events.send(LineEvent::Presence);
+            self.host.keep_groups_online();
+        }
+    }
+}
+
+/// The host's share key, if its settings hold a good one.
+fn share_key(config: &HostConfig) -> Option<[u8; 32]> {
+    let bytes = basalt_proto::hex::decode(&config.share_key.0).ok()?;
+    bytes.try_into().ok()
+}
+
+/// Space a share held for someone away must leave free on the host's disk:
+/// the drive the films live on is never filled by one.
+fn held_margin(total: u64) -> u64 {
+    (total / 20).min(2 * 1024 * 1024 * 1024)
+}
+
+/// Where shares are kept on the drive with secure mode off, one folder per
+/// profile inside.
+pub const SHARES_FOLDER: &str = "Basalt shares";
+
+/// "Basalt shares/<owner>" on the drive, made if it isn't there: where
+/// shares are kept in plain, and where a removed profile's are moved.
+fn shares_folder(vault: &crate::vault::Vault, owner: &str) -> Result<String> {
+    let owner = if crate::vault::name_problem(owner).is_some() {
+        "Shared"
+    } else {
+        owner
+    };
+    let folder = format!("{SHARES_FOLDER}/{owner}");
+    for level in [SHARES_FOLDER.to_string(), folder.clone()] {
+        if vault.resolve(&level).is_err() {
+            vault.mkdir(&level)?;
+        }
+    }
+    Ok(folder)
+}
+
+/// A place on the drive for `name` in `folder` that nothing has, nor any of
+/// `taken`: "name (1).ext" and on when it has.
+fn free_place(
+    vault: &crate::vault::Vault,
+    folder: &str,
+    name: &str,
+    taken: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf> {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.to_string(), String::new()),
+    };
+    let mut count = 0;
+    loop {
+        let named = if count == 0 {
+            name.to_string()
+        } else {
+            format!("{stem} ({count}){ext}")
+        };
+        let rel = if folder.is_empty() {
+            named
+        } else {
+            format!("{folder}/{named}")
+        };
+        let place = vault.resolve_new(&rel)?;
+        if !place.exists() && !taken.contains(&place) {
+            return Ok(place);
+        }
+        count += 1;
+    }
+}
+
+impl Host {
+    /// Locks a copy of files on the drive into the share store, for a device
+    /// that is away, and offers it to that device at once if it came back
+    /// meanwhile.
+    async fn hold_share(
+        self: &Arc<Self>,
+        from: &Device,
+        profile: Option<String>,
+        req: basalt_proto::msg::ShareHoldRequest,
+    ) -> Result<basalt_proto::msg::HeldShare> {
+        let store_ok = self.shares.is_some();
+        if !store_ok {
+            return Err(HostError::Unavailable("this host can't hold files".into()));
+        }
+        let count = req.paths.len() + req.staged.len();
+        if count == 0 || count > 500 {
+            return Err(HostError::BadRequest(
+                "a share holds from 1 to 500 files".into(),
+            ));
+        }
+        let to = self
+            .devices()
+            .into_iter()
+            .find(|d| d.key() == req.to)
+            .ok_or_else(|| HostError::NotFound("there is no such device on this host".into()))?;
+        let vault = self.require_vault().await?;
+        let mut files = Vec::new();
+        let mut total = 0u64;
+        for path in &req.paths {
+            let real = vault.resolve(path)?;
+            let meta = std::fs::metadata(&real)?;
+            if !meta.is_file() {
+                return Err(HostError::BadRequest(format!("{path} isn't a file")));
+            }
+            total += meta.len();
+            let name = path.rsplit('/').next().unwrap_or(path).to_string();
+            files.push((name, real));
+        }
+        // Uploaded from the sending device first: whole, and named as a file
+        // may be.
+        let store = self.shares.as_ref().expect("checked above");
+        for staged in &req.staged {
+            let (path, len) = store
+                .staged(&staged.stage)
+                .ok_or_else(|| HostError::NotFound(format!("{} wasn't uploaded", staged.name)))?;
+            if len != staged.size {
+                return Err(HostError::BadRequest(format!(
+                    "{} came in part: {len} of {} bytes",
+                    staged.name, staged.size
+                )));
+            }
+            if let Some(why) = crate::vault::name_problem(&staged.name) {
+                return Err(HostError::BadRequest(format!("{}: {why}", staged.name)));
+            }
+            total += len;
+            files.push((staged.name.clone(), path));
+        }
+        // Uploaded already: counted against the room once.
+        let staged_total: u64 = req.staged.iter().map(|s| s.size).sum();
+        let (secure, limit) = {
+            let config = self.config.lock().expect("config lock");
+            (
+                config.share_secure,
+                profile.as_deref().and_then(|p| config.share_limits.of(p)),
+            )
+        };
+        if let Some(why) = self.share_refused(
+            profile.as_deref(),
+            from.key(),
+            total.saturating_sub(staged_total),
+            limit,
+        ) {
+            return Err(HostError::Denied(why));
+        }
+        let from_party = crate::share_store::Party {
+            device: from.key().to_string(),
+            name: from.name.clone(),
+            profile: profile.clone(),
+        };
+        let to_party = crate::share_store::Party {
+            device: to.key().to_string(),
+            name: to.name.clone(),
+            profile: None,
+        };
+        // Secure mode off: in plain, in the sender's own folder of "Basalt
+        // shares" on the drive.
+        let mut places = Vec::new();
+        if !secure {
+            if !vault.writable() {
+                return Err(HostError::Denied(
+                    "the drive can't take files, so the host can't keep this in its Basalt shares folder".into(),
+                ));
+            }
+            let owner = profile
+                .as_deref()
+                .and_then(|p| self.profile_name(p))
+                .unwrap_or_else(|| from.name.clone());
+            let folder = shares_folder(&vault, &owner)?;
+            for (name, _) in &files {
+                let place = free_place(&vault, &folder, name, &places)?;
+                places.push(place);
+            }
+        }
+        let id = req.id.clone();
+        let keep = req.keep;
+        let host = Arc::clone(self);
+        let held = tokio::task::spawn_blocking(move || {
+            let store = host.shares.as_ref().expect("checked above");
+            if secure {
+                let opened: std::io::Result<Vec<(String, std::fs::File)>> = files
+                    .into_iter()
+                    .map(|(name, path)| std::fs::File::open(path).map(|f| (name, f)))
+                    .collect();
+                store.hold(&id, from_party, to_party, keep, opened?, unix_ms())
+            } else {
+                let opened: std::io::Result<Vec<(String, std::fs::File, std::path::PathBuf)>> =
+                    files
+                        .into_iter()
+                        .zip(places)
+                        .map(|((name, path), place)| {
+                            std::fs::File::open(path).map(|f| (name, f, place))
+                        })
+                        .collect();
+                store.hold_plain(&id, from_party, to_party, keep, opened?, unix_ms())
+            }
+        })
+        .await
+        .map_err(join)??;
+        for staged in &req.staged {
+            store.unstage(&staged.stage);
+        }
+        self.offer_if_online(&held);
+        Ok(view_of(&held))
+    }
+
+    /// Its device came back while it was being kept: offered now.
+    fn offer_if_online(&self, held: &crate::share_store::Held) {
+        let online = self
+            .line
+            .lock()
+            .expect("line lock")
+            .is_online(&held.to.device);
+        if online {
+            for message in self.held_offers(&held.to.device) {
+                if message.id == format!("held-{}", held.id) {
+                    let _ = self.line_events.send(LineEvent::Message {
+                        to: held.to.device.clone(),
+                        message: Box::new(message),
+                    });
+                }
+            }
+        }
+    }
+
+    /// "Share again": a copy of a share kept here, for another device.
+    async fn share_again(
+        self: &Arc<Self>,
+        held: crate::share_store::Held,
+        profile: Option<&str>,
+        device: &str,
+        req: &basalt_proto::msg::ShareManageRequest,
+    ) -> Result<()> {
+        let to = self
+            .devices()
+            .into_iter()
+            .find(|d| d.key() == req.to)
+            .ok_or_else(|| HostError::NotFound("there is no such device on this host".into()))?;
+        let (secure, limit) = {
+            let config = self.config.lock().expect("config lock");
+            (
+                config.share_secure,
+                profile.and_then(|p| config.share_limits.of(p)),
+            )
+        };
+        if let Some(why) = self.share_refused(profile, device, held.bytes(), limit) {
+            return Err(HostError::Denied(why));
+        }
+        let places = if secure {
+            None
+        } else {
+            let vault = self.require_vault().await?;
+            if !vault.writable() {
+                return Err(HostError::Denied(
+                    "the drive can't take files, so the host can't keep this in its Basalt shares folder".into(),
+                ));
+            }
+            let owner = profile
+                .and_then(|p| self.profile_name(p))
+                .unwrap_or_else(|| held.from.name.clone());
+            let folder = shares_folder(&vault, &owner)?;
+            let mut places = Vec::new();
+            for file in &held.files {
+                let place = free_place(&vault, &folder, &file.name, &places)?;
+                places.push(place);
+            }
+            Some(places)
+        };
+        let to_party = crate::share_store::Party {
+            device: to.key().to_string(),
+            name: to.name.clone(),
+            profile: None,
+        };
+        let host = Arc::clone(self);
+        let (id, again_id, keep) = (held.id.clone(), req.again.clone(), req.keep);
+        let again = tokio::task::spawn_blocking(move || {
+            host.shares.as_ref().expect("held came from it").copy_for(
+                &id,
+                &again_id,
+                to_party,
+                keep,
+                places,
+                unix_ms(),
+            )
+        })
+        .await
+        .map_err(join)??;
+        self.offer_if_online(&again);
+        Ok(())
+    }
+
+    /// What waits on the share store for `device`, as offers it understands:
+    /// the same as a sender's, marked as held here.
+    fn held_offers(&self, device: &str) -> Vec<basalt_proto::msg::ChannelMessage> {
+        let Some(store) = self.shares.as_ref() else {
+            return Vec::new();
+        };
+        let book = self.profiles.lock().expect("profiles lock");
+        let devices = self.devices();
+        store
+            .waiting_for(device)
+            .into_iter()
+            .map(|held| {
+                let profile_name = held
+                    .from
+                    .profile
+                    .as_deref()
+                    .and_then(|p| book.profiles().iter().find(|x| x.id == p).map(|x| x.name.clone()));
+                let form_of = |key: &str| {
+                    devices
+                        .iter()
+                        .find(|d| d.key() == key)
+                        .and_then(|d| d.form)
+                        .and_then(|f| serde_json::to_value(f).ok())
+                };
+                let body = serde_json::json!({
+                    "offer": held.id,
+                    "files": held.files.iter().map(|f| serde_json::json!({ "name": f.name, "size": f.size, "path": "" })).collect::<Vec<_>>(),
+                    "from": { "device": held.from.device, "name": held.from.name, "profile": held.from.profile, "profileName": profile_name, "form": form_of(&held.from.device) },
+                    "to": { "device": held.to.device, "name": held.to.name, "form": form_of(&held.to.device) },
+                    "held": true,
+                });
+                basalt_proto::msg::ChannelMessage {
+                    id: format!("held-{}", held.id),
+                    from_device: held.from.device.clone(),
+                    from_name: held.from.name.clone(),
+                    from_profile: held.from.profile.clone(),
+                    to: basalt_proto::msg::Address::Device { device: held.to.device.clone() },
+                    kind: "share.offer".into(),
+                    body,
+                    sent: held.created,
+                    expires: i64::MAX,
+                }
+            })
+            .collect()
+    }
+
+    /// What a profile (or a device on its own) has held here.
+    fn held_by(&self, profile: Option<&str>, device: &str) -> basalt_proto::msg::ShareHeldResponse {
+        let Some(store) = self.shares.as_ref() else {
+            return basalt_proto::msg::ShareHeldResponse::default();
+        };
+        let (used, count, _) = store.usage();
+        basalt_proto::msg::ShareHeldResponse {
+            held: store.sent_by(profile, device).iter().map(view_of).collect(),
+            used,
+            count,
+            room: Some(self.share_room(profile, device)),
+            secure: Some(self.config.lock().expect("config lock").share_secure),
+        }
+    }
+
+    /// A profile's name, by its id.
+    fn profile_name(&self, id: &str) -> Option<String> {
+        self.profiles
+            .lock()
+            .expect("profiles lock")
+            .find(id)
+            .map(|p| p.name.clone())
+    }
+
+    /// Bytes `profile` (or `device`, on its own) may still send through the
+    /// host now: the space where it would go, less a margin, and what is left
+    /// of its limit.
+    fn share_room(&self, profile: Option<&str>, device: &str) -> u64 {
+        let (secure, limit) = {
+            let config = self.config.lock().expect("config lock");
+            (
+                config.share_secure,
+                profile.and_then(|p| config.share_limits.of(p)),
+            )
+        };
+        let place = if secure {
+            self.shares.as_ref().map(|s| s.dir().to_path_buf())
+        } else {
+            self.vault_path()
+        };
+        let mut room = match place.map(|w| crate::space::for_path(&w)) {
+            // A disk that won't say: not refused for it.
+            None | Some((0, 0)) => u64::MAX,
+            Some((free, size)) => free.saturating_sub(held_margin(size)),
+        };
+        if let (Some(limit), Some(store)) = (limit, self.shares.as_ref()) {
+            let used = store
+                .usage()
+                .2
+                .get(profile.unwrap_or(device))
+                .copied()
+                .unwrap_or(0);
+            room = room.min(limit.saturating_sub(used));
+        }
+        room
+    }
+
+    /// Why a share of `total` bytes can't be kept now, if it can't.
+    fn share_refused(
+        &self,
+        profile: Option<&str>,
+        device: &str,
+        total: u64,
+        limit: Option<u64>,
+    ) -> Option<String> {
+        if total <= self.share_room(profile, device) {
+            return None;
+        }
+        let used = self
+            .shares
+            .as_ref()
+            .and_then(|s| s.usage().2.get(profile.unwrap_or(device)).copied())
+            .unwrap_or(0);
+        match limit {
+            Some(limit) if used.saturating_add(total) > limit => Some(format!(
+                "that's more than this profile may keep on the host ({} of {} used)",
+                crate::ui::bytes_said(used),
+                crate::ui::bytes_said(limit)
+            )),
+            _ => Some("not enough space on the host to keep this for someone offline".into()),
+        }
+    }
+
+    /// Removes a profile, and first what it keeps on the host for someone
+    /// away (D14): moved into "Basalt shares/<name>" on the drive (`move`),
+    /// or deleted. Either way the shares are gone from the host, so their
+    /// offers end (D19).
+    pub async fn remove_profile_and_shares(
+        self: &Arc<Self>,
+        id: &str,
+        move_to_drive: bool,
+    ) -> Result<bool> {
+        let held: Vec<crate::share_store::Held> = self
+            .shares
+            .as_ref()
+            .map(|store| {
+                store
+                    .all()
+                    .into_iter()
+                    .filter(|h| h.from.profile.as_deref() == Some(id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !held.is_empty() {
+            let store = self.shares.as_ref().expect("held came from it");
+            if move_to_drive {
+                let vault = self.require_vault().await?;
+                if !vault.writable() {
+                    return Err(HostError::Denied(
+                        "the drive can't take files, so its share files can't be moved there"
+                            .into(),
+                    ));
+                }
+                let name = self.profile_name(id).unwrap_or_else(|| "Shared".into());
+                let folder = shares_folder(&vault, &name)?;
+                for share in &held {
+                    for (n, file) in share.files.iter().enumerate() {
+                        // Kept in plain already: it is on the drive as it is.
+                        if file.plain.is_some() {
+                            continue;
+                        }
+                        let dest = free_place(&vault, &folder, &file.name, &[])?;
+                        store.unlock_into(&share.id, n, &dest)?;
+                    }
+                    store.forget(&share.id)?;
+                }
+            } else {
+                for share in &held {
+                    store.delete(&share.id)?;
+                }
+            }
+        }
+        self.remove_profile(id)
+    }
+
+    /// Does what a device asked of a group playing together, and tells
+    /// every member what it is now (and those no longer in it that they
+    /// aren't). Answers the group as the asking device sees it after.
+    pub fn music_group(
+        &self,
+        profile: &str,
+        me: basalt_proto::msg::GroupMember,
+        asked: &basalt_proto::msg::MusicGroupRequest,
+    ) -> Result<Option<basalt_proto::msg::MusicGroup>> {
+        let now = unix_ms();
+        let there = (asked.action == "start")
+            .then(|| {
+                self.music_live
+                    .lock()
+                    .expect("music lock")
+                    .playing_now(profile, &asked.with, now)
+            })
+            .flatten()
+            .map(|(name, form, listening, playing)| {
+                (
+                    basalt_proto::msg::GroupMember {
+                        device: asked.with.clone(),
+                        name,
+                        form,
+                    },
+                    listening,
+                    playing,
+                )
+            });
+        let device = me.device.clone();
+        let changed = self
+            .music_groups
+            .lock()
+            .expect("groups lock")
+            .ask(profile, me, asked, there, now)
+            .map_err(|why| HostError::NotFound(why.into()))?;
+        let mine = self.music_groups.lock().expect("groups lock").of(&device);
+        self.tell_group(&changed);
+        if asked.action != "view" {
+            let _ = self.music_changes.send(profile.to_string());
+        }
+        Ok(mine)
+    }
+
+    /// A `music.group` message from the host to `to`.
+    fn group_message(
+        &self,
+        to: &str,
+        body: serde_json::Value,
+    ) -> basalt_proto::msg::ChannelMessage {
+        let host_name = self.config.lock().expect("config lock").host_name.clone();
+        basalt_proto::msg::ChannelMessage {
+            id: format!("group-{}-{to}", unix_ms()),
+            from_device: format!("host-{}", self.identity.host_id),
+            from_name: host_name,
+            from_profile: None,
+            to: basalt_proto::msg::Address::Device {
+                device: to.to_string(),
+            },
+            kind: "music.group".into(),
+            body,
+            sent: unix_ms(),
+            expires: unix_ms(),
+        }
+    }
+
+    /// The group `device` is in, as a message: for a device back on the line.
+    fn group_now(&self, device: &str) -> Option<basalt_proto::msg::ChannelMessage> {
+        let group = self.music_groups.lock().expect("groups lock").of(device)?;
+        Some(self.group_message(
+            device,
+            serde_json::json!({ "now": unix_ms(), "group": group }),
+        ))
+    }
+
+    /// Tells a group's members what it is now, and those who left it that
+    /// they're on their own: a `music.group` message down each one's watch.
+    fn tell_group(&self, changed: &crate::music_groups::Changed) {
+        let send = |to: &str, body: serde_json::Value| {
+            let message = self.group_message(to, body);
+            let _ = self.line_events.send(LineEvent::Message {
+                to: to.to_string(),
+                message: Box::new(message),
+            });
+        };
+        if let Some(group) = &changed.group {
+            let body = serde_json::json!({ "now": unix_ms(), "group": group });
+            for member in &group.members {
+                send(&member.device, body.clone());
+            }
+        }
+        for device in &changed.left {
+            send(
+                device,
+                serde_json::json!({ "now": unix_ms(), "group": null, "ended": changed.ended }),
+            );
+        }
+    }
+
+    /// Devices gone away leave their groups; the others are told.
+    fn keep_groups_online(&self) {
+        let changes = {
+            let line = self.line.lock().expect("line lock");
+            self.music_groups
+                .lock()
+                .expect("groups lock")
+                .keep_online(|d| line.is_online(d), unix_ms())
+        };
+        for changed in &changes {
+            self.tell_group(changed);
+        }
+    }
+
+    /// Kept apart and locked (on), or in plain in "Basalt shares" on the
+    /// drive (off). Shares already held stay as they are.
+    pub fn set_share_secure(&self, secure: bool) -> Result<()> {
+        self.config.lock().expect("config lock").share_secure = secure;
+        self.persist()
+    }
+
+    /// Limits on or off, the limit for profiles not set on their own, and
+    /// one profile's own (None: back to the general one).
+    pub fn set_share_limits(
+        &self,
+        on: Option<bool>,
+        new_profile: Option<u64>,
+        profile: Option<(String, Option<u64>)>,
+    ) -> Result<()> {
+        {
+            let mut config = self.config.lock().expect("config lock");
+            let limits = &mut config.share_limits;
+            if let Some(on) = on {
+                limits.on = on;
+            }
+            if let Some(bytes) = new_profile {
+                limits.new_profile = bytes;
+            }
+            if let Some((id, bytes)) = profile {
+                match bytes {
+                    Some(bytes) => {
+                        limits.profiles.insert(id, bytes);
+                    }
+                    None => {
+                        limits.profiles.remove(&id);
+                    }
+                }
+            }
+        }
+        self.persist()
+    }
+
+    /// Every share held, deleted: "Clear share files". Their senders are
+    /// told, so a share still waiting says it was removed by the host.
+    pub fn clear_shares(&self) -> Result<usize> {
+        let Some(store) = self.shares.as_ref() else {
+            return Ok(0);
+        };
+        let held = store.all();
+        let cleared = store.clear()?;
+        self.tell_removed(&held);
+        Ok(cleared)
+    }
+
+    /// Tells the senders of shares still waiting that the host removed them.
+    fn tell_removed(&self, held: &[crate::share_store::Held]) {
+        let host = crate::channel::Sender {
+            device: format!("host-{}", self.identity.host_id),
+            name: self.config.lock().expect("config lock").host_name.clone(),
+            profile: None,
+        };
+        for share in held
+            .iter()
+            .filter(|h| h.state == crate::share_store::HeldState::Waiting)
+        {
+            let _ = self.channel_send(
+                &host,
+                basalt_proto::msg::ChannelSendRequest {
+                    to: basalt_proto::msg::Address::Device {
+                        device: share.from.device.clone(),
+                    },
+                    kind: "share.answer".into(),
+                    body: serde_json::json!({
+                        "offer": share.id,
+                        "answer": "removed",
+                        "by": { "device": host.device, "name": host.name },
+                        "reason": "Removed by the host",
+                    }),
+                    ttl_ms: basalt_proto::msg::CHANNEL_MAX_TTL_MS,
+                },
+            );
+        }
+    }
+
+    /// Sharing between devices, as the host's window and Manage host show it.
+    pub fn sharing_view(&self) -> crate::ui::SharingView {
+        let (secure, limits) = {
+            let config = self.config.lock().expect("config lock");
+            (config.share_secure, config.share_limits.clone())
+        };
+        let (used, count, by) = self.shares.as_ref().map(|s| s.usage()).unwrap_or_default();
+        let locked = self.shares.as_ref().map(|s| s.locked_bytes()).unwrap_or(0);
+        // The store on the drive's own disk: its files take from the drive's
+        // free space, so the drive's bar shows them.
+        let same_disk = match (self.shares.as_ref(), self.vault_path()) {
+            (Some(store), Some(vault)) => crate::space::same_disk(store.dir(), &vault),
+            _ => false,
+        };
+        let profiles = self
+            .profiles
+            .lock()
+            .expect("profiles lock")
+            .profiles()
+            .iter()
+            .map(|p| crate::ui::SharingProfile {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                color: p.color,
+                used: by.get(&p.id).copied().unwrap_or(0),
+                limit: limits.profiles.get(&p.id).copied(),
+            })
+            .collect::<Vec<_>>();
+        crate::ui::SharingView {
+            available: self.shares.is_some(),
+            secure,
+            limits_on: limits.on,
+            new_profile_limit: limits.new_profile,
+            profiles,
+            used,
+            locked,
+            count,
+            from: by.len(),
+            same_disk,
+        }
+    }
+
+    /// Deletes a held share, or moves its files onto the drive, for whoever sent it.
+    async fn manage_share(
+        self: &Arc<Self>,
+        profile: Option<&str>,
+        device: &str,
+        writable: bool,
+        req: basalt_proto::msg::ShareManageRequest,
+    ) -> Result<()> {
+        let store = self
+            .shares
+            .as_ref()
+            .ok_or_else(|| HostError::Unavailable("this host can't hold files".into()))?;
+        let held = store
+            .get(&req.id)
+            .ok_or_else(|| HostError::NotFound("that share".into()))?;
+        let theirs = match profile {
+            Some(p) => held.from.profile.as_deref() == Some(p),
+            None => held.from.profile.is_none() && held.from.device == device,
+        };
+        if !theirs {
+            return Err(HostError::Denied(
+                "only whoever sent it can change it".into(),
+            ));
+        }
+        match req.action.as_str() {
+            "delete" => store.delete(&req.id),
+            "again" => self.share_again(held, profile, device, &req).await,
+            "move" => {
+                if !writable {
+                    return Err(HostError::Denied(
+                        "this device can't add files to the drive".into(),
+                    ));
+                }
+                let vault = self.require_vault().await?;
+                for (n, file) in held.files.iter().enumerate() {
+                    let dest = free_place(&vault, &req.folder, &file.name, &[])?;
+                    store.unlock_into(&req.id, n, &dest)?;
+                }
+                store.delete(&req.id)
+            }
+            _ => Err(HostError::BadRequest("delete, move or again".into())),
+        }
+    }
+}
+
+fn view_of(held: &crate::share_store::Held) -> basalt_proto::msg::HeldShare {
+    basalt_proto::msg::HeldShare {
+        id: held.id.clone(),
+        to: held.to.device.clone(),
+        to_name: held.to.name.clone(),
+        files: held
+            .files
+            .iter()
+            .map(|f| basalt_proto::msg::HeldShareFile {
+                name: f.name.clone(),
+                size: f.size,
+            })
+            .collect(),
+        created: held.created,
+        keep: held.keep,
+        state: match held.state {
+            crate::share_store::HeldState::Waiting => "waiting",
+            crate::share_store::HeldState::Accepted => "accepted",
+            crate::share_store::HeldState::Declined => "declined",
+        }
+        .into(),
+    }
+}
+
+/// How often devices not heard from lately are looked for.
+const LINE_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
+impl Host {
+    /// `device` said it is still there: see [`crate::channel::Line::heard`].
+    fn heard(&self, device: &str) {
+        let back = self
+            .line
+            .lock()
+            .expect("line lock")
+            .heard(device, unix_ms());
+        if let Some(mut waiting) = back {
+            let _ = self.line_events.send(LineEvent::Presence);
+            waiting.extend(self.group_now(device));
+            for message in waiting {
+                let _ = self.line_events.send(LineEvent::Message {
+                    to: device.to_string(),
+                    message: Box::new(message),
+                });
+            }
+        }
+    }
+
+    /// Every device of the host, who is online, and what each is signed in to.
+    fn presence(&self, you: String) -> basalt_proto::msg::PresenceResponse {
+        let devices = self.devices();
+        let book = self.profiles.lock().expect("profiles lock");
+        let line = self.line.lock().expect("line lock");
+        let mut listed: Vec<basalt_proto::msg::PresentDevice> = devices
+            .iter()
+            .map(|d| {
+                let key = d.key().to_string();
+                // Online: the profile it is signed in to now. Away: the one it
+                // last signed in to and is still signed in to, so a device of
+                // Maya's off for the night is still listed as hers.
+                let profile = line.profile_of(&key).map(str::to_string).or_else(|| {
+                    book.tokens()
+                        .iter()
+                        .filter(|t| t.device_key == key)
+                        .max_by_key(|t| t.last_used)
+                        .map(|t| t.profile_id.clone())
+                });
+                let named = profile
+                    .as_deref()
+                    .and_then(|id| book.profiles().iter().find(|p| p.id == id));
+                basalt_proto::msg::PresentDevice {
+                    online: line.is_online(&key),
+                    last_seen: line.last_seen(&key),
+                    device: key,
+                    name: d.name.clone(),
+                    form: d
+                        .form
+                        .and_then(|f| serde_json::to_value(f).ok())
+                        .and_then(|v| v.as_str().map(str::to_string)),
+                    profile_name: named.map(|p| p.name.clone()),
+                    profile_color: named.map(|p| u32::from(p.color)),
+                    profile,
+                }
+            })
+            .collect();
+        // Online first, then by name: the order a list of targets is read in.
+        listed.sort_by(|a, b| b.online.cmp(&a.online).then_with(|| a.name.cmp(&b.name)));
+        basalt_proto::msg::PresenceResponse {
+            now: unix_ms(),
+            devices: listed,
+            you,
+        }
+    }
+
+    /// Passes a message on: at once to the devices online, kept for the rest.
+    fn channel_send(
+        &self,
+        from: &crate::channel::Sender,
+        asked: basalt_proto::msg::ChannelSendRequest,
+    ) -> Result<basalt_proto::msg::ChannelSendResponse> {
+        let devices: Vec<String> = self.devices().iter().map(|d| d.key().to_string()).collect();
+        let profiles: Vec<String> = self
+            .profiles
+            .lock()
+            .expect("profiles lock")
+            .profiles()
+            .iter()
+            .map(|p| p.id.clone())
+            .collect();
+        let sent = self
+            .line
+            .lock()
+            .expect("line lock")
+            .send(
+                from,
+                asked,
+                |d| devices.iter().any(|known| known == d),
+                |p| profiles.iter().any(|known| known == p),
+                unix_ms(),
+            )
+            .map_err(|why| HostError::NotFound(why.into()))?;
+        for to in &sent.now {
+            let _ = self.line_events.send(LineEvent::Message {
+                to: to.clone(),
+                message: Box::new(sent.message.clone()),
+            });
+        }
+        Ok(basalt_proto::msg::ChannelSendResponse {
+            id: sent.message.id,
+            delivered: sent.now,
+            waiting: sent.waiting,
+        })
+    }
+}
+
 pub(crate) fn unix_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3701,7 +4696,9 @@ impl Batch {
             | Change::Modified { .. }
             | Change::LibraryChanged
             | Change::ProfilesChanged
-            | Change::MusicNow => {}
+            | Change::MusicNow
+            | Change::Channel { .. }
+            | Change::PresenceChanged => {}
         }
     }
 }
@@ -3834,6 +4831,23 @@ pub async fn serve(server: BoundServer) -> Result<()> {
     host.keep_library_current();
     // And keep serving the drive through it being unplugged and plugged back.
     host.keep_drive_attached();
+    // Devices whose watch stays open with nobody behind it (a phone Android
+    // froze, one gone from the Wi-Fi) are taken as away, and the others told.
+    {
+        let host = Arc::clone(&host);
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(LINE_SWEEP_EVERY);
+            loop {
+                every.tick().await;
+                let changed = host.line.lock().expect("line lock").sweep(unix_ms());
+                if changed {
+                    let _ = host.line_events.send(LineEvent::Presence);
+                }
+                // Every time: a member off the line leaves once its grace is over.
+                host.keep_groups_online();
+            }
+        });
+    }
     // What this machine can convert video with, found now rather than on
     // the first film somebody's phone cannot play: it takes a few seconds.
     {
@@ -4692,7 +5706,15 @@ where
         // for as long as the client wants it and writes a response per change.
         Op::Watch => {
             let request: WatchRequest = decode(payload).unwrap_or_default();
-            stream_changes(stream, host, session, request.profiles, request.music).await?;
+            stream_changes(
+                stream,
+                host,
+                session,
+                request.profiles,
+                request.music,
+                request.channel,
+            )
+            .await?;
         }
 
         Op::Library => {
@@ -5018,7 +6040,17 @@ where
                     req.stopped,
                     now,
                 );
-                let sessions = live.others(&profile, &device.device_id, now);
+                let mut sessions = live.others(&profile, &device.device_id, now);
+                // Devices playing together as the host keeps them (1.6.4):
+                // each session says its group, for "Laptop +2".
+                {
+                    let groups = host.music_groups.lock().expect("groups lock");
+                    for session in &mut sessions {
+                        if let Some(group) = groups.of(&session.device) {
+                            session.group = Some(group.id);
+                        }
+                    }
+                }
                 let (group, anchor) = live.group_of(&profile, &device.device_id);
                 let answer = basalt_proto::msg::MusicNowResponse {
                     now,
@@ -5033,6 +6065,32 @@ where
                 let _ = host.music_changes.send(profile);
             }
             reply(stream, &answer).await?;
+        }
+
+        Op::MusicGroup => {
+            let req: basalt_proto::msg::MusicGroupRequest = decode(payload)?;
+            host.check_profile(session)?;
+            let profile = session.profile.clone().map(|(id, _)| id).ok_or_else(|| {
+                HostError::Denied("music is shared between a profile's devices only".into())
+            })?;
+            let device = session.device.clone().ok_or(HostError::Unauthenticated)?;
+            let me = basalt_proto::msg::GroupMember {
+                device: device.key().to_string(),
+                name: device.name.clone(),
+                form: device
+                    .form
+                    .and_then(|f| serde_json::to_value(f).ok())
+                    .and_then(|v| v.as_str().map(str::to_string)),
+            };
+            let group = host.music_group(&profile, me, &req)?;
+            reply(
+                stream,
+                &basalt_proto::msg::MusicGroupResponse {
+                    now: unix_ms(),
+                    group,
+                },
+            )
+            .await?;
         }
 
         Op::MusicCommand => {
@@ -5053,6 +6111,142 @@ where
                 .map_err(|why| HostError::NotFound(why.into()))?;
             let _ = host.music_changes.send(profile);
             write_ok(stream, &[]).await?;
+        }
+
+        Op::Presence => {
+            host.check_profile(session)?;
+            let you = session
+                .device
+                .as_ref()
+                .map(|d| d.key().to_string())
+                .ok_or(HostError::Unauthenticated)?;
+            // Asking is also saying it is still there: the app asks every
+            // 30 seconds while it runs. Back after being taken as away, what
+            // waited for it comes down its watch.
+            host.heard(&you);
+            reply(stream, &host.presence(you)).await?;
+        }
+
+        Op::ShareHold => {
+            let req: basalt_proto::msg::ShareHoldRequest = decode(payload)?;
+            host.check_profile(session)?;
+            let device = session.device.clone().ok_or(HostError::Unauthenticated)?;
+            let profile = session.profile.as_ref().map(|(id, _)| id.clone());
+            let held = host.hold_share(&device, profile, req).await?;
+            reply(stream, &held).await?;
+        }
+
+        Op::ShareStage => {
+            host.check_profile(session)?;
+            let device = session.device.clone().ok_or(HostError::Unauthenticated)?;
+            let profile = session.profile.as_ref().map(|(id, _)| id.clone());
+            let (stage, offset, data) = basalt_proto::msg::decode_chunk(payload)?;
+            let store = host
+                .shares
+                .as_ref()
+                .ok_or_else(|| HostError::Unavailable("this host can't hold files".into()))?;
+            // Never more than could be kept: an upload that fills the disk is
+            // refused as it comes, not after.
+            let room = host
+                .share_room(profile.as_deref(), device.key())
+                .saturating_sub(store.staged_bytes());
+            if data.len() as u64 > room {
+                return Err(HostError::Denied(
+                    "not enough space on the host to keep this for someone offline".into(),
+                ));
+            }
+            store.stage_write(&stage, offset, data)?;
+            if let Some(key) = session.device_key() {
+                host.traffic.received(&key, data.len() as u64);
+            }
+            write_ok(stream, &[]).await?;
+        }
+
+        Op::ShareRead => {
+            let req: basalt_proto::msg::ShareReadRequest = decode(payload)?;
+            let me = session
+                .device
+                .as_ref()
+                .map(|d| d.key().to_string())
+                .ok_or(HostError::Unauthenticated)?;
+            let store = host
+                .shares
+                .as_ref()
+                .ok_or_else(|| HostError::Unavailable("this host can't hold files".into()))?;
+            let held = store
+                .get(&req.id)
+                .ok_or_else(|| HostError::NotFound("that share".into()))?;
+            if held.to.device != me {
+                return Err(HostError::Denied("that share isn't for this device".into()));
+            }
+            let length = (req.length as u64).min(MAX_READ_BYTES) as usize;
+            let data = store.read(&req.id, req.file, req.offset, length)?;
+            write_response_header(stream, STATUS_OK, data.len() as u64).await?;
+            stream.write_all(&data).await?;
+            stream.flush().await?;
+            if let Some(key) = session.device_key() {
+                host.traffic.sent(&key, data.len() as u64);
+            }
+        }
+
+        Op::ShareAnswer => {
+            let req: basalt_proto::msg::ShareAnswerRequest = decode(payload)?;
+            let me = session
+                .device
+                .as_ref()
+                .map(|d| d.key().to_string())
+                .ok_or(HostError::Unauthenticated)?;
+            let store = host
+                .shares
+                .as_ref()
+                .ok_or_else(|| HostError::Unavailable("this host can't hold files".into()))?;
+            let held = store
+                .get(&req.id)
+                .ok_or_else(|| HostError::NotFound("that share".into()))?;
+            if held.to.device != me {
+                return Err(HostError::Denied("that share isn't for this device".into()));
+            }
+            store.answered(&req.id, req.accepted)?;
+            write_ok(stream, &[]).await?;
+        }
+
+        Op::ShareHeld => {
+            host.check_profile(session)?;
+            let me = session
+                .device
+                .as_ref()
+                .map(|d| d.key().to_string())
+                .ok_or(HostError::Unauthenticated)?;
+            let profile = session.profile.as_ref().map(|(id, _)| id.clone());
+            reply(stream, &host.held_by(profile.as_deref(), &me)).await?;
+        }
+
+        Op::ShareManage => {
+            let req: basalt_proto::msg::ShareManageRequest = decode(payload)?;
+            host.check_profile(session)?;
+            let me = session
+                .device
+                .as_ref()
+                .map(|d| d.key().to_string())
+                .ok_or(HostError::Unauthenticated)?;
+            let profile = session.profile.as_ref().map(|(id, _)| id.clone());
+            let writable = session.writable();
+            host.manage_share(profile.as_deref(), &me, writable, req)
+                .await?;
+            write_ok(stream, &[]).await?;
+        }
+
+        Op::ChannelSend => {
+            let req: basalt_proto::msg::ChannelSendRequest = decode(payload)?;
+            host.check_profile(session)?;
+            let device = session.device.as_ref().ok_or(HostError::Unauthenticated)?;
+            let from = crate::channel::Sender {
+                device: device.key().to_string(),
+                name: device.name.clone(),
+                profile: session.profile.as_ref().map(|(id, _)| id.clone()),
+            };
+            let answer = host.channel_send(&from, req)?;
+            reply(stream, &answer).await?;
         }
 
         Op::MusicMine => {
@@ -5143,12 +6337,40 @@ async fn stream_changes<S>(
     session: &mut Session,
     profiles: bool,
     music: bool,
+    channel: bool,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let device = session.device_key();
     let mut access_changes = host.access_changes.subscribe();
+    // Online while this watch is open, and its messages come down it: the
+    // ones waiting first, then each as it is sent.
+    let mut line_events = host.line_events.subscribe();
+    let mut hang_up = [0u8; 64];
+    let on_line = match (channel, session.device.as_ref()) {
+        (true, Some(d)) => Some(OnLine::open(
+            host,
+            d.key().to_string(),
+            session.profile.as_ref().map(|(id, _)| id.clone()),
+        )),
+        _ => None,
+    };
+    if let Some(on_line) = &on_line {
+        for message in on_line.waiting.clone() {
+            if reply(
+                stream,
+                &WatchEvent {
+                    change: Change::Channel { message },
+                },
+            )
+            .await
+            .is_err()
+            {
+                return Ok(());
+            }
+        }
+    }
     let mut profile_changes = host.profile_changes.subscribe();
     let mut music_changes = host.music_changes.subscribe();
     // Told only for the profile this watch acts for.
@@ -5209,6 +6431,37 @@ where
                 }
                 let told = WatchEvent { change: basalt_proto::msg::Change::MusicNow };
                 if reply(stream, &told).await.is_err() {
+                    return Ok(());
+                }
+                continue;
+            }
+            // The device sends nothing more on a watch, so anything read is
+            // it hanging up: noticed now, not at the next change, so it is
+            // offline the moment it closes.
+            closed = tokio::io::AsyncReadExt::read(stream, &mut hang_up) => {
+                match closed {
+                    Ok(0) | Err(_) => return Ok(()),
+                    Ok(_) => continue,
+                }
+            }
+            told = line_events.recv(), if on_line.is_some() => {
+                let change = match told {
+                    Ok(LineEvent::Message { to, message }) => {
+                        if on_line.as_ref().is_none_or(|l| l.device != to) {
+                            continue;
+                        }
+                        Change::Channel { message: *message }
+                    }
+                    // Missed some: who is online is asked again. A message
+                    // missed is the sender's to try again; its answer never
+                    // comes.
+                    Ok(LineEvent::Presence)
+                    | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        Change::PresenceChanged
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+                };
+                if reply(stream, &WatchEvent { change }).await.is_err() {
                     return Ok(());
                 }
                 continue;

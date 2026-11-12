@@ -21,6 +21,7 @@ import { cn, formatBytes } from '@/lib/utils'
 import { Card, Fact, Group, Pill, Presence, Row, Rows, Toggle, useLayout } from './parts'
 import { Surface } from './Surface'
 import type { Tools } from './tools'
+import { shareBytesOnDrive } from './Sharing'
 
 const PLATFORM: Record<string, string> = {
   windows: 'Windows',
@@ -41,6 +42,7 @@ export function HostHero(tools: Tools): React.JSX.Element {
   const [choosing, setChoosing] = useState(false)
   const online = view.devices.filter((d) => d.online).length
   const vault = status.vault
+  const shareBytes = vault ? Math.min(shareBytesOnDrive(status.sharing), vault.total - vault.free) : 0
 
   const rename = (): void =>
     prompt({
@@ -132,15 +134,34 @@ export function HostHero(tools: Tools): React.JSX.Element {
           {vault.available ? (
             vault.total > 0 && (
               <>
-                <div className="mt-3.5 h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
+                <div className="mt-3.5 flex h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
                   <div
-                    className="h-full rounded-full bg-basaltDeep"
-                    style={{ width: `${((vault.total - vault.free) / vault.total) * 100}%` }}
+                    className="h-full bg-basaltDeep"
+                    style={{ width: `${((vault.total - vault.free - shareBytes) / vault.total) * 100}%` }}
                   />
+                  {shareBytes > 0 && (
+                    <div className="h-full bg-amber-300/85" style={{ width: `${Math.max((shareBytes / vault.total) * 100, 0.8)}%` }} />
+                  )}
                 </div>
                 <div className="tnum mt-2 font-mono text-[11.5px] text-textFaint">
                   {formatBytes(vault.free)} free of {formatBytes(vault.total)}
                 </div>
+                {(status.sharing?.used ?? 0) > 0 && (
+                  <div className="tnum mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-textFaint">
+                    {shareBytes > 0 && (
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-[7px] w-[7px] rounded-full bg-amber-300/85" />
+                        Share files {formatBytes(shareBytes)} on the drive
+                      </span>
+                    )}
+                    {(status.sharing?.used ?? 0) - shareBytes > 0 && (
+                      <span className="flex items-center gap-1.5">
+                        <span className="h-[7px] w-[7px] rounded-full border border-amber-300/85" />
+                        {formatBytes((status.sharing?.used ?? 0) - shareBytes)} locked on the host’s computer
+                      </span>
+                    )}
+                  </div>
+                )}
                 {view.cannotAddFiles && (
                   <p
                     className={cn(

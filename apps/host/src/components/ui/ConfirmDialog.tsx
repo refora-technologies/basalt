@@ -8,6 +8,8 @@ export interface ConfirmRequest {
   confirmLabel: string
   /** Going ahead makes something less safe, and the button says so. */
   danger?: boolean
+  /** A second way to go ahead, beside the first: "Delete them". */
+  alternative?: string
 }
 
 /**
@@ -18,9 +20,12 @@ export interface ConfirmRequest {
 export function ConfirmDialog({
   request,
   onAnswer,
+  onAlternative,
 }: {
   request: ConfirmRequest | null
   onAnswer: (yes: boolean) => void
+  /** The `alternative` button was pressed. */
+  onAlternative?: () => void
 }): React.JSX.Element {
   return createPortal(
     <AnimatePresence>
@@ -59,6 +64,14 @@ export function ConfirmDialog({
               >
                 Cancel
               </button>
+              {request.alternative && (
+                <button
+                  onClick={() => onAlternative?.()}
+                  className="rounded-md border border-white/[0.14] px-3.5 py-1.5 text-[12px] text-text outline-none transition-colors hover:bg-white/[0.05]"
+                >
+                  {request.alternative}
+                </button>
+              )}
               <button
                 onClick={() => onAnswer(true)}
                 className={

@@ -431,6 +431,129 @@ export interface NowReport {
 }
 
 /** Another of the profile's devices, playing. */
+/** Whom a message is for: one device, or every device of a profile. */
+export type Address = { to: 'device'; device: string } | { to: 'profile'; profile: string }
+
+/** A message from another of the host's devices. */
+export interface ChannelMessage {
+  id: string
+  fromDevice: string
+  fromName: string
+  fromProfile?: string
+  to: Address
+  kind: string
+  body: unknown
+  /** Host Unix milliseconds. */
+  sent: number
+  expires: number
+}
+
+export interface ChannelSendResponse {
+  id: string
+  delivered: string[]
+  waiting: boolean
+}
+
+/** One of the host's devices, and whether it is online now. */
+/** A share kept on the host for a device that's away, as its sender sees it. */
+/** One device of a group playing together. */
+export interface GroupMember {
+  device: string
+  name: string
+  form?: string
+}
+
+/** Devices playing one song together, as the host keeps it: every member plays this. */
+export interface MusicGroup {
+  id: string
+  members: GroupMember[]
+  /** The queue, the song and the second it is at, at `at`. */
+  listening: Listening
+  playing: boolean
+  /** When the song is at `listening.position`, on the host's clock (ms). Ahead after a change. */
+  at: number
+  version: number
+}
+
+export interface MusicGroupRequest {
+  action: 'view' | 'start' | 'set' | 'leave' | 'end'
+  group?: string
+  with?: string
+  listening?: Listening
+  position?: number
+  playing?: boolean
+  /** Refused if the group has moved on from this version. */
+  expect?: number
+  leadMs?: number
+}
+
+/** A device as devices nearby see it: its name, kind and short id ("K7HM"). */
+export interface NearbyMe {
+  id: string
+  name: string
+  form?: 'phone' | 'computer' | 'tablet' | 'tv'
+}
+
+/** A device nearby, ready to receive. */
+export interface NearbyDevice extends NearbyMe {
+  address: string
+  port: number
+  key: string
+  /** It asks for a code every time. */
+  code: boolean
+  /**
+   * Found by its own Wi-Fi, not on this one (no network in common): joined
+   * to send, and a code always asked. Its address, port and key come once
+   * joined.
+   */
+  ssid?: string
+}
+
+
+/** What happens on this device while it is ready for nearby shares. */
+export type NearbyReadyEvent =
+  | { kind: 'offer'; ask: string; from: NearbyMe; files: { name: string; size: number }[]; code: boolean }
+  | { kind: 'code'; ask: string; code: string }
+  | { kind: 'wrongCode'; ask: string; left: number }
+  /** Agreed: each file is taken with `nearbyTakeFile`, down the line the offer came up. */
+  | { kind: 'take'; ask: string }
+  | { kind: 'gone'; ask: string; why: string }
+
+/** What a device nearby said to an offer. */
+export type NearbySaid = { kind: 'accepted' } | { kind: 'declined' } | { kind: 'code' }
+
+/** What came of a code typed for a device nearby. */
+export type NearbyCodeSaid = { kind: 'right' } | { kind: 'wrong'; left: number }
+
+export interface HeldShare {
+  id: string
+  to: string
+  toName: string
+  files: { name: string; size: number }[]
+  created: number
+  keep: boolean
+  state: 'waiting' | 'accepted' | 'declined'
+}
+
+export interface PresentDevice {
+  device: string
+  name: string
+  form?: 'phone' | 'tablet' | 'tv' | 'computer' | 'other'
+  profile?: string
+  profileName?: string
+  profileColor?: number
+  online: boolean
+  /** Host Unix milliseconds; 0 if not since the host started. */
+  lastSeen: number
+}
+
+export interface PresenceResponse {
+  now: number
+  devices: PresentDevice[]
+  /** This device's id in the list. */
+  you: string
+}
+
 export interface NowSession {
   /** Its id, to send it a command. */
   device: string
@@ -744,7 +867,129 @@ export const api = {
     const request = { stopped: false, ...asked }
     return call<MusicNowResponse>('music_now', { request })
   },
+  /**
+   * Whether the app goes on running when its window closes: while it is ready
+   * to receive, the line to the host carries on without a window.
+   */
+  stayRunning: (on: boolean) => call<void>('stay_running', { on }),
+  /** Messages from other devices that came while the page wasn't there to hear them, now handed over. */
+  channelTake: () => call<ChannelMessage[]>('channel_take'),
+  /**
+   * Takes a file shared with this device from the drive into its received
+   * folder (`folder`, or the usual one), never over a file already there.
+   */
+  receiveFile: (remote: string, id: string, folder?: string) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('receive_file', { remote, id, folder: folder ?? null }),
+  /**
+   * A notification from the system, with up to two buttons (label, action).
+   * What is pressed comes back by `onNotification`, with `tag`. On a computer;
+   * nothing elsewhere for now.
+   */
+  /** A link opened in the browser or mail app, on Linux: only the addresses the capability file allows. */
+  openLink: (url: string) => call<void>('open_link', { url }),
+  notify: (tag: string, title: string, text: string, buttons: [string, string][] = []) =>
+    call<void>('notify', { tag, title, text, buttons }),
+  /** Offers files on this device (paths, or a phone's content URIs) to another, straight across. */
+  shareLocal: (offer: string, sources: string[]) =>
+    call<{ endpoint: { addresses: string[]; port: number; key: string }; token: string }>('share_local', { offer, sources }),
+  withdrawLocal: (offer: string) => call<void>('withdraw_local', { offer }),
+  /** Files picked on this computer, with their sizes. */
+  localFiles: (paths: string[]) => call<{ source: string; name: string; size: number }[]>('local_files', { paths }),
+  /** Takes one file of an offer straight from the device that offers it. */
+  receiveDirect: (
+    endpoint: { addresses: string[]; port: number; key: string },
+    offer: string,
+    token: string,
+    file: number,
+    name: string,
+    id: string,
+    folder?: string,
+  ) => call<{ shownAs: string; path?: string; uri?: string }>('receive_direct', { endpoint, offer, token, file, name, id, folder: folder ?? null }),
+  /** This device's name and short id, as devices nearby see them. */
+  nearbyWhoami: () => call<NearbyMe>('nearby_whoami'),
+  /** Ready to receive from devices nearby, or not; `onNearbyReady` says what comes. */
+  nearbyReady: (on: boolean, alwaysCode: boolean) => call<void>('nearby_ready', { on, alwaysCode }),
+  /** Accept or Decline an offer from a device nearby. False if it's gone. */
+  nearbyReply: (ask: string, accept: boolean) => call<boolean>('nearby_reply', { ask, accept }),
+  /** Whether Windows Firewall lets devices nearby reach this app. */
+  nearbyFirewall: () => call<'open' | 'blocked' | 'unknown'>('nearby_firewall'),
+  /** Lets them through, after Windows asks for an administrator. */
+  nearbyFirewallAllow: () => call<'open' | 'blocked' | 'unknown'>('nearby_firewall_allow'),
+  /** This device's own Wi-Fi, as devices nearby find it. */
+  nearbyWifiOwn: () => call<{ ssid: string; passphrase: string }>('nearby_wifi_own'),
+  /** The passphrase of a Basalt Wi-Fi found around. */
+  nearbyWifiPassphrase: (ssid: string) => call<string>('nearby_wifi_passphrase', { ssid }),
+  /** Hosts this computer's own Wi-Fi while ready, or stops. */
+  nearbyWifiHost: (on: boolean) => call<void>('nearby_wifi_host', { on }),
+  /** The Basalt Wi-Fis around. */
+  nearbyWifiScan: () => call<{ ssid: string; level: number }[]>('nearby_wifi_scan'),
+  /** Joins a Basalt Wi-Fi found around. */
+  nearbyWifiJoin: (ssid: string) => call<void>('nearby_wifi_join', { ssid }),
+  /** Leaves it: back to the Wi-Fi before. */
+  nearbyWifiLeave: () => call<void>('nearby_wifi_leave'),
+  /** How far taking the files from a device nearby has come, for its sender. */
+  nearbyTakeFile: (ask: string, file: number, name: string, id: string, folder?: string) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('nearby_take_file', { ask, file, name, id, folder: folder ?? null }),
+  /** How taking the files from a device nearby went. */
+  nearbyFinish: (ask: string, answer: 'done' | 'failed') => call<void>('nearby_finish', { ask, answer }),
+  /** The devices nearby ready to receive, on this Wi-Fi. */
+  nearbyFind: () => call<NearbyDevice[]>('nearby_find'),
+  /** Files Basalt was opened to share ("Share with Basalt" in Explorer), once. */
+  sharedAtStart: () => call<{ source: string; name: string; size: number }[]>('shared_at_start'),
+  /** A step of sharing nearby, into the device's own log (Android's logcat). */
+  nearbyNote: (line: string) => call<void>('nearby_note', { line }),
+  /** Offers files on this device to one nearby, and waits for the answer there. */
+  nearbyOffer: (device: NearbyDevice, offer: string, files: { source: string; name: string; size: number }[], alwaysCode: boolean) =>
+    call<NearbySaid>('nearby_offer', { device, offer, files, alwaysCode }),
+  /** The code shown on the device nearby, typed here. */
+  nearbyCode: (offer: string, code: string) => call<NearbyCodeSaid>('nearby_code', { offer, code }),
+  /** Stops an offer to a device nearby. */
+  nearbyCancel: (offer: string) => call<void>('nearby_cancel', { offer }),
+  /** Files on this device, uploaded to the host and kept for `to`; `onShareSending` says how far. */
+  shareHoldLocal: (id: string, to: string, keep: boolean, files: { source: string; name: string; size: number }[]) =>
+    call<HeldShare>('share_hold_local', { id, to, keep, files }),
+  /** Keeps files on the drive on the host, locked, for a device that's away. */
+  shareHold: (id: string, to: string, keep: boolean, paths: string[]) =>
+    call<HeldShare>('share_hold', { id, to, keep, paths }),
+  /** This device's answer to a share the host kept for it. */
+  shareAnswer: (id: string, accepted: boolean) => call<void>('share_answer', { id, accepted }),
+  /** What this profile has kept on the host, and the space kept files take. */
+  /** `room`: bytes this sender may still keep there; `secure`: kept locked. Both absent from older hosts. */
+  shareHeld: () => call<{ held: HeldShare[]; used: number; count: number; room?: number; secure?: boolean }>('share_held'),
+  /** Deletes a kept share, or moves its files onto the drive (`folder`, "" for its top). */
+  /** `again`: a copy for device `to`, as share `again` (its new id). */
+  shareManage: (action: 'delete' | 'move' | 'again', id: string, folder = '', again?: { to: string; id: string; keep: boolean }) =>
+    call<void>('share_manage', { action, id, folder, to: again?.to ?? null, again: again?.id ?? null, keep: again?.keep ?? null }),
+  /** Takes one file of a share the host kept for this device. */
+  receiveHeld: (share: string, file: number, name: string, size: number, id: string, folder?: string) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('receive_held', { share, file, name, size, id, folder: folder ?? null }),
+  /** Where shared files land unless another folder is chosen. */
+  defaultReceivedFolder: () => call<string>('default_received_folder'),
+  /** The host's devices and who of them is online. Throws on a host before 1.6.4. */
+  presence: () => call<PresenceResponse>('presence'),
+  /** Passes a message to another of the host's devices, or to a profile's. */
+  channelSend: (to: Address, kind: string, body: unknown, ttlMs = 0) => {
+    const request = { to, kind, body, ttlMs }
+    return call<ChannelSendResponse>('channel_send', { request })
+  },
   /** Asks another of the profile's devices to pause, play, skip or stop. */
+  /** Devices playing together: see `MusicGroupRequest` in basalt-proto. Refused (`unsupported`) by hosts before 1.6.4. */
+  musicGroup: (request: MusicGroupRequest) => call<{ now: number; group?: MusicGroup }>('music_group', { request }),
+  /** A file received on this computer, opened as the computer opens it (never a program). */
+  receivedOpen: (path: string) => call<void>('received_open', { path }),
+  /** A file received on this computer, shown in its folder. */
+  receivedShow: (path: string) => call<void>('received_show', { path }),
+  /** Quick reads of the player's clock, taken outside the page (on time when it is hidden). */
+  musicClock: (reads: number) => call<{ position: number; at: number; took: number }[]>('music_clock', { reads }),
+  /** Paused at `position`, playing from it at `at` (Unix ms), unpaused `lag` ms early; timed outside the page. */
+  musicPlayAt: (position: number, at: number, lag: number) =>
+    call<{ position: number | null; at: number; gone: boolean }>('music_play_at', { position, at, lag }),
+  /** Paused at `position` at `at` (Unix ms); false if something else was asked meanwhile. */
+  musicPauseAt: (position: number, at: number) => call<boolean>('music_pause_at', { position, at }),
+  /** A start or pause waiting for its moment is given up. */
+  musicCancel: () => call<void>('music_cancel'),
+  /** A hair faster or slower, back to 1 after `forMs` unless asked again. */
+  musicSetRate: (rate: number, forMs: number) => call<void>('music_set_rate', { rate, forMs }),
   musicCommand: (device: string, action: MusicCommand['action'], position = 0, listening?: Listening, clock?: number) => {
     const request = { device, action, position, listening, clock }
     return call<void>('music_command', { request })
@@ -894,6 +1139,69 @@ export async function onRemoved(handler: (message: string) => void): Promise<() 
  * them, and when a request finds this device's sign-in no longer stands.
  * Either way: ask again who is using this device.
  */
+/** A notification pressed: its tag, and the button's action (null for the notification itself). */
+export async function onNotification(handler: (pressed: { tag: string; action: string | null }) => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<{ tag: string; action: string | null }>('basalt://notification', (event) => handler(event.payload))
+}
+
+/** The tray asking for a page of the window (`inbox`). */
+export async function onOpenPage(handler: (page: string) => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<string>('basalt://open', (event) => handler(event.payload))
+}
+
+/** Told when a device of the host comes online or goes. */
+export async function onPresence(handler: () => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen('basalt://presence', () => handler())
+}
+
+/** What happens on this device while it is ready for nearby shares, as it happens. */
+export async function onNearbyReady(handler: (event: NearbyReadyEvent) => void): Promise<() => void> {
+  if (!inTauri()) return onPreview('nearby-ready', handler)
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<NearbyReadyEvent>('basalt://nearby-ready', (e) => handler(e.payload))
+}
+
+/** How far an offer to a device nearby has come there, as it goes. */
+export async function onNearbyProgress(handler: (said: { offer: string; done: number; total: number }) => void): Promise<() => void> {
+  if (!inTauri()) return onPreview('nearby-progress', handler)
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<{ offer: string; done: number; total: number }>('basalt://nearby-progress', (e) => handler(e.payload))
+}
+
+/** How an offer to a device nearby ended there, once accepted. */
+export async function onNearbySent(handler: (said: { offer: string; answer: string }) => void): Promise<() => void> {
+  if (!inTauri()) return onPreview('nearby-sent', handler)
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<{ offer: string; answer: string }>('basalt://nearby-sent', (e) => handler(e.payload))
+}
+
+/** Files to share, from Explorer while Basalt runs ("Share with Basalt", Send to). */
+export async function onShareFiles(handler: (files: { source: string; name: string; size: number }[]) => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<{ source: string; name: string; size: number }[]>('basalt://share-files', (e) => handler(e.payload))
+}
+
+/** How far files on this device have gone up to the host, for a share kept there. */
+export async function onShareSending(handler: (sending: { offer: string; done: number; total: number }) => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<{ offer: string; done: number; total: number }>('basalt://share-sending', (e) => handler(e.payload))
+}
+
+/** Each message from another of the host's devices, as it comes. */
+export async function onChannel(handler: (message: ChannelMessage) => void): Promise<() => void> {
+  if (!inTauri()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<ChannelMessage>('basalt://channel', (event) => handler(event.payload))
+}
+
 /** Told when what the profile's other devices play changes. */
 export async function onMusicNow(handler: () => void): Promise<() => void> {
   if (!inTauri()) return () => {}
@@ -1475,6 +1783,83 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     }
     case 'music_command':
       return undefined as T
+    case 'music_group':
+      return { now: Date.now() } as T
+    // The page preview's café: two phones of the same name, one asking for a code.
+    case 'nearby_whoami':
+      return { id: 'K7HM', name: 'Maya’s laptop', form: 'computer' } as T
+    case 'nearby_find':
+      return [
+        { id: 'TUVW', name: 'Pixel 8', form: 'phone', address: '10.0.0.4', port: 1, key: '', code: false },
+        { id: 'MNPR', name: 'Pixel 8', form: 'phone', address: '10.0.0.7', port: 1, key: '', code: true },
+        { id: 'XY34', name: 'Leo’s laptop', form: 'computer', address: '10.0.0.9', port: 1, key: '', code: false },
+      ] as T
+    case 'nearby_offer':
+      return { kind: (args?.device as { code?: boolean })?.code ? 'code' : 'accepted' } as T
+    case 'nearby_code':
+      return { kind: 'right' } as T
+    case 'nearby_firewall':
+    case 'nearby_firewall_allow':
+      return 'open' as T
+    case 'nearby_wifi_own':
+      return { ssid: 'DIRECT-bs-K7HM Maya_s laptop', passphrase: 'bslt-K7HM-0' } as T
+    case 'nearby_wifi_passphrase':
+      return 'bslt-0' as T
+    case 'nearby_wifi_scan':
+      return [] as T
+    case 'nearby_wifi_host':
+    case 'nearby_wifi_join':
+    case 'nearby_wifi_leave':
+    case 'nearby_take_file':
+      return { shownAs: 'Downloads/Basalt/file' } as T
+    case 'nearby_ready':
+    case 'nearby_finish':
+    case 'nearby_cancel':
+      return undefined as T
+    case 'nearby_reply':
+      return true as T
+    // The page preview's household: this laptop, a phone and a tablet of the
+    // same profile, and Sam's phone.
+    case 'presence': {
+      const now = Date.now()
+      return {
+        now,
+        you: 'this-laptop',
+        devices: [
+          { device: 'this-laptop', name: 'Maya’s laptop', form: 'computer', profile: 'maya', profileName: 'Maya', profileColor: 2, online: true, lastSeen: now },
+          { device: 'maya-phone', name: 'Pixel 8', form: 'phone', profile: 'maya', profileName: 'Maya', profileColor: 2, online: true, lastSeen: now },
+          { device: 'sam-phone', name: 'Sam’s phone', form: 'phone', profile: 'sam', profileName: 'Sam', profileColor: 5, online: true, lastSeen: now },
+          { device: 'maya-tablet', name: 'Galaxy Tab', form: 'tablet', online: false, lastSeen: now - 3 * 3600_000 },
+        ],
+      } as T
+    }
+    case 'stay_running':
+      return undefined as T
+    case 'channel_take':
+      return [] as T
+    case 'notify':
+    case 'withdraw_local':
+    case 'share_answer':
+    case 'share_manage':
+      return undefined as T
+    case 'share_held':
+      return { held: [], used: 0, count: 0 } as T
+    case 'share_hold':
+      return { id: 'mock', to: '', toName: '', files: [], created: 0, keep: false, state: 'waiting' } as T
+    case 'receive_held':
+      return { shownAs: 'Downloads\Basalt\file' } as T
+    case 'share_local':
+      return { endpoint: { addresses: ['127.0.0.1'], port: 1, key: '' }, token: '' } as T
+    case 'local_files':
+      return [] as T
+    case 'receive_direct':
+      return { shownAs: 'Downloads\Basalt\file' } as T
+    case 'receive_file':
+      return { shownAs: 'Downloads\Basalt\file' } as T
+    case 'default_received_folder':
+      return 'C:\Users\You\Downloads\Basalt' as T
+    case 'channel_send':
+      return { id: 'mock', delivered: [], waiting: false } as T
     case 'music_mine': {
       const request = (args?.request ?? {}) as { playlists?: Playlist[]; listening?: Listening }
       if (request.playlists) mockMusicMine.playlists = request.playlists

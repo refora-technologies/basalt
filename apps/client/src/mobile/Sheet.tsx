@@ -86,7 +86,7 @@ export function Sheet({
         ref={panel}
         role="dialog"
         className={cn(
-          'sheet-slide absolute inset-x-0 bottom-0 mx-auto flex max-w-[640px] flex-col rounded-t-[22px] border-t border-white/[0.08] bg-[#141416] shadow-sheet',
+          'sheet-slide absolute inset-x-0 bottom-0 mx-auto flex max-w-[640px] flex-col rounded-t-[22px] border-t border-white/[0.08] bg-[#141416] shadow-sheet [--surface:#141416]',
           tall ? 'max-h-[88%]' : 'max-h-[80%]',
         )}
         style={{
