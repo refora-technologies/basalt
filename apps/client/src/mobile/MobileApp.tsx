@@ -57,6 +57,7 @@ import { About } from '@/components/About'
 import { WhatsNew } from '@/components/WhatsNew'
 import { FeatureTour } from '@/components/FeatureTour'
 import { TourShapes } from '@/components/TourArt'
+import { holdRunning } from '@/lib/stayRunning'
 import type { NavKey } from '@/components/Sidebar'
 import type { Entry } from '@/components/FileList'
 import {
@@ -355,10 +356,10 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   useEffect(() => {
     if (!ready) return undefined
     void android.keepAlive('ready', 'Basalt', 'Ready to receive')
-    void api.stayRunning(true).catch(() => {})
+    holdRunning('ready', true)
     return () => {
       void android.letGo('ready')
-      void api.stayRunning(false).catch(() => {})
+      holdRunning('ready', false)
     }
   }, [ready])
   useEffect(() => {

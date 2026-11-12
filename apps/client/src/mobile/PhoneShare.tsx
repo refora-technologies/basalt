@@ -15,6 +15,7 @@ import { Sheet } from './Sheet'
 import { SectionPager, SectionTabs, useSectionLink } from './SectionPager'
 import { useBack } from './useBack'
 import { android } from '@/lib/android'
+import { holdRunning } from '@/lib/stayRunning'
 import { useAlwaysReady } from '@/lib/alwaysReady'
 
 /**
@@ -211,7 +212,13 @@ export function PhoneNearby({ nearby }: { nearby: Nearby }): React.JSX.Element {
   useEffect(() => {
     if (!nearby.ready || !isAndroid()) return undefined
     void android.keepAlive('nearby', 'Basalt', 'Receiving from devices nearby')
-    return () => void android.letGo('nearby')
+    // And the app told not to quit when swiped away: Android's service alone
+    // kept the process for nothing, as the app ended itself.
+    holdRunning('nearby', true)
+    return () => {
+      void android.letGo('nearby')
+      holdRunning('nearby', false)
+    }
   }, [nearby.ready])
   useBack(open, () => {
     nearby.setScreenOpen(false)

@@ -62,6 +62,7 @@ import { WhatsNew } from '@/components/WhatsNew'
 import { FeatureTour } from '@/components/FeatureTour'
 import { TourShapes } from '@/components/TourArt'
 import { noteStart } from '@/lib/featureTour'
+import { holdRunning } from '@/lib/stayRunning'
 import { OpenWithDialog, type OpenWithRequest } from '@/components/OpenWithDialog'
 import { preferPlayer, preferredPlayer, type PlayerChoice } from '@/lib/playerChoice'
 import {
@@ -1590,8 +1591,12 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
   const [alwaysReady] = useAlwaysReady()
   const keepRunning = alwaysReady && presence.supported && presence.you !== ''
   useEffect(() => {
-    void api.stayRunning(keepRunning).catch(() => {})
+    holdRunning('ready', keepRunning)
   }, [keepRunning])
+  // Ready for devices nearby too, with or without a drive.
+  useEffect(() => {
+    holdRunning('nearby', model.nearby.ready)
+  }, [model.nearby.ready])
   useShareNotifications(inbox, presence, model.setNav)
   useNearbyNotifications(model.nearby)
   const {
