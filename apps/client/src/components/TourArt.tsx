@@ -16,7 +16,7 @@ import { useReducedMotion } from 'framer-motion'
 const SHAPES = `
 <symbol id="ft-phone" viewBox="0 0 40 70"><rect x="2" y="2" width="36" height="66" rx="8" fill="#1C1C1F" stroke="#4A4A52" stroke-width="2"/><rect x="15" y="7" width="10" height="2.5" rx="1.25" fill="#4A4A52"/></symbol>
 <symbol id="ft-laptop" viewBox="0 0 110 70"><rect x="14" y="4" width="82" height="52" rx="5" fill="#1C1C1F" stroke="#4A4A52" stroke-width="2"/><path d="M4 60h102l-6 7H10z" fill="#2A2A2F" stroke="#4A4A52" stroke-width="2" stroke-linejoin="round"/></symbol>
-<symbol id="ft-file" viewBox="0 0 30 36"><path d="M3 3h16l8 8v22H3z" fill="#F4F4F5"/><path d="M19 3v8h8" fill="#C9C9CE"/></symbol>
+<symbol id="ft-file" viewBox="0 0 30 36"><rect x="3" y="1.5" width="24" height="33" rx="5" fill="#F4F4F5"/><rect x="8" y="10" width="14" height="2.6" rx="1.3" fill="#86868D"/><rect x="8" y="15.5" width="9.5" height="2.6" rx="1.3" fill="#B4B4BA"/><rect x="8" y="21" width="12" height="2.6" rx="1.3" fill="#B4B4BA"/></symbol>
 <symbol id="ft-note" viewBox="0 0 30 30"><path d="M11 22V6l15-3v16" fill="none" stroke="#F4F4F5" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="7" cy="22" r="4.2" fill="#F4F4F5"/><circle cx="22" cy="19" r="4.2" fill="#F4F4F5"/></symbol>
 <g id="ft-beat"><use href="#ft-note" x="-10" y="-10" width="20" height="20"/><animateTransform attributeName="transform" type="translate" additive="sum" values="0 0;0 -12;0 0" dur="0.8s" repeatCount="indefinite" calcMode="spline" keySplines=".3 0 .3 1;.3 0 .3 1"/></g>
 `
@@ -113,7 +113,7 @@ const ELSEWHERE = `
 </g>
 <use href="#ft-laptop" x="36" y="10" width="82" height="52"/>
 <rect x="50" y="17" width="54" height="29" rx="3" fill="#26262B"/>
-<path d="M54 21h4.4l1.8 1.8v6.2H54z" fill="#F4F4F5"/>
+<rect x="54" y="20.6" width="6.2" height="8.4" rx="1.3" fill="#F4F4F5"/><rect x="55.4" y="23" width="3.4" height=".9" rx=".45" fill="#86868D"/><rect x="55.4" y="25" width="2.4" height=".9" rx=".45" fill="#B4B4BA"/>
 <circle cx="60.4" cy="28.6" r="2.6" fill="#34D399" opacity="0"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.5;0.56;0.92;1" dur="3s" repeatCount="indefinite"/></circle>
 <path d="M59.2 28.6l.9.9 1.7-1.8" fill="none" stroke="#0B0B0C" stroke-width=".8" stroke-linecap="round" stroke-linejoin="round" opacity="0"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.5;0.56;0.92;1" dur="3s" repeatCount="indefinite"/></path>
 <rect x="64" y="21.4" width="28" height="2.4" rx="1.2" fill="#F4F4F5"/>
