@@ -776,6 +776,8 @@ export const api = {
 
   /** Which version this is, as the release tags spell it. */
   appVersion: (): Promise<string> => call<string>('app_version'),
+  /** Whether closing the window leaves Basalt in a tray here (not on a Linux desktop with none). */
+  trayShown: (): Promise<boolean> => call<boolean>('tray_shown'),
   /** The release notes of one version as published on GitHub, or null when it has none. */
   releaseNotes: (version: string): Promise<string | null> => call<string | null>('release_notes', { version }),
   /** What kind of device this is, for its picture in the host's device lists. */
@@ -1506,6 +1508,8 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
   switch (cmd) {
     case 'app_version':
       return MOCK_VERSION as T
+    case 'tray_shown':
+      return true as T
     case 'release_notes':
       await new Promise((resolve) => setTimeout(resolve, 300))
       return MOCK_RELEASE.notes as T

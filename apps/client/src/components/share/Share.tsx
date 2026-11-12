@@ -24,6 +24,7 @@ import {
 import { api, onShareSending, type NearbyDevice, type PresentDevice } from '@/lib/api'
 import { NearbyChooser, NearbyList } from './Nearby'
 import { HandoffMark, markForm } from './WaitingMarks'
+import { Tip } from './Tip'
 import type { Nearby } from '@/lib/useNearby'
 import type { Presence } from '@/lib/usePresence'
 import { seenLine } from '@/lib/usePresence'
@@ -778,6 +779,15 @@ export function ReceivePrompt({
           one by itself; only open it if you trust where it came from.
         </p>
       )}
+      {!compact && others.length > 0 && (
+        <Tip
+          id="accept-elsewhere"
+          art="elsewhere"
+          title={`Take it on your ${formName(others[0]!.form)} instead`}
+          line="Accept on whichever device is in front of you."
+          className="mt-3.5"
+        />
+      )}
       <div className={cn('mt-4 flex gap-2.5', compact ? 'flex-row flex-wrap' : 'flex-col')}>
         <button
           onClick={() => {
@@ -833,6 +843,11 @@ export function ReceivePrompt({
       {error && <p className="mt-2 text-[12px] text-danger">{error}</p>}
     </div>
   )
+}
+
+/** A device's kind as said in a line: "your computer". */
+function formName(form: PresentDevice['form']): string {
+  return form === 'computer' ? 'computer' : form === 'tablet' ? 'tablet' : form === 'phone' ? 'phone' : 'other device'
 }
 
 // ---------------------------------------------------------------------------

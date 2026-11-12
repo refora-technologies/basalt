@@ -8,6 +8,7 @@ import { isProgram, percentOf, progressLine, titleOf, totalOf, type ShareFile, t
 import { cn, formatBytes } from '@/lib/utils'
 import { HandoffMark, JoiningMark, LookingDots, markForm } from './WaitingMarks'
 import { Switch } from '@/components/Switch'
+import { Tip } from './Tip'
 import { openSaved, ShareStatus } from './Share'
 import { isLinuxDesktop } from '@/lib/platform'
 
@@ -556,6 +557,9 @@ export function NearbySwitches({ nearby, className }: { nearby: Nearby; classNam
         onChange={nearby.setReady}
         className={className}
       />
+      {nearby.ready && !nearby.alwaysCode && (
+        <Tip id="nearby-code" art="code" title="Busy place? Ask for a code" line="They type the code on your screen." className="mx-4 mb-3 mt-1" />
+      )}
       <Switch
         label="Always ask for a code"
         description="Before a file is sent, the receiver sees a 6-digit code and the sender enters it. Good for busy places. Applies if either device has it on."

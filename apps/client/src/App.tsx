@@ -59,6 +59,9 @@ import { useContextMenu, type MenuAction } from '@/components/ui/ContextMenu'
 import { PromptDialog, type PromptRequest } from '@/components/ui/PromptDialog'
 import { useConfirm } from '@/components/ui/ConfirmDialog'
 import { WhatsNew } from '@/components/WhatsNew'
+import { FeatureTour } from '@/components/FeatureTour'
+import { TourShapes } from '@/components/TourArt'
+import { noteStart } from '@/lib/featureTour'
 import { OpenWithDialog, type OpenWithRequest } from '@/components/OpenWithDialog'
 import { preferPlayer, preferredPlayer, type PlayerChoice } from '@/lib/playerChoice'
 import {
@@ -197,6 +200,12 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
 
   const connected = vault.status?.connected ?? false
   const writable = vault.status?.writable ?? false
+  // Whether this device had a host as it started: with what it kept, it says
+  // whether it came from an older version (What's new once) or is new here.
+  const pairedNow = vault.status ? vault.status.hasPaired : null
+  useEffect(() => {
+    if (pairedNow !== null) noteStart(pairedNow)
+  }, [pairedNow])
   /**
    * The host connected to, or null. What is on every drive-specific screen
    * belongs to this one host, and is dropped when it changes — including when
@@ -2223,6 +2232,8 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
       />
       {confirmDialog}
       <WhatsNew />
+      <TourShapes />
+      <FeatureTour nearby={model.nearby} />
       {menu.node}
     </div>
   )

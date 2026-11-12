@@ -2846,6 +2846,21 @@ async fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Whether closing the window leaves Basalt in a tray here: not on a phone,
+/// nor on a Linux desktop that shows no tray icons (What's new leaves its
+/// card about the tray out there).
+#[tauri::command]
+fn tray_shown() -> bool {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        tray::installed()
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        false
+    }
+}
+
 /// Whether a newer release exists. `None` means this is the newest.
 ///
 /// A failure to reach GitHub is an error rather than "no update": the two
@@ -3261,6 +3276,7 @@ pub fn run() {
             media_controls::media_controls_show,
             media_controls::media_controls_clear,
             app_version,
+            tray_shown,
             check_update,
             release_notes,
             set_device_form,

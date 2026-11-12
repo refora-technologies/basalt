@@ -55,6 +55,8 @@ import { NoDrive } from '@/components/NoDrive'
 import { PropertiesDetails } from '@/components/PropertiesPanel'
 import { About } from '@/components/About'
 import { WhatsNew } from '@/components/WhatsNew'
+import { FeatureTour } from '@/components/FeatureTour'
+import { TourShapes } from '@/components/TourArt'
 import type { NavKey } from '@/components/Sidebar'
 import type { Entry } from '@/components/FileList'
 import {
@@ -695,6 +697,8 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       </div>
 
       <WhatsNew />
+      <TourShapes />
+      <FeatureTour nearby={model.nearby} />
 
       <Rise
         show={!!notice}
