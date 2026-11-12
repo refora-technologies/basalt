@@ -58,6 +58,22 @@ import { profileColor } from '@/lib/useIdentity'
 // ---------------------------------------------------------------------------
 
 /**
+ * Which share a window is for: each new list of files a new one, so a share
+ * opened while the last one's window still says "Arrived" starts afresh
+ * rather than showing the last one's end under the new file's name.
+ */
+const shareKeys = new WeakMap<ShareFile[], number>()
+let lastShareKey = 0
+export function shareKey(files: ShareFile[]): number {
+  let key = shareKeys.get(files)
+  if (key === undefined) {
+    key = ++lastShareKey
+    shareKeys.set(files, key)
+  }
+  return key
+}
+
+/**
  * The Share sheet's body: this person's devices, then the home by person,
  * then devices on their own. A plain list; a device tapped is chosen, and one
  * button at the bottom says what will happen.

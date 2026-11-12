@@ -154,6 +154,18 @@ impl DirectServer {
     /// Where to reach this listener now: this device's addresses on the
     /// networks it is on, which change as it moves.
     pub fn endpoint(&self) -> Endpoint {
+        // Testing only (debug builds): a sender no device can reach, as
+        // behind a firewall that drops what comes in, to see the share go
+        // through the host instead. 192.0.2.1 is kept for documentation:
+        // nothing ever answers there. A security suite that runs its own
+        // firewall leaves Windows' rules unused, so a rule can't stand in.
+        if cfg!(debug_assertions) && std::env::var_os("BASALT_DEV_UNREACHABLE").is_some() {
+            return Endpoint {
+                addresses: vec!["192.0.2.1".into()],
+                port: self.port,
+                key: self.key.clone(),
+            };
+        }
         Endpoint {
             addresses: basalt_net::discovery::local_addresses()
                 .into_iter()

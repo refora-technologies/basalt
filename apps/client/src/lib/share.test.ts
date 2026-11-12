@@ -14,8 +14,13 @@ import {
   received,
   timeLeft,
   takesWithoutAsking,
+  COMING_THROUGH_HOST,
+  THROUGH_HOST_TTL_MS,
+  sentItem,
   steadyTargets,
   targetsOf,
+  throughHostFiles,
+  toldOf,
   titleOf,
   totalOf,
   type OfferBody,
@@ -109,6 +114,35 @@ describe('the list while the share sheet is open', () => {
 
   it('takes the first list as it is', () => {
     expect(steadyTargets(null, first)).toBe(first)
+  })
+})
+
+describe('a share sent straight across that can\'t reach the receiver', () => {
+  const files = [{ name: 'Trip.mp4', size: 5_000_000, path: '', source: 'C:/Users/You/Videos/Trip.mp4' }]
+  const body: OfferBody = { ...offer, files: toldOf(files) }
+
+  it('tells the other side nothing of where the file is here', () => {
+    expect(JSON.stringify(body)).not.toContain('C:/Users')
+  })
+
+  it('keeps, here, where its files are, so they can go through the host', () => {
+    const sent = sentItem(body, files, 5)
+    expect(throughHostFiles(sent)).toEqual([{ source: 'C:/Users/You/Videos/Trip.mp4', name: 'Trip.mp4', size: 5_000_000 }])
+  })
+
+  it('ends on the receiver if it never comes through the host', () => {
+    const coming: ShareItem = { ...received(offer, 0), state: 'moving', reason: COMING_THROUGH_HOST, since: 1_000 }
+    expect(unanswered([coming], 1_000 + THROUGH_HOST_TTL_MS - 1)).toEqual([])
+    expect(unanswered([coming], 1_000 + THROUGH_HOST_TTL_MS + 1)).toEqual([coming])
+    expect(endedUnanswered(coming).state).toBe('failed')
+    expect(endedUnanswered(coming).reason).toContain('through the host')
+    // One moving straight across is left alone: it says how far it got.
+    expect(unanswered([{ ...coming, reason: undefined }], 10 * THROUGH_HOST_TTL_MS)).toEqual([])
+  })
+
+  it('has nothing to send through the host for files on the drive', () => {
+    const onDrive = sentItem(offer, offer.files, 5)
+    expect(throughHostFiles(onDrive)).toBeNull()
   })
 })
 

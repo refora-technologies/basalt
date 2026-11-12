@@ -7,7 +7,7 @@ import type { Inbox } from '@/lib/useInbox'
 import { SectionTabs, useSectionLink } from '@/mobile/SectionPager'
 import type { Presence } from '@/lib/usePresence'
 import type { ShareFile, ShareItem } from '@/lib/share'
-import { InboxList, ReceivePrompt, ShareChooser } from './Share'
+import { InboxList, ReceivePrompt, ShareChooser, shareKey } from './Share'
 import { NearbyPrompt, NearbyReceiving, NearbyScreen, useNearbyFollow } from './Nearby'
 import { api } from '@/lib/api'
 import { pickFiles } from '@/lib/dialogs'
@@ -67,6 +67,8 @@ export function ShareDialog({
               <X size={16} />
             </button>
             <ShareChooser
+              // A new share starts afresh, even with the last one's window still open.
+              key={shareKey(files)}
               files={files}
               presence={presence}
               inbox={inbox}

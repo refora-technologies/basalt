@@ -6,7 +6,7 @@ import { ChevronLeft, ChevronRight, Radio, Send } from 'lucide-react'
 import type { AppModel } from '@/App'
 import { Switch } from '@/components/Switch'
 import { SyncLogPanel } from '@/components/music/SyncLog'
-import { InboxList, ReceivePrompt, ShareChooser } from '@/components/share/Share'
+import { InboxList, ReceivePrompt, ShareChooser, shareKey } from '@/components/share/Share'
 import { NearbyPrompt, NearbyReceiving, NearbyScreen, NearbySwitches, useNearbyFollow } from '@/components/share/Nearby'
 import type { Nearby } from '@/lib/useNearby'
 import { HeldList } from '@/components/share/Held'
@@ -50,6 +50,8 @@ export function PhoneShare({
         {sharing && (
           <div>
             <ShareChooser
+              // A new share starts afresh, even with the last one's sheet still open.
+              key={shareKey(sharing)}
               sheet
               nearby={model.nearby}
               files={sharing}

@@ -14,7 +14,11 @@ import {
   partyOf,
   progressIn,
   received,
+  COMING_THROUGH_HOST,
+  sentItem,
   takesWithoutAsking,
+  throughHostFiles,
+  toldOf,
   type AnswerBody,
   type HandoffBody,
   type OfferBody,
@@ -206,7 +210,8 @@ export function useInbox(
         update(item.id, (i) => ({
           ...i,
           state: through ? 'moving' : 'failed',
-          reason: through ? 'Couldn’t reach it directly: coming through the host' : reason,
+          reason: through ? COMING_THROUGH_HOST : reason,
+          ...(through ? { since: Date.now() } : {}),
         }))
         void answer(offer, 'failed', reason, through)
       }
@@ -257,17 +262,13 @@ export function useInbox(
         // It couldn't reach this device: the same files, through the host,
         // under the same offer, for the same device.
         const sent = itemsRef.current.find((i) => i.id === said.offer && i.direction === 'out')
-        if (said.unreachable && sent && sent.files.every((f) => f.source)) {
+        const local = sent && said.unreachable ? throughHostFiles(sent) : null
+        if (sent && local) {
           setItems((list) =>
             list.map((i) => (i === sent ? { ...i, state: 'moving', reason: 'Couldn’t reach it directly: going through the host' } : i)),
           )
           void api
-            .shareHoldLocal(
-              sent.id,
-              sent.peer.device,
-              false,
-              sent.files.map((f) => ({ source: f.source!, name: f.name, size: f.size })),
-            )
+            .shareHoldLocal(sent.id, sent.peer.device, false, local)
             .catch((e: unknown) =>
               setItems((list) =>
                 list.map((i) => (i.id === sent.id && i.direction === 'out' ? { ...i, state: 'failed', reason: e instanceof Error ? e.message : String(e) } : i)),
@@ -308,16 +309,13 @@ export function useInbox(
     // the receiver told where to take them. Their sources stay here.
     const local = files.filter((f) => f.source)
     const direct = local.length > 0 ? await api.shareLocal(offer, files.map((f) => f.source ?? '')) : undefined
-    const told = files.map(({ source: _, ...rest }) => rest)
-    const body: OfferBody = { offer, files: told, from, to: partyOf(to), direct }
+    const body: OfferBody = { offer, files: toldOf(files), from, to: partyOf(to), direct }
     const sent = await api.channelSend({ to: 'device', device: to.device }, KIND.offer, body, 0)
     if (sent.delivered.length === 0) {
       if (direct) void api.withdrawLocal(offer).catch(() => {})
       throw new Error(`${to.name} isn’t online.`)
     }
-    setItems((list) =>
-      kept([{ id: body.offer, direction: 'out', files: told, peer: body.to, state: 'waiting', at: Date.now() }, ...list]),
-    )
+    setItems((list) => kept([sentItem(body, files, Date.now()), ...list]))
     return offer
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

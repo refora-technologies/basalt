@@ -160,11 +160,24 @@ export const OFFER_TTL_MS = 10 * 60_000
 export function unanswered(items: ShareItem[], now: number): ShareItem[] {
   return items.filter(
     (i) =>
-      i.state === 'waiting' &&
-      now - i.at > OFFER_TTL_MS &&
-      (i.direction === 'out' ? !i.reason : !!i.offer && !i.offer.held),
+      (i.state === 'waiting' &&
+        now - i.at > OFFER_TTL_MS &&
+        (i.direction === 'out' ? !i.reason : !!i.offer && !i.offer.held)) ||
+      (i.direction === 'in' && i.state === 'moving' && i.reason === COMING_THROUGH_HOST && now - (i.since ?? i.at) > THROUGH_HOST_TTL_MS),
   )
 }
+
+/** Said on a share received here that couldn't come straight across, while it comes through the host. */
+export const COMING_THROUGH_HOST = 'Couldn’t reach it directly: coming through the host'
+
+/**
+ * How long a share received here waits to come through the host, from when
+ * it couldn't come straight across: the sender sends it up to the host first,
+ * which for a big file over Wi-Fi takes a while. A sender that never does (one
+ * from before this worked, or gone) leaves it waiting otherwise, at 0%, until
+ * the app starts again.
+ */
+export const THROUGH_HOST_TTL_MS = 30 * 60_000
 
 /** What an unanswered share says once it has ended. */
 export function endedUnanswered(item: ShareItem): ShareItem {
@@ -172,7 +185,12 @@ export function endedUnanswered(item: ShareItem): ShareItem {
     ...item,
     state: 'failed',
     offer: undefined,
-    reason: item.direction === 'out' ? 'No answer in 10 minutes.' : 'Not answered in 10 minutes: ask them to send it again.',
+    reason:
+      item.state === 'moving'
+        ? 'It didn’t come through the host: ask them to send it again.'
+        : item.direction === 'out'
+          ? 'No answer in 10 minutes.'
+          : 'Not answered in 10 minutes: ask them to send it again.',
   }
 }
 
@@ -201,10 +219,38 @@ export interface ShareItem {
   savedAs?: string
   /** Each file as it landed here: to open, show in its folder, or share on. */
   saved?: SavedFile[]
-  /** Why it failed, or was declined. */
+  /** Why it failed, or was declined; or, while moving, what is happening. */
   reason?: string
+  /** When it began coming through the host instead, Unix ms. */
+  since?: number
   /** The offer itself, kept while it waits for an answer here. */
   offer?: OfferBody
+}
+
+/**
+ * The files as they go in an offer: where each is on this device stays here
+ * (only the sender knows it, and it is nobody else's business).
+ */
+export function toldOf(files: ShareFile[]): ShareFile[] {
+  return files.map(({ source: _, ...rest }) => rest)
+}
+
+/**
+ * A share sent from here, as this device keeps it: its files with where they
+ * are here, so that if the receiver can't reach this device straight across,
+ * the same files can go through the host. Kept without them (as in the
+ * offer), every share sent straight across that couldn't reach the receiver
+ * just failed: the Sony on 2026-11-12, behind a sender it couldn't reach.
+ */
+export function sentItem(offer: OfferBody, files: ShareFile[], at: number): ShareItem {
+  return { id: offer.offer, direction: 'out', files, peer: offer.to, state: 'waiting', at }
+}
+
+/** The files of a share sent from here that can go through the host instead: all on this device. */
+export function throughHostFiles(sent: ShareItem): { source: string; name: string; size: number }[] | null {
+  if (sent.direction !== 'out' || sent.files.length === 0) return null
+  if (!sent.files.every((f) => f.source)) return null
+  return sent.files.map((f) => ({ source: f.source!, name: f.name, size: f.size }))
 }
 
 /** A file received here, and where it is. */
