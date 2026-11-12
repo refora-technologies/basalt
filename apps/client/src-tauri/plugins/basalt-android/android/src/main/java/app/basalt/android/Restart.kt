@@ -43,7 +43,11 @@ class Restart : Activity() {
       startActivity(it)
     }
     finish()
-    Process.killProcess(Process.myPid())
+    // Gone a moment later, not at once: killed in the same instant as it
+    // asked, Android sometimes dropped the fresh Basalt with it, and Basalt
+    // reopened after being swiped away closed instead (seen on the Sony,
+    // 2026-11-13: "Duplicate finish request", no new process).
+    android.os.Handler(mainLooper).postDelayed({ Process.killProcess(Process.myPid()) }, 1_500L)
   }
 
   companion object {
