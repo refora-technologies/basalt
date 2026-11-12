@@ -507,6 +507,11 @@ export interface NearbyDevice extends NearbyMe {
    * joined.
    */
   ssid?: string
+  /**
+   * Found by Bluetooth (not on this Wi-Fi): where Bluetooth reaches it, to
+   * ask it to open the Wi-Fi in `ssid` first.
+   */
+  ble?: string
 }
 
 
@@ -925,6 +930,13 @@ export const api = {
   nearbyWifiHost: (on: boolean) => call<void>('nearby_wifi_host', { on }),
   /** The Basalt Wi-Fis around. */
   nearbyWifiScan: () => call<{ ssid: string; level: number }[]>('nearby_wifi_scan'),
+  // Nearby by Bluetooth, on a computer: see nearby_ble.rs and lib/nearbyBle.ts.
+  nearbyReach: () => call<string>('nearby_reach'),
+  bluetoothTurnOn: () => call<string>('bluetooth_turn_on'),
+  bleReady: (on: boolean, info: string) => call<void>('ble_ready', { on, info }),
+  bleLook: (on: boolean) => call<void>('ble_look', { on }),
+  bleSeen: () => call<{ address: string; info: string; rssi: number; open?: boolean }[]>('ble_seen'),
+  bleWake: (address: string, from: string) => call<void>('ble_wake', { address, from }),
   /** Joins a Basalt Wi-Fi found around. */
   nearbyWifiJoin: (ssid: string) => call<void>('nearby_wifi_join', { ssid }),
   /** Leaves it: back to the Wi-Fi before. */
@@ -1811,6 +1823,22 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return 'bslt-0' as T
     case 'nearby_wifi_scan':
       return [] as T
+    case 'nearby_reach':
+      return (previewFlag('bluetoothoff') ? 'bluetooth' : 'ready') as T
+    case 'bluetooth_turn_on':
+      return 'ready' as T
+    case 'ble_ready':
+    case 'ble_look':
+    case 'ble_wake':
+      return undefined as T
+    case 'ble_seen':
+      return [
+        {
+          address: 'mock-ble-1',
+          info: JSON.stringify({ v: 1, id: 'R4TP', name: 'Sam’s phone', form: 'phone', ssid: 'DIRECT-bs-R4TP Sam_s phone', code: false }),
+          rssi: -58,
+        },
+      ] as T
     case 'nearby_wifi_host':
     case 'nearby_wifi_join':
     case 'nearby_wifi_leave':

@@ -362,13 +362,32 @@ mod imp {
         let _ = std::fs::remove_file(&file);
         added.map_err(|e| format!("couldn't add that Wi-Fi ({e})"))?;
         *state.joined.lock().expect("joined lock") = Some((ssid.to_string(), before));
-        netsh(&[
-            "wlan",
-            "connect",
-            &format!("name={ssid}"),
-            &format!("ssid={ssid}"),
-        ])
-        .map_err(|e| format!("couldn't join that device's Wi-Fi ({e})"))?;
+        // A Wi-Fi just opened for this (asked over Bluetooth) isn't in
+        // Windows' list yet, and it won't connect to one it hasn't seen:
+        // looked for until it is, a few times, then connected to.
+        let prefix = ssid.get(..14).unwrap_or(ssid);
+        for _ in 0..5 {
+            if scan(prefix).map(|found| found.iter().any(|f| f.ssid == ssid)).unwrap_or(false) {
+                break;
+            }
+        }
+        let mut connected = Err(String::new());
+        for _ in 0..3 {
+            connected = netsh(&[
+                "wlan",
+                "connect",
+                &format!("name={ssid}"),
+                &format!("ssid={ssid}"),
+            ]);
+            if connected.is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        if let Err(e) = connected {
+            leave(state);
+            return Err(format!("couldn't join that device's Wi-Fi ({e})"));
+        }
         // Joined, and given an address, within about twenty seconds.
         for _ in 0..40 {
             if connected_to(ssid) {

@@ -120,6 +120,25 @@ class NearbyWifi(private val context: Context) {
     })
   }
 
+  /** Whether this app's own Wi-Fi is up. */
+  fun isHosting(): Boolean = hosting
+
+  /**
+   * How many devices are on this app's own Wi-Fi now; null if Android won't
+   * say. Watched while it's open for someone (see [NearbyBle]).
+   */
+  @SuppressLint("MissingPermission")
+  fun clients(done: (Int?) -> Unit) {
+    val manager = p2p ?: return done(null)
+    val ch = channel ?: return done(null)
+    if (!hosting) return done(0)
+    try {
+      manager.requestGroupInfo(ch) { group -> main.post { done(group?.clientList?.size) } }
+    } catch (e: Exception) {
+      done(null)
+    }
+  }
+
   /**
    * Stops hosting; `done` once it has. Wi-Fi Direct turns a change away while
    * another is under way ("busy"), so it is asked again a few times: a group
@@ -328,6 +347,16 @@ class NearbyWifi(private val context: Context) {
   }
 
   companion object {
+    @Volatile
+    private var one: NearbyWifi? = null
+
+    /**
+     * The one for the app: the page's and Bluetooth's own Wi-Fi are the same
+     * group, so only one may own it (see `ours`).
+     */
+    fun shared(context: Context): NearbyWifi =
+      one ?: synchronized(this) { one ?: NearbyWifi(context.applicationContext).also { one = it } }
+
     /** On a nearby device's own Wi-Fi now, to share: the app's binding stays on it. */
     @Volatile
     var joinedNow = false

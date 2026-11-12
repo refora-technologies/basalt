@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDown, Check, Laptop, Lock, Monitor, Radio, Send, ShieldAlert, Smartphone, Tablet, Wifi, X } from 'lucide-react'
+import { ArrowDown, Bluetooth, Check, Laptop, Lock, Monitor, Radio, Send, ShieldAlert, Smartphone, Tablet, Wifi, X } from 'lucide-react'
 
 import type { NearbyDevice, NearbyMe } from '@/lib/api'
 import type { Incoming, Nearby, Outgoing } from '@/lib/useNearby'
@@ -76,7 +76,11 @@ export function NearbyDeviceRow({
       <span className="min-w-0 flex-1">
         <NearbyName device={device} className="text-[14.5px] text-text" />
         <span className="flex items-center gap-1 text-[12px] text-textFaint">
-          {device.ssid ? (
+          {device.ble || (device.ssid && device.form) ? (
+            <>
+              <Bluetooth size={11} /> By Bluetooth · code needed
+            </>
+          ) : device.ssid ? (
             <>
               <Wifi size={11} /> Direct connection · code needed
             </>
@@ -205,6 +209,11 @@ export function NearbySending({
           <JoiningMark className="mx-auto text-text" />
           <p className="mt-3 text-[14px] text-text">Connecting to</p>
           <NearbyName device={device} className="mt-1 justify-center text-[16px] font-semibold text-text" />
+          {sending.waitingForThem && (
+            <p className="mt-2 text-[13px] leading-snug text-text [text-wrap:pretty]">
+              Waiting for them to open Basalt. Their phone shows a notification to tap.
+            </p>
+          )}
           <p className="mt-2 text-[12.5px] leading-snug text-textFaint">
             You’re not on the same Wi-Fi, so this {phone ? 'phone' : 'computer'} connects to it directly for a moment.
             {phone ? ' If Android asks, choose Connect.' : ' Your Wi-Fi comes back when it’s done.'}
@@ -567,6 +576,7 @@ export function NearbySwitches({ nearby, className }: { nearby: Nearby; classNam
         onChange={nearby.setAlwaysCode}
         className={className}
       />
+      {nearby.ready && nearby.wifiNote && <ReachNote nearby={nearby} />}
       {nearby.ready && nearby.firewall === 'blocked' && (
         <div className="mx-4 my-2 flex items-start gap-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] px-3.5 py-3">
           <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-300" />
@@ -625,9 +635,6 @@ export function NearbyScreen({
         </div>
       )}
       <NearbySwitches nearby={nearby} className="px-5" />
-      {nearby.ready && nearby.wifiNote && (
-        <p className="mx-5 mt-1 rounded-xl bg-white/[0.04] px-3 py-2 text-[12px] leading-snug text-textDim">{nearby.wifiNote}</p>
-      )}
       <div className="px-5 pb-1 pt-4 font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">Send</div>
       {files ? (
         <div className="flex min-h-0 flex-col">
@@ -649,6 +656,43 @@ export function NearbyScreen({
             </span>
           </button>
         </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * What keeps devices that aren't on this Wi-Fi from reaching this one, and
+ * the one button that puts it right where there is one: Bluetooth or Wi-Fi
+ * off, the "nearby devices" permission not given.
+ */
+function ReachNote({ nearby }: { nearby: Nearby }): React.JSX.Element {
+  const action =
+    nearby.reach === 'bluetooth'
+      ? 'Turn on'
+      : nearby.reach === 'wifi'
+        ? 'Turn on'
+        : nearby.reach === 'ask'
+          ? 'Allow'
+          : nearby.reach === 'denied'
+            ? 'Settings'
+            : null
+  return (
+    <div className="mx-4 my-2 flex items-center gap-3 rounded-xl border border-white/[0.1] bg-white/[0.04] px-3.5 py-3">
+      {nearby.reach === 'bluetooth' ? (
+        <Bluetooth size={16} className="shrink-0 text-textDim" />
+      ) : (
+        <Radio size={16} className="shrink-0 text-textDim" />
+      )}
+      <p className="min-w-0 flex-1 text-[12.5px] leading-snug text-textDim [text-wrap:pretty]">{nearby.wifiNote}</p>
+      {action && (
+        <button
+          type="button"
+          onClick={nearby.fixReach}
+          className="shrink-0 rounded-full bg-white px-3.5 py-1.5 text-[12.5px] font-semibold text-black active:scale-[0.98]"
+        >
+          {action}
+        </button>
       )}
     </div>
   )

@@ -28,6 +28,7 @@ mod linux_share;
 mod linux_update;
 mod media_controls;
 mod music_timing;
+mod nearby_ble;
 mod nearby_wifi;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod tray;
@@ -149,6 +150,8 @@ struct AppState {
     nearby_ready: Mutex<Option<basalt_client::nearby::Ready>>,
     /// This device's own Wi-Fi while ready, and one joined to share.
     nearby_wifi: nearby_wifi::State,
+    /// Found by Bluetooth, and asked to open its own Wi-Fi: see nearby_ble.
+    nearby_ble: nearby_ble::State,
     /// Offers to devices nearby still waiting for their answer: a word here
     /// drops the line, and the other side's question goes with it.
     nearby_asking: Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
@@ -1309,6 +1312,79 @@ async fn nearby_wifi_host(app: tauri::AppHandle, on: bool) -> Answer<()> {
             nearby_wifi::stop_host(&state.nearby_wifi);
             Ok(())
         }
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// Whether devices that aren't on this Wi-Fi can reach this computer:
+/// `ready`, `bluetooth` (off) or `unsupported` (see nearby_ble).
+#[tauri::command]
+async fn nearby_reach() -> String {
+    tauri::async_runtime::spawn_blocking(nearby_ble::reach)
+        .await
+        .unwrap_or_else(|_| "unsupported".into())
+}
+
+/// Bluetooth switched on, or its settings opened; where things stand after.
+#[tauri::command]
+async fn bluetooth_turn_on() -> String {
+    tauri::async_runtime::spawn_blocking(nearby_ble::turn_on)
+        .await
+        .unwrap_or_else(|_| "unsupported".into())
+}
+
+/// Ready by Bluetooth (`on`), saying `info` (JSON from the page; the name of
+/// the Wi-Fi it opens is put in here), or not.
+#[tauri::command]
+async fn ble_ready(app: tauri::AppHandle, on: bool, info: String) -> Answer<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let info = if on {
+            let mut said: serde_json::Value =
+                serde_json::from_str(&info).map_err(|e| wifi_error(e.to_string()))?;
+            said["ssid"] = serde_json::Value::String(nearby_wifi::own(&nearby_me(&state)).ssid);
+            Some(said.to_string().into_bytes())
+        } else {
+            None
+        };
+        let handle = app.clone();
+        let open: nearby_ble::Opener = std::sync::Arc::new(move |on: bool| {
+            let state = handle.state::<AppState>();
+            if on {
+                nearby_wifi::host(&state.nearby_wifi, &nearby_me(&state))
+            } else {
+                nearby_wifi::stop_host(&state.nearby_wifi);
+                Ok(())
+            }
+        });
+        nearby_ble::ready(&state.nearby_ble, info, open).map_err(wifi_error)
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// Looks for ready devices by Bluetooth while `on`.
+#[tauri::command]
+async fn ble_look(app: tauri::AppHandle, on: bool) -> Answer<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        nearby_ble::look(&app.state::<AppState>().nearby_ble, on).map_err(wifi_error)
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// The ready devices found by Bluetooth lately.
+#[tauri::command]
+fn ble_seen(state: State<'_, AppState>) -> Vec<nearby_ble::Seen> {
+    nearby_ble::seen(&state.nearby_ble)
+}
+
+/// Asks a device found by Bluetooth to open its Wi-Fi; done once it has.
+#[tauri::command]
+async fn ble_wake(app: tauri::AppHandle, address: String, from: String) -> Answer<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        nearby_ble::wake(&app.state::<AppState>().nearby_ble, &address, &from).map_err(wifi_error)
     })
     .await
     .map_err(|e| wifi_error(e.to_string()))?
@@ -3153,6 +3229,7 @@ pub fn run() {
                 direct: tokio::sync::OnceCell::new(),
                 nearby_ready: Mutex::new(None),
                 nearby_wifi: nearby_wifi::State::default(),
+                nearby_ble: nearby_ble::State::default(),
                 nearby_asking: Mutex::new(std::collections::HashMap::new()),
                 nearby_offers: Mutex::new(std::collections::HashMap::new()),
             });
@@ -3342,6 +3419,12 @@ pub fn run() {
             nearby_firewall_allow,
             nearby_wifi_passphrase,
             nearby_wifi_host,
+            nearby_reach,
+            bluetooth_turn_on,
+            ble_ready,
+            ble_look,
+            ble_seen,
+            ble_wake,
             nearby_wifi_scan,
             nearby_wifi_join,
             nearby_wifi_leave,

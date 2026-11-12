@@ -39,6 +39,14 @@ What the Basalt interface may ask of Android directly. Opening files and creatin
 - `allow-nearby-join`
 - `allow-nearby-leave`
 - `allow-nearby-wifi-turn-on`
+- `allow-nearby-state`
+- `allow-request-nearby`
+- `allow-bluetooth-turn-on`
+- `allow-ble-ready`
+- `allow-ble-stop`
+- `allow-ble-look`
+- `allow-ble-seen`
+- `allow-ble-wake`
 - `allow-cancel-share`
 - `allow-take-action`
 - `allow-app-version`
@@ -93,6 +101,162 @@ Enables the app_version command without any pre-configured scope.
 <td>
 
 Denies the app_version command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-ble-look`
+
+</td>
+<td>
+
+Enables the ble_look command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-ble-look`
+
+</td>
+<td>
+
+Denies the ble_look command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-ble-ready`
+
+</td>
+<td>
+
+Enables the ble_ready command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-ble-ready`
+
+</td>
+<td>
+
+Denies the ble_ready command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-ble-seen`
+
+</td>
+<td>
+
+Enables the ble_seen command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-ble-seen`
+
+</td>
+<td>
+
+Denies the ble_seen command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-ble-stop`
+
+</td>
+<td>
+
+Enables the ble_stop command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-ble-stop`
+
+</td>
+<td>
+
+Denies the ble_stop command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-ble-wake`
+
+</td>
+<td>
+
+Enables the ble_wake command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-ble-wake`
+
+</td>
+<td>
+
+Denies the ble_wake command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-bluetooth-turn-on`
+
+</td>
+<td>
+
+Enables the bluetooth_turn_on command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-bluetooth-turn-on`
+
+</td>
+<td>
+
+Denies the bluetooth_turn_on command without any pre-configured scope.
 
 </td>
 </tr>
@@ -932,6 +1096,32 @@ Denies the nearby_scan command without any pre-configured scope.
 <tr>
 <td>
 
+`basalt-android:allow-nearby-state`
+
+</td>
+<td>
+
+Enables the nearby_state command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-nearby-state`
+
+</td>
+<td>
+
+Denies the nearby_state command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `basalt-android:allow-nearby-wifi-state`
 
 </td>
@@ -1471,6 +1661,32 @@ Enables the request_local_network command without any pre-configured scope.
 <td>
 
 Denies the request_local_network command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:allow-request-nearby`
+
+</td>
+<td>
+
+Enables the request_nearby command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`basalt-android:deny-request-nearby`
+
+</td>
+<td>
+
+Denies the request_nearby command without any pre-configured scope.
 
 </td>
 </tr>

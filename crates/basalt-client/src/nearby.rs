@@ -58,9 +58,57 @@ pub fn trace_to(log: fn(&str)) {
     let _ = TRACE.set(log);
 }
 
+/// Testing only (debug builds): `BASALT_DEV_OWN_WIFI_ONLY` answers devices
+/// looking for it only on its own Wi-Fi (Windows 192.168.137.x, Android
+/// 192.168.49.x), never on the Wi-Fi it is on, so that a device sharing on
+/// the same Wi-Fi sees it as one with no Wi-Fi in common, found by Bluetooth.
+fn answers_from(ip: IpAddr) -> bool {
+    if !cfg!(debug_assertions) || std::env::var_os("BASALT_DEV_OWN_WIFI_ONLY").is_none() {
+        return true;
+    }
+    matches!(ip, IpAddr::V4(v4) if matches!(v4.octets(), [192, 168, 137, _] | [192, 168, 49, _]))
+}
+
+/// A line of the app's own about nearby sharing, into the same log.
+pub fn note(line: &str) {
+    trace(|| line.to_string());
+}
+
 fn trace(line: impl FnOnce() -> String) {
     if let Some(log) = TRACE.get() {
         log(&line());
+    }
+}
+
+/// Offers coming in now, each from its line opening to its end.
+static RECEIVING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// When the last offer coming in ended.
+static QUIET_SINCE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// How many offers are coming in now, and since when none has been (None
+/// while one is, or before any came). A device that opened a Wi-Fi of its own
+/// for someone closes it once it has been quiet a while (see the apps).
+pub fn receiving() -> (usize, Option<std::time::Instant>) {
+    let now = RECEIVING.load(std::sync::atomic::Ordering::SeqCst);
+    let quiet = *QUIET_SINCE.lock().expect("quiet lock");
+    (now, if now == 0 { quiet } else { None })
+}
+
+/// Counts an offer coming in while it lives.
+struct Receiving;
+
+impl Receiving {
+    fn start() -> Self {
+        RECEIVING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Receiving
+    }
+}
+
+impl Drop for Receiving {
+    fn drop(&mut self) {
+        if RECEIVING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            *QUIET_SINCE.lock().expect("quiet lock") = Some(std::time::Instant::now());
+        }
     }
 }
 
@@ -344,6 +392,9 @@ impl Ready {
                         if n < 14 || &buffer[..5] != MAGIC || buffer[5] != VERSION {
                             continue;
                         }
+                        if !answers_from(from.ip()) {
+                            continue;
+                        }
                         let mut reply = buffer[..14].to_vec();
                         reply.extend_from_slice(said.as_bytes());
                         let sent = udp.send_to(&reply, from).await;
@@ -383,7 +434,9 @@ impl Ready {
                         let answers = Arc::clone(&answers);
                         let finishes = Arc::clone(&finishes);
                         let links = Arc::clone(&links);
+                        let counted = Receiving::start();
                         tokio::spawn(async move {
+                            let _counted = counted;
                             let tls =
                                 match tokio::time::timeout(STEP, acceptor.accept(stream)).await {
                                     Ok(Ok(tls)) => tls,

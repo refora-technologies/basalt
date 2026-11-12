@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-nearby-state"
+description = "Enables the nearby_state command without any pre-configured scope."
+commands.allow = ["nearby_state"]
+
+[[permission]]
+identifier = "deny-nearby-state"
+description = "Denies the nearby_state command without any pre-configured scope."
+commands.deny = ["nearby_state"]

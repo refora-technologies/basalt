@@ -11,6 +11,18 @@
     <uses-permission
         android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />
+    <!-- Devices nearby found by Bluetooth: a device ready to receive says it is
+         here over Bluetooth Low Energy, and opens a Wi-Fi of its own only when
+         asked (see NearbyBle). Android 12 asks for "nearby devices" for these. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Not required: a TV or a phone without it still installs, and shares on the same Wi-Fi. -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
     <!-- Looking at the Wi-Fis around (a nearby device's own) needs location on every Android, 13+ too. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />

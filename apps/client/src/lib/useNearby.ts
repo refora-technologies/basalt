@@ -13,7 +13,9 @@ import {
 import type { Transfers } from './useTransfers'
 import { kept, newOfferId, progressIn, type Progress, type SavedFile, type ShareFile, type ShareItem } from './share'
 import { plainReason } from './useInbox'
-import { isAndroid } from './platform'
+import { isAndroid, isLinuxDesktop } from './platform'
+import { bleLook, bleReady, bleSeen, bleWake, nearbyReach, reachNote, turnBluetoothOn, type FoundBle, type NearbyReach } from './nearbyBle'
+import { android } from './android'
 import { hostWifi, joinWifi, leaveWifi, scanWifi, turnWifiOn, wifiReady, type FoundWifi, type WifiState } from './nearbyWifi'
 import { pluginReason } from './android'
 
@@ -38,6 +40,10 @@ export interface Nearby {
   setAlwaysCode: (on: boolean) => void
   /** Why devices with no Wi-Fi in common can't find this one or be found, if they can't. */
   wifiNote: string | null
+  /** Whether devices that aren't on this Wi-Fi can reach this one, or what's in the way. */
+  reach: NearbyReach
+  /** Puts right what's in the way: asks for the permission, turns Bluetooth or Wi-Fi on. */
+  fixReach: () => void
   /** On a computer: its firewall (Windows, ufw, firewalld) keeps devices nearby out (`blocked`), until let through. */
   firewall: 'open' | 'blocked' | 'unknown'
   /** Lets them through: Windows asks for an administrator. Throws what went wrong. */
@@ -91,6 +97,11 @@ export interface Outgoing {
   files: ShareFile[]
   /** Joining its own Wi-Fi first (no network in common), then asking, a code, sending. */
   state: 'joining' | 'asking' | 'code' | 'sending'
+  /**
+   * Found by Bluetooth, it couldn't open its Wi-Fi yet (a phone with Basalt
+   * swiped away, on Android 10 to 12, is shown a notification): asked again.
+   */
+  waitingForThem?: boolean
   /** Tries left after a wrong code. */
   left?: number
 }
@@ -166,8 +177,8 @@ export function useNearby(transfers: Transfers): Nearby {
   // once Wi-Fi is on and Android lets it (see `hostNow` for when it's open).
   const [hostable, setHostable] = useState(false)
   useEffect(() => {
-    if (!ready) {
-      setWifiNote(null)
+    if (!ready || !OWN_WIFI_ALWAYS) {
+      if (!ready) setWifiNote(null)
       setHostable(false)
       return undefined
     }
@@ -241,6 +252,59 @@ export function useNearby(transfers: Transfers): Nearby {
       if (again) clearTimeout(again)
     }
   }, [hostNow, host, hostTry])
+
+  // Ready, found by Bluetooth (not Linux): it says it's here, and opens a
+  // Wi-Fi of its own only when a device that isn't on its Wi-Fi asks, for
+  // that share. Looked at again now and then, as Bluetooth or a permission
+  // can change behind its back.
+  const [reach, setReach] = useState<NearbyReach>('ready')
+  const [reachTry, setReachTry] = useState(0)
+  useEffect(() => {
+    if (OWN_WIFI_ALWAYS) return undefined
+    if (!ready || !me) {
+      void bleReady(false, null).catch(() => {})
+      return undefined
+    }
+    let live = true
+    let again: ReturnType<typeof setTimeout> | null = null
+    const check = async (ask: boolean): Promise<void> => {
+      const state = await nearbyReach(ask)
+      if (!live) return
+      setReach(state)
+      if (state !== 'ready') {
+        setWifiNote(reachNote(state))
+        await bleReady(false, null).catch(() => {})
+        again = setTimeout(() => void check(false), 3_000)
+        return
+      }
+      try {
+        await bleReady(true, { v: 1, id: me.id, name: me.name, form: me.form, ssid: '', code: alwaysCode })
+        if (!live) return
+        setWifiNote(null)
+        again = setTimeout(() => void check(false), 15_000)
+      } catch (e) {
+        note(`bluetooth ready failed: ${pluginReason(e)}`)
+        if (!live) return
+        setWifiNote(`Devices that aren’t on your Wi-Fi can’t find this one: ${pluginReason(e)}`)
+        again = setTimeout(() => void check(false), HOST_AGAIN_MS)
+      }
+    }
+    void check(true)
+    return () => {
+      live = false
+      if (again) clearTimeout(again)
+    }
+  }, [ready, me, alwaysCode, reachTry])
+  const fixReach = useCallback(() => {
+    void (async () => {
+      if (reach === 'bluetooth') await turnBluetoothOn().catch(() => {})
+      else if (reach === 'wifi') await turnWifiOn().catch(() => {})
+      else if (reach === 'denied' && isAndroid()) await android.openAppSettings().catch(() => {})
+      else if (reach === 'ask') await nearbyReach(true).catch(() => {})
+      // A moment for it to take, then looked at again.
+      setTimeout(() => setReachTry((n) => n + 1), 1_200)
+    })()
+  }, [reach])
 
   /** Leaves the Wi-Fi joined for an offer, once it has ended: its own opens again then, if ready. */
   const leaveFor = useCallback((offer: string) => {
@@ -414,8 +478,33 @@ export function useNearby(transfers: Transfers): Nearby {
 
   // Devices with no network in common, by their own Wi-Fi: looked for less
   // often (Android allows a few looks a minute). Asked for what it needs once.
+  const [bleFar, setBleFar] = useState<FoundBle[]>([])
   useEffect(() => {
-    if (watchers === 0) return undefined
+    if (watchers === 0 || OWN_WIFI_ALWAYS) return undefined
+    let live = true
+    let timer: ReturnType<typeof setInterval> | null = null
+    void (async () => {
+      const state = await nearbyReach(true)
+      if (!live) return
+      setReach(state)
+      if (state !== 'ready') return
+      await bleLook(true).catch((e: unknown) => note(`bluetooth look failed: ${pluginReason(e)}`))
+      const read = (): void =>
+        void bleSeen()
+          .then((found) => live && setBleFar(found))
+          .catch(() => {})
+      read()
+      timer = setInterval(read, 1_500)
+    })()
+    return () => {
+      live = false
+      if (timer) clearInterval(timer)
+      setBleFar([])
+      void bleLook(false).catch(() => {})
+    }
+  }, [watchers])
+  useEffect(() => {
+    if (watchers === 0 || !OWN_WIFI_ALWAYS) return undefined
     let live = true
     const lookFar = async (ask: boolean): Promise<void> => {
       const state = await wifiReady(ask)
@@ -446,11 +535,15 @@ export function useNearby(transfers: Transfers): Nearby {
     const farAway: NearbyDevice[] = far
       .filter((f) => !here.has(f.id) && f.id !== me?.id)
       .map((f) => ({ id: f.id, name: f.name || 'A device', address: '', port: 0, key: '', code: true, ssid: f.ssid }))
-    const both = [...devices, ...farAway]
+    const byBluetooth: NearbyDevice[] = bleFar
+      .filter((f) => !here.has(f.id) && f.id !== me?.id)
+      // One that told us it's here has its Wi-Fi open already: only to join.
+      .map((f) => ({ id: f.id, name: f.name, form: f.form, address: '', port: 0, key: '', code: true, ssid: f.ssid, ble: f.open ? undefined : f.address }))
+    const both = [...devices, ...byBluetooth, ...farAway.filter((f) => !bleFar.some((b) => b.id === f.id))]
     const seen = firstSeen.current
     for (const d of both) if (!seen.has(d.id)) seen.set(d.id, seen.size)
     return both.sort((a, b) => (seen.get(a.id) ?? 0) - (seen.get(b.id) ?? 0))
-  }, [devices, far, me])
+  }, [devices, far, bleFar, me])
 
   const send = useCallback(
     (device: NearbyDevice, files: ShareFile[]): string => {
@@ -476,6 +569,30 @@ export function useNearby(transfers: Transfers): Nearby {
           }
           // Its own closed first (see `hostNow`), and waited for.
           await host(false).catch(() => {})
+          if (device.ble) {
+            // Found by Bluetooth: asked to open its Wi-Fi first, for this;
+            // again for a while if it can't yet (its person is asked to open
+            // Basalt there), unless this is cancelled meanwhile.
+            note(`asking ${device.id} over Bluetooth to open its Wi-Fi`)
+            const until = Date.now() + WAKE_FOR_MS
+            for (;;) {
+              try {
+                await bleWake(device.ble, me?.id ?? '')
+                break
+              } catch (e) {
+                const still = outgoingRef.current.some((o) => o.offer === offer)
+                if (!still) throw new Error('Cancelled.')
+                if (Date.now() > until) {
+                  throw new Error('That device couldn’t open its Wi-Fi. Ask them to open Basalt, then send again.')
+                }
+                note(`${device.id} couldn't open yet (${pluginReason(e)}); asking again`)
+                setOutgoing((list) => list.map((o) => (o.offer === offer ? { ...o, waitingForThem: true } : o)))
+                await new Promise((done) => setTimeout(done, 4_000))
+              }
+            }
+            setOutgoing((list) => list.map((o) => (o.offer === offer ? { ...o, waitingForThem: false } : o)))
+            note(`${device.id} opened its Wi-Fi`)
+          }
           await joinWifi(device.ssid)
           note(`joined ${device.ssid}`)
           there = await findOnJoined(device.id)
@@ -511,7 +628,7 @@ export function useNearby(transfers: Transfers): Nearby {
       })()
       return offer
     },
-    [alwaysCode, update, leaveFor, host],
+    [alwaysCode, update, leaveFor, host, me],
   )
 
   const typeCode = useCallback(
@@ -563,6 +680,8 @@ export function useNearby(transfers: Transfers): Nearby {
       alwaysCode,
       setAlwaysCode,
       wifiNote,
+      reach,
+      fixReach,
       firewall,
       allowFirewall,
       devices: all,
@@ -582,7 +701,7 @@ export function useNearby(transfers: Transfers): Nearby {
       screenOpen,
       setScreenOpen,
     }),
-    [me, ready, setReady, alwaysCode, setAlwaysCode, wifiNote, firewall, allowFirewall, all, looking, look, watch, incoming, accept, decline, outgoing, send, typeCode, cancel, items, progressOf, forget, screenOpen],
+    [me, ready, setReady, alwaysCode, setAlwaysCode, wifiNote, reach, fixReach, firewall, allowFirewall, all, looking, look, watch, incoming, accept, decline, outgoing, send, typeCode, cancel, items, progressOf, forget, screenOpen],
   )
 }
 
@@ -596,6 +715,17 @@ export function useNearbyDevices(nearby: Nearby, on: boolean): NearbyDevice[] {
   }, [on, watch])
   return nearby.devices
 }
+
+/**
+ * A Wi-Fi of its own open all the time while ready: Linux only, where a card
+ * opens one only while it's on no Wi-Fi, so it slows nothing. Elsewhere a
+ * device is found by Bluetooth and opens one only when asked: kept open all
+ * the time, it made the device's own Wi-Fi several times slower.
+ */
+const OWN_WIFI_ALWAYS = isLinuxDesktop()
+
+/** How long a device found by Bluetooth is asked to open its Wi-Fi before giving up. */
+const WAKE_FOR_MS = 90_000
 
 /** How often devices with no network in common are looked for. */
 const FAR_LOOK_EVERY_MS = 12_000
