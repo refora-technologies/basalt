@@ -101,6 +101,8 @@ const ITEMS_KEY = 'basalt.nearby.items'
 const FOLDER_KEY = 'basalt.share.folder'
 /** How often a Share sheet that is open looks again. */
 const LOOK_EVERY_MS = 4_000
+/** How soon its own Wi-Fi is tried again after it couldn't open. */
+const HOST_AGAIN_MS = 60_000
 
 export function useNearby(transfers: Transfers): Nearby {
   const [me, setMe] = useState<NearbyMe | null>(null)
@@ -216,8 +218,12 @@ export function useNearby(transfers: Transfers): Nearby {
     hosting.current = next.catch(() => {})
     return next
   }, [])
+  // Asked again a minute after it couldn't open (on a computer, another app
+  // may be holding Wi-Fi Direct for a while: a cast to a TV).
+  const [hostTry, setHostTry] = useState(0)
   useEffect(() => {
     let live = true
+    let again: ReturnType<typeof setTimeout> | null = null
     host(hostNow)
       .then(() => {
         note(hostNow ? 'hosting its own Wi-Fi' : 'own Wi-Fi closed')
@@ -226,12 +232,15 @@ export function useNearby(transfers: Transfers): Nearby {
       .catch((e: unknown) => {
         if (!hostNow) return
         note(`hosting failed: ${pluginReason(e)}`)
-        if (live) setWifiNote(`Devices with no Wi-Fi in common can’t find this one: ${pluginReason(e)}`)
+        if (!live) return
+        setWifiNote(`Devices with no Wi-Fi in common can’t find this one: ${pluginReason(e)}`)
+        again = setTimeout(() => setHostTry((n) => n + 1), HOST_AGAIN_MS)
       })
     return () => {
       live = false
+      if (again) clearTimeout(again)
     }
-  }, [hostNow, host])
+  }, [hostNow, host, hostTry])
 
   /** Leaves the Wi-Fi joined for an offer, once it has ended: its own opens again then, if ready. */
   const leaveFor = useCallback((offer: string) => {
