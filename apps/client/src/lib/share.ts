@@ -278,6 +278,38 @@ export function targetsOf(devices: PresentDevice[], you: string): Targets {
   return { mine, home, loose }
 }
 
+/**
+ * The list as it was, brought up to date without moving anything: each row
+ * keeps its place and takes the device's news (online, name); a device new to
+ * the list joins the end of its part; one gone from it keeps its row as it was
+ * last seen. The share sheet shows this while it is open: rebuilt each time
+ * "who is online" came back, a device going on or off line jumped rows and a
+ * refresh that came back empty for a moment dropped whole parts, so a tap
+ * landed on the row that had moved under the finger.
+ */
+export function steadyTargets(before: Targets | null, now: Targets): Targets {
+  if (!before) return now
+  const shown = (t: Targets): PresentDevice[] => [...t.mine, ...t.home.flatMap((g) => g.devices), ...t.loose]
+  const fresh = new Map(shown(now).map((d) => [d.device, d]))
+  const had = new Set(shown(before).map((d) => d.device))
+  const keep = (old: PresentDevice[], joining: PresentDevice[]): PresentDevice[] => [
+    ...old.map((d) => fresh.get(d.device) ?? d),
+    ...joining.filter((d) => !had.has(d.device)),
+  ]
+  const groups = new Map(now.home.map((g) => [g.profile, g]))
+  const home = before.home.map((g) => {
+    const latest = groups.get(g.profile)
+    return { ...g, ...(latest ? { name: latest.name, color: latest.color } : {}), devices: keep(g.devices, latest?.devices ?? []) }
+  })
+  const kept = new Set(before.home.map((g) => g.profile))
+  for (const g of now.home) {
+    if (kept.has(g.profile)) continue
+    const devices = g.devices.filter((d) => !had.has(d.device))
+    if (devices.length > 0) home.push({ ...g, devices })
+  }
+  return { mine: keep(before.mine, now.mine), home, loose: keep(before.loose, now.loose) }
+}
+
 /** A device as a party to a share. */
 export function partyOf(device: PresentDevice): Party {
   return {

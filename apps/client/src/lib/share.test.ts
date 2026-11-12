@@ -14,6 +14,7 @@ import {
   received,
   timeLeft,
   takesWithoutAsking,
+  steadyTargets,
   targetsOf,
   titleOf,
   totalOf,
@@ -63,6 +64,51 @@ describe('where a share can go', () => {
     expect(t.home[0]!.devices.map((d) => d.device)).toEqual(['sam-phone'])
     expect(t.loose.map((d) => d.device)).toEqual(['kitchen'])
     expect(JSON.stringify(t)).not.toContain('"tv"')
+  })
+})
+
+describe('the list while the share sheet is open', () => {
+  const ids = (t: ReturnType<typeof targetsOf>): string[] => [
+    ...t.mine.map((d) => d.device),
+    ...t.home.flatMap((g) => g.devices.map((d) => d.device)),
+    ...t.loose.map((d) => d.device),
+  ]
+  const first = targetsOf(household, 'me')
+
+  it('keeps every row in its place when a device goes on or off line', () => {
+    const changed = household.map((d) =>
+      d.device === 'tablet' ? { ...d, online: true } : d.device === 'phone' ? { ...d, online: false } : d,
+    )
+    const rebuilt = targetsOf(changed, 'me')
+    // Rebuilt from scratch, the tablet would jump above the phone.
+    expect(rebuilt.mine.map((d) => d.device)).toEqual(['tablet', 'phone'])
+    const steady = steadyTargets(first, rebuilt)
+    expect(ids(steady)).toEqual(ids(first))
+    // The dots still say what is true now.
+    expect(steady.mine.find((d) => d.device === 'tablet')!.online).toBe(true)
+    expect(steady.mine.find((d) => d.device === 'phone')!.online).toBe(false)
+  })
+
+  it('keeps the rows of a refresh that came back empty for a moment', () => {
+    const steady = steadyTargets(first, targetsOf([], ''))
+    expect(ids(steady)).toEqual(ids(first))
+    expect(steady.home.map((g) => g.name)).toEqual(['Sam', 'Amma'])
+  })
+
+  it('adds a device that comes along at the end of its part, moving no one', () => {
+    const more = [
+      ...household,
+      device({ device: 'a-laptop', name: 'A laptop', form: 'computer', profile: 'maya', profileName: 'Maya' }),
+      device({ device: 'nimal-phone', name: 'Nimal phone', form: 'phone', profile: 'nimal', profileName: 'Nimal' }),
+    ]
+    const steady = steadyTargets(first, targetsOf(more, 'me'))
+    expect(steady.mine.map((d) => d.device)).toEqual(['phone', 'tablet', 'a-laptop'])
+    expect(steady.home.map((g) => g.name)).toEqual(['Sam', 'Amma', 'Nimal'])
+    expect(steady.loose.map((d) => d.device)).toEqual(['kitchen'])
+  })
+
+  it('takes the first list as it is', () => {
+    expect(steadyTargets(null, first)).toBe(first)
   })
 })
 

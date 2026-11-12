@@ -33,6 +33,7 @@ import {
   isProgram,
   percentOf,
   progressLine,
+  steadyTargets,
   targetsOf,
   titleOf,
   totalOf,
@@ -78,8 +79,21 @@ export function ShareChooser({
   /** In a phone's sheet: the button stays at the bottom, over the list, never scrolled away. */
   sheet?: boolean
 }): React.JSX.Element {
-  const targets = useMemo(() => targetsOf(presence.devices, presence.you), [presence])
-  const [chosen, setChosen] = useState<PresentDevice | null>(null)
+  // Rows hold still while the sheet is open (see steadyTargets): a tap goes to
+  // the device under the finger, whatever "who is online" said meanwhile.
+  const steady = useRef<ReturnType<typeof targetsOf> | null>(null)
+  const targets = useMemo(() => {
+    const next = steadyTargets(steady.current, targetsOf(presence.devices, presence.you))
+    if (next.mine.length + next.home.length + next.loose.length > 0) steady.current = next
+    return next
+  }, [presence])
+  const [picked, setChosen] = useState<PresentDevice | null>(null)
+  // The device chosen, as it is now: its row may have gone on or off line since.
+  const chosen = useMemo(() => {
+    if (!picked) return null
+    const all = [...targets.mine, ...targets.home.flatMap((g) => g.devices), ...targets.loose]
+    return all.find((d) => d.device === picked.device) ?? picked
+  }, [picked, targets])
   const [busy, setBusy] = useState(false)
   // Pressed once is sent once: a second press while the first is on its
   // way does nothing (it offered the same file five times to the other side).
