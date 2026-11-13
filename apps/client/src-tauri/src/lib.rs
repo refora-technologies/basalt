@@ -3260,6 +3260,12 @@ pub fn run() {
             {
                 use tauri_plugin_basalt_android::BasaltAndroidExt;
                 let _ = app.basalt_android().notices_at(&notices.to_string_lossy());
+                // Beside it: touched when a device on the Wi-Fi looks for this
+                // phone, read by Android's side before it opens a Wi-Fi of its
+                // own for someone sharing nearby (NearbyBle.heardSharing).
+                basalt_client::nearby::note_looked_for_in(
+                    store_path.with_file_name("nearby-looked-for"),
+                );
             }
             // The device's key goes in the phone's hardware key store there;
             // on Windows the client finds the TPM by itself.

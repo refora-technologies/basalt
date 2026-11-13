@@ -76,6 +76,10 @@ object NearbyBle {
   private const val SHARING_GONE_MS = 60_000L
   /** A device sharing is told we're here again after this long. */
   private const val TELL_AGAIN_MS = 15_000L
+  /** How long a device heard sharing is given to find this phone on its Wi-Fi first. */
+  private const val LAN_FIRST_MS = 5_000L
+  /** The packet size asked for before writing a device's details. */
+  private const val MTU = 247
   /** One that told us it's here is listed this long after it last did. */
   private const val HERE_FOR_MS = 45_000L
 
@@ -199,46 +203,86 @@ object NearbyBle {
       value: ByteArray?,
     ) {
       val s = server ?: return
-      when (characteristic.uuid) {
-        OPEN -> {
-          log("asked to open its Wi-Fi by ${value?.let { String(it) } ?: "?"}")
-          main.post {
-            openOwnWifi(listening = false) { why ->
-              log(if (why == null) "its Wi-Fi is open" else "couldn't open its Wi-Fi: $why")
-              if (why != null && Build.VERSION.SDK_INT <= 32) {
-                // Android 10 to 12 open Wi-Fi Direct only for an app on
-                // screen: the person is asked to bring Basalt up, and it opens
-                // then; the asking device keeps trying meanwhile.
-                markAsked()
-                ShareNotices.post(
-                  context,
-                  "nearby-asked",
-                  "Someone nearby wants to send you a file",
-                  "Tap to open Basalt and receive it.",
-                  emptyList(),
-                )
-              }
-              if (responseNeeded) {
-                runCatching {
-                  s.sendResponse(device, requestId, if (why == null) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE, 0, null)
-                }
-              }
-            }
-          }
+      // Longer than one packet (a device's details, from a phone that didn't
+      // ask for bigger ones): it comes in pieces, each echoed back, and is
+      // taken whole when the writer says to (onExecuteWrite).
+      if (preparedWrite) {
+        val key = "${device.address}/${characteristic.uuid}"
+        val parts = pieces.getOrPut(key) { java.io.ByteArrayOutputStream() }
+        if (offset != parts.size()) {
+          pieces.remove(key)
+          if (responseNeeded) runCatching { s.sendResponse(device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null) }
+          return
         }
-        HERE -> {
-          val said = value?.let { String(it) } ?: ""
-          main.post {
-            val id = runCatching { JSONObject(said).optString("id") }.getOrNull()
-            if (!id.isNullOrEmpty()) {
-              log("$id says it's here")
-              here[id] = said to SystemClock.elapsedRealtime()
-            }
-          }
-          if (responseNeeded) runCatching { s.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null) }
-        }
-        else -> if (responseNeeded) s.sendResponse(device, requestId, BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED, 0, null)
+        parts.write(value ?: ByteArray(0))
+        if (responseNeeded) runCatching { s.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value) }
+        return
       }
+      written(device, characteristic.uuid, value) { ok ->
+        if (responseNeeded) {
+          runCatching { s.sendResponse(device, requestId, if (ok) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE, 0, null) }
+        }
+      }
+    }
+
+    override fun onExecuteWrite(device: BluetoothDevice, requestId: Int, execute: Boolean) {
+      val s = server ?: return
+      val mine = pieces.keys.filter { it.startsWith("${device.address}/") }
+      val whole = mine.mapNotNull { key -> pieces.remove(key)?.let { key to it.toByteArray() } }
+      val (key, value) = whole.firstOrNull() ?: run {
+        runCatching { s.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null) }
+        return
+      }
+      if (!execute) {
+        runCatching { s.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null) }
+        return
+      }
+      written(device, UUID.fromString(key.substringAfter('/')), value) { ok ->
+        runCatching { s.sendResponse(device, requestId, if (ok) BluetoothGatt.GATT_SUCCESS else BluetoothGatt.GATT_FAILURE, 0, null) }
+      }
+    }
+  }
+
+  /** Pieces of a long write, by device and characteristic, until it's executed. */
+  private val pieces = java.util.concurrent.ConcurrentHashMap<String, java.io.ByteArrayOutputStream>()
+
+  /** A write to one of ours, whole: `answer` says whether it was done. */
+  private fun written(device: BluetoothDevice, which: UUID, value: ByteArray?, answer: (Boolean) -> Unit) {
+    when (which) {
+      OPEN -> {
+        log("asked to open its Wi-Fi by ${value?.let { String(it) } ?: "?"}")
+        main.post {
+          openOwnWifi(listening = false) { why ->
+            log(if (why == null) "its Wi-Fi is open" else "couldn't open its Wi-Fi: $why")
+            if (why != null && Build.VERSION.SDK_INT <= 32) {
+              // Android 10 to 12 open Wi-Fi Direct only for an app on
+              // screen: the person is asked to bring Basalt up, and it opens
+              // then; the asking device keeps trying meanwhile.
+              markAsked()
+              ShareNotices.post(
+                context,
+                "nearby-asked",
+                "Someone nearby wants to send you a file",
+                "Tap to open Basalt and receive it.",
+                emptyList(),
+              )
+            }
+            answer(why == null)
+          }
+        }
+      }
+      HERE -> {
+        val said = value?.let { String(it) } ?: ""
+        main.post {
+          val id = runCatching { JSONObject(said).optString("id") }.getOrNull()
+          if (!id.isNullOrEmpty()) {
+            log("$id says it's here")
+            here[id] = said to SystemClock.elapsedRealtime()
+          }
+        }
+        answer(true)
+      }
+      else -> answer(false)
     }
   }
 
@@ -289,6 +333,10 @@ object NearbyBle {
   /** Ready but can't be found: listening for devices sharing nearby. */
   private var listening: ScanCallback? = null
   private var sharingHeard = 0L
+  /** When "sharing nearby" was last heard from anyone. */
+  private var lastSharingAd = 0L
+  /** When this phone, unable to open its Wi-Fi from the background, last said someone is sharing. */
+  private var toldSharingAt = 0L
   private val told = HashMap<String, Long>()
 
   /**
@@ -373,13 +421,45 @@ object NearbyBle {
 
   private fun heardSharing(device: BluetoothDevice) {
     val now = SystemClock.elapsedRealtime()
-    sharingHeard = now
+    lastSharingAd = now
     val last = told[device.address] ?: 0L
     if (now - last < TELL_AGAIN_MS) return
     told[device.address] = now
+    // A device sharing on this phone's Wi-Fi looks for it there within
+    // moments and finds it: then there's nothing to open, and a Wi-Fi of its
+    // own would only slow this phone's (as it did a computer's, which then
+    // missed a send). Rust touches a file when it's looked for.
+    main.postDelayed({
+      val looked = ShareNotices.beside(context, "nearby-looked-for")?.lastModified() ?: 0L
+      if (looked > 0 && System.currentTimeMillis() - looked < LAN_FIRST_MS + 3_000L) {
+        log("someone nearby is sharing, and found this phone on its Wi-Fi")
+        return@postDelayed
+      }
+      // And only if it's still sharing: the last word of one that just
+      // stopped (its app left the screen) isn't a reason.
+      if (lastSharingAd <= now + 1_000L) return@postDelayed
+      sharingHeard = SystemClock.elapsedRealtime()
+      openForSharing(device)
+    }, LAN_FIRST_MS)
+  }
+
+  private fun openForSharing(device: BluetoothDevice) {
     openOwnWifi(listening = true) { why ->
       if (why != null) {
         log("couldn't open its Wi-Fi for someone sharing nearby: $why")
+        // Android 10 to 12 open Wi-Fi Direct only for an app on screen: the
+        // person is told, now and then, so the one sharing can find them.
+        val now = SystemClock.elapsedRealtime()
+        if (Build.VERSION.SDK_INT <= 32 && (toldSharingAt == 0L || now - toldSharingAt > 10 * 60_000L)) {
+          toldSharingAt = now
+          ShareNotices.post(
+            context,
+            "nearby-sharing",
+            "Someone nearby is sharing files",
+            "Tap to open Basalt so they can find you.",
+            emptyList(),
+          )
+        }
         return@openOwnWifi
       }
       enqueue { next ->
@@ -600,10 +680,20 @@ object NearbyBle {
       override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
         main.post {
           if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
-            if (!g.discoverServices()) end(null, "Bluetooth couldn't look at that device.")
+            // Bigger packets first, so a device's details go in one write
+            // (Windows asks by itself); looked at once they're agreed.
+            if (write == null || !g.requestMtu(MTU)) {
+              if (!g.discoverServices()) end(null, "Bluetooth couldn't look at that device.")
+            }
           } else {
             end(null, "Bluetooth lost that device ($status).")
           }
+        }
+      }
+
+      override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+        main.post {
+          if (!finished && !g.discoverServices()) end(null, "Bluetooth couldn't look at that device.")
         }
       }
 

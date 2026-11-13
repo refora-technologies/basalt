@@ -134,6 +134,7 @@ class KeepAliveService : Service() {
       reasons["music"] ?: reasons["playback"] ?: reasons["transfer"] ?: reasons["ready"] ?: reasons["nearby"]
 
     fun hold(context: Context, reason: String, title: String, text: String, progress: Int) {
+      Comeback.held(context, reason, true)
       main.removeCallbacks(stopLater)
       val fresh = !reasons.containsKey(reason)
       reasons[reason] = Shown(title, text, progress).also { lastShown = it }
@@ -164,6 +165,7 @@ class KeepAliveService : Service() {
     }
 
     fun release(context: Context, reason: String) {
+      Comeback.held(context, reason, false)
       if (reasons.remove(reason) == null) return
       val intent = Intent(context, KeepAliveService::class.java)
       if (reasons.isEmpty()) {

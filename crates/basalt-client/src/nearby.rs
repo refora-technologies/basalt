@@ -409,8 +409,7 @@ impl Ready {
                         };
                         if !from.ip().is_loopback() {
                             if !basalt_net::discovery::local_addresses().contains(&from.ip()) {
-                                *LOOKED_FOR.lock().unwrap_or_else(|e| e.into_inner()) =
-                                    Some(std::time::Instant::now());
+                                looked_for_now();
                             }
                             trace(|| {
                                 format!(
@@ -1038,6 +1037,30 @@ async fn bind_port(port: u16) -> Result<UdpSocket> {
 
 /// When another device last looked for this one over a network, as it was ready.
 static LOOKED_FOR: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// A file touched when another device looks for this one, for a side that
+/// can't ask (Android's, while Basalt is swiped away): its time says when.
+static LOOKED_FOR_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Where to touch that file: set once, as the app starts.
+pub fn note_looked_for_in(path: std::path::PathBuf) {
+    let _ = LOOKED_FOR_FILE.set(path);
+}
+
+fn looked_for_now() {
+    static TOUCHED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    let now = std::time::Instant::now();
+    *LOOKED_FOR.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
+    let Some(path) = LOOKED_FOR_FILE.get() else {
+        return;
+    };
+    // Every couple of seconds at most: a look comes several times over.
+    let mut touched = TOUCHED.lock().unwrap_or_else(|e| e.into_inner());
+    if touched.is_none_or(|at| now.saturating_duration_since(at) > Duration::from_secs(2)) {
+        *touched = Some(now);
+        let _ = std::fs::write(path, b"");
+    }
+}
 
 /// Whether another device looked for this one over a network it's on within
 /// `within`: a device sharing nearby that is on this one's Wi-Fi finds it

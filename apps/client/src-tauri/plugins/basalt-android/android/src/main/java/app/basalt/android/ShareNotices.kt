@@ -34,6 +34,12 @@ object ShareNotices {
   @Volatile
   private var observer: FileObserver? = null
 
+  /** A file beside the one Rust writes notices to: Rust's other words to this side. */
+  fun beside(context: Context, name: String): File? {
+    val path = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_PATH, null)
+    return path?.let { File(it).resolveSibling(name) }
+  }
+
   /** Shows one, replacing any with the same tag; false when Android won't. */
   fun post(context: Context, tag: String, title: String, text: String, actions: List<String>): Boolean {
     val allowed = Build.VERSION.SDK_INT < 33 ||
