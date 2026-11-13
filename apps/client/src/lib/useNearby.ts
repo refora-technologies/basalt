@@ -168,14 +168,27 @@ export function useNearby(transfers: Transfers): Nearby {
     void api.nearbyReady(ready, alwaysCode).catch(() => {})
   }, [ready, alwaysCode])
 
-  // Ready on a computer: whether its firewall lets devices nearby in.
+  // Ready on a computer: whether its firewall lets devices nearby in. Asked
+  // again after a moment and now and then: Windows asks about an app that
+  // just started listening, and a question closed unanswered leaves a rule
+  // blocking it, made after the first look said all was well.
   useEffect(() => {
-    if (!ready || isAndroid()) return
-    void api
-      .nearbyFirewall()
-      .then(setFirewall)
-      .catch(() => setFirewall('unknown'))
-  }, [ready])
+    if (!ready || isAndroid() || !shown) return undefined
+    let live = true
+    const check = (): void =>
+      void api
+        .nearbyFirewall()
+        .then((state) => live && setFirewall(state))
+        .catch(() => live && setFirewall('unknown'))
+    check()
+    const soon = setTimeout(check, 5_000)
+    const timer = setInterval(check, 30_000)
+    return () => {
+      live = false
+      clearTimeout(soon)
+      clearInterval(timer)
+    }
+  }, [ready, shown])
   const allowFirewall = useCallback(async () => {
     setFirewall(await api.nearbyFirewallAllow())
   }, [])
