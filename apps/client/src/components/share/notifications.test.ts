@@ -30,7 +30,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
 
 const { useShareNotifications } = await import('./notifications')
 
-const presence: Presence = { devices: [], you: 'pc', supported: true }
+const presence: Presence = { devices: [], you: 'pc', supported: true, forget: false }
 
 function item(id: string, state: ShareItem['state'], at: number): ShareItem {
   return {

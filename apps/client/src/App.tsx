@@ -1877,6 +1877,7 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                   },
                   devices: ownDevices(model.presence),
                   you: model.presence.you,
+                  canRemove: model.presence.forget,
                 }
               : undefined
           }

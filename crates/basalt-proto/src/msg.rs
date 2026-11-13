@@ -397,6 +397,12 @@ pub enum ManageAction {
     ResetProfilePin {
         id: String,
     },
+    /// Signs a profile out of one device (lost, sold or lent): it stays the
+    /// home's; the PIN is asked to use the profile there again. From 1.6.4.
+    SignOutProfileDevice {
+        id: String,
+        device: String,
+    },
     SetRequireProfile {
         require: bool,
     },
@@ -1293,6 +1299,9 @@ pub struct PresenceResponse {
     pub devices: Vec<PresentDevice>,
     /// The id this device is known by, to tell itself apart in the list.
     pub you: String,
+    /// The host signs a profile out of its other devices when asked
+    /// ([`ProfileForgetDeviceRequest`]): false from a host before that.
+    pub forget: bool,
 }
 
 /// One of the host's devices.
@@ -1706,6 +1715,17 @@ pub struct ProfileUseResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ProfileSignOutRequest {
     pub token: String,
+}
+
+/// Signs the profile this device is signed in to out of another device: one
+/// lost, sold or lent. It stays the home's, for its other profiles; to use
+/// this profile there again, the PIN is asked. Not this device: that is
+/// [`ProfileSignOutRequest`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileForgetDeviceRequest {
+    /// [`PresentDevice::device`].
+    pub device: String,
 }
 
 /// One starred file or folder.

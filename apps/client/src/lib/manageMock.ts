@@ -76,8 +76,9 @@ const sample: ManageView = {
         createdAt: now() - 86400 * 40,
         lastUsed: now() - 120,
         devices: [
-          { name: 'Maya’s phone', remembered: true, lastUsed: now() - 120 },
-          { name: 'Maya’s laptop', remembered: true, lastUsed: now() - 7200 },
+          { device: 'k-maya-phone', name: 'Maya’s phone', form: 'phone', remembered: true, lastUsed: now() - 120 },
+          { device: 'k-maya-laptop', name: 'Maya’s laptop', form: 'computer', remembered: true, lastUsed: now() - 7200 },
+          { device: 'k-maya-old', name: 'Galaxy S9', form: 'phone', remembered: true, lastUsed: now() - 86400 * 40 },
         ],
       },
       {
@@ -87,7 +88,7 @@ const sample: ManageView = {
         hasPin: true,
         createdAt: now() - 86400 * 12,
         lastUsed: now() - 86400,
-        devices: [{ name: 'Kitchen tablet', remembered: true, lastUsed: now() - 86400 }],
+        devices: [{ device: 'k-kitchen', name: 'Kitchen tablet', form: 'tablet', remembered: true, lastUsed: now() - 86400 }],
       },
       {
         id: 'p-leo',
@@ -394,6 +395,11 @@ function apply(action: ManageAction): boolean {
       status.profiles = status.profiles.filter((p) => p.id !== action.id)
       if (status.profiles.length === 0) status.profileRules.requireProfile = false
       break
+    case 'signOutProfileDevice': {
+      const profile = status.profiles.find((p) => p.id === action.id)
+      if (profile) profile.devices = profile.devices.filter((d) => d.device !== action.device)
+      break
+    }
     case 'resetProfilePin': {
       const profile = status.profiles.find((p) => p.id === action.id)
       if (profile) {

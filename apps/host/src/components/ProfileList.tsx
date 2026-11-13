@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Check, Copy, KeyRound, MoreHorizontal, Plus, Trash2 } from 'lucide-react'
-import type { ProfileSummary } from '@/lib/api'
+import { Check, ChevronDown, Copy, KeyRound, Laptop, MoreHorizontal, Plus, Smartphone, Tablet, Trash2, Tv, X } from 'lucide-react'
+import type { ProfileDevice, ProfileSummary } from '@/lib/api'
 import { cn, formatAgo } from '@/lib/utils'
 import { copyText } from '@/lib/copyText'
 import { Tag } from './ui/Group'
@@ -69,6 +69,7 @@ export function ProfileList({
   onResetPin,
   onRemove,
   onNewCode,
+  onRemoveDevice,
 }: {
   profiles: ProfileSummary[]
   /** Only this host adds profiles: the empty list says how. */
@@ -78,6 +79,8 @@ export function ProfileList({
   onRemove: (profile: ProfileSummary) => void
   /** A new code for a profile waiting for its PIN. */
   onNewCode: (profile: ProfileSummary) => void
+  /** Signs the profile out of one device: lost, sold or lent. */
+  onRemoveDevice: (profile: ProfileSummary, device: ProfileDevice) => void
 }): React.JSX.Element {
   return (
     <div className="divide-y divide-white/[0.05]">
@@ -102,6 +105,7 @@ export function ProfileList({
               onResetPin={() => onResetPin(profile)}
               onRemove={() => onRemove(profile)}
               onNewCode={() => onNewCode(profile)}
+              onRemoveDevice={(device) => onRemoveDevice(profile, device)}
             />
           </motion.div>
         ))}
@@ -120,6 +124,19 @@ export function ProfileList({
   )
 }
 
+function iconOf(form: string | null | undefined): typeof Laptop {
+  switch (form) {
+    case 'phone':
+      return Smartphone
+    case 'tablet':
+      return Tablet
+    case 'tv':
+      return Tv
+    default:
+      return Laptop
+  }
+}
+
 /** Who a profile is signed in on, as a sentence part. */
 function signedIn(profile: ProfileSummary): string {
   const names = profile.devices.map((d) => d.name)
@@ -134,13 +151,16 @@ function ProfileRow({
   onResetPin,
   onRemove,
   onNewCode,
+  onRemoveDevice,
 }: {
   profile: ProfileSummary
   onResetPin: () => void
   onRemove: () => void
   onNewCode: () => void
+  onRemoveDevice: (device: ProfileDevice) => void
 }): React.JSX.Element {
   const [menu, setMenu] = useState(false)
+  const [showDevices, setShowDevices] = useState(false)
   const now = Date.now() / 1000
   const active = profile.devices.some((d) => now - d.lastUsed < 10 * 60)
   const waiting = !profile.hasPin && !profile.home
@@ -165,10 +185,27 @@ function ProfileRow({
             {profile.name}
             {profile.home && <span className="ml-1.5 text-[11.5px] text-textFaint">from {profile.home}</span>}
           </div>
-          <div className="mt-0.5 truncate text-[11.5px] text-textFaint" title={devicesTitle || undefined}>
-            {profile.home
-              ? `Signs in on ${profile.home}, with no PIN here`
-              : `${profile.lastUsed > 0 ? `Used ${formatAgo(profile.lastUsed)}` : 'Not used yet'} · ${signedIn(profile)}`}
+          <div className="mt-0.5 flex min-w-0 items-center text-[11.5px] text-textFaint" title={devicesTitle || undefined}>
+            {profile.home ? (
+              <span className="truncate">{`Signs in on ${profile.home}, with no PIN here`}</span>
+            ) : (
+              <>
+                <span className="shrink-0">{profile.lastUsed > 0 ? `Used ${formatAgo(profile.lastUsed)}` : 'Not used yet'} ·&nbsp;</span>
+                {profile.devices.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowDevices((open) => !open)}
+                    aria-expanded={showDevices}
+                    className="flex min-w-0 items-center gap-0.5 rounded transition-colors hover:text-text"
+                  >
+                    <span className="truncate">{signedIn(profile)}</span>
+                    <ChevronDown size={11} className={cn('shrink-0 transition-transform', showDevices && 'rotate-180')} />
+                  </button>
+                ) : (
+                  <span className="truncate">{signedIn(profile)}</span>
+                )}
+              </>
+            )}
           </div>
         </div>
         {waiting && (
@@ -187,6 +224,40 @@ function ProfileRow({
           <MoreHorizontal size={15} />
         </button>
       </div>
+
+      <AnimatePresence initial={false}>
+        {showDevices && profile.devices.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+            className="ml-11 overflow-hidden"
+          >
+            <div className="mt-1.5 rounded-md bg-white/[0.03] py-0.5">
+              {profile.devices.map((device) => {
+                const Icon = iconOf(device.form)
+                return (
+                  <div key={device.device} className="group flex min-h-[30px] items-center gap-2.5 px-2.5 py-1">
+                    <Icon size={13} className="shrink-0 text-textFaint" />
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-textDim">{device.name}</span>
+                    <span className="shrink-0 text-[10.5px] text-textFaint">{formatAgo(device.lastUsed)}</span>
+                    <button
+                      type="button"
+                      onClick={() => onRemoveDevice(device)}
+                      aria-label={`Remove ${device.name} from ${profile.name}`}
+                      title={`Remove from ${profile.name}`}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-textFaint opacity-0 transition-opacity hover:bg-white/[0.06] hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {waiting && profile.claimCode && (
         <div className="ml-11 mt-2 flex items-center gap-2 rounded-md bg-white/[0.04] px-2.5 py-1.5 text-[11px]">

@@ -1156,14 +1156,20 @@ impl Host {
                     .tokens()
                     .iter()
                     .filter(|t| t.profile_id == profile.id)
-                    .map(|t| crate::ui::ProfileDevice {
-                        name: devices
-                            .iter()
-                            .find(|d| d.key() == t.device_key)
-                            .map(|d| d.name.clone())
-                            .unwrap_or_else(|| "A device no longer paired".into()),
-                        remembered: t.remembered,
-                        last_used: t.last_used,
+                    .map(|t| {
+                        let paired = devices.iter().find(|d| d.key() == t.device_key);
+                        crate::ui::ProfileDevice {
+                            device: t.device_key.clone(),
+                            name: paired
+                                .map(|d| d.name.clone())
+                                .unwrap_or_else(|| "A device no longer paired".into()),
+                            form: paired
+                                .and_then(|d| d.form)
+                                .and_then(|f| serde_json::to_value(f).ok())
+                                .and_then(|v| v.as_str().map(str::to_string)),
+                            remembered: t.remembered,
+                            last_used: t.last_used,
+                        }
                     })
                     .collect();
                 signed_in.sort_by_key(|d| std::cmp::Reverse(d.last_used));
@@ -1587,6 +1593,31 @@ impl Host {
         if ended {
             self.persist()?;
             self.profiles_changed();
+        }
+        Ok(ended)
+    }
+
+    /// Signs a profile out of one of its devices, from the host's window, a
+    /// device managing the host, or the profile itself on another device.
+    /// The device stays the home's; the PIN is asked to come back.
+    pub fn sign_profile_out_of(&self, profile: &str, device: &str) -> Result<bool> {
+        let ended = self
+            .profiles
+            .lock()
+            .expect("profiles lock")
+            .sign_out_device(profile, device);
+        if ended {
+            self.authority
+                .lock()
+                .expect("authority lock")
+                .revoke_sign_in(device, profile);
+            self.line
+                .lock()
+                .expect("line lock")
+                .signed_out(device, profile);
+            self.persist()?;
+            self.profiles_changed();
+            let _ = self.line_events.send(LineEvent::Presence);
         }
         Ok(ended)
     }
@@ -4554,6 +4585,7 @@ impl Host {
             now: unix_ms(),
             devices: listed,
             you,
+            forget: true,
         }
     }
 
@@ -5843,6 +5875,22 @@ where
                 },
             };
             reply(stream, &answer).await?;
+        }
+
+        Op::ProfileForgetDevice => {
+            let req: basalt_proto::msg::ProfileForgetDeviceRequest = decode(payload)?;
+            host.check_profile(session)?;
+            let profile = session.profile.clone().map(|(id, _)| id).ok_or_else(|| {
+                HostError::Denied("sign in to a profile to remove its devices".into())
+            })?;
+            let here = session.device.as_ref().map(|d| d.key().to_string());
+            if here.as_deref() == Some(req.device.as_str()) {
+                return Err(HostError::BadRequest(
+                    "this device signs out with Sign out".into(),
+                ));
+            }
+            let ended = host.sign_profile_out_of(&profile, &req.device)?;
+            reply(stream, &ended).await?;
         }
 
         Op::ProfileSignOut => {

@@ -655,6 +655,13 @@ async fn use_profile_elsewhere(
         .await?)
 }
 
+/// Signs this device's profile out of another of its devices (lost, sold or
+/// lent). Whether it was signed in there.
+#[tauri::command]
+async fn forget_profile_device(state: State<'_, AppState>, device: String) -> Answer<bool> {
+    Ok(state.client.forget_profile_device(&device).await?)
+}
+
 #[tauri::command]
 async fn sign_out_profile(state: State<'_, AppState>) -> Answer<()> {
     Ok(state.client.sign_out_profile().await?)
@@ -3398,6 +3405,7 @@ pub fn run() {
             music_timing::music_cancel,
             music_timing::music_set_rate,
             presence,
+            forget_profile_device,
             channel_send,
             channel_take,
             receive_file,

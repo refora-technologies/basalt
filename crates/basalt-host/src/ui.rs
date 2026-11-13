@@ -220,7 +220,11 @@ pub struct ProfileSummary {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileDevice {
+    /// The device's key, as the presence list has it: what removing it names.
+    pub device: String,
     pub name: String,
+    /// "computer", "phone", "tablet" or "tv", when the device said.
+    pub form: Option<String>,
     /// Stays signed in, rather than until the app closes.
     pub remembered: bool,
     pub last_used: i64,

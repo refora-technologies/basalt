@@ -1478,6 +1478,14 @@ impl Basalt {
         Ok(profile)
     }
 
+    /// Signs the profile out of another of its devices (lost, sold or lent).
+    pub async fn forget_profile_device(&self, device: &str) -> Result<bool> {
+        let pool = self.pool().await?;
+        let mut lease = pool.acquire().await?;
+        let result = lease.profile_forget_device(device).await;
+        lease.check(result)
+    }
+
     /// Signs out of the profile, here. The device carries on as itself, and
     /// the app asks who is watching.
     pub async fn sign_out_profile(&self) -> Result<()> {

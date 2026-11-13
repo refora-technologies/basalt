@@ -311,6 +311,21 @@ export function App(): React.JSX.Element {
                             },
                           })
                         }
+                        onRemoveDevice={(profile, device) =>
+                          setPrompt({
+                            title: `Remove ${device.name} from ${profile.name}?`,
+                            note: `It’s signed out of ${profile.name} at once, and asks for the PIN to be ${profile.name}’s again. It stays paired for the other profiles. For a device that’s lost, sold or lent.`,
+                            value: device.name,
+                            confirmLabel: 'Remove',
+                            select: 'all',
+                            // Lost, sold or lent: signed out of the profile
+                            // there, and asked for the PIN to come back. The
+                            // device stays the home's.
+                            onConfirm: () => {
+                              void api.signOutProfileDevice(profile.id, device.device).then(apply)
+                            },
+                          })
+                        }
                         onRemove={(profile) =>
                           setPrompt({
                             title: `Remove ${profile.name}?`,

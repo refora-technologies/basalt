@@ -412,6 +412,18 @@ async fn set_sections(
     status(state).await
 }
 
+/// Signs a profile out of one device (lost, sold or lent): the device stays
+/// the home's, and asks for the PIN to use the profile again.
+#[tauri::command]
+async fn sign_out_profile_device(
+    state: State<'_, AppState>,
+    id: String,
+    device: String,
+) -> Answer<HostStatus> {
+    state.host.sign_profile_out_of(&id, &device)?;
+    status(state).await
+}
+
 #[tauri::command]
 async fn reset_profile_pin(state: State<'_, AppState>, id: String) -> Answer<HostStatus> {
     state.host.reset_profile_pin(&id)?;
@@ -1166,6 +1178,7 @@ pub fn run() {
             set_tmdb_key,
             set_fanart_key,
             reset_profile_pin,
+            sign_out_profile_device,
             remove_profile,
             add_profile,
             set_require_profile,

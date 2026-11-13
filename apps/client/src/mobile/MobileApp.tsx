@@ -1827,7 +1827,11 @@ function MoreScreen({
     <div className="h-full overflow-y-auto px-4 pb-10">
       <Sheet open={devicesOpen} onClose={() => setDevicesOpen(false)} title="Your devices">
         <div className="px-4 pb-6">
-          <YourDevices devices={mine} you={model.presence.you} />
+          <YourDevices
+            devices={mine}
+            you={model.presence.you}
+            profileName={model.presence.forget ? mine.find((d) => d.device === model.presence.you)?.profileName : undefined}
+          />
         </div>
       </Sheet>
       <div className="mx-auto max-w-[560px] space-y-3 pt-1">

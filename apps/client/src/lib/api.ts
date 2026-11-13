@@ -557,6 +557,8 @@ export interface PresenceResponse {
   devices: PresentDevice[]
   /** This device's id in the list. */
   you: string
+  /** The host signs a profile out of its other devices when asked: false before 1.6.4. */
+  forget?: boolean
 }
 
 export interface NowSession {
@@ -832,6 +834,8 @@ export const api = {
   claimProfile: (id: string, code: string, pin: string, remember: boolean) =>
     call<ProfileView>('claim_profile', { id, code, pin, remember }),
   signOutProfile: () => call<void>('sign_out_profile'),
+  /** Signs this profile out of another of its devices. Whether it was signed in there. */
+  forgetProfileDevice: (device: string) => call<boolean>('forget_profile_device', { device }),
   continueAsDevice: (always: boolean) => call<void>('continue_as_device', { always }),
   /** Profiles this device is signed in to on its other drives. */
   profilesElsewhere: () => call<ProfilePass[]>('profiles_elsewhere'),
@@ -1732,6 +1736,11 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       mockIdentity = { rules: mockRules, profile, choose: false, ended: false, lastProfile: profile.id }
       return { profile, waiting: false } as T
     }
+    case 'forget_profile_device': {
+      const { device } = args as { device: string }
+      mockForgotten.add(device)
+      return true as T
+    }
     case 'sign_out_profile':
       mockIdentity = { rules: mockRules, profile: null, choose: true, ended: false, lastProfile: mockIdentity.lastProfile }
       return undefined as T
@@ -1854,15 +1863,18 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     // same profile, and Sam's phone.
     case 'presence': {
       const now = Date.now()
+      const all: PresentDevice[] = [
+        { device: 'this-laptop', name: 'Maya’s laptop', form: 'computer', profile: 'maya', profileName: 'Maya', profileColor: 2, online: true, lastSeen: now },
+        { device: 'maya-phone', name: 'Pixel 8', form: 'phone', profile: 'maya', profileName: 'Maya', profileColor: 2, online: true, lastSeen: now },
+        { device: 'maya-old-phone', name: 'Galaxy S9', form: 'phone', profile: 'maya', profileName: 'Maya', profileColor: 2, online: false, lastSeen: now - 40 * 86400_000 },
+        { device: 'sam-phone', name: 'Sam’s phone', form: 'phone', profile: 'sam', profileName: 'Sam', profileColor: 5, online: true, lastSeen: now },
+        { device: 'maya-tablet', name: 'Galaxy Tab', form: 'tablet', online: false, lastSeen: now - 3 * 3600_000 },
+      ]
       return {
         now,
         you: 'this-laptop',
-        devices: [
-          { device: 'this-laptop', name: 'Maya’s laptop', form: 'computer', profile: 'maya', profileName: 'Maya', profileColor: 2, online: true, lastSeen: now },
-          { device: 'maya-phone', name: 'Pixel 8', form: 'phone', profile: 'maya', profileName: 'Maya', profileColor: 2, online: true, lastSeen: now },
-          { device: 'sam-phone', name: 'Sam’s phone', form: 'phone', profile: 'sam', profileName: 'Sam', profileColor: 5, online: true, lastSeen: now },
-          { device: 'maya-tablet', name: 'Galaxy Tab', form: 'tablet', online: false, lastSeen: now - 3 * 3600_000 },
-        ],
+        forget: true,
+        devices: all.map((d) => (mockForgotten.has(d.device) ? { ...d, profile: undefined, profileName: undefined, profileColor: undefined } : d)),
       } as T
     }
     case 'stay_running':
@@ -1928,6 +1940,8 @@ const mockProfiles: ProfileView[] = [
     : []),
 ]
 const mockPins = showcase.pins()
+/** Devices signed out of their profile in the preview (Your devices, Remove). */
+const mockForgotten = new Set<string>()
 /** The browser preview's playlists and listening, as a host would keep them. */
 const mockMusicMine: MusicMine = {
   playlists: [
