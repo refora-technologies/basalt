@@ -1015,6 +1015,7 @@ async fn a_watching_device_hears_at_once_that_its_access_changed_or_it_was_remov
     let notices = Notices::default();
     let _watch = client.watch_with(|_| {}, notices.record());
     settle().await;
+    notices.until_listening(&fixture.host).await;
 
     assert!(fixture.host.set_writable(&hash, false).unwrap());
     assert!(
@@ -2433,8 +2434,35 @@ impl Notices {
 
     /// Waits for one more of `said` than there were, and says how long it took.
     async fn next(&self, said: &str, before: usize) -> Option<Duration> {
+        self.next_within(said, before, Duration::from_secs(10))
+            .await
+    }
+
+    /// On a busy machine (the whole suite at once) a watch can take longer
+    /// than `settle` to be listening: a change nobody looks at is made until
+    /// one is told, before the ones a test is about.
+    async fn until_listening(&self, host: &Host) {
+        let warming = std::time::Instant::now();
+        loop {
+            let before = self.count("profiles");
+            host.set_owner_adds_profiles(false).unwrap();
+            if self
+                .next_within("profiles", before, Duration::from_secs(1))
+                .await
+                .is_some()
+            {
+                return;
+            }
+            assert!(
+                warming.elapsed() < Duration::from_secs(30),
+                "the watch never listened"
+            );
+        }
+    }
+
+    async fn next_within(&self, said: &str, before: usize, within: Duration) -> Option<Duration> {
         let started = std::time::Instant::now();
-        while started.elapsed() < Duration::from_secs(10) {
+        while started.elapsed() < within {
             if self.count(said) > before {
                 return Some(started.elapsed());
             }
@@ -2456,6 +2484,7 @@ async fn every_change_to_the_profiles_or_their_rules_is_told_at_once() {
     settle().await;
 
     let host = &fixture.host;
+    notices.until_listening(host).await;
     let changes = [
         "a profile added",
         "a profile required",

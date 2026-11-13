@@ -79,6 +79,8 @@ mod imp {
     const SHARING_GONE: Duration = Duration::from_secs(60);
     /// A device sharing is told we're here again after this long.
     const TELL_AGAIN: Duration = Duration::from_secs(15);
+    /// Listening because saying it's here failed: tried again after this.
+    const FOUND_AGAIN: Duration = Duration::from_secs(2 * 60);
     /// How long a device heard sharing is given to find this computer on its
     /// Wi-Fi before this computer opens its own.
     const LAN_FIRST: Duration = Duration::from_secs(5);
@@ -124,6 +126,9 @@ mod imp {
         here: Arc<Mutex<HashMap<String, (String, Instant)>>>,
         /// Ready but can't be found: listening for devices sharing.
         listening: Mutex<Option<BluetoothLEAdvertisementWatcher>>,
+        /// Since when, to try being found again now and then: one abort
+        /// (the radio busy a moment) isn't for good.
+        listening_since: Mutex<Option<Instant>>,
         /// When "sharing nearby" was last heard, listening.
         sharing_heard: Arc<Mutex<Option<Instant>>>,
         /// Each device sharing, when we last told it we're here.
@@ -217,9 +222,20 @@ mod imp {
             return Ok(());
         };
         *state.info.lock().expect("info") = info;
-        // Listening already (this computer can't be found): carried on.
-        if state.listening.lock().expect("listening").is_some() {
-            return Ok(());
+        // Listening already (this computer can't be found): carried on, and
+        // being found tried again every so often.
+        {
+            let mut listening = state.listening.lock().expect("listening");
+            if listening.is_some() {
+                let since = *state.listening_since.lock().expect("listening since");
+                if since.is_some_and(|at| at.elapsed() < FOUND_AGAIN) {
+                    return Ok(());
+                }
+                if let Some(w) = listening.take() {
+                    let _ = w.Stop();
+                }
+                basalt_client::nearby::note("bluetooth: trying again to be found");
+            }
         }
         // One at a time, held throughout: two services with the same id at
         // once and Windows aborts both.
@@ -273,6 +289,7 @@ mod imp {
         basalt_client::nearby::note("bluetooth: this computer can't be found; listening for devices sharing instead");
         let watcher = listen(state, open).map_err(|e| format!("Bluetooth couldn't listen here: {}", e.message()))?;
         *state.listening.lock().expect("listening") = Some(watcher);
+        *state.listening_since.lock().expect("listening since") = Some(Instant::now());
         Ok(())
     }
 
@@ -494,7 +511,15 @@ mod imp {
         // "Sharing nearby", for devices that can't be found to come forward:
         // as far as this computer's Bluetooth can say it.
         match beacon(state) {
-            Ok(b) => *state.beacon.lock().expect("beacon") = Some(b),
+            Ok(b) => {
+                let watched = b.0.clone();
+                *state.beacon.lock().expect("beacon") = Some(b);
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(2));
+                    let status = watched.AdvertisementStatus();
+                    basalt_client::nearby::note(&format!("bluetooth: saying it's sharing: {status:?}"));
+                });
+            }
             Err(e) => basalt_client::nearby::note(&format!("bluetooth: can't say it's sharing: {}", e.message())),
         }
         let watcher = watch(state).map_err(|e| format!("Bluetooth couldn't look for devices: {}", e.message()))?;
@@ -588,11 +613,16 @@ mod imp {
                 Ok(())
             },
         ))?;
+        provider.StartAdvertisingWithParameters(&advertising_parameters()?)?;
+        Ok((provider, here_ch))
+    }
+
+    /// Found and talked to: what both services advertise with.
+    fn advertising_parameters() -> WinResult<GattServiceProviderAdvertisingParameters> {
         let params = GattServiceProviderAdvertisingParameters::new()?;
         params.SetIsConnectable(true)?;
         params.SetIsDiscoverable(true)?;
-        provider.StartAdvertisingWithParameters(&params)?;
-        Ok((provider, here_ch))
+        Ok(params)
     }
 
     /// The devices heard lately whose INFO was read, and those that told us
