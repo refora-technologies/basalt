@@ -657,8 +657,11 @@ mod imp {
         let kind = if random { BluetoothAddressType::Random } else { BluetoothAddressType::Public };
         let device = BluetoothLEDevice::FromBluetoothAddressWithBluetoothAddressTypeAsync(address, kind)?.get()?;
         let services = device.GetGattServicesForUuidWithCacheModeAsync(service, BluetoothCacheMode::Uncached)?.get()?;
-        if services.Status()? != GattCommunicationStatus::Success || services.Services()?.Size()? == 0 {
-            return Err(fail("that device isn't ready for Basalt any more"));
+        let status = services.Status()?;
+        if status != GattCommunicationStatus::Success || services.Services()?.Size()? == 0 {
+            // Which it was, for the log: not reached at all, or reached
+            // without Basalt's service on it.
+            return Err(fail(format!("that device isn't ready for Basalt any more ({status:?})")));
         }
         let service = services.Services()?.GetAt(0)?;
         let chars = service.GetCharacteristicsForUuidWithCacheModeAsync(which, BluetoothCacheMode::Uncached)?.get()?;

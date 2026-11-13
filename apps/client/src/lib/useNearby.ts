@@ -41,6 +41,8 @@ export interface Nearby {
   setAlwaysCode: (on: boolean) => void
   /** Why devices with no Wi-Fi in common can't find this one or be found, if they can't. */
   wifiNote: string | null
+  /** Ready, but it couldn't be: why (another app holding its port, say). */
+  readyNote: string | null
   /** Whether devices that aren't on this Wi-Fi can reach this one, or what's in the way. */
   reach: NearbyReach
   /** Puts right what's in the way: asks for the permission, turns Bluetooth or Wi-Fi on. */
@@ -124,6 +126,7 @@ export function useNearby(transfers: Transfers): Nearby {
   /** Devices found by their own Wi-Fi: no network in common. */
   const [far, setFar] = useState<FoundWifi[]>([])
   const [wifiNote, setWifiNote] = useState<string | null>(null)
+  const [readyNote, setReadyNote] = useState<string | null>(null)
   const [firewall, setFirewall] = useState<'open' | 'blocked' | 'unknown'>('open')
   /** Offers sent over a Wi-Fi joined for them: left once each ends. */
   const joinedFor = useRef(new Set<string>())
@@ -163,9 +166,28 @@ export function useNearby(transfers: Transfers): Nearby {
     }
   }, [items])
 
-  // Ready or not, as set; again whenever the code setting changes.
+  // Ready or not, as set; again whenever the code setting changes. When it
+  // couldn't be (another app, or another copy of Basalt, holding its port),
+  // it says so and tries again now and then: before, it said nothing and
+  // looked ready while nothing could reach it.
   useEffect(() => {
-    void api.nearbyReady(ready, alwaysCode).catch(() => {})
+    let live = true
+    let again: ReturnType<typeof setTimeout> | null = null
+    const apply = (): void =>
+      void api
+        .nearbyReady(ready, alwaysCode)
+        .then(() => live && setReadyNote(null))
+        .catch((e: unknown) => {
+          if (!live || !ready) return
+          setReadyNote(readyNoteFor(pluginReason(e)))
+          again = setTimeout(apply, 30_000)
+        })
+    apply()
+    return () => {
+      live = false
+      if (again) clearTimeout(again)
+      setReadyNote(null)
+    }
   }, [ready, alwaysCode])
 
   // Ready on a computer: whether its firewall lets devices nearby in. Asked
@@ -700,6 +722,7 @@ export function useNearby(transfers: Transfers): Nearby {
       alwaysCode,
       setAlwaysCode,
       wifiNote,
+      readyNote,
       reach,
       fixReach,
       firewall,
@@ -721,7 +744,7 @@ export function useNearby(transfers: Transfers): Nearby {
       screenOpen,
       setScreenOpen,
     }),
-    [me, ready, setReady, alwaysCode, setAlwaysCode, wifiNote, reach, fixReach, firewall, allowFirewall, all, looking, look, watch, incoming, accept, decline, outgoing, send, typeCode, cancel, items, progressOf, forget, screenOpen],
+    [me, ready, setReady, alwaysCode, setAlwaysCode, wifiNote, readyNote, reach, fixReach, firewall, allowFirewall, all, looking, look, watch, incoming, accept, decline, outgoing, send, typeCode, cancel, items, progressOf, forget, screenOpen],
   )
 }
 
@@ -768,6 +791,14 @@ async function findOnJoined(id: string): Promise<NearbyDevice> {
 /** A step of sharing nearby, into the device's own log. */
 function note(line: string): void {
   void api.nearbyNote(line).catch(() => {})
+}
+
+/** Why this device couldn't be ready for devices nearby, said plainly. */
+export function readyNoteFor(reason: string): string {
+  if (/nearby port/i.test(reason)) {
+    return 'Devices nearby can’t reach this one: another app on it, or another copy of Basalt, is using Basalt’s nearby port. Close it, and Basalt tries again by itself.'
+  }
+  return `Devices nearby can’t reach this one: ${reason}`
 }
 
 /** What stands in the way of a Wi-Fi of its own, said plainly. */

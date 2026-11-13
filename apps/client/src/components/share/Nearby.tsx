@@ -576,7 +576,7 @@ export function NearbySwitches({ nearby, className }: { nearby: Nearby; classNam
         onChange={nearby.setAlwaysCode}
         className={className}
       />
-      {nearby.ready && nearby.wifiNote && <ReachNote nearby={nearby} />}
+      {nearby.ready && (nearby.readyNote || nearby.wifiNote) && <ReachNote nearby={nearby} />}
       {nearby.ready && nearby.firewall === 'blocked' && (
         <div className="mx-4 my-2 flex items-start gap-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] px-3.5 py-3">
           <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-300" />
@@ -667,8 +667,9 @@ export function NearbyScreen({
  * off, the "nearby devices" permission not given.
  */
 function ReachNote({ nearby }: { nearby: Nearby }): React.JSX.Element {
-  const action =
-    nearby.reach === 'bluetooth'
+  const action = nearby.readyNote
+    ? null
+    : nearby.reach === 'bluetooth'
       ? 'Turn on'
       : nearby.reach === 'wifi'
         ? 'Turn on'
@@ -684,7 +685,7 @@ function ReachNote({ nearby }: { nearby: Nearby }): React.JSX.Element {
       ) : (
         <Radio size={16} className="shrink-0 text-textDim" />
       )}
-      <p className="min-w-0 flex-1 text-[12.5px] leading-snug text-textDim [text-wrap:pretty]">{nearby.wifiNote}</p>
+      <p className="min-w-0 flex-1 text-[12.5px] leading-snug text-textDim [text-wrap:pretty]">{nearby.readyNote ?? nearby.wifiNote}</p>
       {action && (
         <button
           type="button"
