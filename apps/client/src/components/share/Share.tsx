@@ -779,13 +779,14 @@ export function ReceivePrompt({
           one by itself; only open it if you trust where it came from.
         </p>
       )}
-      {!compact && others.length > 0 && (
+      {others.length > 0 && (
         <Tip
           id="accept-elsewhere"
-          art="elsewhere"
+          art={others[0]!.form === 'computer' ? 'elsewhere' : 'elsewherePhone'}
           title={`Take it on your ${formName(others[0]!.form)} instead`}
           line="Accept on whichever device is in front of you."
-          className="mt-3.5"
+          compact={compact}
+          className={compact ? 'mt-3' : 'mt-3.5'}
         />
       )}
       <div className={cn('mt-4 flex gap-2.5', compact ? 'flex-row flex-wrap' : 'flex-col')}>

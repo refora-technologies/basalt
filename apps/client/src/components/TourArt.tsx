@@ -127,6 +127,32 @@ const ELSEWHERE = `
 </circle>
 `
 
+/** The same, the other way: on the computer, taken on the phone. */
+const ELSEWHERE_PHONE = `
+<use href="#ft-laptop" x="2" y="10" width="82" height="52"/>
+<g><rect x="24" y="22" width="38" height="20" rx="2.6" fill="#26262B"/>
+  <rect x="28" y="26" width="5" height="6.4" rx=".8" fill="#C9C9CE"/>
+  <rect x="35.4" y="26.6" width="16" height="2" rx="1" fill="#F4F4F5"/>
+  <rect x="35.4" y="30.2" width="10" height="1.6" rx=".8" fill="#86868D"/>
+  <rect x="28" y="35.2" width="12" height="3.2" rx="1.6" fill="#F4F4F5"/>
+  <animate attributeName="opacity" values="1;1;.3;.3;1" keyTimes="0;0.5;0.58;0.92;1" dur="3s" repeatCount="indefinite"/>
+</g>
+<use href="#ft-phone" x="88" y="12" width="26" height="46"/>
+<rect x="90.6" y="21" width="20.8" height="28" rx="2.4" fill="#26262B"/>
+<rect x="93.2" y="24" width="5" height="6.6" rx="1" fill="#F4F4F5"/><rect x="94.3" y="26.2" width="2.8" height=".8" rx=".4" fill="#86868D"/><rect x="94.3" y="27.9" width="2" height=".8" rx=".4" fill="#B4B4BA"/>
+<circle cx="98.2" cy="30.4" r="2.3" fill="#34D399" opacity="0"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.5;0.56;0.92;1" dur="3s" repeatCount="indefinite"/></circle>
+<path d="M97.1 30.4l.8.8 1.5-1.6" fill="none" stroke="#0B0B0C" stroke-width=".75" stroke-linecap="round" stroke-linejoin="round" opacity="0"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.5;0.56;0.92;1" dur="3s" repeatCount="indefinite"/></path>
+<rect x="100.6" y="24.6" width="8.4" height="1.8" rx=".9" fill="#F4F4F5"/>
+<rect x="100.6" y="27.8" width="5.6" height="1.4" rx=".7" fill="#86868D"/>
+<rect x="93.2" y="35.4" width="15.6" height="5.4" rx="2.7" fill="#F4F4F5"><animate attributeName="fill" values="#F4F4F5;#F4F4F5;#34D399;#34D399;#F4F4F5" keyTimes="0;0.47;0.5;0.92;1" dur="3s" repeatCount="indefinite"/></rect>
+<text x="101" y="39.25" font-size="3.3" font-weight="700" text-anchor="middle" fill="#0B0B0C" font-family="Plus Jakarta Sans Variable, system-ui">Accept</text>
+<text x="101" y="45.4" font-size="3" font-weight="600" text-anchor="middle" fill="#86868D" font-family="Plus Jakarta Sans Variable, system-ui">Decline</text>
+<circle cx="101" cy="38.1" r="3" fill="none" stroke="#F4F4F5" stroke-width="1.2" opacity="0">
+  <animate attributeName="opacity" values="0;0;.9;0;0" keyTimes="0;0.38;0.45;0.6;1" dur="3s" repeatCount="indefinite"/>
+  <animate attributeName="r" values="2;2;3;9;9" keyTimes="0;0.38;0.45;0.6;1" dur="3s" repeatCount="indefinite"/>
+</circle>
+`
+
 /** The code on the one is typed on the other, and it is ticked. */
 const CODE = `
 <use href="#ft-phone" x="6" y="6" width="28" height="50"/>
@@ -139,7 +165,7 @@ const CODE = `
 <path d="M71 45 l3 3 6-6" fill="none" stroke="#34D399" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.58;0.64;0.9;1" dur="2.6s" repeatCount="indefinite"/></path>
 `
 
-export type ArtName = 'share' | 'nearby' | 'background' | 'tray' | 'music' | 'elsewhere' | 'code'
+export type ArtName = 'share' | 'nearby' | 'background' | 'tray' | 'music' | 'elsewhere' | 'elsewherePhone' | 'code'
 
 const ART: Record<ArtName, { body: string; viewBox: string; width: number; height: number; still: number }> = {
   share: { body: SHARE, viewBox: '0 0 250 150', width: 250, height: 150, still: 2.4 },
@@ -148,6 +174,7 @@ const ART: Record<ArtName, { body: string; viewBox: string; width: number; heigh
   tray: { body: TRAY, viewBox: '0 0 250 150', width: 250, height: 150, still: 2.8 },
   music: { body: MUSIC, viewBox: '0 0 250 150', width: 250, height: 150, still: 0.4 },
   elsewhere: { body: ELSEWHERE, viewBox: '0 0 120 72', width: 132, height: 80, still: 2 },
+  elsewherePhone: { body: ELSEWHERE_PHONE, viewBox: '0 0 120 72', width: 132, height: 80, still: 2 },
   code: { body: CODE, viewBox: '0 0 96 64', width: 96, height: 64, still: 2 },
 }
 
