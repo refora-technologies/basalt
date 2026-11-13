@@ -834,6 +834,8 @@ export const api = {
   claimProfile: (id: string, code: string, pin: string, remember: boolean) =>
     call<ProfileView>('claim_profile', { id, code, pin, remember }),
   signOutProfile: () => call<void>('sign_out_profile'),
+  /** The nearby log (a computer's), shown selected in its folder. */
+  nearbyLogShow: () => call<void>('nearby_log_show'),
   /** Signs this profile out of another of its devices. Whether it was signed in there. */
   forgetProfileDevice: (device: string) => call<boolean>('forget_profile_device', { device }),
   continueAsDevice: (always: boolean) => call<void>('continue_as_device', { always }),
@@ -1736,6 +1738,8 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       mockIdentity = { rules: mockRules, profile, choose: false, ended: false, lastProfile: profile.id }
       return { profile, waiting: false } as T
     }
+    case 'nearby_log_show':
+      return undefined as T
     case 'forget_profile_device': {
       const { device } = args as { device: string }
       mockForgotten.add(device)

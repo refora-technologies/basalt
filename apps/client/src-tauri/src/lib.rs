@@ -1520,7 +1520,91 @@ fn nearby_log(line: &str) {
         }
     }
     #[cfg(not(target_os = "android"))]
-    eprintln!("nearby: {line}");
+    {
+        eprintln!("nearby: {line}");
+        keep_nearby_line(line);
+    }
+}
+
+/// Where a computer keeps its nearby steps: beside its settings, so a failed
+/// share leaves something to look at or send. Set as the app starts.
+#[cfg(not(target_os = "android"))]
+static NEARBY_LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// About this much is kept: the file, and the one before it.
+#[cfg(not(target_os = "android"))]
+const NEARBY_LOG_KEEP: u64 = 1024 * 1024;
+
+#[cfg(not(target_os = "android"))]
+fn keep_nearby_line(line: &str) {
+    use std::io::Write;
+    static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let Some(path) = NEARBY_LOG.get() else {
+        return;
+    };
+    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > NEARBY_LOG_KEEP) {
+        let _ = std::fs::rename(path, path.with_file_name("nearby.old.log"));
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{} {line}", utc_now());
+    }
+}
+
+/// The time now, as `2026-11-13 08:41:07 UTC`.
+#[cfg(not(target_os = "android"))]
+fn utc_now() -> String {
+    utc_at(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    )
+}
+
+#[cfg(not(target_os = "android"))]
+fn utc_at(secs: i64) -> String {
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Days to a civil date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
+/// The nearby log, shown selected in its folder.
+#[tauri::command]
+fn nearby_log_show(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let path = NEARBY_LOG
+            .get()
+            .ok_or_else(|| "There’s no nearby log yet.".to_string())?;
+        if !path.exists() {
+            return Err("Nothing has happened nearby yet.".into());
+        }
+        received_show(app, path.to_string_lossy().into_owned())
+    }
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        Err("Only on a computer.".into())
+    }
 }
 
 /// A step of sharing nearby, as the page saw it: into the same log.
@@ -3152,6 +3236,8 @@ pub fn run() {
                 Some(folder) => folder.join("client.json"),
                 None => basalt_client::store::default_path(),
             };
+            #[cfg(desktop)]
+            let _ = NEARBY_LOG.set(store_path.with_file_name("nearby.log"));
             // With the device's lasting id, so a reinstall is the same device
             // on the host rather than another of the same name. On Android the
             // id comes from the Java side; on Windows the client asks itself.
@@ -3406,6 +3492,7 @@ pub fn run() {
             music_timing::music_set_rate,
             presence,
             forget_profile_device,
+            nearby_log_show,
             channel_send,
             channel_take,
             receive_file,
@@ -3527,6 +3614,14 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{is_program, link_allowed, safe_local_name};
+
+    #[test]
+    fn the_nearby_log_says_when_in_utc() {
+        assert_eq!(super::utc_at(0), "1970-01-01 00:00:00 UTC");
+        // A leap day, and the morning these were written.
+        assert_eq!(super::utc_at(951_782_400), "2000-02-29 00:00:00 UTC");
+        assert_eq!(super::utc_at(1_794_553_411), "2026-11-13 07:03:31 UTC");
+    }
 
     #[test]
     fn links_are_only_the_ones_the_capability_file_allows() {
