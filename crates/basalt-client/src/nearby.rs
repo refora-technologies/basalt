@@ -408,6 +408,10 @@ impl Ready {
                             None => None,
                         };
                         if !from.ip().is_loopback() {
+                            if !basalt_net::discovery::local_addresses().contains(&from.ip()) {
+                                *LOOKED_FOR.lock().unwrap_or_else(|e| e.into_inner()) =
+                                    Some(std::time::Instant::now());
+                            }
                             trace(|| {
                                 format!(
                                     "ready: looked for by {from}, answered: {sent:?}, {again:?}"
@@ -642,14 +646,23 @@ pub async fn find(port: u16, window: Duration) -> Result<Vec<NearbyDevice>> {
     let mut found: Vec<NearbyDevice> = Vec::new();
     // Broadcasts are dropped on some Wi-Fi (a phone's chip, a router keeping
     // devices apart, a device's own Wi-Fi): every neighbour is asked directly
-    // too, once, the network's own device first (on a device's own Wi-Fi,
-    // that is the device). Asked alongside, so answers are read as they come
-    // rather than after the last of 253 is sent.
+    // too, the network's own device first (on a device's own Wi-Fi, that is
+    // the device). Asked alongside, so answers are read as they come rather
+    // than after the last of 253 is sent.
+    //
+    // But not at every look: each address with nothing on it sends Wi-Fi
+    // broadcasts asking who has it, and a sweep every few seconds (a Share
+    // sheet open) made a phone's own Wi-Fi six times slower (a Galaxy A03s on
+    // 2.4 GHz: 84 MB in 4 min, 41 s without). Each network is swept when
+    // first looked at and then at most every SWEEP_EVERY; in between, those
+    // that answered before are asked directly.
+    let networks = local_networks();
+    let due = sweep_due(&networks, std::time::Instant::now());
     let sweep = {
         let udp = Arc::clone(&udp);
         let query = query.clone();
         tokio::spawn(async move {
-            let all = neighbours();
+            let all = neighbours(&due);
             let mut failed = 0;
             for neighbour in &all {
                 if udp
@@ -660,9 +673,22 @@ pub async fn find(port: u16, window: Duration) -> Result<Vec<NearbyDevice>> {
                     failed += 1;
                 }
             }
-            trace(|| format!("find: asked {} neighbours, {failed} failed", all.len()));
+            if !all.is_empty() {
+                trace(|| format!("find: asked {} neighbours, {failed} failed", all.len()));
+            }
         })
     };
+    // Those that answered lately, and each network's own device: known to be
+    // there, so asking them costs no broadcast.
+    let known: Vec<SocketAddr> = answered_lately(&networks)
+        .into_iter()
+        .chain(
+            networks
+                .iter()
+                .map(|[a, b, c]| IpAddr::V4(Ipv4Addr::new(*a, *b, *c, 1))),
+        )
+        .map(|ip| SocketAddr::new(ip, port))
+        .collect();
     let deadline = tokio::time::Instant::now() + window;
     let mut buffer = [0u8; 1024];
     let mut asked = 0;
@@ -673,6 +699,7 @@ pub async fn find(port: u16, window: Duration) -> Result<Vec<NearbyDevice>> {
                 .chain(std::iter::once(IpAddr::V4(Ipv4Addr::LOCALHOST)))
                 .chain(subnet_broadcasts())
                 .map(|ip| SocketAddr::new(ip, port))
+                .chain(known.iter().copied())
                 .collect();
             for target in targets {
                 if let Err(e) = udp.send_to(&query, target).await
@@ -692,6 +719,7 @@ pub async fn find(port: u16, window: Duration) -> Result<Vec<NearbyDevice>> {
             && let Ok(said) = serde_json::from_slice::<serde_json::Value>(&buffer[14..n])
         {
             trace(|| format!("find: answered by {from}"));
+            remember_answered(from.ip());
             add(&mut found, &said, from);
         }
     }
@@ -1008,18 +1036,108 @@ async fn bind_port(port: u16) -> Result<UdpSocket> {
     }
 }
 
-/// Every other address of each local IPv4 network, taken as a /24.
-fn neighbours() -> Vec<IpAddr> {
-    let mut all = Vec::new();
+/// When another device last looked for this one over a network, as it was ready.
+static LOOKED_FOR: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// Whether another device looked for this one over a network it's on within
+/// `within`: a device sharing nearby that is on this one's Wi-Fi finds it
+/// there, so a Wi-Fi of its own would only slow its own (see `nearby_ble`).
+pub fn looked_for_within(within: Duration) -> bool {
+    LOOKED_FOR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|at| at.elapsed() < within)
+}
+
+/// How often a network is swept, address by address, while something looks.
+const SWEEP_EVERY: Duration = Duration::from_secs(30);
+/// How long an address that answered is asked directly at every look.
+const ANSWERED_FOR: Duration = Duration::from_secs(10 * 60);
+
+/// When each network (a /24) was last swept.
+static SWEPT: Mutex<Vec<([u8; 3], std::time::Instant)>> = Mutex::new(Vec::new());
+/// Addresses that answered a look, and when.
+static ANSWERED: Mutex<Vec<(Ipv4Addr, std::time::Instant)>> = Mutex::new(Vec::new());
+
+/// This device's IPv4 networks, each taken as a /24, with its own address there.
+fn local_networks() -> Vec<[u8; 3]> {
+    let mut all: Vec<[u8; 3]> = Vec::new();
     for ip in basalt_net::discovery::local_addresses() {
         let IpAddr::V4(v4) = ip else { continue };
         if v4.is_loopback() || v4.is_link_local() {
             continue;
         }
-        let [a, b, c, mine] = v4.octets();
+        let [a, b, c, _] = v4.octets();
+        if !all.contains(&[a, b, c]) {
+            all.push([a, b, c]);
+        }
+    }
+    all
+}
+
+/// The networks due a sweep now, marked as swept: those not swept within
+/// [`SWEEP_EVERY`] (a network just joined, such as another device's own
+/// Wi-Fi, at once).
+fn sweep_due(networks: &[[u8; 3]], now: std::time::Instant) -> Vec<[u8; 3]> {
+    let mut swept = SWEPT.lock().unwrap_or_else(|e| e.into_inner());
+    due_from(&mut swept, networks, now)
+}
+
+fn due_from(
+    swept: &mut Vec<([u8; 3], std::time::Instant)>,
+    networks: &[[u8; 3]],
+    now: std::time::Instant,
+) -> Vec<[u8; 3]> {
+    swept.retain(|(_, at)| now.saturating_duration_since(*at) < SWEEP_EVERY);
+    let due: Vec<[u8; 3]> = networks
+        .iter()
+        .filter(|n| !swept.iter().any(|(s, _)| s == *n))
+        .copied()
+        .collect();
+    swept.extend(due.iter().map(|n| (*n, now)));
+    due
+}
+
+fn remember_answered(ip: IpAddr) {
+    let IpAddr::V4(v4) = ip else { return };
+    if v4.is_loopback() {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let mut answered = ANSWERED.lock().unwrap_or_else(|e| e.into_inner());
+    answered.retain(|(a, at)| *a != v4 && now.saturating_duration_since(*at) < ANSWERED_FOR);
+    answered.push((v4, now));
+}
+
+/// Addresses that answered lately, on the networks this device is on now.
+fn answered_lately(networks: &[[u8; 3]]) -> Vec<IpAddr> {
+    let now = std::time::Instant::now();
+    let answered = ANSWERED.lock().unwrap_or_else(|e| e.into_inner());
+    answered
+        .iter()
+        .filter(|(a, at)| {
+            let [x, y, z, _] = a.octets();
+            now.saturating_duration_since(*at) < ANSWERED_FOR && networks.contains(&[x, y, z])
+        })
+        .map(|(a, _)| IpAddr::V4(*a))
+        .collect()
+}
+
+/// Every other address of the given local networks.
+fn neighbours(networks: &[[u8; 3]]) -> Vec<IpAddr> {
+    let mine: Vec<Ipv4Addr> = basalt_net::discovery::local_addresses()
+        .into_iter()
+        .filter_map(|ip| match ip {
+            IpAddr::V4(v4) => Some(v4),
+            IpAddr::V6(_) => None,
+        })
+        .collect();
+    let mut all = Vec::new();
+    for [a, b, c] in networks {
         for d in 1..=254u8 {
-            if d != mine {
-                all.push(IpAddr::V4(Ipv4Addr::new(a, b, c, d)));
+            let ip = Ipv4Addr::new(*a, *b, *c, d);
+            if !mine.contains(&ip) {
+                all.push(IpAddr::V4(ip));
             }
         }
     }
@@ -1149,6 +1267,23 @@ mod tests {
         assert_eq!(bytes, 700_000);
         assert_eq!(std::fs::read(&into).unwrap(), body(), "the same bytes");
         let _ = std::fs::remove_file(into);
+    }
+
+    #[test]
+    fn a_network_is_swept_when_first_looked_at_then_not_again_for_a_while() {
+        let home = [192, 168, 1];
+        let theirs = [192, 168, 49];
+        let mut swept = Vec::new();
+        let start = std::time::Instant::now();
+        assert_eq!(due_from(&mut swept, &[home], start), vec![home]);
+        // Looked again every few seconds: not swept again.
+        let soon = start + Duration::from_secs(4);
+        assert!(due_from(&mut swept, &[home], soon).is_empty());
+        // Another device's own Wi-Fi joined meanwhile: that one at once.
+        assert_eq!(due_from(&mut swept, &[home, theirs], soon), vec![theirs]);
+        // And the home's again once its while is up.
+        let later = start + SWEEP_EVERY;
+        assert_eq!(due_from(&mut swept, &[home, theirs], later), vec![home]);
     }
 
     #[test]

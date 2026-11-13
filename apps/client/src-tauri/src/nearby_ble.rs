@@ -79,6 +79,11 @@ mod imp {
     const SHARING_GONE: Duration = Duration::from_secs(60);
     /// A device sharing is told we're here again after this long.
     const TELL_AGAIN: Duration = Duration::from_secs(15);
+    /// How long a device heard sharing is given to find this computer on its
+    /// Wi-Fi before this computer opens its own.
+    const LAN_FIRST: Duration = Duration::from_secs(5);
+    /// When "sharing nearby" was last heard from anyone.
+    static LAST_SHARING_AD: Mutex<Option<Instant>> = Mutex::new(None);
 
     /// A device not heard from for this long leaves the list.
     const SEEN_FOR: Duration = Duration::from_secs(20);
@@ -291,7 +296,7 @@ mod imp {
                 let a = args.as_ref().ok_or_else(|| fail("no advertisement"))?;
                 let address = a.BluetoothAddress()?;
                 let random = a.BluetoothAddressType()? == BluetoothAddressType::Random;
-                *heard.lock().expect("heard") = Some(Instant::now());
+                *LAST_SHARING_AD.lock().expect("last ad") = Some(Instant::now());
                 let due = {
                     let mut told = told.lock().expect("told");
                     let due = told.get(&address).is_none_or(|at| at.elapsed() > TELL_AGAIN);
@@ -309,6 +314,31 @@ mod imp {
                 let talking = Arc::clone(&talking);
                 let heard = Arc::clone(&heard);
                 std::thread::spawn(move || {
+                    // A device sharing on this computer's Wi-Fi looks for it
+                    // there within moments, and finds it: then there is
+                    // nothing to open. Opened anyway, its own Wi-Fi made this
+                    // one's slow and broke a send over it (a phone on the
+                    // same Wi-Fi: three tries timed out).
+                    let waited = Instant::now();
+                    while waited.elapsed() < LAN_FIRST {
+                        if basalt_client::nearby::looked_for_within(LAN_FIRST + Duration::from_secs(3)) {
+                            basalt_client::nearby::note("bluetooth: someone nearby is sharing, and found this computer on its Wi-Fi");
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                    // And only if it's still sharing: the last word of one
+                    // that just stopped (its app left the screen) isn't a reason.
+                    let still = LAST_SHARING_AD
+                        .lock()
+                        .expect("last ad")
+                        .is_some_and(|at| at > waited + Duration::from_secs(1));
+                    if !still {
+                        return;
+                    }
+                    // Heard sharing, and not on this Wi-Fi: our own stays open
+                    // while it goes on (see `close_when_done`).
+                    *heard.lock().expect("heard") = Some(Instant::now());
                     let _one = talking.lock().expect("talking");
                     if opened.lock().expect("opened").is_none() {
                         basalt_client::nearby::note("bluetooth: someone nearby is sharing; opening this computer's Wi-Fi");

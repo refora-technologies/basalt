@@ -18,6 +18,7 @@ import { bleLook, bleReady, bleSeen, bleWake, nearbyReach, reachNote, turnBlueto
 import { android } from './android'
 import { hostWifi, joinWifi, leaveWifi, scanWifi, turnWifiOn, wifiReady, type FoundWifi, type WifiState } from './nearbyWifi'
 import { pluginReason } from './android'
+import { usePageShown } from './pageShown'
 
 /**
  * Sharing with devices nearby, without a host (1.6.4): a guest's phone, two
@@ -128,6 +129,12 @@ export function useNearby(transfers: Transfers): Nearby {
   const joinedFor = useRef(new Set<string>())
   const [looking, setLooking] = useState(false)
   const [watchers, setWatchers] = useState(0)
+  // Looked for only while a Share sheet is open and Basalt is on screen: a
+  // phone left with one open went on looking in the background (the network
+  // swept, Bluetooth scanning, "sharing nearby" said, so a computer nearby
+  // kept its own Wi-Fi open) until it was opened again.
+  const shown = usePageShown()
+  const lookingNow = watchers > 0 && shown
   const [incoming, setIncoming] = useState<Incoming[]>([])
   const [outgoing, setOutgoing] = useState<Outgoing[]>([])
   const [items, setItems] = useState<ShareItem[]>(() => load())
@@ -221,7 +228,7 @@ export function useNearby(transfers: Transfers): Nearby {
    * itself. Ready on the same Wi-Fi stays as it is throughout.
    */
   const [joined, setJoined] = useState(0)
-  const hostNow = ready && hostable && watchers === 0 && joined === 0
+  const hostNow = ready && hostable && !lookingNow && joined === 0
   /** One change at a time, in order: Android's Wi-Fi Direct is busy otherwise. */
   const hosting = useRef<Promise<void>>(Promise.resolve())
   const host = useCallback((on: boolean): Promise<void> => {
@@ -470,17 +477,17 @@ export function useNearby(transfers: Transfers): Nearby {
 
   const watch = useCallback((on: boolean) => setWatchers((n) => Math.max(0, n + (on ? 1 : -1))), [])
   useEffect(() => {
-    if (watchers === 0) return undefined
+    if (!lookingNow) return undefined
     look()
     const timer = setInterval(look, LOOK_EVERY_MS)
     return () => clearInterval(timer)
-  }, [watchers, look])
+  }, [lookingNow, look])
 
   // Devices with no network in common, by their own Wi-Fi: looked for less
   // often (Android allows a few looks a minute). Asked for what it needs once.
   const [bleFar, setBleFar] = useState<FoundBle[]>([])
   useEffect(() => {
-    if (watchers === 0 || OWN_WIFI_ALWAYS) return undefined
+    if (!lookingNow || OWN_WIFI_ALWAYS) return undefined
     let live = true
     let timer: ReturnType<typeof setInterval> | null = null
     void (async () => {
@@ -502,9 +509,9 @@ export function useNearby(transfers: Transfers): Nearby {
       setBleFar([])
       void bleLook(false).catch(() => {})
     }
-  }, [watchers])
+  }, [lookingNow])
   useEffect(() => {
-    if (watchers === 0 || !OWN_WIFI_ALWAYS) return undefined
+    if (!lookingNow || !OWN_WIFI_ALWAYS) return undefined
     let live = true
     const lookFar = async (ask: boolean): Promise<void> => {
       const state = await wifiReady(ask)
@@ -525,7 +532,7 @@ export function useNearby(transfers: Transfers): Nearby {
       clearTimeout(first)
       clearInterval(timer)
     }
-  }, [watchers])
+  }, [lookingNow])
 
   // Both, each device once (on this Wi-Fi rather than by its own), each
   // where it was first seen: a row never moves under a finger about to tap it.
