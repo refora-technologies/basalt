@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { PopMenu } from './ui/PopMenu'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   ArrowDown,
@@ -154,6 +155,7 @@ function DeviceRow({
   onToggleOwner: () => void
 }): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [menuButton, setMenuButton] = useState<HTMLButtonElement | null>(null)
   const moving = device.sendRate > 0 || device.receiveRate > 0
 
   const Icon = deviceIcon(device)
@@ -217,6 +219,7 @@ function DeviceRow({
 
       <div className="relative shrink-0">
         <button
+          ref={setMenuButton}
           onClick={() => setMenuOpen((open) => !open)}
           aria-label={`Options for ${device.name}`}
           className={cn(
@@ -227,59 +230,44 @@ function DeviceRow({
           <MoreHorizontal size={15} />
         </button>
 
-        <AnimatePresence>
-          {menuOpen && (
-            <>
-              {/* Catches the next click anywhere, so the menu closes the way
-                  every other menu does. */}
-              <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-              <motion.div
-                initial={{ opacity: 0, scale: 0.96, y: -4 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.96, y: -4 }}
-                transition={{ duration: 0.12 }}
-                className="absolute right-0 top-8 z-50 w-[188px] origin-top-right overflow-hidden rounded-md border border-lineBright bg-panel2 py-1 shadow-lift"
-              >
-                <MenuItem
-                  icon={<Pencil size={12} />}
-                  label="Rename"
-                  onClick={() => {
-                    setMenuOpen(false)
-                    onRename()
-                  }}
-                />
-                <MenuItem
-                  icon={<ShieldOff size={12} />}
-                  label={device.writable ? 'Make read only' : 'Allow changes'}
-                  onClick={() => {
-                    setMenuOpen(false)
-                    onToggleWritable()
-                  }}
-                />
-                {device.keyed && (
-                  <MenuItem
-                    icon={<ShieldCheck size={12} />}
-                    label={device.owner ? 'Stop managing the host' : 'Let it manage the host'}
-                    onClick={() => {
-                      setMenuOpen(false)
-                      onToggleOwner()
-                    }}
-                  />
-                )}
-                <div className="my-1 h-px bg-line" />
-                <MenuItem
-                  icon={<Trash2 size={12} />}
-                  label="Remove this device"
-                  danger
-                  onClick={() => {
-                    setMenuOpen(false)
-                    onRevoke()
-                  }}
-                />
-              </motion.div>
-            </>
+        <PopMenu anchor={menuButton} open={menuOpen} onClose={() => setMenuOpen(false)} width={188}>
+          <MenuItem
+            icon={<Pencil size={12} />}
+            label="Rename"
+            onClick={() => {
+              setMenuOpen(false)
+              onRename()
+            }}
+          />
+          <MenuItem
+            icon={<ShieldOff size={12} />}
+            label={device.writable ? 'Make read only' : 'Allow changes'}
+            onClick={() => {
+              setMenuOpen(false)
+              onToggleWritable()
+            }}
+          />
+          {device.keyed && (
+            <MenuItem
+              icon={<ShieldCheck size={12} />}
+              label={device.owner ? 'Stop managing the host' : 'Let it manage the host'}
+              onClick={() => {
+                setMenuOpen(false)
+                onToggleOwner()
+              }}
+            />
           )}
-        </AnimatePresence>
+          <div className="my-1 h-px bg-line" />
+          <MenuItem
+            icon={<Trash2 size={12} />}
+            label="Remove this device"
+            danger
+            onClick={() => {
+              setMenuOpen(false)
+              onRevoke()
+            }}
+          />
+        </PopMenu>
       </div>
     </div>
   )

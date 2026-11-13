@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { PopMenu } from './ui/PopMenu'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Check, ChevronDown, Copy, KeyRound, Laptop, MoreHorizontal, Plus, Smartphone, Tablet, Trash2, Tv, X } from 'lucide-react'
 import type { ProfileDevice, ProfileSummary } from '@/lib/api'
@@ -160,6 +161,7 @@ function ProfileRow({
   onRemoveDevice: (device: ProfileDevice) => void
 }): React.JSX.Element {
   const [menu, setMenu] = useState(false)
+  const [menuButton, setMenuButton] = useState<HTMLButtonElement | null>(null)
   const [showDevices, setShowDevices] = useState(false)
   const now = Date.now() / 1000
   const active = profile.devices.some((d) => now - d.lastUsed < 10 * 60)
@@ -214,6 +216,7 @@ function ProfileRow({
           </Tag>
         )}
         <button
+          ref={setMenuButton}
           onClick={() => setMenu((open) => !open)}
           aria-label={`Options for ${profile.name}`}
           className={cn(
@@ -273,41 +276,27 @@ function ProfileRow({
         </div>
       )}
 
-      <AnimatePresence>
-        {menu && (
-          <>
-            <div className="fixed inset-0 z-10" onClick={() => setMenu(false)} />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.97, y: -4 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.98 }}
-              transition={{ duration: 0.13, ease: [0.22, 1, 0.36, 1] }}
-              style={{ transformOrigin: 'top right' }}
-              className="absolute right-3 top-11 z-20 w-[190px] overflow-hidden rounded-md border border-white/10 bg-panel2 p-1 shadow-lift"
-            >
-              {!profile.home && (
-                <MenuItem
-                  icon={KeyRound}
-                  label="Reset PIN"
-                  onClick={() => {
-                    setMenu(false)
-                    onResetPin()
-                  }}
-                />
-              )}
-              <MenuItem
-                icon={Trash2}
-                label="Remove profile"
-                danger
-                onClick={() => {
-                  setMenu(false)
-                  onRemove()
-                }}
-              />
-            </motion.div>
-          </>
+      <PopMenu anchor={menuButton} open={menu} onClose={() => setMenu(false)} width={190} inset>
+        {!profile.home && (
+          <MenuItem
+            icon={KeyRound}
+            label="Reset PIN"
+            onClick={() => {
+              setMenu(false)
+              onResetPin()
+            }}
+          />
         )}
-      </AnimatePresence>
+        <MenuItem
+          icon={Trash2}
+          label="Remove profile"
+          danger
+          onClick={() => {
+            setMenu(false)
+            onRemove()
+          }}
+        />
+      </PopMenu>
     </div>
   )
 }
