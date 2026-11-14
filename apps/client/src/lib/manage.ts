@@ -341,11 +341,19 @@ export function useManage(): Manage {
       } catch (e) {
         if (live.current) setError(said(e))
       }
-      if (live.current) timer = setTimeout(() => void refresh(), REFRESH_MS)
+      // Hidden: asked again once it's shown (below), not every 3 s for nobody.
+      if (live.current && document.visibilityState !== 'hidden') timer = setTimeout(() => void refresh(), REFRESH_MS)
     }
     void refresh()
+    const shown = (): void => {
+      if (document.visibilityState === 'hidden' || !live.current) return
+      if (timer) clearTimeout(timer)
+      void refresh()
+    }
+    document.addEventListener('visibilitychange', shown)
     return () => {
       live.current = false
+      document.removeEventListener('visibilitychange', shown)
       if (timer) clearTimeout(timer)
     }
   }, [])

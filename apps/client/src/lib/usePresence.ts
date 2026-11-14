@@ -48,7 +48,9 @@ export function usePresence(who: string | null): Presence {
       if (document.visibilityState === 'visible') void ask()
     }
     document.addEventListener('visibilitychange', shown)
-    const timer = setInterval(() => void ask(), REFRESH_MS)
+    const timer = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void ask()
+    }, REFRESH_MS)
     return () => {
       gone = true
       stop?.()

@@ -41,13 +41,19 @@ export function usePoll<T>(fetcher: () => Promise<T>, interval: number): Polled<
   const [loading, setLoading] = useState(true)
   const latestFetcher = useLatest(fetcher)
   const poller = useRef<Poller<T> | null>(null)
+  const last = useRef<string | null>(null)
 
   useEffect(() => {
     const instance = new Poller<T>({
       fetch: () => latestFetcher.current(),
       interval,
       onData: (value) => {
-        setData(value)
+        // The same answer again (most of them) draws nothing.
+        const said = JSON.stringify(value)
+        if (said !== last.current) {
+          last.current = said
+          setData(value)
+        }
         setError(null)
         setLoading(false)
       },
@@ -58,7 +64,15 @@ export function usePoll<T>(fetcher: () => Promise<T>, interval: number): Polled<
     })
     poller.current = instance
     instance.start()
+    // Hidden in the tray: nothing asked until it's shown again.
+    const shown = (): void => {
+      if (document.visibilityState === 'hidden') instance.pause()
+      else instance.resume()
+    }
+    shown()
+    document.addEventListener('visibilitychange', shown)
     return () => {
+      document.removeEventListener('visibilitychange', shown)
       instance.stop()
       poller.current = null
     }
@@ -69,5 +83,10 @@ export function usePoll<T>(fetcher: () => Promise<T>, interval: number): Polled<
 
   const refresh = useCallback(() => poller.current?.refresh(), [])
 
-  return { data, error, loading, refresh, set: setData }
+  const set = useCallback((value: T) => {
+    last.current = JSON.stringify(value)
+    setData(value)
+  }, [])
+
+  return { data, error, loading, refresh, set }
 }

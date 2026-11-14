@@ -41,6 +41,24 @@ describe('Poller', () => {
     poller.stop()
   })
 
+  it('asks nothing while paused, and at once when resumed', async () => {
+    const fetch = vi.fn().mockResolvedValue(1)
+    const poller = new Poller({ fetch, interval: 1_000, onData: vi.fn(), onError: vi.fn() })
+
+    poller.start()
+    await vi.advanceTimersByTimeAsync(0)
+    poller.pause()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    poller.resume()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetch).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1_100)
+    expect(fetch).toHaveBeenCalledTimes(3)
+    poller.stop()
+  })
+
   it('keeps polling on the interval', async () => {
     const fetch = vi.fn().mockResolvedValue(1)
     const poller = new Poller({ fetch, interval: 1_000, onData: vi.fn(), onError: vi.fn() })

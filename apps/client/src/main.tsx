@@ -10,6 +10,7 @@ import { startHalo } from './lib/focusHalo'
 import { startRemote } from './lib/remote'
 import { startTvTyping } from './lib/tvTyping'
 import { startUpdateChecks } from './lib/updates'
+import { followWindowShown } from './lib/windowShown'
 import { shapeWindow } from './lib/windowFrame'
 import './styles.css'
 
@@ -44,6 +45,9 @@ async function onTelevision(): Promise<boolean> {
   const late = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1500))
   return Promise.race([asked, late])
 }
+
+// The window hidden in the tray says so to the page, which then pauses.
+if (!isAndroid()) followWindowShown()
 
 void onTelevision().then(async (tv) => {
   // Told before anything connects, so the host draws this device as what it

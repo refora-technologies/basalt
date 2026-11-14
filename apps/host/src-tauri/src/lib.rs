@@ -517,11 +517,18 @@ async fn open_vault_folder(state: State<'_, AppState>, app: tauri::AppHandle) ->
 /// nobody is looking. The drive is shared by this process either way.
 const FREE_WHEN_CLOSED: bool = cfg!(target_os = "linux");
 
+/// Tells the page whether its window is on screen: hiding a window doesn't,
+/// and its polling went on in the tray all day (see windowShown.ts).
+fn say_shown<R: tauri::Runtime>(window: &impl tauri::Emitter<R>, shown: bool) {
+    let _ = window.emit("basalt://window-shown", shown);
+}
+
 fn show_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        say_shown(&window, true);
         return;
     }
     // Freed when it was closed: made again, as it was configured.
@@ -1133,6 +1140,7 @@ pub fn run() {
                 if !FREE_WHEN_CLOSED {
                     api.prevent_close();
                     let _ = window.hide();
+                    say_shown(window, false);
                 }
             }
         })
