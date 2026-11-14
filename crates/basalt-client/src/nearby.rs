@@ -301,11 +301,25 @@ impl NearbyLink {
                 return Err(ClientError::Protocol("cancelled".into()));
             }
             let want = buffer.len().min((length - done) as usize);
-            let n = tokio::time::timeout(STEP * 4, reader.read(&mut buffer[..want]))
-                .await
-                .map_err(|_| {
-                    ClientError::Protocol("the device that sent it stopped part-way".into())
-                })??;
+            // Waited for a second at a time, so Cancel is heard while
+            // nothing comes, and no longer than a minute in all.
+            let waiting_since = std::time::Instant::now();
+            let n = loop {
+                match tokio::time::timeout(Duration::from_secs(1), reader.read(&mut buffer[..want]))
+                    .await
+                {
+                    Ok(read) => break read?,
+                    Err(_) if cancel.as_ref().is_some_and(Cancel::is_cancelled) => {
+                        return Err(ClientError::Protocol("cancelled".into()));
+                    }
+                    Err(_) if waiting_since.elapsed() >= STEP * 4 => {
+                        return Err(ClientError::Protocol(
+                            "the device that sent it stopped part-way".into(),
+                        ));
+                    }
+                    Err(_) => {}
+                }
+            };
             if n == 0 {
                 return Err(ClientError::Protocol(
                     "the device that sent it stopped part-way".into(),
@@ -951,16 +965,25 @@ impl Offering {
             let mut left = length;
             while left > 0 {
                 let want = buffer.len().min(left as usize);
-                let n = match source.read(&mut buffer[..want]).await {
-                    Ok(0) | Err(_) => return "failed".into(),
-                    Ok(n) => n,
+                // Neither side of it waited for for ever: a file on the drive
+                // that stops coming from the host, or a receiver gone without
+                // a word (its line still up), left this "sending" for good.
+                let n = match tokio::time::timeout(STEP * 4, source.read(&mut buffer[..want])).await
+                {
+                    Ok(Ok(n)) if n > 0 => n,
+                    _ => return "failed".into(),
                 };
-                if self.write.write_all(&buffer[..n]).await.is_err() {
-                    return "failed".into();
+                // In pieces, so the wait is for the line moving at all, and
+                // the bar moves on a slow one.
+                for piece in buffer[..n].chunks(32 * 1024) {
+                    match tokio::time::timeout(STEP * 4, self.write.write_all(piece)).await {
+                        Ok(Ok(())) => {}
+                        _ => return "failed".into(),
+                    }
+                    left -= piece.len() as u64;
+                    sent += piece.len() as u64;
+                    progress(sent);
                 }
-                left -= n as u64;
-                sent += n as u64;
-                progress(sent);
             }
             if self.write.flush().await.is_err() {
                 return "failed".into();
