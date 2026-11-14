@@ -407,8 +407,9 @@ packaging/build-server.sh OUT_DIR          # with no screen: .deb, .rpm, .tar.gz
 docker build -f docker/Dockerfile -t basalt-host .
 ```
 
-Each builds inside an older system's container, so what it makes runs on
-Ubuntu 22.04, Debian 11 and everything newer.
+Each builds inside an older system's container, so the desktop apps run on
+Ubuntu 22.04, Debian 12 and everything newer, and the host with no screen on
+Debian 11 and Ubuntu 20.04 as well.
 
 ### The Android app
 
