@@ -441,6 +441,14 @@ function Tile({
 // Albums and artists
 // ---------------------------------------------------------------------------
 
+/**
+ * Drawn only once near the screen: every album, artist and song of a big
+ * library was laid out and painted at once, which a modest phone feels as
+ * a stutter on opening Music.
+ */
+const OFF_SCREEN_CARD: React.CSSProperties = { contentVisibility: 'auto', containIntrinsicSize: 'auto 230px' }
+const OFF_SCREEN_ROW: React.CSSProperties = { contentVisibility: 'auto', containIntrinsicSize: 'auto 56px' }
+
 const gridOf = (layout: MusicLayout): string =>
   cn(
     'grid',
@@ -472,6 +480,8 @@ function AlbumCard({
   return (
     <button
       onClick={() => nav.openAlbum(album)}
+      // A library of thousands: the cards off screen are skipped until near.
+      style={rowItem ? undefined : OFF_SCREEN_CARD}
       className={cn(
         'group text-left',
         rowItem && (layout === 'tv' ? 'w-[180px] shrink-0' : layout === 'phone' ? 'w-[132px] shrink-0' : 'w-[160px] shrink-0'),
@@ -557,6 +567,7 @@ function ArtistCard({
   return (
     <button
       onClick={() => nav.openArtist(artist.name)}
+      style={rowItem ? undefined : OFF_SCREEN_CARD}
       className={cn(
         'group text-center',
         rowItem && (layout === 'tv' ? 'w-[150px] shrink-0' : layout === 'phone' ? 'w-[92px] shrink-0' : 'w-[130px] shrink-0'),
@@ -928,7 +939,7 @@ function SongList({
         const now = player?.current === song.path
         const isLiked = liked.has(song.path)
         return (
-          <div key={song.path}>
+          <div key={song.path} style={OFF_SCREEN_ROW}>
             {heading !== null && (
               <div className="mb-1 mt-3 font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">
                 Disc {heading}
