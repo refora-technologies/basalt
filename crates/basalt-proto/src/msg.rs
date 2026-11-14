@@ -1253,8 +1253,10 @@ pub struct ChannelSendRequest {
 /// The longest a message waits on the host for a device to come online.
 pub const CHANNEL_MAX_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 /// The largest `body` the host passes on, serialised: messages are small;
-/// files go by transfers.
-pub const CHANNEL_MAX_BODY_BYTES: usize = 32 * 1024;
+/// files go by transfers. Room for an offer of a folder's files (up to
+/// `folder::MOST_SHARE_FILES`, each with its name, path and folder), and no
+/// more: a device's waiting messages are kept in memory.
+pub const CHANNEL_MAX_BODY_BYTES: usize = 256 * 1024;
 
 /// What became of a message the moment it was sent.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1348,6 +1350,10 @@ pub struct ShareHoldRequest {
     /// From 1.6.4.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub staged: Vec<StagedFile>,
+    /// For a shared folder: each file's folder inside it ("Holiday/Day 1"),
+    /// those of `paths` first, then those of `staged`. Empty when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
 }
 
 /// A file uploaded with `ShareStage` for a share: its stage id (hex), name
@@ -1397,6 +1403,9 @@ pub struct HeldShare {
 pub struct HeldShareFile {
     pub name: String,
     pub size: u64,
+    /// Its folder inside a shared folder; empty for a file shared on its own.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub folder: String,
 }
 
 /// What this profile has held, and the space held files take on the host.

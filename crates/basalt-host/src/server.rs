@@ -3784,6 +3784,17 @@ fn shares_folder(vault: &crate::vault::Vault, owner: &str) -> Result<String> {
 
 /// A place on the drive for `name` in `folder` that nothing has, nor any of
 /// `taken`: "name (1).ext" and on when it has.
+/// A folder on the drive with a shared folder's own folder inside it (made
+/// safe): where a kept file of a shared folder goes.
+fn inside(folder: &str, within: &str) -> String {
+    let within = basalt_proto::folder::clean_folder(within);
+    match (folder.is_empty(), within.is_empty()) {
+        (_, true) => folder.to_string(),
+        (true, false) => within,
+        (false, false) => format!("{folder}/{within}"),
+    }
+}
+
 fn free_place(
     vault: &crate::vault::Vault,
     folder: &str,
@@ -3829,11 +3840,21 @@ impl Host {
             return Err(HostError::Unavailable("this host can't hold files".into()));
         }
         let count = req.paths.len() + req.staged.len();
-        if count == 0 || count > 500 {
-            return Err(HostError::BadRequest(
-                "a share holds from 1 to 500 files".into(),
-            ));
+        let most = basalt_proto::folder::MOST_SHARE_FILES;
+        if count == 0 || count > most {
+            return Err(HostError::BadRequest(format!(
+                "a share holds from 1 to {most} files"
+            )));
         }
+        // A shared folder: each file's folder inside it, made safe.
+        let folders: Vec<String> = (0..count)
+            .map(|n| {
+                req.folders
+                    .get(n)
+                    .map(|f| basalt_proto::folder::clean_folder(f))
+                    .unwrap_or_default()
+            })
+            .collect();
         let to = self
             .devices()
             .into_iter()
@@ -3912,8 +3933,8 @@ impl Host {
                 .and_then(|p| self.profile_name(p))
                 .unwrap_or_else(|| from.name.clone());
             let folder = shares_folder(&vault, &owner)?;
-            for (name, _) in &files {
-                let place = free_place(&vault, &folder, name, &places)?;
+            for ((name, _), within) in files.iter().zip(&folders) {
+                let place = free_place(&vault, &inside(&folder, within), name, &places)?;
                 places.push(place);
             }
         }
@@ -3942,6 +3963,14 @@ impl Host {
         })
         .await
         .map_err(join)??;
+        let mut held = held;
+        if folders.iter().any(|f| !f.is_empty()) {
+            let store = self.shares.as_ref().expect("checked above");
+            store.set_folders(&held.id, &folders)?;
+            for (file, folder) in held.files.iter_mut().zip(&folders) {
+                file.folder = folder.clone();
+            }
+        }
         for staged in &req.staged {
             store.unstage(&staged.stage);
         }
@@ -4006,7 +4035,8 @@ impl Host {
             let folder = shares_folder(&vault, &owner)?;
             let mut places = Vec::new();
             for file in &held.files {
-                let place = free_place(&vault, &folder, &file.name, &places)?;
+                let place =
+                    free_place(&vault, &inside(&folder, &file.folder), &file.name, &places)?;
                 places.push(place);
             }
             Some(places)
@@ -4060,7 +4090,13 @@ impl Host {
                 };
                 let body = serde_json::json!({
                     "offer": held.id,
-                    "files": held.files.iter().map(|f| serde_json::json!({ "name": f.name, "size": f.size, "path": "" })).collect::<Vec<_>>(),
+                    "files": held.files.iter().map(|f| {
+                        let mut file = serde_json::json!({ "name": f.name, "size": f.size, "path": "" });
+                        if !f.folder.is_empty() {
+                            file["folder"] = f.folder.clone().into();
+                        }
+                        file
+                    }).collect::<Vec<_>>(),
                     "from": { "device": held.from.device, "name": held.from.name, "profile": held.from.profile, "profileName": profile_name, "form": form_of(&held.from.device) },
                     "to": { "device": held.to.device, "name": held.to.name, "form": form_of(&held.to.device) },
                     "held": true,
@@ -4201,7 +4237,8 @@ impl Host {
                         if file.plain.is_some() {
                             continue;
                         }
-                        let dest = free_place(&vault, &folder, &file.name, &[])?;
+                        let dest =
+                            free_place(&vault, &inside(&folder, &file.folder), &file.name, &[])?;
                         store.unlock_into(&share.id, n, &dest)?;
                     }
                     store.forget(&share.id)?;
@@ -4485,7 +4522,8 @@ impl Host {
                 }
                 let vault = self.require_vault().await?;
                 for (n, file) in held.files.iter().enumerate() {
-                    let dest = free_place(&vault, &req.folder, &file.name, &[])?;
+                    let dest =
+                        free_place(&vault, &inside(&req.folder, &file.folder), &file.name, &[])?;
                     store.unlock_into(&req.id, n, &dest)?;
                 }
                 store.delete(&req.id)
@@ -4506,6 +4544,7 @@ fn view_of(held: &crate::share_store::Held) -> basalt_proto::msg::HeldShare {
             .map(|f| basalt_proto::msg::HeldShareFile {
                 name: f.name.clone(),
                 size: f.size,
+                folder: f.folder.clone(),
             })
             .collect(),
         created: held.created,

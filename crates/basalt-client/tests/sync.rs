@@ -1203,6 +1203,7 @@ async fn a_share_waits_on_the_host_for_a_device_that_is_away() {
             keep: false,
             paths: vec!["films/Holiday.mkv".into()],
             staged: Vec::new(),
+            folders: Vec::new(),
         })
         .await
         .expect("held for the tablet");
@@ -1287,6 +1288,7 @@ async fn the_host_limits_keeps_in_plain_and_clears_what_it_holds() {
         keep: false,
         paths: vec![path.into()],
         staged: Vec::new(),
+        folders: Vec::new(),
     };
 
     // A limit of 2 MB for Maya: the big file doesn't fit, and she is told.
@@ -1380,6 +1382,7 @@ async fn a_removed_profiles_share_files_go_to_the_drive_or_away() {
         keep: false,
         paths: vec!["note.txt".into()],
         staged: Vec::new(),
+        folders: Vec::new(),
     };
 
     // Maya's, locked: moved onto the drive as she goes.
@@ -1449,6 +1452,7 @@ async fn a_kept_share_is_shared_again_with_another_device() {
             keep: true,
             paths: vec!["clip.mp4".into()],
             staged: Vec::new(),
+            folders: Vec::new(),
         })
         .await
         .expect("held");
@@ -1542,6 +1546,7 @@ async fn a_file_on_this_device_waits_on_the_host_for_one_that_is_away() {
                 name: "Beach.mov".into(),
                 size: 5,
             }],
+            folders: Vec::new(),
         })
         .await;
     assert!(wrong.is_err(), "a size that isn't what came");
@@ -1556,10 +1561,14 @@ async fn a_file_on_this_device_waits_on_the_host_for_one_that_is_away() {
                 name: "Beach.mov".into(),
                 size: body.len() as u64,
             }],
+            // Part of a shared folder: its place inside it goes with it,
+            // made safe, and comes back in the list.
+            folders: vec!["Trip\\Day 1".into()],
         })
         .await
         .expect("held from the upload");
     assert_eq!(held.files[0].name, "Beach.mov");
+    assert_eq!(held.files[0].folder, "Trip/Day 1");
     assert_eq!(fixture.host.sharing_view().locked, body.len() as u64);
 
     let into = fixture.dir.join("taken.mov");

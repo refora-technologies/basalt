@@ -14,6 +14,7 @@
 //!   cheaply.
 
 pub mod codec;
+pub mod folder;
 pub mod frame;
 pub mod hex;
 pub mod manifest;

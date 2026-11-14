@@ -56,6 +56,10 @@ pub struct HeldFile {
     /// (secure mode off). None: locked in the store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plain: Option<PathBuf>,
+    /// Its folder inside a shared folder ("Holiday/Day 1"), made safe; empty
+    /// for a file shared on its own.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +161,7 @@ impl ShareStore {
                     name,
                     size,
                     plain: None,
+                    folder: String::new(),
                 }),
                 Err(e) => {
                     let _ = std::fs::remove_dir_all(&folder);
@@ -202,6 +207,7 @@ impl ShareStore {
                     name,
                     size,
                     plain: Some(dest),
+                    folder: String::new(),
                 }),
                 Err(e) => {
                     for made in &listed {
@@ -285,6 +291,9 @@ impl ShareStore {
             .get(id)
             .and_then(|h| h.files.get(n).map(|f| f.size))
             .ok_or_else(|| HostError::NotFound("that share".into()))?;
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let part = dest.with_extension("basalt-part");
         let mut out = std::fs::File::create(&part)?;
         let mut at = 0u64;
@@ -412,6 +421,7 @@ impl ShareStore {
                             name: file.name.clone(),
                             size,
                             plain: Some(dest),
+                            folder: file.folder.clone(),
                         })
                     })
                 }
@@ -424,6 +434,7 @@ impl ShareStore {
                         name: file.name.clone(),
                         size,
                         plain: None,
+                        folder: file.folder.clone(),
                     }),
             };
             match made {
@@ -445,6 +456,19 @@ impl ShareStore {
         };
         self.change(|index| index.held.push(again.clone()))?;
         Ok(again)
+    }
+
+    /// Gives each file of share `id` its folder inside a shared folder, in
+    /// order, made safe (see `basalt_proto::folder`). Fewer folders than
+    /// files leave the rest at the top.
+    pub fn set_folders(&self, id: &str, folders: &[String]) -> Result<()> {
+        self.change(|index| {
+            if let Some(held) = index.held.iter_mut().find(|h| h.id == id) {
+                for (file, folder) in held.files.iter_mut().zip(folders) {
+                    file.folder = basalt_proto::folder::clean_folder(folder);
+                }
+            }
+        })
     }
 
     /// Lets a share go without deleting what it kept in plain on the drive,
@@ -1003,6 +1027,62 @@ mod tests {
         assert_eq!(std::fs::read(dest).unwrap(), b"22");
         assert_eq!(again.clear().unwrap(), 1);
         assert_eq!(again.usage().1, 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_shared_folder_keeps_each_files_folder_safely_and_again() {
+        let dir = temp("folders");
+        let store = ShareStore::open(dir.join("store"), [9; 32]).unwrap();
+        let files = vec![
+            ("a.jpg".to_string(), source(&dir, "a.jpg", b"aa")),
+            ("b.jpg".to_string(), source(&dir, "b.jpg", b"bb")),
+            ("c.jpg".to_string(), source(&dir, "c.jpg", b"cc")),
+        ];
+        store
+            .hold(
+                "f1",
+                party("phone", Some("maya")),
+                party("laptop", None),
+                true,
+                files,
+                1,
+            )
+            .unwrap();
+        store
+            .set_folders(
+                "f1",
+                &[
+                    "Holiday".into(),
+                    "Holiday/Day 1".into(),
+                    "../../Startup".into(),
+                ],
+            )
+            .unwrap();
+        let folders = |s: &ShareStore, id: &str| -> Vec<String> {
+            s.get(id)
+                .unwrap()
+                .files
+                .iter()
+                .map(|f| f.folder.clone())
+                .collect()
+        };
+        assert_eq!(folders(&store, "f1"), ["Holiday", "Holiday/Day 1", ""]);
+        drop(store);
+        let store = ShareStore::open(dir.join("store"), [9; 32]).unwrap();
+        assert_eq!(
+            folders(&store, "f1"),
+            ["Holiday", "Holiday/Day 1", ""],
+            "kept"
+        );
+        store
+            .copy_for("f1", "f2", party("tablet", None), false, None, 2)
+            .unwrap();
+        assert_eq!(
+            folders(&store, "f2"),
+            ["Holiday", "Holiday/Day 1", ""],
+            "shared again"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
