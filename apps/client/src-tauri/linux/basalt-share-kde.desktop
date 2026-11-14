@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Service
-MimeType=all/allfiles;
+MimeType=all/all;
 Actions=share
 X-KDE-Priority=TopLevel
 

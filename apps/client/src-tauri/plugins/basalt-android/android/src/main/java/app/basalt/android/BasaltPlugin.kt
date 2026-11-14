@@ -82,6 +82,8 @@ class OpenFdArgs {
 class CreateDownloadArgs {
   lateinit var name: String
   var mime: String? = null
+  /** A shared folder's own folder for it, made safe by the app ("Holiday/Day 1"). */
+  var folder: String? = null
 }
 
 @InvokeArg
@@ -832,12 +834,15 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   fun createDownload(invoke: Invoke) {
     val args = invoke.parseArgs(CreateDownloadArgs::class.java)
     val mime = args.mime?.takeIf { it.isNotEmpty() } ?: mimeOf(args.name)
+    // Its folder inside Download/Basalt: the app made it safe; looked at again.
+    val within = (args.folder ?: "").split('/').filter { it.isNotBlank() && it != "." && it != ".." }.joinToString("/")
+    val under = if (within.isEmpty()) "Basalt" else "Basalt/$within"
     try {
       if (Build.VERSION.SDK_INT >= 29) {
         val values = ContentValues().apply {
           put(MediaStore.Downloads.DISPLAY_NAME, args.name)
           put(MediaStore.Downloads.MIME_TYPE, mime)
-          put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Basalt")
+          put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/" + under)
           put(MediaStore.Downloads.IS_PENDING, 1)
         }
         val uri = activity.contentResolver.insert(
@@ -849,11 +854,11 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
           JSObject()
             .put("uri", uri.toString())
             .put("fd", pfd.detachFd())
-            .put("shownAs", "Download/Basalt/${args.name}")
+            .put("shownAs", "Download/$under/${args.name}")
         )
       } else {
         @Suppress("DEPRECATION")
-        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Basalt")
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), under)
         dir.mkdirs()
         var file = File(dir, args.name)
         var n = 1
@@ -873,7 +878,7 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
           JSObject()
             .put("uri", Uri.fromFile(file).toString())
             .put("fd", pfd.detachFd())
-            .put("shownAs", "Download/Basalt/${file.name}")
+            .put("shownAs", "Download/$under/${file.name}")
         )
       }
     } catch (e: Exception) {

@@ -212,6 +212,10 @@ pub struct Me {
 pub struct NearbyFile {
     pub name: String,
     pub size: u64,
+    /// Its folder inside a shared folder ("Holiday/Day 1"); empty for a file
+    /// shared on its own. Made safe where it lands.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
 }
 
 /// A device nearby that is ready to receive.
@@ -1405,6 +1409,7 @@ mod tests {
         vec![NearbyFile {
             name: "Holiday 2026.mkv".into(),
             size: 700_000,
+            folder: String::new(),
         }]
     }
 

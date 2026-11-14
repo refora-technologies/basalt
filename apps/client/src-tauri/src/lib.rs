@@ -30,6 +30,7 @@ mod media_controls;
 mod music_timing;
 mod nearby_ble;
 mod nearby_wifi;
+mod share_local;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod tray;
 #[cfg(target_os = "linux")]
@@ -908,11 +909,13 @@ async fn receive_file(
     remote: String,
     id: String,
     folder: Option<String>,
+    within: Option<String>,
 ) -> Answer<Received> {
+    let within = basalt_proto::folder::clean_folder(within.as_deref().unwrap_or(""));
     #[cfg(target_os = "android")]
     {
         let _ = folder;
-        let saved = download_to_phone(app, state, remote, id).await?;
+        let saved = download_to_phone(app, state, remote, id, within).await?;
         Ok(Received {
             shown_as: saved.shown_as,
             path: None,
@@ -921,17 +924,21 @@ async fn receive_file(
     }
     #[cfg(not(target_os = "android"))]
     {
-        let dir = match folder.filter(|f| !f.trim().is_empty()) {
+        let base = match folder.filter(|f| !f.trim().is_empty()) {
             Some(folder) => PathBuf::from(folder),
             None => received_folder(&app)?,
         };
+        let dir = within_dir(&base, &within);
         std::fs::create_dir_all(&dir).map_err(|e| UiError {
             kind: "error".into(),
             message: format!("couldn’t make the folder {}: {e}", dir.display()),
         })?;
         let local = free_name(&dir, &safe_local_name(&remote));
         let shown_as = local.display().to_string();
-        download(app, state, remote, shown_as.clone(), id).await?;
+        if let Err(e) = download(app, state, remote, shown_as.clone(), id).await {
+            prune_empty(&dir, &base);
+            return Err(e);
+        }
         Ok(Received {
             shown_as: shown_as.clone(),
             path: Some(shown_as),
@@ -968,6 +975,60 @@ fn default_received_folder(app: tauri::AppHandle) -> Answer<String> {
 
 /// `name` in `dir`, or "name (1).ext", "name (2).ext"... whichever is free.
 #[cfg(not(target_os = "android"))]
+/// Where a file of a shared folder goes: its folder (made safe already)
+/// under the received folder.
+fn within_dir(base: &std::path::Path, within: &str) -> PathBuf {
+    within
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .fold(base.to_path_buf(), |dir, part| dir.join(part))
+}
+
+/// Folders made for a file that didn't come, now empty: gone again, up to
+/// (never including) `base`. A folder with anything in it stays. A phone's
+/// Downloads are Android's to keep.
+#[cfg_attr(target_os = "android", allow(dead_code))]
+fn prune_empty(dir: &std::path::Path, base: &std::path::Path) {
+    let mut at = dir.to_path_buf();
+    while at != base && at.starts_with(base) {
+        if std::fs::remove_dir(&at).is_err() {
+            return;
+        }
+        if !at.pop() {
+            return;
+        }
+    }
+}
+
+/// The name a shared folder takes in the received folder: its own, or
+/// "Holiday (1)" when one of that name is there already, so two shares of
+/// the same folder never mix. On a phone, Android keeps Downloads; its own.
+#[tauri::command]
+fn share_folder_root(app: tauri::AppHandle, top: String, folder: Option<String>) -> Answer<String> {
+    let top = basalt_proto::folder::folder_parts(&top)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "Shared".into());
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, folder);
+        Ok(top)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let base = match folder.filter(|f| !f.trim().is_empty()) {
+            Some(folder) => PathBuf::from(folder),
+            None => received_folder(&app)?,
+        };
+        let free = (0..)
+            .map(|n| if n == 0 { top.clone() } else { format!("{top} ({n})") })
+            .find(|name| !base.join(name).exists())
+            .expect("a free name");
+        Ok(free)
+    }
+}
+
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn free_name(dir: &std::path::Path, name: &str) -> PathBuf {
     let first = dir.join(name);
     if !first.exists() {
@@ -1469,35 +1530,21 @@ async fn nearby_firewall_allow() -> Answer<String> {
 type WaitingOffer = (basalt_client::nearby::Offering, Vec<String>, u64);
 
 /// The files after `--share` in a command line ("Share with Basalt" in
-/// Explorer, Send to): each that is a file here, with its name and size.
-fn shared_in(args: &[String]) -> Vec<LocalFile> {
+/// Explorer, Send to): each file, and each folder's files.
+fn shared_in(args: &[String]) -> share_local::Chosen {
     let Some(at) = args.iter().position(|a| a == "--share") else {
-        return Vec::new();
+        return share_local::Chosen::default();
     };
-    args[at + 1..]
-        .iter()
-        .filter_map(|path| {
-            let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
-            let name = std::path::Path::new(path)
-                .file_name()?
-                .to_string_lossy()
-                .into_owned();
-            Some(LocalFile {
-                source: path.clone(),
-                name,
-                size: meta.len(),
-            })
-        })
-        .collect()
+    share_local::gather(&args[at + 1..])
 }
 
 /// Files Basalt was opened to share ("Share with Basalt" with it closed),
 /// once: the page asks as it starts.
 #[tauri::command]
-fn shared_at_start() -> Vec<LocalFile> {
+fn shared_at_start() -> share_local::Chosen {
     static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if TAKEN.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        return Vec::new();
+        return share_local::Chosen::default();
     }
     shared_in(&std::env::args().collect::<Vec<_>>())
 }
@@ -1652,6 +1699,7 @@ async fn nearby_offer(
         .map(|f| basalt_client::nearby::NearbyFile {
             name: f.name.clone(),
             size: f.size,
+            folder: f.folder.clone(),
         })
         .collect();
     let me = nearby_me(&state);
@@ -1845,20 +1893,11 @@ fn withdraw_local(state: State<'_, AppState>, offer: String) {
     }
 }
 
-/// Files picked on this computer, with their names and sizes, to offer.
+/// Files and folders picked on this computer, as the files to offer, each
+/// with its name, size and folder inside a folder picked; or why not.
 #[tauri::command]
-fn local_files(paths: Vec<String>) -> Vec<serde_json::Value> {
-    paths
-        .into_iter()
-        .filter_map(|path| {
-            let meta = std::fs::metadata(&path).ok().filter(|m| m.is_file())?;
-            let name = std::path::Path::new(&path)
-                .file_name()?
-                .to_string_lossy()
-                .into_owned();
-            Some(serde_json::json!({ "source": path, "name": name, "size": meta.len() }))
-        })
-        .collect()
+fn local_files(paths: Vec<String>) -> share_local::Chosen {
+    share_local::gather(&paths)
 }
 
 /// Takes one file of an offer straight from the device that offers it,
@@ -1876,6 +1915,7 @@ async fn receive_direct(
     id: String,
     folder: Option<String>,
     size: Option<u64>,
+    within: Option<String>,
 ) -> Answer<Received> {
     let shown = name.clone();
     receive_into(
@@ -1884,6 +1924,7 @@ async fn receive_direct(
         name,
         id,
         folder,
+        within,
         move |out, report, cancel| async move {
             basalt_client::direct::fetch(
                 &endpoint,
@@ -1905,6 +1946,7 @@ async fn receive_direct(
 
 /// Takes one file of an offer from a device nearby, agreed: it comes down
 /// the line its offer came up.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn nearby_take_file(
     app: tauri::AppHandle,
@@ -1914,6 +1956,7 @@ async fn nearby_take_file(
     name: String,
     id: String,
     folder: Option<String>,
+    within: Option<String>,
 ) -> Answer<Received> {
     let link = state
         .nearby_ready
@@ -1932,6 +1975,7 @@ async fn nearby_take_file(
         name,
         id,
         folder,
+        within,
         move |out, report, cancel| async move {
             link.take_file(file, &shown, out, Some(report), Some(cancel))
                 .await
@@ -1946,6 +1990,7 @@ async fn receive_into<F, Fut>(
     name: String,
     id: String,
     folder: Option<String>,
+    within: Option<String>,
     take: F,
 ) -> Answer<Received>
 where
@@ -1960,6 +2005,9 @@ where
         .insert(id.clone(), cancel.clone());
     let report = progress_reporter(app.clone(), id.clone(), name.clone(), "download");
     let safe = safe_local_name(&name);
+    // A shared folder's own folder for this file, made safe here too: it
+    // came from another device.
+    let within = basalt_proto::folder::clean_folder(within.as_deref().unwrap_or(""));
     #[cfg(target_os = "android")]
     let outcome = {
         let _ = folder;
@@ -1967,7 +2015,9 @@ where
         let handle = app.clone();
         let wanted = safe.clone();
         let created = tokio::task::spawn_blocking(move || {
-            handle.basalt_android().create_download(&wanted, "")
+            handle
+                .basalt_android()
+                .create_download_in(&wanted, "", &within)
         })
         .await
         .map_err(|e| UiError {
@@ -1993,10 +2043,11 @@ where
     };
     #[cfg(not(target_os = "android"))]
     let outcome = {
-        let dir = match folder.filter(|f| !f.trim().is_empty()) {
+        let base = match folder.filter(|f| !f.trim().is_empty()) {
             Some(folder) => PathBuf::from(folder),
             None => received_folder(&app)?,
         };
+        let dir = within_dir(&base, &within);
         std::fs::create_dir_all(&dir).map_err(|e| UiError {
             kind: "error".into(),
             message: format!("couldn’t make the folder {}: {e}", dir.display()),
@@ -2016,6 +2067,7 @@ where
         let out = match made {
             Ok(out) => out,
             Err(e) => {
+                prune_empty(&dir, &base);
                 state.transfers.lock().expect("transfers lock").remove(&id);
                 return Err(e);
             }
@@ -2030,6 +2082,8 @@ where
         };
         if result.is_err() {
             let _ = std::fs::remove_file(&part);
+            // A folder made for it, and nothing in it: gone again.
+            prune_empty(&dir, &base);
         } else {
             mark_downloaded(&local);
         }
@@ -2052,6 +2106,7 @@ async fn share_hold(
     to: String,
     keep: bool,
     paths: Vec<String>,
+    folders: Option<Vec<String>>,
 ) -> Answer<basalt_proto::msg::HeldShare> {
     Ok(state
         .client
@@ -2061,17 +2116,12 @@ async fn share_hold(
             keep,
             paths,
             staged: Vec::new(),
+            folders: folders.unwrap_or_default(),
         })
         .await?)
 }
 
-/// A file on this device to keep on the host for a device that is away.
-#[derive(serde::Deserialize, serde::Serialize, Clone)]
-struct LocalFile {
-    source: String,
-    name: String,
-    size: u64,
-}
+use share_local::LocalFile;
 
 /// Keeps files on this device on the host for a device that is away: each
 /// uploaded first (`basalt://share-sending` says how far), then kept there.
@@ -2089,6 +2139,7 @@ async fn share_hold_local(
     let total: u64 = files.iter().map(|f| f.size).sum();
     let mut before = 0u64;
     let mut staged = Vec::new();
+    let folders: Vec<String> = files.iter().map(|f| f.folder.clone()).collect();
     for file in &files {
         let source = {
             let open = Arc::clone(&open);
@@ -2143,6 +2194,7 @@ async fn share_hold_local(
             keep,
             paths: Vec::new(),
             staged,
+            folders,
         })
         .await?)
 }
@@ -2186,7 +2238,7 @@ async fn share_manage(
 }
 
 /// Takes one file of a share the host kept for this device into its
-/// received folder.
+/// received folder (inside `within`, for a shared folder).
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn receive_held(
@@ -2198,90 +2250,24 @@ async fn receive_held(
     size: u64,
     id: String,
     folder: Option<String>,
+    within: Option<String>,
 ) -> Answer<Received> {
-    let cancel = Cancel::new();
-    state
-        .transfers
-        .lock()
-        .expect("transfers lock")
-        .insert(id.clone(), cancel.clone());
-    let report = progress_reporter(app.clone(), id.clone(), name.clone(), "download");
-    let safe = safe_local_name(&name);
-    #[cfg(target_os = "android")]
-    let outcome = {
-        let _ = folder;
-        use tauri_plugin_basalt_android::BasaltAndroidExt;
-        let handle = app.clone();
-        let wanted = safe.clone();
-        let created = tokio::task::spawn_blocking(move || {
-            handle.basalt_android().create_download(&wanted, "")
-        })
-        .await
-        .map_err(|e| UiError {
-            kind: "error".into(),
-            message: e.to_string(),
-        })?
-        .map_err(|e| UiError {
-            kind: "error".into(),
-            message: format!("couldn’t save to Downloads: {e}"),
-        })?;
-        let result = state
-            .client
-            .download_held(
-                &share,
-                file,
-                size,
-                &name,
-                owned_file(created.fd),
-                Some(report),
-                Some(cancel),
-            )
-            .await;
-        let ok = result.is_ok();
-        let handle = app.clone();
-        let uri = created.uri.clone();
-        let _ =
-            tokio::task::spawn_blocking(move || handle.basalt_android().finish_download(&uri, ok))
-                .await;
-        result.map(|_| Received {
-            shown_as: created.shown_as,
-            path: None,
-            uri: Some(created.uri),
-        })
-    };
-    #[cfg(not(target_os = "android"))]
-    let outcome = {
-        let dir = match folder.filter(|f| !f.trim().is_empty()) {
-            Some(folder) => PathBuf::from(folder),
-            None => received_folder(&app)?,
-        };
-        std::fs::create_dir_all(&dir).map_err(|e| UiError {
-            kind: "error".into(),
-            message: format!("couldn’t make the folder {}: {e}", dir.display()),
-        })?;
-        let local = free_name(&dir, &safe);
-        let out = std::fs::File::create(&local).map_err(|e| UiError {
-            kind: "error".into(),
-            message: format!("couldn’t write {}: {e}", local.display()),
-        })?;
-        let result = state
-            .client
-            .download_held(&share, file, size, &name, out, Some(report), Some(cancel))
-            .await;
-        if result.is_err() {
-            let _ = std::fs::remove_file(&local);
-        } else {
-            mark_downloaded(&local);
-        }
-        let shown = local.display().to_string();
-        result.map(|_| Received {
-            shown_as: shown.clone(),
-            path: Some(shown),
-            uri: None,
-        })
-    };
-    state.transfers.lock().expect("transfers lock").remove(&id);
-    Ok(outcome?)
+    let client = Arc::clone(&state.client);
+    let shown = name.clone();
+    receive_into(
+        app,
+        &state,
+        name,
+        id,
+        folder,
+        within,
+        move |out, report, cancel| async move {
+            client
+                .download_held(&share, file, size, &shown, out, Some(report), Some(cancel))
+                .await
+        },
+    )
+    .await
 }
 
 /// The host's devices, and who of them is online now.
@@ -2812,10 +2798,11 @@ async fn download_to_phone(
     state: State<'_, AppState>,
     remote: String,
     id: String,
+    within: String,
 ) -> Answer<SavedOnPhone> {
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (app, state, remote, id);
+        let _ = (app, state, remote, id, within);
         Err(UiError {
             kind: "error".into(),
             message: "only on Android".into(),
@@ -2829,7 +2816,9 @@ async fn download_to_phone(
         let handle = app.clone();
         let wanted = name.clone();
         let created = tokio::task::spawn_blocking(move || {
-            handle.basalt_android().create_download(&wanted, "")
+            handle
+                .basalt_android()
+                .create_download_in(&wanted, "", &within)
         })
         .await
         .map_err(|e| UiError {
@@ -3288,9 +3277,9 @@ pub fn run() {
         builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             use tauri::Emitter;
             tray::show(app, None);
-            let files = shared_in(&argv);
-            if !files.is_empty() {
-                let _ = app.emit("basalt://share-files", files);
+            let chosen = shared_in(&argv);
+            if !chosen.files.is_empty() || chosen.problem.is_some() {
+                let _ = app.emit("basalt://share-files", chosen);
             }
         }))
     };
@@ -3584,6 +3573,7 @@ pub fn run() {
             share_local,
             withdraw_local,
             local_files,
+            share_folder_root,
             receive_direct,
             share_hold,
             share_hold_local,
@@ -3700,7 +3690,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_program, link_allowed, safe_local_name};
+    use super::{is_program, link_allowed, safe_local_name, within_dir};
 
     #[test]
     fn the_nearby_log_says_when_in_utc() {
@@ -3762,6 +3752,10 @@ mod tests {
             "Sintel (2010).mkv"
         );
         assert_eq!(safe_local_name("notes.txt. "), "notes.txt");
+        // A shared folder's files go under the received folder, never out.
+        let base = std::path::Path::new("received");
+        assert_eq!(within_dir(base, ""), base);
+        assert_eq!(within_dir(base, "Holiday/Day 1"), base.join("Holiday").join("Day 1"));
         // Names Windows keeps for itself can't be made: kept, with a mark.
         assert_eq!(safe_local_name("CON.txt"), "_CON.txt");
         assert_eq!(safe_local_name("com1"), "_com1");

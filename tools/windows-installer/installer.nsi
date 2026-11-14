@@ -712,6 +712,11 @@ Section Install
   WriteRegStr SHCTX "Software\Classes\*\shell\BasaltShare" "Icon" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\",0"
   WriteRegStr SHCTX "Software\Classes\*\shell\BasaltShare" "MultiSelectModel" "Player"
   WriteRegStr SHCTX "Software\Classes\*\shell\BasaltShare\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" --share $\"%1$\""
+  ; And for a folder: everything in it, in its own folders.
+  WriteRegStr SHCTX "Software\Classes\Directory\shell\BasaltShare" "MUIVerb" "Share with Basalt"
+  WriteRegStr SHCTX "Software\Classes\Directory\shell\BasaltShare" "Icon" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\",0"
+  WriteRegStr SHCTX "Software\Classes\Directory\shell\BasaltShare" "MultiSelectModel" "Player"
+  WriteRegStr SHCTX "Software\Classes\Directory\shell\BasaltShare\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" --share $\"%1$\""
   CreateShortCut "$SENDTO\Basalt.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "--share" "$INSTDIR\${MAINBINARYNAME}.exe" 0
   !endif
 
@@ -838,6 +843,7 @@ Section Uninstall
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"
   !if "${MAINBINARYNAME}" == "basalt-client-shell"
   DeleteRegKey SHCTX "Software\Classes\*\shell\BasaltShare"
+  DeleteRegKey SHCTX "Software\Classes\Directory\shell\BasaltShare"
   Delete "$SENDTO\Basalt.lnk"
   !endif
 
