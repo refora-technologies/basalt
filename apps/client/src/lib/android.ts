@@ -157,6 +157,16 @@ export const android = {
   nearbyLeave: () => plugin<void>('nearby_leave'),
   /** Wi-Fi off: turned on, or Android's Wi-Fi panel brought up to do it. */
   nearbyWifiTurnOn: () => plugin<void>('nearby_wifi_turn_on'),
+  // Nearby by Bluetooth: see NearbyBle.kt and lib/nearbyBle.ts.
+  nearbyState: async () => (await plugin<{ state: string }>('nearby_state'))?.state ?? 'unsupported',
+  requestNearby: async () => (await plugin<{ state: string }>('request_nearby'))?.state ?? 'denied',
+  bluetoothTurnOn: () => plugin<void>('bluetooth_turn_on'),
+  bleReady: (info: string, ssid: string, passphrase: string) => plugin<void>('ble_ready', { info, ssid, passphrase }),
+  bleStop: () => plugin<void>('ble_stop'),
+  bleLook: (on: boolean) => plugin<void>('ble_look', { on }),
+  bleSeen: async () =>
+    (await plugin<{ found: { address: string; info: string; rssi: number; open?: boolean }[] }>('ble_seen'))?.found ?? [],
+  bleWake: (address: string, from: string) => plugin<void>('ble_wake', { address, from }),
   /** A share's notification taken away. */
   cancelShare: (tag: string) => plugin<void>('cancel_share', { tag }),
   /** What a notification tap asked the app to open, once. */

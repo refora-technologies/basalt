@@ -43,6 +43,7 @@ struct OpenFdArgs<'a> {
 struct CreateDownloadArgs<'a> {
     name: &'a str,
     mime: &'a str,
+    folder: &'a str,
 }
 
 #[derive(Serialize)]
@@ -149,7 +150,16 @@ impl<R: Runtime> BasaltAndroid<R> {
 
     /// Creates `name` in Downloads/Basalt, hidden until finished.
     pub fn create_download(&self, name: &str, mime: &str) -> Result<NewDownload> {
-        self.call("createDownload", CreateDownloadArgs { name, mime })
+        self.create_download_in(name, mime, "")
+    }
+
+    /// The same, inside `folder` there (a shared folder's own: made safe
+    /// already, its parts joined by `/`).
+    pub fn create_download_in(&self, name: &str, mime: &str, folder: &str) -> Result<NewDownload> {
+        self.call(
+            "createDownload",
+            CreateDownloadArgs { name, mime, folder },
+        )
     }
 
     /// Android's id for this app on this phone: the same after a reinstall,

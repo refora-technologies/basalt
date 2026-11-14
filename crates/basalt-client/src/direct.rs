@@ -78,6 +78,11 @@ const ASK_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(4);
 /// The largest request line a receiver may send.
 const MAX_ASK_BYTES: usize = 1024;
+/// How long a line may stand still, either way, before it is taken as cut
+/// off. A device that walks out of the Wi-Fi's reach says nothing as it goes:
+/// without this the other side waited for ever, "moving" at the same figure,
+/// and neither the taking up again nor Cancel ever got a turn.
+const IDLE: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
 
 struct Shared {
     token: String,
@@ -154,6 +159,18 @@ impl DirectServer {
     /// Where to reach this listener now: this device's addresses on the
     /// networks it is on, which change as it moves.
     pub fn endpoint(&self) -> Endpoint {
+        // Testing only (debug builds): a sender no device can reach, as
+        // behind a firewall that drops what comes in, to see the share go
+        // through the host instead. 192.0.2.1 is kept for documentation:
+        // nothing ever answers there. A security suite that runs its own
+        // firewall leaves Windows' rules unused, so a rule can't stand in.
+        if cfg!(debug_assertions) && std::env::var_os("BASALT_DEV_UNREACHABLE").is_some() {
+            return Endpoint {
+                addresses: vec!["192.0.2.1".into()],
+                port: self.port,
+                key: self.key.clone(),
+            };
+        }
         Endpoint {
             addresses: basalt_net::discovery::local_addresses()
                 .into_iter()
@@ -218,15 +235,36 @@ where
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "no question"))??;
     let ask = serde_json::from_str::<Ask>(line.trim()).ok();
     let from = ask.as_ref().map_or(0, |a| a.from);
+    // Still offered, asked as the bytes go: taken back part-way (Stop on
+    // the sender), the rest isn't sent. While it goes it lasts on, however
+    // long one file takes.
+    let offered = {
+        let shares = Arc::clone(&shares);
+        let offer = ask.as_ref().map(|a| a.offer.clone()).unwrap_or_default();
+        move || match shares.lock().expect("shares lock").get_mut(&offer) {
+            Some(shared) => {
+                shared.until = Instant::now() + SHARE_LASTS;
+                true
+            }
+            None => false,
+        }
+    };
     let source = ask.and_then(|ask| {
-        let shares = shares.lock().expect("shares lock");
-        let shared = shares.get(&ask.offer)?;
+        let mut shares = shares.lock().expect("shares lock");
+        let shared = shares.get_mut(&ask.offer)?;
         // Compared in full every time: the secret is the only thing that
         // stands between a stranger on the Wi-Fi and the file.
         let right = same(shared.token.as_bytes(), ask.token.as_bytes());
-        (right && shared.until > Instant::now())
-            .then(|| shared.sources.get(ask.file).cloned())
-            .flatten()
+        let now = Instant::now();
+        if !right || shared.until <= now {
+            return None;
+        }
+        // Being taken: it lasts from the last time it was asked for, not
+        // from when it was offered. Counted from the offer, several films to
+        // a slow phone ended half an hour in, at the next file ("that isn't
+        // offered"), and one cut off after that could not be taken up again.
+        shared.until = now + SHARE_LASTS;
+        shared.sources.get(ask.file).cloned()
     });
     let Some(source) = source else {
         write.write_all(b"no that isn't offered\n").await?;
@@ -254,7 +292,7 @@ where
         } else {
             write.write_all(format!("ok {length}\n").as_bytes()).await?;
         }
-        tokio::io::copy(&mut reader, &mut write).await?;
+        send(&mut reader, &mut write, &offered).await?;
         return write.shutdown().await;
     }
     let opened = {
@@ -281,8 +319,39 @@ where
     } else {
         write.write_all(format!("ok {length}\n").as_bytes()).await?;
     }
-    tokio::io::copy(&mut file, &mut write).await?;
+    send(&mut file, &mut write, &offered).await?;
     write.shutdown().await
+}
+
+/// A file's bytes down the line, until its end. A receiver that stops
+/// taking them for [`IDLE`] (gone without a word) ends it, rather than
+/// leaving this side holding the file open for good; and so does the share
+/// being taken back (`offered` says no).
+async fn send<R, W>(from: &mut R, to: &mut W, offered: &impl Fn() -> bool) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let stood_still = || std::io::Error::new(std::io::ErrorKind::TimedOut, "the line stood still");
+    let mut buffer = vec![0u8; 256 * 1024];
+    loop {
+        let n = tokio::time::timeout(IDLE, from.read(&mut buffer))
+            .await
+            .map_err(|_| stood_still())??;
+        if n == 0 {
+            return Ok(());
+        }
+        if !offered() {
+            return Err(std::io::Error::other("taken back"));
+        }
+        // In pieces, so the wait is for the line moving at all, not for a
+        // whole buffer on a slow one.
+        for piece in buffer[..n].chunks(32 * 1024) {
+            tokio::time::timeout(IDLE, to.write_all(piece))
+                .await
+                .map_err(|_| stood_still())??;
+        }
+    }
 }
 
 /// Whether two secrets are the same, taking as long whatever they hold.
@@ -292,7 +361,8 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 
 /// Takes file number `file` of `offer` from the sender at `endpoint`, into
 /// `out`. Each of its addresses is tried in turn; the first that answers
-/// with the right key is used. Cut off part-way (either side's Wi-Fi gone
+/// with the right key is used. A file said to be longer than `most` (its
+/// size as offered) is refused. Cut off part-way (either side's Wi-Fi gone
 /// a moment), it is tried again for [`RESUME_FOR`] from where it got to.
 #[allow(clippy::too_many_arguments)]
 pub async fn fetch(
@@ -304,13 +374,14 @@ pub async fn fetch(
     out: std::fs::File,
     progress: Option<ProgressFn>,
     cancel: Option<Cancel>,
+    most: u64,
 ) -> Result<u64> {
     let mut have = 0u64;
     let mut moved_since = Instant::now();
     loop {
         let before = have;
         let tried = fetch_once(
-            endpoint, offer, token, file, name, &out, &progress, &cancel, &mut have,
+            endpoint, offer, token, file, name, &out, &progress, &cancel, &mut have, most,
         )
         .await;
         let error = match tried {
@@ -358,6 +429,7 @@ async fn fetch_once(
     progress: &Option<ProgressFn>,
     cancel: &Option<Cancel>,
     have: &mut u64,
+    most: u64,
 ) -> Result<u64> {
     let mut last = ClientError::Protocol("the device that sent it has no address".into());
     for address in &endpoint.addresses {
@@ -375,13 +447,22 @@ async fn fetch_once(
             progress,
             cancel,
             have,
+            most,
         )
         .await
         {
             Ok(bytes) => return Ok(bytes),
             // Reached, and refused or cut off: another address won't help.
             Err(e @ ClientError::Protocol(_)) => return Err(e),
-            Err(e) => last = e,
+            Err(e) => {
+                // Which address, and why: "couldn't reach each other" alone
+                // says nothing about a Wi-Fi that keeps two phones apart.
+                crate::nearby::note(&format!(
+                    "share {offer}: {address}:{} not reached: {e}",
+                    endpoint.port
+                ));
+                last = e;
+            }
         }
     }
     Err(last)
@@ -399,6 +480,7 @@ async fn fetch_from(
     progress: &Option<ProgressFn>,
     cancel: &Option<Cancel>,
     have: &mut u64,
+    most: u64,
 ) -> Result<u64> {
     let tcp = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(at))
         .await
@@ -418,7 +500,9 @@ async fn fetch_from(
     write.write_all(format!("{ask}\n").as_bytes()).await?;
     let mut read = BufReader::new(read);
     let mut line = String::new();
-    read.read_line(&mut line).await?;
+    tokio::time::timeout(IDLE, read.read_line(&mut line))
+        .await
+        .map_err(|_| ClientError::Config(format!("the device at {at} didn't answer")))??;
     let line = line.trim();
     let (length, from): (u64, u64) = match line.strip_prefix("ok ") {
         Some(said) => {
@@ -433,6 +517,13 @@ async fn fetch_from(
                 (Some("from"), Some(n)) => n.parse().map_err(|_| oddly())?,
                 _ => 0,
             };
+            // More than was offered (and accepted) is refused: a sender
+            // could otherwise fill the disk under a photo's name.
+            if length > most {
+                return Err(ClientError::Protocol(
+                    "the device that sent it sent more than it offered".into(),
+                ));
+            }
             (length, from)
         }
         None => {
@@ -459,7 +550,31 @@ async fn fetch_from(
             return Err(ClientError::Protocol("cancelled".into()));
         }
         let want = buffer.len().min((length - done) as usize);
-        let n = read.read(&mut buffer[..want]).await?;
+        // Waited for a second at a time, so Cancel is heard while nothing
+        // comes; and no longer than IDLE in all, so a sender gone without a
+        // word is taken as cut off (and tried again) instead of waited for.
+        let waiting_since = Instant::now();
+        let n = loop {
+            match tokio::time::timeout(Duration::from_secs(1), read.read(&mut buffer[..want])).await
+            {
+                Ok(read) => {
+                    // The line dropped (the other device stopped, or left):
+                    // said as that, not as the drive's connection.
+                    break read.map_err(|_| {
+                        ClientError::Protocol("the device that sent it stopped part-way".into())
+                    })?;
+                }
+                Err(_) if cancel.as_ref().is_some_and(Cancel::is_cancelled) => {
+                    return Err(ClientError::Protocol("cancelled".into()));
+                }
+                Err(_) if waiting_since.elapsed() >= IDLE => {
+                    return Err(ClientError::Protocol(
+                        "the device that sent it stopped part-way".into(),
+                    ));
+                }
+                Err(_) => {}
+            }
+        };
         if n == 0 {
             return Err(ClientError::Protocol(
                 "the device that sent it stopped part-way".into(),
@@ -531,6 +646,7 @@ mod tests {
             out,
             Some(report),
             None,
+            u64::MAX,
         )
         .await
         .unwrap();
@@ -571,6 +687,7 @@ mod tests {
             &Some(report),
             &None,
             &mut have,
+            u64::MAX,
         )
         .await
         .unwrap();
@@ -584,6 +701,139 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_share_taken_back_part_way_sends_no_more() {
+        // Stop on the sender, the wrong film already on its way: before,
+        // only quitting Basalt stopped it.
+        let body = vec![7u8; 1_000_000];
+        let mut from = std::io::Cursor::new(body);
+        let mut to = Vec::new();
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let offered = || asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2;
+        let ended = send(&mut from, &mut to, &offered).await;
+        assert!(ended.is_err(), "it ends, said as an error");
+        assert_eq!(
+            to.len(),
+            2 * 256 * 1024,
+            "what went before it was taken back, no more"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_share_being_taken_lasts_from_when_it_was_last_asked_for() {
+        // Several films to a slow phone: the third was asked for more than
+        // half an hour after the offer, and got "that isn't offered".
+        let dir = temp("lasts");
+        std::fs::write(dir.join("a.mp4"), b"first").unwrap();
+        std::fs::write(dir.join("b.mp4"), b"second").unwrap();
+        let (server, endpoint) = loopback(dir.clone()).await;
+        let token = server.offer("o5", vec!["a.mp4".into(), "b.mp4".into()]);
+        let out = || std::fs::File::create(dir.join("out")).unwrap();
+        // Nearly at its end when the first file is asked for.
+        let soon = Instant::now() + Duration::from_secs(5);
+        server.shares.lock().unwrap().get_mut("o5").unwrap().until = soon;
+        fetch(
+            &endpoint,
+            "o5",
+            &token,
+            0,
+            "a.mp4",
+            out(),
+            None,
+            None,
+            u64::MAX,
+        )
+        .await
+        .unwrap();
+        let until = server.shares.lock().unwrap()["o5"].until;
+        assert!(
+            until > soon + Duration::from_secs(20 * 60),
+            "asked for: it lasts on from now"
+        );
+        // One nobody asked for in time has ended, as before.
+        server.shares.lock().unwrap().get_mut("o5").unwrap().until = Instant::now();
+        let late = fetch(
+            &endpoint,
+            "o5",
+            &token,
+            1,
+            "b.mp4",
+            out(),
+            None,
+            None,
+            u64::MAX,
+        )
+        .await;
+        assert!(late.is_err(), "ended: {late:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_sender_gone_without_a_word_is_not_waited_for_for_ever() {
+        // A sender that says how long the file is and then nothing more, its
+        // line still up: a phone carried out of the Wi-Fi's reach.
+        let identity = basalt_net::identity::HostIdentity::generate("basalt-device").unwrap();
+        let acceptor = basalt_net::tls::server_config(&identity).unwrap();
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut tls = acceptor.accept(stream).await.unwrap();
+            let mut ask = [0u8; 512];
+            let _ = tls.read(&mut ask).await;
+            tls.write_all(b"ok 1000000\n").await.unwrap();
+            tls.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        let endpoint = Endpoint {
+            addresses: vec!["127.0.0.1".into()],
+            port,
+            key: identity.host_id.clone(),
+        };
+        let dir = temp("silent");
+        let out = std::fs::File::create(dir.join("out")).unwrap();
+        let started = Instant::now();
+        let got = fetch(
+            &endpoint,
+            "o6",
+            "t",
+            0,
+            "film.mp4",
+            out,
+            None,
+            None,
+            u64::MAX,
+        )
+        .await;
+        assert!(
+            matches!(&got, Err(ClientError::Protocol(why)) if why.contains("stopped part-way")),
+            "cut off, said as such: {got:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "and soon, not after the minute it stayed silent"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn more_than_was_offered_is_refused() {
+        // Offered as 5 bytes, and the file is 11 by the time it is taken.
+        let dir = temp("most");
+        std::fs::write(dir.join("photo.jpg"), b"hello world").unwrap();
+        let (server, endpoint) = loopback(dir.clone()).await;
+        let token = server.offer("o7", vec!["photo.jpg".into()]);
+        let out = std::fs::File::create(dir.join("out")).unwrap();
+        let got = fetch(&endpoint, "o7", &token, 0, "photo.jpg", out, None, None, 5).await;
+        assert!(
+            matches!(&got, Err(ClientError::Protocol(why)) if why.contains("more than it offered")),
+            "refused: {got:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn nothing_goes_without_the_secret_or_once_withdrawn() {
         let dir = temp("secret");
         std::fs::write(dir.join("notes.txt"), b"private").unwrap();
@@ -591,15 +841,48 @@ mod tests {
         let token = server.offer("o2", vec!["notes.txt".into()]);
         let out = || std::fs::File::create(dir.join("out")).unwrap();
 
-        let wrong = fetch(&endpoint, "o2", "00", 0, "notes.txt", out(), None, None).await;
+        let wrong = fetch(
+            &endpoint,
+            "o2",
+            "00",
+            0,
+            "notes.txt",
+            out(),
+            None,
+            None,
+            u64::MAX,
+        )
+        .await;
         assert!(
             matches!(wrong, Err(ClientError::Protocol(_))),
             "a wrong secret: {wrong:?}"
         );
-        let other = fetch(&endpoint, "o2", &token, 5, "notes.txt", out(), None, None).await;
+        let other = fetch(
+            &endpoint,
+            "o2",
+            &token,
+            5,
+            "notes.txt",
+            out(),
+            None,
+            None,
+            u64::MAX,
+        )
+        .await;
         assert!(other.is_err(), "a file not offered");
         server.withdraw("o2");
-        let gone = fetch(&endpoint, "o2", &token, 0, "notes.txt", out(), None, None).await;
+        let gone = fetch(
+            &endpoint,
+            "o2",
+            &token,
+            0,
+            "notes.txt",
+            out(),
+            None,
+            None,
+            u64::MAX,
+        )
+        .await;
         assert!(gone.is_err(), "withdrawn");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -613,9 +896,19 @@ mod tests {
         endpoint.key = "0".repeat(64);
         let out = std::fs::File::create(dir.join("out")).unwrap();
         assert!(
-            fetch(&endpoint, "o3", &token, 0, "a.txt", out, None, None)
-                .await
-                .is_err()
+            fetch(
+                &endpoint,
+                "o3",
+                &token,
+                0,
+                "a.txt",
+                out,
+                None,
+                None,
+                u64::MAX
+            )
+            .await
+            .is_err()
         );
         let _ = std::fs::remove_dir_all(dir);
     }

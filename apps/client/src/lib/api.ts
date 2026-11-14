@@ -507,12 +507,17 @@ export interface NearbyDevice extends NearbyMe {
    * joined.
    */
   ssid?: string
+  /**
+   * Found by Bluetooth (not on this Wi-Fi): where Bluetooth reaches it, to
+   * ask it to open the Wi-Fi in `ssid` first.
+   */
+  ble?: string
 }
 
 
 /** What happens on this device while it is ready for nearby shares. */
 export type NearbyReadyEvent =
-  | { kind: 'offer'; ask: string; from: NearbyMe; files: { name: string; size: number }[]; code: boolean }
+  | { kind: 'offer'; ask: string; from: NearbyMe; files: { name: string; size: number; folder?: string }[]; code: boolean }
   | { kind: 'code'; ask: string; code: string }
   | { kind: 'wrongCode'; ask: string; left: number }
   /** Agreed: each file is taken with `nearbyTakeFile`, down the line the offer came up. */
@@ -529,7 +534,7 @@ export interface HeldShare {
   id: string
   to: string
   toName: string
-  files: { name: string; size: number }[]
+  files: { name: string; size: number; folder?: string }[]
   created: number
   keep: boolean
   state: 'waiting' | 'accepted' | 'declined'
@@ -552,6 +557,8 @@ export interface PresenceResponse {
   devices: PresentDevice[]
   /** This device's id in the list. */
   you: string
+  /** The host signs a profile out of its other devices when asked: false before 1.6.4. */
+  forget?: boolean
 }
 
 export interface NowSession {
@@ -776,6 +783,8 @@ export const api = {
 
   /** Which version this is, as the release tags spell it. */
   appVersion: (): Promise<string> => call<string>('app_version'),
+  /** Whether closing the window leaves Basalt in a tray here (not on a Linux desktop with none). */
+  trayShown: (): Promise<boolean> => call<boolean>('tray_shown'),
   /** The release notes of one version as published on GitHub, or null when it has none. */
   releaseNotes: (version: string): Promise<string | null> => call<string | null>('release_notes', { version }),
   /** What kind of device this is, for its picture in the host's device lists. */
@@ -825,6 +834,10 @@ export const api = {
   claimProfile: (id: string, code: string, pin: string, remember: boolean) =>
     call<ProfileView>('claim_profile', { id, code, pin, remember }),
   signOutProfile: () => call<void>('sign_out_profile'),
+  /** The nearby log (a computer's), shown selected in its folder. */
+  nearbyLogShow: () => call<void>('nearby_log_show'),
+  /** Signs this profile out of another of its devices. Whether it was signed in there. */
+  forgetProfileDevice: (device: string) => call<boolean>('forget_profile_device', { device }),
   continueAsDevice: (always: boolean) => call<void>('continue_as_device', { always }),
   /** Profiles this device is signed in to on its other drives. */
   profilesElsewhere: () => call<ProfilePass[]>('profiles_elsewhere'),
@@ -878,8 +891,8 @@ export const api = {
    * Takes a file shared with this device from the drive into its received
    * folder (`folder`, or the usual one), never over a file already there.
    */
-  receiveFile: (remote: string, id: string, folder?: string) =>
-    call<{ shownAs: string; path?: string; uri?: string }>('receive_file', { remote, id, folder: folder ?? null }),
+  receiveFile: (remote: string, id: string, folder?: string, within?: string) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('receive_file', { remote, id, folder: folder ?? null, within: within ?? null }),
   /**
    * A notification from the system, with up to two buttons (label, action).
    * What is pressed comes back by `onNotification`, with `tag`. On a computer;
@@ -894,7 +907,12 @@ export const api = {
     call<{ endpoint: { addresses: string[]; port: number; key: string }; token: string }>('share_local', { offer, sources }),
   withdrawLocal: (offer: string) => call<void>('withdraw_local', { offer }),
   /** Files picked on this computer, with their sizes. */
-  localFiles: (paths: string[]) => call<{ source: string; name: string; size: number }[]>('local_files', { paths }),
+  localFiles: (paths: string[]) => call<ChosenFiles>('local_files', { paths }),
+  /**
+   * The name a shared folder takes in the received folder (`folder`, or the
+   * usual one): its own, or "Holiday (1)" when one of that name is there.
+   */
+  shareFolderRoot: (top: string, folder?: string) => call<string>('share_folder_root', { top, folder: folder ?? null }),
   /** Takes one file of an offer straight from the device that offers it. */
   receiveDirect: (
     endpoint: { addresses: string[]; port: number; key: string },
@@ -904,7 +922,22 @@ export const api = {
     name: string,
     id: string,
     folder?: string,
-  ) => call<{ shownAs: string; path?: string; uri?: string }>('receive_direct', { endpoint, offer, token, file, name, id, folder: folder ?? null }),
+    /** Its size as offered: a sender that sends more is refused. */
+    size?: number,
+    /** For a shared folder: its own folder, under the received folder. */
+    within?: string,
+  ) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('receive_direct', {
+      endpoint,
+      offer,
+      token,
+      file,
+      name,
+      id,
+      folder: folder ?? null,
+      size: size ?? null,
+      within: within ?? null,
+    }),
   /** This device's name and short id, as devices nearby see them. */
   nearbyWhoami: () => call<NearbyMe>('nearby_whoami'),
   /** Ready to receive from devices nearby, or not; `onNearbyReady` says what comes. */
@@ -923,34 +956,41 @@ export const api = {
   nearbyWifiHost: (on: boolean) => call<void>('nearby_wifi_host', { on }),
   /** The Basalt Wi-Fis around. */
   nearbyWifiScan: () => call<{ ssid: string; level: number }[]>('nearby_wifi_scan'),
+  // Nearby by Bluetooth, on a computer: see nearby_ble.rs and lib/nearbyBle.ts.
+  nearbyReach: () => call<string>('nearby_reach'),
+  bluetoothTurnOn: () => call<string>('bluetooth_turn_on'),
+  bleReady: (on: boolean, info: string) => call<void>('ble_ready', { on, info }),
+  bleLook: (on: boolean) => call<void>('ble_look', { on }),
+  bleSeen: () => call<{ address: string; info: string; rssi: number; open?: boolean }[]>('ble_seen'),
+  bleWake: (address: string, from: string) => call<void>('ble_wake', { address, from }),
   /** Joins a Basalt Wi-Fi found around. */
   nearbyWifiJoin: (ssid: string) => call<void>('nearby_wifi_join', { ssid }),
   /** Leaves it: back to the Wi-Fi before. */
   nearbyWifiLeave: () => call<void>('nearby_wifi_leave'),
   /** How far taking the files from a device nearby has come, for its sender. */
-  nearbyTakeFile: (ask: string, file: number, name: string, id: string, folder?: string) =>
-    call<{ shownAs: string; path?: string; uri?: string }>('nearby_take_file', { ask, file, name, id, folder: folder ?? null }),
+  nearbyTakeFile: (ask: string, file: number, name: string, id: string, folder?: string, within?: string) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('nearby_take_file', { ask, file, name, id, folder: folder ?? null, within: within ?? null }),
   /** How taking the files from a device nearby went. */
   nearbyFinish: (ask: string, answer: 'done' | 'failed') => call<void>('nearby_finish', { ask, answer }),
   /** The devices nearby ready to receive, on this Wi-Fi. */
   nearbyFind: () => call<NearbyDevice[]>('nearby_find'),
   /** Files Basalt was opened to share ("Share with Basalt" in Explorer), once. */
-  sharedAtStart: () => call<{ source: string; name: string; size: number }[]>('shared_at_start'),
+  sharedAtStart: () => call<ChosenFiles>('shared_at_start'),
   /** A step of sharing nearby, into the device's own log (Android's logcat). */
   nearbyNote: (line: string) => call<void>('nearby_note', { line }),
   /** Offers files on this device to one nearby, and waits for the answer there. */
-  nearbyOffer: (device: NearbyDevice, offer: string, files: { source: string; name: string; size: number }[], alwaysCode: boolean) =>
+  nearbyOffer: (device: NearbyDevice, offer: string, files: LocalShareFile[], alwaysCode: boolean) =>
     call<NearbySaid>('nearby_offer', { device, offer, files, alwaysCode }),
   /** The code shown on the device nearby, typed here. */
   nearbyCode: (offer: string, code: string) => call<NearbyCodeSaid>('nearby_code', { offer, code }),
   /** Stops an offer to a device nearby. */
   nearbyCancel: (offer: string) => call<void>('nearby_cancel', { offer }),
   /** Files on this device, uploaded to the host and kept for `to`; `onShareSending` says how far. */
-  shareHoldLocal: (id: string, to: string, keep: boolean, files: { source: string; name: string; size: number }[]) =>
+  shareHoldLocal: (id: string, to: string, keep: boolean, files: LocalShareFile[]) =>
     call<HeldShare>('share_hold_local', { id, to, keep, files }),
-  /** Keeps files on the drive on the host, locked, for a device that's away. */
-  shareHold: (id: string, to: string, keep: boolean, paths: string[]) =>
-    call<HeldShare>('share_hold', { id, to, keep, paths }),
+  /** Keeps files on the drive on the host, locked, for a device that's away; `folders`, each one's in a shared folder. */
+  shareHold: (id: string, to: string, keep: boolean, paths: string[], folders?: string[]) =>
+    call<HeldShare>('share_hold', { id, to, keep, paths, folders: folders ?? null }),
   /** This device's answer to a share the host kept for it. */
   shareAnswer: (id: string, accepted: boolean) => call<void>('share_answer', { id, accepted }),
   /** What this profile has kept on the host, and the space kept files take. */
@@ -961,8 +1001,8 @@ export const api = {
   shareManage: (action: 'delete' | 'move' | 'again', id: string, folder = '', again?: { to: string; id: string; keep: boolean }) =>
     call<void>('share_manage', { action, id, folder, to: again?.to ?? null, again: again?.id ?? null, keep: again?.keep ?? null }),
   /** Takes one file of a share the host kept for this device. */
-  receiveHeld: (share: string, file: number, name: string, size: number, id: string, folder?: string) =>
-    call<{ shownAs: string; path?: string; uri?: string }>('receive_held', { share, file, name, size, id, folder: folder ?? null }),
+  receiveHeld: (share: string, file: number, name: string, size: number, id: string, folder?: string, within?: string) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('receive_held', { share, file, name, size, id, folder: folder ?? null, within: within ?? null }),
   /** Where shared files land unless another folder is chosen. */
   defaultReceivedFolder: () => call<string>('default_received_folder'),
   /** The host's devices and who of them is online. Throws on a host before 1.6.4. */
@@ -1182,10 +1222,25 @@ export async function onNearbySent(handler: (said: { offer: string; answer: stri
 }
 
 /** Files to share, from Explorer while Basalt runs ("Share with Basalt", Send to). */
-export async function onShareFiles(handler: (files: { source: string; name: string; size: number }[]) => void): Promise<() => void> {
+export async function onShareFiles(handler: (chosen: ChosenFiles) => void): Promise<() => void> {
   if (!inTauri()) return () => {}
   const { listen } = await import('@tauri-apps/api/event')
-  return listen<{ source: string; name: string; size: number }[]>('basalt://share-files', (e) => handler(e.payload))
+  return listen<ChosenFiles>('basalt://share-files', (e) => handler(e.payload))
+}
+
+/** A file on this device to share: where it is here, its name and size, and its folder inside a folder chosen. */
+export interface LocalShareFile {
+  source: string
+  name: string
+  size: number
+  /** Inside a shared folder: its own folder there ("Holiday/Day 1"). */
+  folder?: string
+}
+
+/** Files chosen on this device (a folder's included), or why they can't go. */
+export interface ChosenFiles {
+  files: LocalShareFile[]
+  problem?: string
 }
 
 /** How far files on this device have gone up to the host, for a share kept there. */
@@ -1506,6 +1561,8 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
   switch (cmd) {
     case 'app_version':
       return MOCK_VERSION as T
+    case 'tray_shown':
+      return true as T
     case 'release_notes':
       await new Promise((resolve) => setTimeout(resolve, 300))
       return MOCK_RELEASE.notes as T
@@ -1716,6 +1773,13 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       mockIdentity = { rules: mockRules, profile, choose: false, ended: false, lastProfile: profile.id }
       return { profile, waiting: false } as T
     }
+    case 'nearby_log_show':
+      return undefined as T
+    case 'forget_profile_device': {
+      const { device } = args as { device: string }
+      mockForgotten.add(device)
+      return true as T
+    }
     case 'sign_out_profile':
       mockIdentity = { rules: mockRules, profile: null, choose: true, ended: false, lastProfile: mockIdentity.lastProfile }
       return undefined as T
@@ -1807,6 +1871,22 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
       return 'bslt-0' as T
     case 'nearby_wifi_scan':
       return [] as T
+    case 'nearby_reach':
+      return (previewFlag('bluetoothoff') ? 'bluetooth' : 'ready') as T
+    case 'bluetooth_turn_on':
+      return 'ready' as T
+    case 'ble_ready':
+    case 'ble_look':
+    case 'ble_wake':
+      return undefined as T
+    case 'ble_seen':
+      return [
+        {
+          address: 'mock-ble-1',
+          info: JSON.stringify({ v: 1, id: 'R4TP', name: 'Sam’s phone', form: 'phone', ssid: 'DIRECT-bs-R4TP Sam_s phone', code: false }),
+          rssi: -58,
+        },
+      ] as T
     case 'nearby_wifi_host':
     case 'nearby_wifi_join':
     case 'nearby_wifi_leave':
@@ -1822,15 +1902,18 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     // same profile, and Sam's phone.
     case 'presence': {
       const now = Date.now()
+      const all: PresentDevice[] = [
+        { device: 'this-laptop', name: 'Maya’s laptop', form: 'computer', profile: 'maya', profileName: 'Maya', profileColor: 2, online: true, lastSeen: now },
+        { device: 'maya-phone', name: 'Pixel 8', form: 'phone', profile: 'maya', profileName: 'Maya', profileColor: 2, online: true, lastSeen: now },
+        { device: 'maya-old-phone', name: 'Galaxy S9', form: 'phone', profile: 'maya', profileName: 'Maya', profileColor: 2, online: false, lastSeen: now - 40 * 86400_000 },
+        { device: 'sam-phone', name: 'Sam’s phone', form: 'phone', profile: 'sam', profileName: 'Sam', profileColor: 5, online: true, lastSeen: now },
+        { device: 'maya-tablet', name: 'Galaxy Tab', form: 'tablet', online: false, lastSeen: now - 3 * 3600_000 },
+      ]
       return {
         now,
         you: 'this-laptop',
-        devices: [
-          { device: 'this-laptop', name: 'Maya’s laptop', form: 'computer', profile: 'maya', profileName: 'Maya', profileColor: 2, online: true, lastSeen: now },
-          { device: 'maya-phone', name: 'Pixel 8', form: 'phone', profile: 'maya', profileName: 'Maya', profileColor: 2, online: true, lastSeen: now },
-          { device: 'sam-phone', name: 'Sam’s phone', form: 'phone', profile: 'sam', profileName: 'Sam', profileColor: 5, online: true, lastSeen: now },
-          { device: 'maya-tablet', name: 'Galaxy Tab', form: 'tablet', online: false, lastSeen: now - 3 * 3600_000 },
-        ],
+        forget: true,
+        devices: all.map((d) => (mockForgotten.has(d.device) ? { ...d, profile: undefined, profileName: undefined, profileColor: undefined } : d)),
       } as T
     }
     case 'stay_running':
@@ -1851,7 +1934,9 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     case 'share_local':
       return { endpoint: { addresses: ['127.0.0.1'], port: 1, key: '' }, token: '' } as T
     case 'local_files':
-      return [] as T
+      return { files: [] } as T
+    case 'share_folder_root':
+      return String(args?.top ?? 'Shared') as T
     case 'receive_direct':
       return { shownAs: 'Downloads\Basalt\file' } as T
     case 'receive_file':
@@ -1896,6 +1981,8 @@ const mockProfiles: ProfileView[] = [
     : []),
 ]
 const mockPins = showcase.pins()
+/** Devices signed out of their profile in the preview (Your devices, Remove). */
+const mockForgotten = new Set<string>()
 /** The browser preview's playlists and listening, as a host would keep them. */
 const mockMusicMine: MusicMine = {
   playlists: [

@@ -55,6 +55,9 @@ import { NoDrive } from '@/components/NoDrive'
 import { PropertiesDetails } from '@/components/PropertiesPanel'
 import { About } from '@/components/About'
 import { WhatsNew } from '@/components/WhatsNew'
+import { FeatureTour } from '@/components/FeatureTour'
+import { TourShapes } from '@/components/TourArt'
+import { holdRunning } from '@/lib/stayRunning'
 import type { NavKey } from '@/components/Sidebar'
 import type { Entry } from '@/components/FileList'
 import {
@@ -353,10 +356,10 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
   useEffect(() => {
     if (!ready) return undefined
     void android.keepAlive('ready', 'Basalt', 'Ready to receive')
-    void api.stayRunning(true).catch(() => {})
+    holdRunning('ready', true)
     return () => {
       void android.letGo('ready')
-      void api.stayRunning(false).catch(() => {})
+      holdRunning('ready', false)
     }
   }, [ready])
   useEffect(() => {
@@ -509,11 +512,10 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
             onSelectAll={() => setSelected(new Set(entries.map((e) => e.id)))}
             onDownload={() => void model.downloadMany(chosen)}
             onShare={
-              sharingHere && chosen.some((e) => e.kind === 'file')
+              sharingHere && chosen.length > 0
                 ? () => {
-                    model.setSharing(
-                      chosen.filter((e) => e.kind === 'file').map((e) => ({ name: e.name, size: e.size, path: e.id })),
-                    )
+                    // A folder goes as everything in it.
+                    void model.shareEntries(chosen)
                     setSelected(new Set())
                   }
                 : undefined
@@ -695,6 +697,8 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
       </div>
 
       <WhatsNew />
+      <TourShapes />
+      <FeatureTour nearby={model.nearby} />
 
       <Rise
         show={!!notice}
@@ -1822,7 +1826,11 @@ function MoreScreen({
     <div className="h-full overflow-y-auto px-4 pb-10">
       <Sheet open={devicesOpen} onClose={() => setDevicesOpen(false)} title="Your devices">
         <div className="px-4 pb-6">
-          <YourDevices devices={mine} you={model.presence.you} />
+          <YourDevices
+            devices={mine}
+            you={model.presence.you}
+            profileName={model.presence.forget ? mine.find((d) => d.device === model.presence.you)?.profileName : undefined}
+          />
         </div>
       </Sheet>
       <div className="mx-auto max-w-[560px] space-y-3 pt-1">

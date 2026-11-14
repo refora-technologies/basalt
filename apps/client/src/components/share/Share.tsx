@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ExternalLink,
   FileText,
+  Folder,
   FolderOpen,
   Share2,
   Upload,
@@ -24,15 +25,19 @@ import {
 import { api, onShareSending, type NearbyDevice, type PresentDevice } from '@/lib/api'
 import { NearbyChooser, NearbyList } from './Nearby'
 import { HandoffMark, markForm } from './WaitingMarks'
+import { Tip } from './Tip'
 import type { Nearby } from '@/lib/useNearby'
 import type { Presence } from '@/lib/usePresence'
 import { seenLine } from '@/lib/usePresence'
 import type { Inbox } from '@/lib/useInbox'
 import {
   calledOf,
+  canTakeBack,
+  whatIsSent,
   isProgram,
   percentOf,
   progressLine,
+  steadyTargets,
   targetsOf,
   titleOf,
   totalOf,
@@ -41,6 +46,7 @@ import {
   type ShareFile,
   type ShareItem,
 } from '@/lib/share'
+import { sharedFolder } from '@/lib/shareFolders'
 import { cn, formatBytes } from '@/lib/utils'
 import { android } from '@/lib/android'
 import { isAndroid } from '@/lib/platform'
@@ -55,6 +61,22 @@ import { profileColor } from '@/lib/useIdentity'
 // ---------------------------------------------------------------------------
 // Choosing where it goes
 // ---------------------------------------------------------------------------
+
+/**
+ * Which share a window is for: each new list of files a new one, so a share
+ * opened while the last one's window still says "Arrived" starts afresh
+ * rather than showing the last one's end under the new file's name.
+ */
+const shareKeys = new WeakMap<ShareFile[], number>()
+let lastShareKey = 0
+export function shareKey(files: ShareFile[]): number {
+  let key = shareKeys.get(files)
+  if (key === undefined) {
+    key = ++lastShareKey
+    shareKeys.set(files, key)
+  }
+  return key
+}
 
 /**
  * The Share sheet's body: this person's devices, then the home by person,
@@ -78,8 +100,21 @@ export function ShareChooser({
   /** In a phone's sheet: the button stays at the bottom, over the list, never scrolled away. */
   sheet?: boolean
 }): React.JSX.Element {
-  const targets = useMemo(() => targetsOf(presence.devices, presence.you), [presence])
-  const [chosen, setChosen] = useState<PresentDevice | null>(null)
+  // Rows hold still while the sheet is open (see steadyTargets): a tap goes to
+  // the device under the finger, whatever "who is online" said meanwhile.
+  const steady = useRef<ReturnType<typeof targetsOf> | null>(null)
+  const targets = useMemo(() => {
+    const next = steadyTargets(steady.current, targetsOf(presence.devices, presence.you))
+    if (next.mine.length + next.home.length + next.loose.length > 0) steady.current = next
+    return next
+  }, [presence])
+  const [picked, setChosen] = useState<PresentDevice | null>(null)
+  // The device chosen, as it is now: its row may have gone on or off line since.
+  const chosen = useMemo(() => {
+    if (!picked) return null
+    const all = [...targets.mine, ...targets.home.flatMap((g) => g.devices), ...targets.loose]
+    return all.find((d) => d.device === picked.device) ?? picked
+  }, [picked, targets])
   const [busy, setBusy] = useState(false)
   // Pressed once is sent once: a second press while the first is on its
   // way does nothing (it offered the same file five times to the other side).
@@ -183,7 +218,13 @@ export function ShareChooser({
       </div>
 
       {sent ? (
-        <ShareStatus item={sentItem} to={sent.to} progress={sentItem ? inbox.progressOf(sentItem) : null} onDone={() => onDone('')} />
+        <ShareStatus
+          item={sentItem}
+          to={sent.to}
+          progress={sentItem ? inbox.progressOf(sentItem) : null}
+          onDone={() => onDone('')}
+          onCancel={sentItem && canTakeBack(sentItem) ? () => inbox.takeBack(sentItem) : undefined}
+        />
       ) : nearbyPick && nearby ? (
         <div className="flex min-h-0 flex-1 flex-col pb-1 pt-2">
           <NearbyChooser nearby={nearby} files={files} phone={sheet} initial={nearbyPick} onDone={() => onDone('')} />
@@ -333,12 +374,15 @@ function ShareRow({
   who,
   progress,
   onAnswer,
+  onStop,
   onForget,
 }: {
   item: ShareItem
   who: string
   progress: Progress | null
   onAnswer: () => void
+  /** One sent from here that can still be stopped: takes it back, or stops it part-way. */
+  onStop?: () => void
   onForget: () => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
@@ -365,7 +409,7 @@ function ShareRow({
     <div className="group px-5 py-2.5">
       <div className="flex items-center gap-3">
         <span className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/[0.06] text-textDim">
-          <FileIcon name={item.files[0]?.name ?? ''} size={17} />
+          <ShareIcon files={item.files} size={17} />
           <span
             className={cn(
               'surface-ring absolute -bottom-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full',
@@ -388,6 +432,11 @@ function ShareRow({
         {item.direction === 'in' && item.state === 'waiting' && item.offer && (
           <button onClick={onAnswer} className="rounded-full bg-white px-3.5 py-1.5 text-[12.5px] font-semibold text-black">
             Answer
+          </button>
+        )}
+        {onStop && !finished && (
+          <button onClick={onStop} className="rounded-full border border-white/[0.14] px-3.5 py-1.5 text-[12.5px] text-text hover:bg-white/[0.06]">
+            {item.state === 'moving' ? 'Stop' : 'Take back'}
           </button>
         )}
         {finished && (
@@ -423,7 +472,7 @@ function ShareRow({
         <div className="ml-[52px] mt-1.5">
           <div className="flex flex-wrap gap-2">
             {!isAndroid() && saved[0]?.path && (
-              <ActionButton icon={FolderOpen} onClick={() => tried(api.receivedShow(saved[0]!.path!))}>
+              <ActionButton icon={FolderOpen} onClick={() => tried(api.receivedShow(item.folderPath ?? saved[0]!.path!))}>
                 Show in folder
               </ActionButton>
             )}
@@ -528,7 +577,7 @@ export function ShareStatus({
   to: string
   progress: Progress | null
   onDone: () => void
-  /** While it waits for an answer: take it back. */
+  /** While it waits for an answer, or is on its way: take it back, or stop it. */
   onCancel?: () => void
 }): React.JSX.Element {
   const state = item?.state ?? 'waiting'
@@ -597,9 +646,9 @@ export function ShareStatus({
         </div>
       )}
       <div className="mt-5 flex gap-2.5">
-        {state === 'waiting' && onCancel && (
+        {(state === 'waiting' || state === 'moving') && onCancel && (
           <button onClick={onCancel} className="flex-1 rounded-full border border-white/[0.12] py-2.5 text-[13.5px] text-text">
-            Take it back
+            {state === 'moving' ? 'Stop sending' : 'Take it back'}
           </button>
         )}
         <button
@@ -682,6 +731,12 @@ export function deviceIcon(form: PresentDevice['form']): typeof Laptop {
   }
 }
 
+/** A share's mark: a folder for a shared folder, else its first file's kind. */
+export function ShareIcon({ files, size = 18 }: { files: ShareFile[]; size?: number }): React.JSX.Element {
+  if (sharedFolder(files)) return <Folder size={size} />
+  return <FileIcon name={files[0]?.name ?? ''} size={size} />
+}
+
 function FileIcon({ name, size = 18 }: { name: string; size?: number }): React.JSX.Element {
   if (/\.(mkv|mp4|mov|avi|webm|m4v)$/i.test(name)) return <Film size={size} />
   if (/\.(mp3|flac|m4a|wav|ogg|opus|aac)$/i.test(name)) return <Music size={size} />
@@ -728,14 +783,14 @@ export function ReceivePrompt({
         </span>
         <span className="min-w-0">
           <span className={cn('block font-semibold text-text', compact ? 'text-[13.5px]' : 'text-[15px]')}>
-            {from} wants to send you {item.files.length === 1 ? 'a file' : `${item.files.length} files`}
+            {from} wants to send you {whatIsSent(item.files)}
           </span>
           <span className="block text-[12px] text-textFaint">From {item.peer.name}</span>
         </span>
       </div>
       <div className="mt-3.5 flex items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] p-3">
         <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-textDim">
-          <FileIcon name={item.files[0]?.name ?? ''} />
+          <ShareIcon files={item.files} />
         </span>
         <span className="min-w-0">
           <span className="block truncate text-[14px] text-text">{titleOf(item.files)}</span>
@@ -747,6 +802,16 @@ export function ReceivePrompt({
           {programs.length === item.files.length ? 'This is a program.' : 'There are programs among these.'} Basalt never opens
           one by itself; only open it if you trust where it came from.
         </p>
+      )}
+      {others.length > 0 && (
+        <Tip
+          id="accept-elsewhere"
+          art={others[0]!.form === 'computer' ? 'elsewhere' : 'elsewherePhone'}
+          title={`Take it on your ${formName(others[0]!.form)} instead`}
+          line="Accept on whichever device is in front of you."
+          compact={compact}
+          className={compact ? 'mt-3' : 'mt-3.5'}
+        />
       )}
       <div className={cn('mt-4 flex gap-2.5', compact ? 'flex-row flex-wrap' : 'flex-col')}>
         <button
@@ -805,6 +870,11 @@ export function ReceivePrompt({
   )
 }
 
+/** A device's kind as said in a line: "your computer". */
+function formName(form: PresentDevice['form']): string {
+  return form === 'computer' ? 'computer' : form === 'tablet' ? 'tablet' : form === 'phone' ? 'phone' : 'other device'
+}
+
 // ---------------------------------------------------------------------------
 // The Inbox's lists
 // ---------------------------------------------------------------------------
@@ -847,6 +917,15 @@ export function InboxList({
       who={fromNearby.has(item) ? item.peer.name : calledOf(item.peer, myProfile)}
       progress={fromNearby.has(item) ? (nearby?.progressOf(item) ?? null) : inbox.progressOf(item)}
       onAnswer={() => onAnswer(item)}
+      onStop={
+        item.direction !== 'out' || (item.state !== 'waiting' && item.state !== 'moving')
+          ? undefined
+          : fromNearby.has(item)
+            ? () => nearby?.cancel(item.id)
+            : canTakeBack(item)
+              ? () => inbox.takeBack(item)
+              : undefined
+      }
       onForget={() => (fromNearby.has(item) ? nearby?.forget(item) : inbox.forget(item))}
     />
   )

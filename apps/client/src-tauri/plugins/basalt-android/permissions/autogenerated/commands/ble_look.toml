@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-ble-look"
+description = "Enables the ble_look command without any pre-configured scope."
+commands.allow = ["ble_look"]
+
+[[permission]]
+identifier = "deny-ble-look"
+description = "Denies the ble_look command without any pre-configured scope."
+commands.deny = ["ble_look"]

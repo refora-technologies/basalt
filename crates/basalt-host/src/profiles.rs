@@ -668,6 +668,15 @@ impl ProfileBook {
         self.profiles.len() != before
     }
 
+    /// Signs one profile out of one device (lost, sold or lent): coming
+    /// back there asks for the PIN. The device's other sign-ins stay.
+    pub fn sign_out_device(&mut self, profile_id: &str, device_key: &str) -> bool {
+        let before = self.tokens.len();
+        self.tokens
+            .retain(|t| !(t.profile_id == profile_id && t.device_key == device_key));
+        self.tokens.len() != before
+    }
+
     /// Signs a device out of every profile: it was unpaired.
     pub fn forget_device(&mut self, device_key: &str) -> bool {
         let before = self.tokens.len();
@@ -905,6 +914,24 @@ mod tests {
         assert!(b.remove(&p.id));
         assert!(b.resolve(&token, "a", 1).is_none());
         assert!(b.profiles().is_empty());
+    }
+
+    #[test]
+    fn a_profile_signed_out_of_one_device_keeps_the_others_and_asks_the_pin_there() {
+        let mut b = book();
+        let (p, on_a) = b.create("Maya", "4821", 0, "a", true, 0).unwrap();
+        let (_, on_b) = b.sign_in(&p.id, "4821", None, "b", true, 0).unwrap();
+        let (sam, sam_on_a) = b.create("Sam", "1357", 1, "a", true, 0).unwrap();
+        assert!(b.sign_out_device(&p.id, "a"));
+        assert!(b.resolve(&on_a, "a", 1).is_none());
+        assert!(b.resolve(&on_b, "b", 1).is_some());
+        // Sam on the same device stays signed in.
+        assert_eq!(b.resolve(&sam_on_a, "a", 1).map(|s| s.id), Some(sam.id));
+        // Back on it only with the PIN.
+        assert!(b.sign_in(&p.id, "0000", None, "a", true, 2).is_err());
+        assert!(b.sign_in(&p.id, "4821", None, "a", true, 3).is_ok());
+        // Nothing left to sign out: said so.
+        assert!(!b.sign_out_device(&p.id, "c"));
     }
 
     #[test]

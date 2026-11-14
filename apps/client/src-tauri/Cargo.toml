@@ -59,13 +59,21 @@ webkit2gtk = { version = "2.0", features = ["v2_16"] }
 # the tray. Tauri's own notification plugin can't tell which was pressed.
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.8"
-# A nearby device's own Wi-Fi: hosting it (Wi-Fi Direct) and looking for one (WLAN).
+# A nearby device's own Wi-Fi: hosting it (Wi-Fi Direct) and looking for one (WLAN);
+# finding devices nearby by Bluetooth LE.
 windows = { version = "0.61", features = [
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_Advertisement",
+    "Devices_Bluetooth_GenericAttributeProfile",
     "Devices_Radios",
     "Devices_WiFiDirect",
+    "Storage_Streams",
     "Foundation_Collections",
     "Security_Credentials",
     "Foundation",
     "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_NetworkManagement_WiFi",
+    "Win32_Networking_WinSock",
 ] }

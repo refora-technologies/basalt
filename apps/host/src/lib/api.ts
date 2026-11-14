@@ -136,7 +136,11 @@ export interface ProfileRules {
 }
 
 export interface ProfileDevice {
+  /** The device's key: what removing it from the profile names. */
+  device: string
   name: string
+  /** "computer", "phone", "tablet" or "tv", when the device said. */
+  form?: string | null
   /** Stays signed in, rather than until the app closes. */
   remembered: boolean
   lastUsed: number
@@ -439,6 +443,9 @@ export const api = {
   /** Checked with fanart.tv first: refused with why when it does not take the key. */
   setFanartKey: (key: string): Promise<HostStatus> => call('set_fanart_key', { key }),
   resetProfilePin: (id: string): Promise<HostStatus> => call('reset_profile_pin', { id }),
+  /** Signs a profile out of one device; the PIN is asked there to come back. */
+  signOutProfileDevice: (id: string, device: string): Promise<HostStatus> =>
+    call('sign_out_profile_device', { id, device }),
   /** `shares`: what becomes of its files kept for someone away; moved onto the drive unless "delete". */
   removeProfile: (id: string, shares?: 'move' | 'delete'): Promise<HostStatus> =>
     call('remove_profile', { id, shares: shares ?? null }),
@@ -502,7 +509,11 @@ const sample: {
     requirePin: true,
     profileRules: { requireProfile: false, ownerAddsProfiles: false, claimCode: true },
     startWithWindows: false,
-    vault: null,
+    // `?shared`: a host that already shares a drive as the window opens, as
+    // after an update, rather than one being set up.
+    vault: previewFlag('shared')
+      ? { path: 'E:/', name: 'Media Drive', free: 1200 * GB, total: 3600 * GB, available: true }
+      : null,
     addresses: ['192.168.1.20'],
     deviceCount: 3,
     conversion: {
@@ -553,8 +564,9 @@ const sample: {
         createdAt: Math.floor(Date.now() / 1000) - 86400 * 30,
         lastUsed: Math.floor(Date.now() / 1000) - 120,
         devices: [
-          { name: "Maya's laptop", remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 120 },
-          { name: "Maya's phone", remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 5400 },
+          { device: 'k-laptop', name: "Maya's laptop", form: 'computer', remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 120 },
+          { device: 'k-phone', name: "Maya's phone", form: 'phone', remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 5400 },
+          { device: 'k-old', name: 'Galaxy S9', form: 'phone', remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 86400 * 40 },
         ],
         home: null,
       },
@@ -565,7 +577,7 @@ const sample: {
         hasPin: true,
         createdAt: Math.floor(Date.now() / 1000) - 86400 * 12,
         lastUsed: Math.floor(Date.now() / 1000) - 86400,
-        devices: [{ name: "Sam's tablet", remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 86400 }],
+        devices: [{ device: 'k-tablet', name: "Sam's tablet", form: 'tablet', remembered: true, lastUsed: Math.floor(Date.now() / 1000) - 86400 }],
         home: null,
       },
       {
@@ -907,6 +919,11 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
           ? sample.status.library.films + sample.status.library.series
           : 0
         return sample.status
+      case 'sign_out_profile_device':
+        sample.status.profiles = sample.status.profiles.map((p) =>
+          p.id === args?.id ? { ...p, devices: p.devices.filter((d) => d.device !== args?.device) } : p,
+        )
+        return sample.status
       case 'reset_profile_pin':
         sample.status.profiles = sample.status.profiles.map((p) =>
           p.id === args?.id ? { ...p, hasPin: false, claimCode: mockClaimCode(), devices: [] } : p,
@@ -1010,7 +1027,7 @@ function mock<T>(command: string, args?: Record<string, unknown>): Promise<T> {
           hasPin: false,
           createdAt: Math.floor(Date.now() / 1000),
           lastUsed: Math.floor(Date.now() / 1000),
-          devices: [{ name: 'Nina’s phone', remembered: true, lastUsed: Math.floor(Date.now() / 1000) }],
+          devices: [{ device: 'k-nina', name: 'Nina’s phone', form: 'phone', remembered: true, lastUsed: Math.floor(Date.now() / 1000) }],
           home: 'Living Room Drive',
         })
         return undefined

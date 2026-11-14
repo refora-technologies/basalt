@@ -1117,6 +1117,20 @@ impl Session {
         .map_err(Into::into)
     }
 
+    /// Signs this device's profile out of another device. Whether it was
+    /// signed in there.
+    pub async fn profile_forget_device(&mut self, device: &str) -> Result<bool> {
+        call_json(
+            &mut self.stream,
+            Op::ProfileForgetDevice,
+            &basalt_proto::msg::ProfileForgetDeviceRequest {
+                device: device.to_string(),
+            },
+        )
+        .await
+        .map_err(Into::into)
+    }
+
     pub async fn profile_sign_out(&mut self, token: &str) -> Result<()> {
         write_request(
             &mut self.stream,

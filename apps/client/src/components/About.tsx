@@ -11,6 +11,7 @@ import {
   Loader2,
   Mail,
   Send,
+  Sparkles,
   Star,
 } from 'lucide-react'
 import { api } from '@/lib/api'
@@ -26,6 +27,7 @@ import {
 } from '@/lib/links'
 import { isAndroid, isLinuxDesktop, isTv } from '@/lib/platform'
 import { checkForUpdate, offered, openWhatsNew, useUpdate, type UpdateState } from '@/lib/updates'
+import { openTour, TOUR_VERSION } from '@/lib/featureTour'
 import { cn } from '@/lib/utils'
 import { sendRefusedReport } from '@/lib/refusedReport'
 import { canMoveToPlay, onPlay, stopKeepingApk } from '@/lib/playMove'
@@ -117,6 +119,17 @@ export function About({ product }: { product: string }): React.JSX.Element {
       </div>
 
       <Status state={state} installed={installed} />
+
+      {/* The cards shown once after updating, again. */}
+      <button
+        type="button"
+        onClick={openTour}
+        className="mt-3 flex w-full items-center gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.03] px-3 py-2.5 text-left transition-colors hover:bg-white/[0.06] focus-visible:bg-white/[0.08]"
+      >
+        <Sparkles size={15} className="shrink-0 text-textDim" />
+        <span className="min-w-0 flex-1 text-[12.5px] text-text">What’s new in {TOUR_VERSION}</span>
+        <ChevronRight size={13} className="shrink-0 text-textFaint" />
+      </button>
 
       {canMoveToPlay() && <MoveToPlay state={state} />}
 

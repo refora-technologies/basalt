@@ -66,7 +66,8 @@ export interface ManagedProfile {
   claimCode?: string | null
   createdAt: number
   lastUsed: number
-  devices: { name: string; remembered: boolean; lastUsed: number }[]
+  /** `device` (the device's key) is absent from hosts before 1.6.4, which can't sign one out. */
+  devices: { device?: string; name: string; form?: string | null; remembered: boolean; lastUsed: number }[]
   /** A profile from another drive: that drive's name. No PIN here. */
   home?: string | null
 }
@@ -266,6 +267,7 @@ export type ManageAction =
   | { do: 'addProfile'; name: string; color: number }
   | { do: 'removeProfile'; id: string; shares?: 'move' | 'delete' }
   | { do: 'resetProfilePin'; id: string }
+  | { do: 'signOutProfileDevice'; id: string; device: string }
   | { do: 'setRequireProfile'; require: boolean }
   | { do: 'setOwnerAddsProfiles'; ownerOnly: boolean }
   | { do: 'setClaimCode'; required: boolean }
@@ -339,11 +341,19 @@ export function useManage(): Manage {
       } catch (e) {
         if (live.current) setError(said(e))
       }
-      if (live.current) timer = setTimeout(() => void refresh(), REFRESH_MS)
+      // Hidden: asked again once it's shown (below), not every 3 s for nobody.
+      if (live.current && document.visibilityState !== 'hidden') timer = setTimeout(() => void refresh(), REFRESH_MS)
     }
     void refresh()
+    const shown = (): void => {
+      if (document.visibilityState === 'hidden' || !live.current) return
+      if (timer) clearTimeout(timer)
+      void refresh()
+    }
+    document.addEventListener('visibilitychange', shown)
     return () => {
       live.current = false
+      document.removeEventListener('visibilitychange', shown)
       if (timer) clearTimeout(timer)
     }
   }, [])

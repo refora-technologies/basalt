@@ -44,6 +44,7 @@ export class Poller<T> {
   private timer: ReturnType<typeof setTimeout> | null = null
   private inFlight = false
   private stopped = false
+  private paused = false
   private failures = 0
 
   constructor(private readonly options: PollerOptions<T>) {}
@@ -71,6 +72,23 @@ export class Poller<T> {
     void this.tick()
   }
 
+  /**
+   * Stops asking until `resume`, keeping what it has: the window hidden in
+   * the tray asked several times a second all day for nobody.
+   */
+  pause(): void {
+    this.paused = true
+    if (this.timer !== null) clearTimeout(this.timer)
+    this.timer = null
+  }
+
+  /** Asks again at once, and keeps going. */
+  resume(): void {
+    if (!this.paused) return
+    this.paused = false
+    this.refresh()
+  }
+
   /** Consecutive failures, for tests and for deciding what to show. */
   get failureCount(): number {
     return this.failures
@@ -95,7 +113,7 @@ export class Poller<T> {
   }
 
   private schedule(): void {
-    if (this.stopped) return
+    if (this.stopped || this.paused) return
     this.timer = setTimeout(() => {
       void this.tick()
     }, backoffDelay(this.failures, this.options.interval))

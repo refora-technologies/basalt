@@ -6,7 +6,7 @@ import { ChevronLeft, ChevronRight, Radio, Send } from 'lucide-react'
 import type { AppModel } from '@/App'
 import { Switch } from '@/components/Switch'
 import { SyncLogPanel } from '@/components/music/SyncLog'
-import { InboxList, ReceivePrompt, ShareChooser } from '@/components/share/Share'
+import { InboxList, ReceivePrompt, ShareChooser, shareKey } from '@/components/share/Share'
 import { NearbyPrompt, NearbyReceiving, NearbyScreen, NearbySwitches, useNearbyFollow } from '@/components/share/Nearby'
 import type { Nearby } from '@/lib/useNearby'
 import { HeldList } from '@/components/share/Held'
@@ -15,6 +15,7 @@ import { Sheet } from './Sheet'
 import { SectionPager, SectionTabs, useSectionLink } from './SectionPager'
 import { useBack } from './useBack'
 import { android } from '@/lib/android'
+import { holdRunning } from '@/lib/stayRunning'
 import { useAlwaysReady } from '@/lib/alwaysReady'
 
 /**
@@ -50,6 +51,8 @@ export function PhoneShare({
         {sharing && (
           <div>
             <ShareChooser
+              // A new share starts afresh, even with the last one's sheet still open.
+              key={shareKey(sharing)}
               sheet
               nearby={model.nearby}
               files={sharing}
@@ -209,7 +212,13 @@ export function PhoneNearby({ nearby }: { nearby: Nearby }): React.JSX.Element {
   useEffect(() => {
     if (!nearby.ready || !isAndroid()) return undefined
     void android.keepAlive('nearby', 'Basalt', 'Receiving from devices nearby')
-    return () => void android.letGo('nearby')
+    // And the app told not to quit when swiped away: Android's service alone
+    // kept the process for nothing, as the app ended itself.
+    holdRunning('nearby', true)
+    return () => {
+      void android.letGo('nearby')
+      holdRunning('nearby', false)
+    }
   }, [nearby.ready])
   useBack(open, () => {
     nearby.setScreenOpen(false)

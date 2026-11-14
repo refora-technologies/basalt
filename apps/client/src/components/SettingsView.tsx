@@ -120,6 +120,7 @@ export function SettingsView({
         {nearby && (
           <Section icon={Radio} title="Nearby" hint="Devices around you that aren’t on your host">
             <NearbySwitches nearby={nearby} className="rounded-none px-4 py-2.5" />
+            <NearbyLog />
           </Section>
         )}
 
@@ -258,6 +259,28 @@ function Row({
       <span className={cn('text-[13px] text-text', mono && 'font-mono text-[12px]')}>
         {value}
       </span>
+    </div>
+  )
+}
+
+/**
+ * The steps of sharing nearby, kept in a file on a computer: shown in its
+ * folder, to look at or send when something didn't arrive.
+ */
+function NearbyLog(): React.JSX.Element {
+  const [note, setNote] = useState<string | null>(null)
+  return (
+    <div>
+      <Action
+        label="Show the nearby log"
+        onClick={() => {
+          setNote(null)
+          void api.nearbyLogShow().catch((e: unknown) => setNote(e instanceof Error ? e.message : String(e)))
+        }}
+      />
+      <p className="-mt-1 px-4 pb-2.5 text-[11.5px] leading-snug text-textFaint">
+        {note ?? 'Kept on this computer only. It has the names and network addresses of devices nearby: look at it before you send it to anyone.'}
+      </p>
     </div>
   )
 }

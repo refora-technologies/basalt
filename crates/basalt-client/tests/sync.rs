@@ -1015,6 +1015,7 @@ async fn a_watching_device_hears_at_once_that_its_access_changed_or_it_was_remov
     let notices = Notices::default();
     let _watch = client.watch_with(|_| {}, notices.record());
     settle().await;
+    notices.until_listening(&fixture.host).await;
 
     assert!(fixture.host.set_writable(&hash, false).unwrap());
     assert!(
@@ -1202,6 +1203,7 @@ async fn a_share_waits_on_the_host_for_a_device_that_is_away() {
             keep: false,
             paths: vec!["films/Holiday.mkv".into()],
             staged: Vec::new(),
+            folders: Vec::new(),
         })
         .await
         .expect("held for the tablet");
@@ -1286,6 +1288,7 @@ async fn the_host_limits_keeps_in_plain_and_clears_what_it_holds() {
         keep: false,
         paths: vec![path.into()],
         staged: Vec::new(),
+        folders: Vec::new(),
     };
 
     // A limit of 2 MB for Maya: the big file doesn't fit, and she is told.
@@ -1379,6 +1382,7 @@ async fn a_removed_profiles_share_files_go_to_the_drive_or_away() {
         keep: false,
         paths: vec!["note.txt".into()],
         staged: Vec::new(),
+        folders: Vec::new(),
     };
 
     // Maya's, locked: moved onto the drive as she goes.
@@ -1448,6 +1452,7 @@ async fn a_kept_share_is_shared_again_with_another_device() {
             keep: true,
             paths: vec!["clip.mp4".into()],
             staged: Vec::new(),
+            folders: Vec::new(),
         })
         .await
         .expect("held");
@@ -1541,6 +1546,7 @@ async fn a_file_on_this_device_waits_on_the_host_for_one_that_is_away() {
                 name: "Beach.mov".into(),
                 size: 5,
             }],
+            folders: Vec::new(),
         })
         .await;
     assert!(wrong.is_err(), "a size that isn't what came");
@@ -1555,10 +1561,14 @@ async fn a_file_on_this_device_waits_on_the_host_for_one_that_is_away() {
                 name: "Beach.mov".into(),
                 size: body.len() as u64,
             }],
+            // Part of a shared folder: its place inside it goes with it,
+            // made safe, and comes back in the list.
+            folders: vec!["Trip\\Day 1".into()],
         })
         .await
         .expect("held from the upload");
     assert_eq!(held.files[0].name, "Beach.mov");
+    assert_eq!(held.files[0].folder, "Trip/Day 1");
     assert_eq!(fixture.host.sharing_view().locked, body.len() as u64);
 
     let into = fixture.dir.join("taken.mov");
@@ -2433,8 +2443,35 @@ impl Notices {
 
     /// Waits for one more of `said` than there were, and says how long it took.
     async fn next(&self, said: &str, before: usize) -> Option<Duration> {
+        self.next_within(said, before, Duration::from_secs(10))
+            .await
+    }
+
+    /// On a busy machine (the whole suite at once) a watch can take longer
+    /// than `settle` to be listening: a change nobody looks at is made until
+    /// one is told, before the ones a test is about.
+    async fn until_listening(&self, host: &Host) {
+        let warming = std::time::Instant::now();
+        loop {
+            let before = self.count("profiles");
+            host.set_owner_adds_profiles(false).unwrap();
+            if self
+                .next_within("profiles", before, Duration::from_secs(1))
+                .await
+                .is_some()
+            {
+                return;
+            }
+            assert!(
+                warming.elapsed() < Duration::from_secs(30),
+                "the watch never listened"
+            );
+        }
+    }
+
+    async fn next_within(&self, said: &str, before: usize, within: Duration) -> Option<Duration> {
         let started = std::time::Instant::now();
-        while started.elapsed() < Duration::from_secs(10) {
+        while started.elapsed() < within {
             if self.count(said) > before {
                 return Some(started.elapsed());
             }
@@ -2456,6 +2493,7 @@ async fn every_change_to_the_profiles_or_their_rules_is_told_at_once() {
     settle().await;
 
     let host = &fixture.host;
+    notices.until_listening(host).await;
     let changes = [
         "a profile added",
         "a profile required",
@@ -2609,10 +2647,19 @@ async fn a_drive_file_is_passed_on_to_a_device_nearby() {
     // The device nearby: no host, only the offer.
     let into = fixture.dir.join("taken.mkv");
     let out = std::fs::File::create(&into).unwrap();
-    let bytes =
-        basalt_client::direct::fetch(&endpoint, "o1", &token, 0, "trip.mkv", out, None, None)
-            .await
-            .unwrap();
+    let bytes = basalt_client::direct::fetch(
+        &endpoint,
+        "o1",
+        &token,
+        0,
+        "trip.mkv",
+        out,
+        None,
+        None,
+        u64::MAX,
+    )
+    .await
+    .unwrap();
     assert_eq!(bytes, body.len() as u64);
     assert_eq!(std::fs::read(&into).unwrap(), body, "the same bytes");
 }

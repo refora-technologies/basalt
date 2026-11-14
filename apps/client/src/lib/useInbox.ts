@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, onChannel, onShareSending, type ChannelMessage, type HeldShare, type PresentDevice } from './api'
 import type { Presence } from './usePresence'
 import type { Transfers } from './useTransfers'
+import { receivedFolderPath, rootsFor, withinFor } from './shareFolders'
 import {
   KIND,
   OFFER_TTL_MS,
@@ -14,7 +15,19 @@ import {
   partyOf,
   progressIn,
   received,
+  COMING_THROUGH_HOST,
+  sentItem,
   takesWithoutAsking,
+  canTakeBack,
+  endedSilent,
+  goneSilent,
+  takenBack,
+  ON_THE_HOST,
+  throughHostFiles,
+  throughHostSaid,
+  fromMyProfile,
+  trustedOffer,
+  toldOf,
   type AnswerBody,
   type HandoffBody,
   type OfferBody,
@@ -43,6 +56,8 @@ export interface Inbox {
   decline: (item: ShareItem) => void
   /** "Accept on another device": that one of mine takes it instead. */
   acceptOn: (item: ShareItem, device: PresentDevice) => Promise<void>
+  /** Stops one sent from here, waiting or on its way (see `canTakeBack`). */
+  takeBack: (item: ShareItem) => void
   /** Forgets one from the list; nothing else changes. */
   forget: (item: ShareItem) => void
   acceptFromHome: boolean
@@ -65,6 +80,8 @@ export function useInbox(
   transfers: Transfers,
   /** The profile this device is signed in to: known before the device list is. */
   profile?: string,
+  /** Says something out loud, over whatever screen is open. */
+  say?: (text: string) => void,
 ): Inbox {
   const key = who ? `basalt.inbox.${who}` : null
   const [items, setItems] = useState<ShareItem[]>(() => load(key))
@@ -93,10 +110,15 @@ export function useInbox(
   transfersRef.current = transfers
   const profileRef = useRef(profile)
   profileRef.current = profile
+  const sayRef = useRef(say)
+  sayRef.current = say
 
   // How far shares sent from here have come: told by the device taking
   // them, or, going up to the host first, by this app.
   const [sentProgress, setSentProgress] = useState<Map<string, Progress>>(() => new Map())
+  const sentProgressRef = useRef(sentProgress)
+  sentProgressRef.current = sentProgress
+  const startedAt = useRef(Date.now())
   useEffect(() => {
     let gone = false
     let stop: (() => void) | null = null
@@ -174,18 +196,22 @@ export function useInbox(
       void answer(offer, 'accepted')
       let last = ''
       const saved: SavedFile[] = []
+      const folder = settings.current.folder || undefined
       try {
+        // A shared folder: its name here, once ("Holiday (1)" beside an
+        // earlier "Holiday"), then each file into its own folder in it.
+        const roots = await rootsFor(offer.files, (top) => api.shareFolderRoot(top, folder))
         for (const [n, file] of offer.files.entries()) {
           const id = `share-${offer.offer}-${n}`
           transfersRef.current.start({ id, kind: 'download', name: file.name, path: file.path || file.name, total: file.size })
           try {
-            const folder = settings.current.folder || undefined
+            const within = withinFor(file, roots)
             // On the sending device: straight from it. On the drive: from the host.
             const landed = offer.held
-              ? await api.receiveHeld(offer.offer, n, file.name, file.size, id, folder)
+              ? await api.receiveHeld(offer.offer, n, file.name, file.size, id, folder, within)
               : offer.direct
-                ? await api.receiveDirect(offer.direct.endpoint, offer.offer, offer.direct.token, n, file.name, id, folder)
-                : await api.receiveFile(file.path, id, folder)
+                ? await api.receiveDirect(offer.direct.endpoint, offer.offer, offer.direct.token, n, file.name, id, folder, file.size, within)
+                : await api.receiveFile(file.path, id, folder, within)
             transfersRef.current.finish(id)
             last = landed.shownAs
             saved.push({ name: file.name, shownAs: landed.shownAs, path: landed.path, uri: landed.uri })
@@ -194,7 +220,8 @@ export function useInbox(
             throw e
           }
         }
-        update(item.id, (i) => ({ ...i, state: 'done', savedAs: last, saved, offer: undefined }))
+        const folderPath = receivedFolderPath(offer.files, saved, roots)
+        update(item.id, (i) => ({ ...i, state: 'done', savedAs: folderPath ?? last, saved, folderPath, offer: undefined }))
         void answer(offer, 'done')
         // Kept on the host for this device: told it arrived, so it can go.
         if (offer.held) void api.shareAnswer(offer.offer, true).catch(() => {})
@@ -206,8 +233,10 @@ export function useInbox(
         update(item.id, (i) => ({
           ...i,
           state: through ? 'moving' : 'failed',
-          reason: through ? 'Couldn’t reach it directly: coming through the host' : reason,
+          reason: through ? COMING_THROUGH_HOST : reason,
+          ...(through ? { since: Date.now() } : {}),
         }))
+        if (through) sayRef.current?.(throughHostSaid('in', item.peer.name))
         void answer(offer, 'failed', reason, through)
       }
     },
@@ -219,14 +248,23 @@ export function useInbox(
       if (seen.current.has(message.id)) return
       seen.current.add(message.id)
       if (message.kind === KIND.offer || message.kind === KIND.handoff) {
-        const body = message.kind === KIND.offer ? (message.body as OfferBody) : (message.body as HandoffBody).offer
-        if (!body?.offer || !Array.isArray(body.files)) return
+        const said = message.kind === KIND.offer ? (message.body as OfferBody) : (message.body as HandoffBody).offer
+        if (!said?.offer || !Array.isArray(said.files)) return
+        // Who sent it is what the host says, not what the offer says of
+        // itself: an offer naming one of my own devices as its sender was
+        // taken without asking, from any device on the host.
+        const body = trustedOffer(said, message)
+        const myProfile = profileRef.current
+        // Only one of my own devices can ask this one to take a share.
+        if (message.kind === KIND.handoff && !fromMyProfile(message, myProfile)) return
         const item = received(body, Date.now())
         const before = itemsRef.current.find((i) => i.id === item.id && i.direction === 'in')
         // Coming again through the host, after it couldn't come straight
-        // across: taken at once, as the first was.
+        // across: taken at once, as the first was. A host before 1.6.4
+        // keeps no folders: they come from the first offer.
         if (before && body.held && before.state === 'moving' && before.offer?.direct) {
-          const again = { ...item, at: before.at }
+          const files = item.files.map((f, n) => (f.folder || !before.files[n]?.folder ? f : { ...f, folder: before.files[n]!.folder }))
+          const again = { ...item, files, offer: item.offer ? { ...item.offer, files } : item.offer, at: before.at }
           itemsRef.current = kept([again, ...itemsRef.current.filter((i) => i !== before)])
           setItems((list) => kept([again, ...list.filter((i) => !(i.id === item.id && i.direction === 'in'))]))
           void take(again)
@@ -237,7 +275,6 @@ export function useInbox(
         setItems((list) => (list.some((i) => i.id === item.id && i.direction === 'in') ? list : kept([item, ...list])))
         // Asked by one of my own devices to take it here, or a send this
         // person said needs no asking: taken at once.
-        const myProfile = profileRef.current
         const handoff = message.kind === KIND.handoff
         if (handoff || takesWithoutAsking(body, myProfile, settings.current.acceptFromHome)) void take(item)
         return
@@ -257,16 +294,26 @@ export function useInbox(
         // It couldn't reach this device: the same files, through the host,
         // under the same offer, for the same device.
         const sent = itemsRef.current.find((i) => i.id === said.offer && i.direction === 'out')
-        if (said.unreachable && sent && sent.files.every((f) => f.source)) {
+        const local = sent && said.unreachable ? throughHostFiles(sent) : null
+        if (sent && local) {
+          // Its folders go with it, as they went straight across.
           setItems((list) =>
             list.map((i) => (i === sent ? { ...i, state: 'moving', reason: 'Couldn’t reach it directly: going through the host' } : i)),
           )
+          sayRef.current?.(throughHostSaid('out', sent.peer.name))
           void api
-            .shareHoldLocal(
-              sent.id,
-              sent.peer.device,
-              false,
-              sent.files.map((f) => ({ source: f.source!, name: f.name, size: f.size })),
+            .shareHoldLocal(sent.id, sent.peer.device, false, local)
+            // All on the host now: it waits there as any sent through it
+            // does (the host says when it is taken, or cleared), instead
+            // of "going through the host" for good if it never is.
+            .then(() =>
+              setItems((list) =>
+                list.map((i) =>
+                  i.id === sent.id && i.direction === 'out' && i.state === 'moving' && i.reason?.startsWith('Couldn’t reach')
+                    ? { ...i, state: 'waiting', reason: ON_THE_HOST }
+                    : i,
+                ),
+              ),
             )
             .catch((e: unknown) =>
               setItems((list) =>
@@ -308,16 +355,13 @@ export function useInbox(
     // the receiver told where to take them. Their sources stay here.
     const local = files.filter((f) => f.source)
     const direct = local.length > 0 ? await api.shareLocal(offer, files.map((f) => f.source ?? '')) : undefined
-    const told = files.map(({ source: _, ...rest }) => rest)
-    const body: OfferBody = { offer, files: told, from, to: partyOf(to), direct }
+    const body: OfferBody = { offer, files: toldOf(files), from, to: partyOf(to), direct }
     const sent = await api.channelSend({ to: 'device', device: to.device }, KIND.offer, body, 0)
     if (sent.delivered.length === 0) {
       if (direct) void api.withdrawLocal(offer).catch(() => {})
       throw new Error(`${to.name} isn’t online.`)
     }
-    setItems((list) =>
-      kept([{ id: body.offer, direction: 'out', files: told, peer: body.to, state: 'waiting', at: Date.now() }, ...list]),
-    )
+    setItems((list) => kept([sentItem(body, files, Date.now()), ...list]))
     return offer
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -330,7 +374,7 @@ export function useInbox(
         offer,
         to.device,
         keep,
-        files.map((f) => ({ source: f.source!, name: f.name, size: f.size })),
+        files.map((f) => ({ source: f.source!, name: f.name, size: f.size, ...(f.folder ? { folder: f.folder } : {}) })),
       )
     } else if (files.every((f) => !f.source)) {
       await api.shareHold(
@@ -338,6 +382,7 @@ export function useInbox(
         to.device,
         keep,
         files.map((f) => f.path),
+        files.some((f) => f.folder) ? files.map((f) => f.folder ?? '') : undefined,
       )
     } else {
       throw new Error('Send files from the drive and from this device apart.')
@@ -388,13 +433,19 @@ export function useInbox(
   // withdrawn). One kept on the host waits there as the host says (24 h).
   useEffect(() => {
     const sweep = (): void => {
-      const ending = unanswered(itemsRef.current, Date.now())
-      if (ending.length === 0) return
-      for (const i of ending) {
+      const now = Date.now()
+      const ending = unanswered(itemsRef.current, now)
+      // And one being taken that nothing has been heard of for a long while.
+      const silent = goneSilent(itemsRef.current, (id) => sentProgressRef.current.get(id)?.at, startedAt.current, now)
+      if (ending.length === 0 && silent.length === 0) return
+      for (const i of [...ending, ...silent]) {
         if (i.direction === 'out') void api.withdrawLocal(i.id).catch(() => {})
       }
       const gone = new Set(ending.map((i) => `${i.direction}:${i.id}`))
-      setItems((list) => list.map((i) => (gone.has(`${i.direction}:${i.id}`) ? endedUnanswered(i) : i)))
+      const quiet = new Set(silent.map((i) => i.id))
+      setItems((list) =>
+        list.map((i) => (gone.has(`${i.direction}:${i.id}`) ? endedUnanswered(i) : i.direction === 'out' && quiet.has(i.id) ? endedSilent(i) : i)),
+      )
     }
     sweep()
     const timer = setInterval(sweep, 30_000)
@@ -403,6 +454,13 @@ export function useInbox(
 
   const forget = useCallback((item: ShareItem) => {
     setItems((list) => list.filter((i) => i !== item))
+  }, [])
+
+  const takeBack = useCallback((item: ShareItem) => {
+    if (!canTakeBack(item)) return
+    // Nobody can take it any more, and what is on its way stops.
+    void api.withdrawLocal(item.id).catch(() => {})
+    setItems((list) => list.map((i) => (i.id === item.id && i.direction === 'out' && canTakeBack(i) ? takenBack(i) : i)))
   }, [])
 
   const setAcceptFromHome = useCallback((on: boolean) => {
@@ -431,6 +489,7 @@ export function useInbox(
     accept,
     decline,
     acceptOn,
+    takeBack,
     forget,
     acceptFromHome,
     setAcceptFromHome,

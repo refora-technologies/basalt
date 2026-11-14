@@ -58,9 +58,57 @@ pub fn trace_to(log: fn(&str)) {
     let _ = TRACE.set(log);
 }
 
+/// Testing only (debug builds): `BASALT_DEV_OWN_WIFI_ONLY` answers devices
+/// looking for it only on its own Wi-Fi (Windows 192.168.137.x, Android
+/// 192.168.49.x), never on the Wi-Fi it is on, so that a device sharing on
+/// the same Wi-Fi sees it as one with no Wi-Fi in common, found by Bluetooth.
+fn answers_from(ip: IpAddr) -> bool {
+    if !cfg!(debug_assertions) || std::env::var_os("BASALT_DEV_OWN_WIFI_ONLY").is_none() {
+        return true;
+    }
+    matches!(ip, IpAddr::V4(v4) if matches!(v4.octets(), [192, 168, 137, _] | [192, 168, 49, _]))
+}
+
+/// A line of the app's own about nearby sharing, into the same log.
+pub fn note(line: &str) {
+    trace(|| line.to_string());
+}
+
 fn trace(line: impl FnOnce() -> String) {
     if let Some(log) = TRACE.get() {
         log(&line());
+    }
+}
+
+/// Offers coming in now, each from its line opening to its end.
+static RECEIVING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// When the last offer coming in ended.
+static QUIET_SINCE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// How many offers are coming in now, and since when none has been (None
+/// while one is, or before any came). A device that opened a Wi-Fi of its own
+/// for someone closes it once it has been quiet a while (see the apps).
+pub fn receiving() -> (usize, Option<std::time::Instant>) {
+    let now = RECEIVING.load(std::sync::atomic::Ordering::SeqCst);
+    let quiet = *QUIET_SINCE.lock().expect("quiet lock");
+    (now, if now == 0 { quiet } else { None })
+}
+
+/// Counts an offer coming in while it lives.
+struct Receiving;
+
+impl Receiving {
+    fn start() -> Self {
+        RECEIVING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Receiving
+    }
+}
+
+impl Drop for Receiving {
+    fn drop(&mut self) {
+        if RECEIVING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            *QUIET_SINCE.lock().expect("quiet lock") = Some(std::time::Instant::now());
+        }
     }
 }
 
@@ -164,6 +212,10 @@ pub struct Me {
 pub struct NearbyFile {
     pub name: String,
     pub size: u64,
+    /// Its folder inside a shared folder ("Holiday/Day 1"); empty for a file
+    /// shared on its own. Made safe where it lands.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
 }
 
 /// A device nearby that is ready to receive.
@@ -218,6 +270,9 @@ type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
 /// comes, down it.
 pub struct NearbyLink {
     io: tokio::sync::Mutex<LinkIo>,
+    /// Each file's size as offered: what the person accepted. A sender that
+    /// then says a file is longer is refused, rather than let fill the disk.
+    sizes: Vec<u64>,
 }
 
 struct LinkIo {
@@ -244,6 +299,11 @@ impl NearbyLink {
                 said["no"].as_str().unwrap_or("no")
             )));
         };
+        if self.sizes.get(file).is_none_or(|&offered| length > offered) {
+            return Err(ClientError::Protocol(
+                "the device that sent it sent more than it offered".into(),
+            ));
+        }
         let reader = io.lines.get_mut();
         let mut out = tokio::fs::File::from_std(out);
         let mut buffer = vec![0u8; 256 * 1024];
@@ -253,11 +313,31 @@ impl NearbyLink {
                 return Err(ClientError::Protocol("cancelled".into()));
             }
             let want = buffer.len().min((length - done) as usize);
-            let n = tokio::time::timeout(STEP * 4, reader.read(&mut buffer[..want]))
-                .await
-                .map_err(|_| {
-                    ClientError::Protocol("the device that sent it stopped part-way".into())
-                })??;
+            // Waited for a second at a time, so Cancel is heard while
+            // nothing comes, and no longer than a minute in all.
+            let waiting_since = std::time::Instant::now();
+            let n = loop {
+                match tokio::time::timeout(Duration::from_secs(1), reader.read(&mut buffer[..want]))
+                    .await
+                {
+                    Ok(read) => {
+                        // The line dropped (the other device stopped, or left):
+                        // said as that, not as the drive's connection.
+                        break read.map_err(|_| {
+                            ClientError::Protocol("the device that sent it stopped part-way".into())
+                        })?;
+                    }
+                    Err(_) if cancel.as_ref().is_some_and(Cancel::is_cancelled) => {
+                        return Err(ClientError::Protocol("cancelled".into()));
+                    }
+                    Err(_) if waiting_since.elapsed() >= STEP * 4 => {
+                        return Err(ClientError::Protocol(
+                            "the device that sent it stopped part-way".into(),
+                        ));
+                    }
+                    Err(_) => {}
+                }
+            };
             if n == 0 {
                 return Err(ClientError::Protocol(
                     "the device that sent it stopped part-way".into(),
@@ -277,6 +357,45 @@ impl NearbyLink {
         out.flush().await?;
         out.sync_all().await?;
         Ok(done)
+    }
+}
+
+/// Offers open now, by the address they came from.
+type OpenFrom = Arc<Mutex<HashMap<IpAddr, usize>>>;
+
+/// The most offers open at once from one address.
+const MOST_OPEN_FROM_ONE: usize = 3;
+
+/// One offer's place among those from its address, given back when it ends.
+struct OpenSlot {
+    open: OpenFrom,
+    from: IpAddr,
+}
+
+impl OpenSlot {
+    fn take(open: &OpenFrom, from: IpAddr) -> Option<Self> {
+        let mut all = open.lock().expect("open lock");
+        let now = all.entry(from).or_insert(0);
+        if *now >= MOST_OPEN_FROM_ONE {
+            return None;
+        }
+        *now += 1;
+        Some(Self {
+            open: Arc::clone(open),
+            from,
+        })
+    }
+}
+
+impl Drop for OpenSlot {
+    fn drop(&mut self) {
+        let mut all = self.open.lock().expect("open lock");
+        if let Some(now) = all.get_mut(&self.from) {
+            *now -= 1;
+            if *now == 0 {
+                all.remove(&self.from);
+            }
+        }
     }
 }
 
@@ -344,6 +463,9 @@ impl Ready {
                         if n < 14 || &buffer[..5] != MAGIC || buffer[5] != VERSION {
                             continue;
                         }
+                        if !answers_from(from.ip()) {
+                            continue;
+                        }
                         let mut reply = buffer[..14].to_vec();
                         reply.extend_from_slice(said.as_bytes());
                         let sent = udp.send_to(&reply, from).await;
@@ -357,6 +479,9 @@ impl Ready {
                             None => None,
                         };
                         if !from.ip().is_loopback() {
+                            if !basalt_net::discovery::local_addresses().contains(&from.ip()) {
+                                looked_for_now();
+                            }
                             trace(|| {
                                 format!(
                                     "ready: looked for by {from}, answered: {sent:?}, {again:?}"
@@ -367,6 +492,7 @@ impl Ready {
                 };
                 let serving = async {
                     let mut asks = 0u64;
+                    let open_from: OpenFrom = Arc::default();
                     loop {
                         let (stream, from) = match listener.accept().await {
                             Ok(accepted) => accepted,
@@ -376,6 +502,14 @@ impl Ready {
                             }
                         };
                         trace(|| format!("ready: an offer's line from {from}"));
+                        // A few at a time from any one address: one device
+                        // opening line after line filled the screen with
+                        // offers and the device with half-open lines.
+                        let Some(slot) = OpenSlot::take(&open_from, from.ip()) else {
+                            trace(|| format!("ready: too many offers open from {}", from.ip()));
+                            drop(stream);
+                            continue;
+                        };
                         asks += 1;
                         let ask = format!("n{asks}-{}", new_code());
                         let acceptor = acceptor.clone();
@@ -383,7 +517,10 @@ impl Ready {
                         let answers = Arc::clone(&answers);
                         let finishes = Arc::clone(&finishes);
                         let links = Arc::clone(&links);
+                        let counted = Receiving::start();
                         tokio::spawn(async move {
+                            let _counted = counted;
+                            let _slot = slot;
                             let tls =
                                 match tokio::time::timeout(STEP, acceptor.accept(stream)).await {
                                     Ok(Ok(tls)) => tls,
@@ -475,6 +612,7 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     let files: Vec<NearbyFile> = serde_json::from_value(hello["files"].clone())
         .map_err(|_| ClientError::Protocol("not an offer".into()))?;
     let code_needed = always_code || hello["code"].as_bool().unwrap_or(false);
+    let sizes: Vec<u64> = files.iter().map(|f| f.size).collect();
 
     let (tx, rx) = oneshot::channel();
     answers
@@ -490,7 +628,7 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     // The sender hanging up meanwhile ends it too.
     let accepted = tokio::select! {
         said = tokio::time::timeout(ANSWER_WAIT, rx) => matches!(said, Ok(Ok(true))),
-        _ = lines.next_line() => {
+        _ = bounded_line(lines.get_mut()) => {
             return Err(ClientError::Protocol("the sender took it back".into()));
         }
     };
@@ -548,6 +686,7 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
     // Agreed: the files come down this line, as each is asked for.
     let link = Arc::new(NearbyLink {
+        sizes,
         io: tokio::sync::Mutex::new(LinkIo { lines, write }),
     });
     let (tx, rx) = oneshot::channel();
@@ -589,14 +728,23 @@ pub async fn find(port: u16, window: Duration) -> Result<Vec<NearbyDevice>> {
     let mut found: Vec<NearbyDevice> = Vec::new();
     // Broadcasts are dropped on some Wi-Fi (a phone's chip, a router keeping
     // devices apart, a device's own Wi-Fi): every neighbour is asked directly
-    // too, once, the network's own device first (on a device's own Wi-Fi,
-    // that is the device). Asked alongside, so answers are read as they come
-    // rather than after the last of 253 is sent.
+    // too, the network's own device first (on a device's own Wi-Fi, that is
+    // the device). Asked alongside, so answers are read as they come rather
+    // than after the last of 253 is sent.
+    //
+    // But not at every look: each address with nothing on it sends Wi-Fi
+    // broadcasts asking who has it, and a sweep every few seconds (a Share
+    // sheet open) made a phone's own Wi-Fi six times slower (a Galaxy A03s on
+    // 2.4 GHz: 84 MB in 4 min, 41 s without). Each network is swept when
+    // first looked at and then at most every SWEEP_EVERY; in between, those
+    // that answered before are asked directly.
+    let networks = local_networks();
+    let due = sweep_due(&networks, std::time::Instant::now());
     let sweep = {
         let udp = Arc::clone(&udp);
         let query = query.clone();
         tokio::spawn(async move {
-            let all = neighbours();
+            let all = neighbours(&due);
             let mut failed = 0;
             for neighbour in &all {
                 if udp
@@ -607,9 +755,22 @@ pub async fn find(port: u16, window: Duration) -> Result<Vec<NearbyDevice>> {
                     failed += 1;
                 }
             }
-            trace(|| format!("find: asked {} neighbours, {failed} failed", all.len()));
+            if !all.is_empty() {
+                trace(|| format!("find: asked {} neighbours, {failed} failed", all.len()));
+            }
         })
     };
+    // Those that answered lately, and each network's own device: known to be
+    // there, so asking them costs no broadcast.
+    let known: Vec<SocketAddr> = answered_lately(&networks)
+        .into_iter()
+        .chain(
+            networks
+                .iter()
+                .map(|[a, b, c]| IpAddr::V4(Ipv4Addr::new(*a, *b, *c, 1))),
+        )
+        .map(|ip| SocketAddr::new(ip, port))
+        .collect();
     let deadline = tokio::time::Instant::now() + window;
     let mut buffer = [0u8; 1024];
     let mut asked = 0;
@@ -620,6 +781,7 @@ pub async fn find(port: u16, window: Duration) -> Result<Vec<NearbyDevice>> {
                 .chain(std::iter::once(IpAddr::V4(Ipv4Addr::LOCALHOST)))
                 .chain(subnet_broadcasts())
                 .map(|ip| SocketAddr::new(ip, port))
+                .chain(known.iter().copied())
                 .collect();
             for target in targets {
                 if let Err(e) = udp.send_to(&query, target).await
@@ -639,6 +801,7 @@ pub async fn find(port: u16, window: Duration) -> Result<Vec<NearbyDevice>> {
             && let Ok(said) = serde_json::from_slice::<serde_json::Value>(&buffer[14..n])
         {
             trace(|| format!("find: answered by {from}"));
+            remember_answered(from.ip());
             add(&mut found, &said, from);
         }
     }
@@ -871,16 +1034,25 @@ impl Offering {
             let mut left = length;
             while left > 0 {
                 let want = buffer.len().min(left as usize);
-                let n = match source.read(&mut buffer[..want]).await {
-                    Ok(0) | Err(_) => return "failed".into(),
-                    Ok(n) => n,
+                // Neither side of it waited for for ever: a file on the drive
+                // that stops coming from the host, or a receiver gone without
+                // a word (its line still up), left this "sending" for good.
+                let n = match tokio::time::timeout(STEP * 4, source.read(&mut buffer[..want])).await
+                {
+                    Ok(Ok(n)) if n > 0 => n,
+                    _ => return "failed".into(),
                 };
-                if self.write.write_all(&buffer[..n]).await.is_err() {
-                    return "failed".into();
+                // In pieces, so the wait is for the line moving at all, and
+                // the bar moves on a slow one.
+                for piece in buffer[..n].chunks(32 * 1024) {
+                    match tokio::time::timeout(STEP * 4, self.write.write_all(piece)).await {
+                        Ok(Ok(())) => {}
+                        _ => return "failed".into(),
+                    }
+                    left -= piece.len() as u64;
+                    sent += piece.len() as u64;
+                    progress(sent);
                 }
-                left -= n as u64;
-                sent += n as u64;
-                progress(sent);
             }
             if self.write.flush().await.is_err() {
                 return "failed".into();
@@ -955,18 +1127,132 @@ async fn bind_port(port: u16) -> Result<UdpSocket> {
     }
 }
 
-/// Every other address of each local IPv4 network, taken as a /24.
-fn neighbours() -> Vec<IpAddr> {
-    let mut all = Vec::new();
+/// When another device last looked for this one over a network, as it was ready.
+static LOOKED_FOR: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// A file touched when another device looks for this one, for a side that
+/// can't ask (Android's, while Basalt is swiped away): its time says when.
+static LOOKED_FOR_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Where to touch that file: set once, as the app starts.
+pub fn note_looked_for_in(path: std::path::PathBuf) {
+    let _ = LOOKED_FOR_FILE.set(path);
+}
+
+fn looked_for_now() {
+    static TOUCHED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    let now = std::time::Instant::now();
+    *LOOKED_FOR.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
+    let Some(path) = LOOKED_FOR_FILE.get() else {
+        return;
+    };
+    // Every couple of seconds at most: a look comes several times over.
+    let mut touched = TOUCHED.lock().unwrap_or_else(|e| e.into_inner());
+    if touched.is_none_or(|at| now.saturating_duration_since(at) > Duration::from_secs(2)) {
+        *touched = Some(now);
+        let _ = std::fs::write(path, b"");
+    }
+}
+
+/// Whether another device looked for this one over a network it's on within
+/// `within`: a device sharing nearby that is on this one's Wi-Fi finds it
+/// there, so a Wi-Fi of its own would only slow its own (see `nearby_ble`).
+pub fn looked_for_within(within: Duration) -> bool {
+    LOOKED_FOR
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some_and(|at| at.elapsed() < within)
+}
+
+/// How often a network is swept, address by address, while something looks.
+const SWEEP_EVERY: Duration = Duration::from_secs(30);
+/// How long an address that answered is asked directly at every look.
+const ANSWERED_FOR: Duration = Duration::from_secs(10 * 60);
+
+/// When each network (a /24) was last swept.
+static SWEPT: Mutex<Vec<([u8; 3], std::time::Instant)>> = Mutex::new(Vec::new());
+/// Addresses that answered a look, and when.
+static ANSWERED: Mutex<Vec<(Ipv4Addr, std::time::Instant)>> = Mutex::new(Vec::new());
+
+/// This device's IPv4 networks, each taken as a /24, with its own address there.
+fn local_networks() -> Vec<[u8; 3]> {
+    let mut all: Vec<[u8; 3]> = Vec::new();
     for ip in basalt_net::discovery::local_addresses() {
         let IpAddr::V4(v4) = ip else { continue };
         if v4.is_loopback() || v4.is_link_local() {
             continue;
         }
-        let [a, b, c, mine] = v4.octets();
+        let [a, b, c, _] = v4.octets();
+        if !all.contains(&[a, b, c]) {
+            all.push([a, b, c]);
+        }
+    }
+    all
+}
+
+/// The networks due a sweep now, marked as swept: those not swept within
+/// [`SWEEP_EVERY`] (a network just joined, such as another device's own
+/// Wi-Fi, at once).
+fn sweep_due(networks: &[[u8; 3]], now: std::time::Instant) -> Vec<[u8; 3]> {
+    let mut swept = SWEPT.lock().unwrap_or_else(|e| e.into_inner());
+    due_from(&mut swept, networks, now)
+}
+
+fn due_from(
+    swept: &mut Vec<([u8; 3], std::time::Instant)>,
+    networks: &[[u8; 3]],
+    now: std::time::Instant,
+) -> Vec<[u8; 3]> {
+    swept.retain(|(_, at)| now.saturating_duration_since(*at) < SWEEP_EVERY);
+    let due: Vec<[u8; 3]> = networks
+        .iter()
+        .filter(|n| !swept.iter().any(|(s, _)| s == *n))
+        .copied()
+        .collect();
+    swept.extend(due.iter().map(|n| (*n, now)));
+    due
+}
+
+fn remember_answered(ip: IpAddr) {
+    let IpAddr::V4(v4) = ip else { return };
+    if v4.is_loopback() {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let mut answered = ANSWERED.lock().unwrap_or_else(|e| e.into_inner());
+    answered.retain(|(a, at)| *a != v4 && now.saturating_duration_since(*at) < ANSWERED_FOR);
+    answered.push((v4, now));
+}
+
+/// Addresses that answered lately, on the networks this device is on now.
+fn answered_lately(networks: &[[u8; 3]]) -> Vec<IpAddr> {
+    let now = std::time::Instant::now();
+    let answered = ANSWERED.lock().unwrap_or_else(|e| e.into_inner());
+    answered
+        .iter()
+        .filter(|(a, at)| {
+            let [x, y, z, _] = a.octets();
+            now.saturating_duration_since(*at) < ANSWERED_FOR && networks.contains(&[x, y, z])
+        })
+        .map(|(a, _)| IpAddr::V4(*a))
+        .collect()
+}
+
+/// Every other address of the given local networks.
+fn neighbours(networks: &[[u8; 3]]) -> Vec<IpAddr> {
+    let mine: Vec<Ipv4Addr> = basalt_net::discovery::local_addresses()
+        .into_iter()
+        .filter_map(|ip| match ip {
+            IpAddr::V4(v4) => Some(v4),
+            IpAddr::V6(_) => None,
+        })
+        .collect();
+    let mut all = Vec::new();
+    for [a, b, c] in networks {
         for d in 1..=254u8 {
-            if d != mine {
-                all.push(IpAddr::V4(Ipv4Addr::new(a, b, c, d)));
+            let ip = Ipv4Addr::new(*a, *b, *c, d);
+            if !mine.contains(&ip) {
+                all.push(IpAddr::V4(ip));
             }
         }
     }
@@ -1015,14 +1301,51 @@ async fn next_json<R: AsyncRead + Unpin>(
     lines: &mut tokio::io::Lines<BufReader<R>>,
     wait: Duration,
 ) -> Result<serde_json::Value> {
-    let line = tokio::time::timeout(wait, lines.next_line())
+    let line = tokio::time::timeout(wait, bounded_line(lines.get_mut()))
         .await
         .map_err(|_| ClientError::Protocol("the other device stopped answering".into()))??
         .ok_or_else(|| ClientError::Protocol("the other device hung up".into()))?;
-    if line.len() > 64 * 1024 {
-        return Err(ClientError::Protocol("too long a message".into()));
-    }
     serde_json::from_str(&line).map_err(|e| ClientError::Protocol(format!("not a message: {e}")))
+}
+
+/// The longest message line either side takes.
+const MOST_LINE: usize = 64 * 1024;
+
+/// One line, refused once longer than [`MOST_LINE`] as it comes: read whole
+/// first, a device on the Wi-Fi sending one with no end filled memory until
+/// Basalt was stopped, before anyone had accepted anything.
+async fn bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
+    read: &mut R,
+) -> std::io::Result<Option<String>> {
+    let mut line = Vec::new();
+    loop {
+        let available = read.fill_buf().await?;
+        if available.is_empty() {
+            return if line.is_empty() {
+                Ok(None)
+            } else {
+                Err(std::io::ErrorKind::UnexpectedEof.into())
+            };
+        }
+        let end = available.iter().position(|&b| b == b'\n');
+        let take = end.map_or(available.len(), |at| at + 1);
+        line.extend_from_slice(&available[..end.unwrap_or(take)]);
+        read.consume(take);
+        if line.len() > MOST_LINE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "too long a message",
+            ));
+        }
+        if end.is_some() {
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            return String::from_utf8(line)
+                .map(Some)
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "not text"));
+        }
+    }
 }
 
 async fn send_json<W: AsyncWrite + Unpin>(write: &mut W, value: &serde_json::Value) -> Result<()> {
@@ -1036,6 +1359,38 @@ async fn send_json<W: AsyncWrite + Unpin>(write: &mut W, value: &serde_json::Val
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_line_with_no_end_is_refused_before_it_fills_memory() {
+        let endless = vec![b'x'; 200 * 1024];
+        let mut read = BufReader::new(&endless[..]);
+        let got = bounded_line(&mut read).await;
+        assert!(got.is_err(), "refused: {got:?}");
+        let mut read = BufReader::new(&b"{\"a\":1}\r\nnext\n"[..]);
+        assert_eq!(bounded_line(&mut read).await.unwrap().unwrap(), "{\"a\":1}");
+        assert_eq!(bounded_line(&mut read).await.unwrap().unwrap(), "next");
+        assert_eq!(bounded_line(&mut read).await.unwrap(), None);
+    }
+
+    #[test]
+    fn only_a_few_offers_are_open_at_once_from_one_address() {
+        let open: OpenFrom = Arc::default();
+        let one: IpAddr = "192.168.1.20".parse().unwrap();
+        let other: IpAddr = "192.168.1.21".parse().unwrap();
+        let held: Vec<OpenSlot> = (0..MOST_OPEN_FROM_ONE)
+            .map(|_| OpenSlot::take(&open, one).unwrap())
+            .collect();
+        assert!(OpenSlot::take(&open, one).is_none(), "one too many");
+        assert!(
+            OpenSlot::take(&open, other).is_some(),
+            "another address is its own"
+        );
+        drop(held);
+        assert!(
+            OpenSlot::take(&open, one).is_some(),
+            "given back as they end"
+        );
+    }
 
     fn me(id: &str, name: &str) -> Me {
         Me {
@@ -1054,6 +1409,7 @@ mod tests {
         vec![NearbyFile {
             name: "Holiday 2026.mkv".into(),
             size: 700_000,
+            folder: String::new(),
         }]
     }
 
@@ -1096,6 +1452,23 @@ mod tests {
         assert_eq!(bytes, 700_000);
         assert_eq!(std::fs::read(&into).unwrap(), body(), "the same bytes");
         let _ = std::fs::remove_file(into);
+    }
+
+    #[test]
+    fn a_network_is_swept_when_first_looked_at_then_not_again_for_a_while() {
+        let home = [192, 168, 1];
+        let theirs = [192, 168, 49];
+        let mut swept = Vec::new();
+        let start = std::time::Instant::now();
+        assert_eq!(due_from(&mut swept, &[home], start), vec![home]);
+        // Looked again every few seconds: not swept again.
+        let soon = start + Duration::from_secs(4);
+        assert!(due_from(&mut swept, &[home], soon).is_empty());
+        // Another device's own Wi-Fi joined meanwhile: that one at once.
+        assert_eq!(due_from(&mut swept, &[home, theirs], soon), vec![theirs]);
+        // And the home's again once its while is up.
+        let later = start + SWEEP_EVERY;
+        assert_eq!(due_from(&mut swept, &[home, theirs], later), vec![home]);
     }
 
     #[test]

@@ -337,7 +337,7 @@ function Picture({
   const [broken, setBroken] = useState(false)
   useEffect(() => setBroken(false), [src])
   if (!src || broken) return <>{fallback}</>
-  return <img src={src} alt="" draggable={false} onError={() => setBroken(true)} className={className} />
+  return <img src={src} alt="" loading="lazy" decoding="async" draggable={false} onError={() => setBroken(true)} className={className} />
 }
 
 function ContinueButton({ next, onPlay }: { next: Next; onPlay: (path: string) => void }): React.JSX.Element {

@@ -28,7 +28,9 @@ mod linux_share;
 mod linux_update;
 mod media_controls;
 mod music_timing;
+mod nearby_ble;
 mod nearby_wifi;
+mod share_local;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod tray;
 #[cfg(target_os = "linux")]
@@ -149,9 +151,13 @@ struct AppState {
     nearby_ready: Mutex<Option<basalt_client::nearby::Ready>>,
     /// This device's own Wi-Fi while ready, and one joined to share.
     nearby_wifi: nearby_wifi::State,
+    /// Found by Bluetooth, and asked to open its own Wi-Fi: see nearby_ble.
+    nearby_ble: nearby_ble::State,
     /// Offers to devices nearby still waiting for their answer: a word here
     /// drops the line, and the other side's question goes with it.
     nearby_asking: Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+    /// Offers to devices nearby whose files are going now: each one's Stop.
+    nearby_sending: Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
     /// Offers to devices nearby waiting for the code shown there.
     nearby_offers: Mutex<std::collections::HashMap<String, WaitingOffer>>,
 }
@@ -652,6 +658,13 @@ async fn use_profile_elsewhere(
         .await?)
 }
 
+/// Signs this device's profile out of another of its devices (lost, sold or
+/// lent). Whether it was signed in there.
+#[tauri::command]
+async fn forget_profile_device(state: State<'_, AppState>, device: String) -> Answer<bool> {
+    Ok(state.client.forget_profile_device(&device).await?)
+}
+
 #[tauri::command]
 async fn sign_out_profile(state: State<'_, AppState>) -> Answer<()> {
     Ok(state.client.sign_out_profile().await?)
@@ -896,11 +909,13 @@ async fn receive_file(
     remote: String,
     id: String,
     folder: Option<String>,
+    within: Option<String>,
 ) -> Answer<Received> {
+    let within = basalt_proto::folder::clean_folder(within.as_deref().unwrap_or(""));
     #[cfg(target_os = "android")]
     {
         let _ = folder;
-        let saved = download_to_phone(app, state, remote, id).await?;
+        let saved = download_to_phone(app, state, remote, id, within).await?;
         Ok(Received {
             shown_as: saved.shown_as,
             path: None,
@@ -909,17 +924,21 @@ async fn receive_file(
     }
     #[cfg(not(target_os = "android"))]
     {
-        let dir = match folder.filter(|f| !f.trim().is_empty()) {
+        let base = match folder.filter(|f| !f.trim().is_empty()) {
             Some(folder) => PathBuf::from(folder),
             None => received_folder(&app)?,
         };
+        let dir = within_dir(&base, &within);
         std::fs::create_dir_all(&dir).map_err(|e| UiError {
             kind: "error".into(),
             message: format!("couldn’t make the folder {}: {e}", dir.display()),
         })?;
         let local = free_name(&dir, &safe_local_name(&remote));
         let shown_as = local.display().to_string();
-        download(app, state, remote, shown_as.clone(), id).await?;
+        if let Err(e) = download(app, state, remote, shown_as.clone(), id).await {
+            prune_empty(&dir, &base);
+            return Err(e);
+        }
         Ok(Received {
             shown_as: shown_as.clone(),
             path: Some(shown_as),
@@ -956,6 +975,60 @@ fn default_received_folder(app: tauri::AppHandle) -> Answer<String> {
 
 /// `name` in `dir`, or "name (1).ext", "name (2).ext"... whichever is free.
 #[cfg(not(target_os = "android"))]
+/// Where a file of a shared folder goes: its folder (made safe already)
+/// under the received folder.
+fn within_dir(base: &std::path::Path, within: &str) -> PathBuf {
+    within
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .fold(base.to_path_buf(), |dir, part| dir.join(part))
+}
+
+/// Folders made for a file that didn't come, now empty: gone again, up to
+/// (never including) `base`. A folder with anything in it stays. A phone's
+/// Downloads are Android's to keep.
+#[cfg_attr(target_os = "android", allow(dead_code))]
+fn prune_empty(dir: &std::path::Path, base: &std::path::Path) {
+    let mut at = dir.to_path_buf();
+    while at != base && at.starts_with(base) {
+        if std::fs::remove_dir(&at).is_err() {
+            return;
+        }
+        if !at.pop() {
+            return;
+        }
+    }
+}
+
+/// The name a shared folder takes in the received folder: its own, or
+/// "Holiday (1)" when one of that name is there already, so two shares of
+/// the same folder never mix. On a phone, Android keeps Downloads; its own.
+#[tauri::command]
+fn share_folder_root(app: tauri::AppHandle, top: String, folder: Option<String>) -> Answer<String> {
+    let top = basalt_proto::folder::folder_parts(&top)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "Shared".into());
+    #[cfg(target_os = "android")]
+    {
+        let _ = (app, folder);
+        Ok(top)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let base = match folder.filter(|f| !f.trim().is_empty()) {
+            Some(folder) => PathBuf::from(folder),
+            None => received_folder(&app)?,
+        };
+        let free = (0..)
+            .map(|n| if n == 0 { top.clone() } else { format!("{top} ({n})") })
+            .find(|name| !base.join(name).exists())
+            .expect("a free name");
+        Ok(free)
+    }
+}
+
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn free_name(dir: &std::path::Path, name: &str) -> PathBuf {
     let first = dir.join(name);
     if !first.exists() {
@@ -1314,6 +1387,79 @@ async fn nearby_wifi_host(app: tauri::AppHandle, on: bool) -> Answer<()> {
     .map_err(|e| wifi_error(e.to_string()))?
 }
 
+/// Whether devices that aren't on this Wi-Fi can reach this computer:
+/// `ready`, `bluetooth` (off) or `unsupported` (see nearby_ble).
+#[tauri::command]
+async fn nearby_reach() -> String {
+    tauri::async_runtime::spawn_blocking(nearby_ble::reach)
+        .await
+        .unwrap_or_else(|_| "unsupported".into())
+}
+
+/// Bluetooth switched on, or its settings opened; where things stand after.
+#[tauri::command]
+async fn bluetooth_turn_on() -> String {
+    tauri::async_runtime::spawn_blocking(nearby_ble::turn_on)
+        .await
+        .unwrap_or_else(|_| "unsupported".into())
+}
+
+/// Ready by Bluetooth (`on`), saying `info` (JSON from the page; the name of
+/// the Wi-Fi it opens is put in here), or not.
+#[tauri::command]
+async fn ble_ready(app: tauri::AppHandle, on: bool, info: String) -> Answer<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let info = if on {
+            let mut said: serde_json::Value =
+                serde_json::from_str(&info).map_err(|e| wifi_error(e.to_string()))?;
+            said["ssid"] = serde_json::Value::String(nearby_wifi::own(&nearby_me(&state)).ssid);
+            Some(said.to_string().into_bytes())
+        } else {
+            None
+        };
+        let handle = app.clone();
+        let open: nearby_ble::Opener = std::sync::Arc::new(move |on: bool| {
+            let state = handle.state::<AppState>();
+            if on {
+                nearby_wifi::host(&state.nearby_wifi, &nearby_me(&state))
+            } else {
+                nearby_wifi::stop_host(&state.nearby_wifi);
+                Ok(())
+            }
+        });
+        nearby_ble::ready(&state.nearby_ble, info, open).map_err(wifi_error)
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// Looks for ready devices by Bluetooth while `on`.
+#[tauri::command]
+async fn ble_look(app: tauri::AppHandle, on: bool) -> Answer<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        nearby_ble::look(&app.state::<AppState>().nearby_ble, on).map_err(wifi_error)
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
+/// The ready devices found by Bluetooth lately.
+#[tauri::command]
+fn ble_seen(state: State<'_, AppState>) -> Vec<nearby_ble::Seen> {
+    nearby_ble::seen(&state.nearby_ble)
+}
+
+/// Asks a device found by Bluetooth to open its Wi-Fi; done once it has.
+#[tauri::command]
+async fn ble_wake(app: tauri::AppHandle, address: String, from: String) -> Answer<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        nearby_ble::wake(&app.state::<AppState>().nearby_ble, &address, &from).map_err(wifi_error)
+    })
+    .await
+    .map_err(|e| wifi_error(e.to_string()))?
+}
+
 /// The Basalt Wi-Fis around: devices ready with no network in common.
 #[tauri::command]
 async fn nearby_wifi_scan() -> Answer<Vec<nearby_wifi::Found>> {
@@ -1384,35 +1530,21 @@ async fn nearby_firewall_allow() -> Answer<String> {
 type WaitingOffer = (basalt_client::nearby::Offering, Vec<String>, u64);
 
 /// The files after `--share` in a command line ("Share with Basalt" in
-/// Explorer, Send to): each that is a file here, with its name and size.
-fn shared_in(args: &[String]) -> Vec<LocalFile> {
+/// Explorer, Send to): each file, and each folder's files.
+fn shared_in(args: &[String]) -> share_local::Chosen {
     let Some(at) = args.iter().position(|a| a == "--share") else {
-        return Vec::new();
+        return share_local::Chosen::default();
     };
-    args[at + 1..]
-        .iter()
-        .filter_map(|path| {
-            let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
-            let name = std::path::Path::new(path)
-                .file_name()?
-                .to_string_lossy()
-                .into_owned();
-            Some(LocalFile {
-                source: path.clone(),
-                name,
-                size: meta.len(),
-            })
-        })
-        .collect()
+    share_local::gather(&args[at + 1..])
 }
 
 /// Files Basalt was opened to share ("Share with Basalt" with it closed),
 /// once: the page asks as it starts.
 #[tauri::command]
-fn shared_at_start() -> Vec<LocalFile> {
+fn shared_at_start() -> share_local::Chosen {
     static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if TAKEN.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        return Vec::new();
+        return share_local::Chosen::default();
     }
     shared_in(&std::env::args().collect::<Vec<_>>())
 }
@@ -1437,7 +1569,91 @@ fn nearby_log(line: &str) {
         }
     }
     #[cfg(not(target_os = "android"))]
-    eprintln!("nearby: {line}");
+    {
+        eprintln!("nearby: {line}");
+        keep_nearby_line(line);
+    }
+}
+
+/// Where a computer keeps its nearby steps: beside its settings, so a failed
+/// share leaves something to look at or send. Set as the app starts.
+#[cfg(not(target_os = "android"))]
+static NEARBY_LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// About this much is kept: the file, and the one before it.
+#[cfg(not(target_os = "android"))]
+const NEARBY_LOG_KEEP: u64 = 1024 * 1024;
+
+#[cfg(not(target_os = "android"))]
+fn keep_nearby_line(line: &str) {
+    use std::io::Write;
+    static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let Some(path) = NEARBY_LOG.get() else {
+        return;
+    };
+    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > NEARBY_LOG_KEEP) {
+        let _ = std::fs::rename(path, path.with_file_name("nearby.old.log"));
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{} {line}", utc_now());
+    }
+}
+
+/// The time now, as `2026-11-13 08:41:07 UTC`.
+#[cfg(not(target_os = "android"))]
+fn utc_now() -> String {
+    utc_at(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    )
+}
+
+#[cfg(not(target_os = "android"))]
+fn utc_at(secs: i64) -> String {
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Days to a civil date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
+/// The nearby log, shown selected in its folder.
+#[tauri::command]
+fn nearby_log_show(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let path = NEARBY_LOG
+            .get()
+            .ok_or_else(|| "There’s no nearby log yet.".to_string())?;
+        if !path.exists() {
+            return Err("Nothing has happened nearby yet.".into());
+        }
+        received_show(app, path.to_string_lossy().into_owned())
+    }
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        Err("Only on a computer.".into())
+    }
 }
 
 /// A step of sharing nearby, as the page saw it: into the same log.
@@ -1483,6 +1699,7 @@ async fn nearby_offer(
         .map(|f| basalt_client::nearby::NearbyFile {
             name: f.name.clone(),
             size: f.size,
+            folder: f.folder.clone(),
         })
         .collect();
     let me = nearby_me(&state);
@@ -1539,6 +1756,14 @@ fn nearby_serve(
     total: u64,
 ) {
     use tauri::Emitter;
+    // Stopped from here while its files go (the wrong film, 20 GB of it):
+    // the line drops, and the other device says it stopped part-way.
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    app.state::<AppState>()
+        .nearby_sending
+        .lock()
+        .expect("nearby lock")
+        .insert(offer.clone(), stop);
     tauri::async_runtime::spawn(async move {
         let opener = open_local(&app);
         let client = Arc::clone(&app.state::<AppState>().client);
@@ -1569,7 +1794,7 @@ fn nearby_serve(
         let told = app.clone();
         let progress_offer = offer.clone();
         let last = std::sync::Mutex::new(std::time::Instant::now());
-        let answer = offering
+        let serving = offering
             .serve(open, move |sent| {
                 // About four times a second is plenty for a bar.
                 let mut at = last.lock().expect("progress lock");
@@ -1581,8 +1806,16 @@ fn nearby_serve(
                     "basalt://nearby-progress",
                     serde_json::json!({ "offer": progress_offer, "done": sent, "total": total.max(sent) }),
                 );
-            })
-            .await;
+            });
+        let answer = tokio::select! {
+            answer = serving => answer,
+            Ok(()) = stopped => "stopped".to_string(),
+        };
+        app.state::<AppState>()
+            .nearby_sending
+            .lock()
+            .expect("nearby lock")
+            .remove(&offer);
         let _ = app.emit(
             "basalt://nearby-sent",
             serde_json::json!({ "offer": offer, "answer": answer }),
@@ -1642,6 +1875,14 @@ fn nearby_cancel(state: State<'_, AppState>, offer: String) {
         .lock()
         .expect("nearby lock")
         .remove(&offer);
+    if let Some(stop) = state
+        .nearby_sending
+        .lock()
+        .expect("nearby lock")
+        .remove(&offer)
+    {
+        let _ = stop.send(());
+    }
 }
 
 /// Takes an offer back: nobody can take its files any more.
@@ -1652,20 +1893,11 @@ fn withdraw_local(state: State<'_, AppState>, offer: String) {
     }
 }
 
-/// Files picked on this computer, with their names and sizes, to offer.
+/// Files and folders picked on this computer, as the files to offer, each
+/// with its name, size and folder inside a folder picked; or why not.
 #[tauri::command]
-fn local_files(paths: Vec<String>) -> Vec<serde_json::Value> {
-    paths
-        .into_iter()
-        .filter_map(|path| {
-            let meta = std::fs::metadata(&path).ok().filter(|m| m.is_file())?;
-            let name = std::path::Path::new(&path)
-                .file_name()?
-                .to_string_lossy()
-                .into_owned();
-            Some(serde_json::json!({ "source": path, "name": name, "size": meta.len() }))
-        })
-        .collect()
+fn local_files(paths: Vec<String>) -> share_local::Chosen {
+    share_local::gather(&paths)
 }
 
 /// Takes one file of an offer straight from the device that offers it,
@@ -1682,6 +1914,8 @@ async fn receive_direct(
     name: String,
     id: String,
     folder: Option<String>,
+    size: Option<u64>,
+    within: Option<String>,
 ) -> Answer<Received> {
     let shown = name.clone();
     receive_into(
@@ -1690,6 +1924,7 @@ async fn receive_direct(
         name,
         id,
         folder,
+        within,
         move |out, report, cancel| async move {
             basalt_client::direct::fetch(
                 &endpoint,
@@ -1700,6 +1935,8 @@ async fn receive_direct(
                 out,
                 Some(report),
                 Some(cancel),
+                // The size it was offered at: no more is taken.
+                size.unwrap_or(u64::MAX),
             )
             .await
         },
@@ -1709,6 +1946,7 @@ async fn receive_direct(
 
 /// Takes one file of an offer from a device nearby, agreed: it comes down
 /// the line its offer came up.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn nearby_take_file(
     app: tauri::AppHandle,
@@ -1718,6 +1956,7 @@ async fn nearby_take_file(
     name: String,
     id: String,
     folder: Option<String>,
+    within: Option<String>,
 ) -> Answer<Received> {
     let link = state
         .nearby_ready
@@ -1736,6 +1975,7 @@ async fn nearby_take_file(
         name,
         id,
         folder,
+        within,
         move |out, report, cancel| async move {
             link.take_file(file, &shown, out, Some(report), Some(cancel))
                 .await
@@ -1750,6 +1990,7 @@ async fn receive_into<F, Fut>(
     name: String,
     id: String,
     folder: Option<String>,
+    within: Option<String>,
     take: F,
 ) -> Answer<Received>
 where
@@ -1764,6 +2005,9 @@ where
         .insert(id.clone(), cancel.clone());
     let report = progress_reporter(app.clone(), id.clone(), name.clone(), "download");
     let safe = safe_local_name(&name);
+    // A shared folder's own folder for this file, made safe here too: it
+    // came from another device.
+    let within = basalt_proto::folder::clean_folder(within.as_deref().unwrap_or(""));
     #[cfg(target_os = "android")]
     let outcome = {
         let _ = folder;
@@ -1771,7 +2015,9 @@ where
         let handle = app.clone();
         let wanted = safe.clone();
         let created = tokio::task::spawn_blocking(move || {
-            handle.basalt_android().create_download(&wanted, "")
+            handle
+                .basalt_android()
+                .create_download_in(&wanted, "", &within)
         })
         .await
         .map_err(|e| UiError {
@@ -1797,22 +2043,47 @@ where
     };
     #[cfg(not(target_os = "android"))]
     let outcome = {
-        let dir = match folder.filter(|f| !f.trim().is_empty()) {
+        let base = match folder.filter(|f| !f.trim().is_empty()) {
             Some(folder) => PathBuf::from(folder),
             None => received_folder(&app)?,
         };
+        let dir = within_dir(&base, &within);
         std::fs::create_dir_all(&dir).map_err(|e| UiError {
             kind: "error".into(),
             message: format!("couldn’t make the folder {}: {e}", dir.display()),
         })?;
-        let local = free_name(&dir, &safe);
-        let out = std::fs::File::create(&local).map_err(|e| UiError {
+        // Written under another name, and given its own once it is whole (as
+        // a download is): a crash or a power cut part-way left half a film
+        // under the film's name, looking finished.
+        let tag: String = id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        let part = dir.join(format!(".{safe}.{tag}.part"));
+        let made = std::fs::File::create(&part).map_err(|e| UiError {
             kind: "error".into(),
-            message: format!("couldn’t write {}: {e}", local.display()),
-        })?;
-        let result = take(out, report, cancel).await;
+            message: format!("couldn’t write into {}: {e}", dir.display()),
+        });
+        let out = match made {
+            Ok(out) => out,
+            Err(e) => {
+                prune_empty(&dir, &base);
+                state.transfers.lock().expect("transfers lock").remove(&id);
+                return Err(e);
+            }
+        };
+        let taken = take(out, report, cancel).await;
+        let local = free_name(&dir, &safe);
+        let result = match taken {
+            Ok(bytes) => std::fs::rename(&part, &local)
+                .map(|_| bytes)
+                .map_err(basalt_client::ClientError::from),
+            Err(e) => Err(e),
+        };
         if result.is_err() {
-            let _ = std::fs::remove_file(&local);
+            let _ = std::fs::remove_file(&part);
+            // A folder made for it, and nothing in it: gone again.
+            prune_empty(&dir, &base);
         } else {
             mark_downloaded(&local);
         }
@@ -1835,6 +2106,7 @@ async fn share_hold(
     to: String,
     keep: bool,
     paths: Vec<String>,
+    folders: Option<Vec<String>>,
 ) -> Answer<basalt_proto::msg::HeldShare> {
     Ok(state
         .client
@@ -1844,17 +2116,12 @@ async fn share_hold(
             keep,
             paths,
             staged: Vec::new(),
+            folders: folders.unwrap_or_default(),
         })
         .await?)
 }
 
-/// A file on this device to keep on the host for a device that is away.
-#[derive(serde::Deserialize, serde::Serialize, Clone)]
-struct LocalFile {
-    source: String,
-    name: String,
-    size: u64,
-}
+use share_local::LocalFile;
 
 /// Keeps files on this device on the host for a device that is away: each
 /// uploaded first (`basalt://share-sending` says how far), then kept there.
@@ -1872,6 +2139,7 @@ async fn share_hold_local(
     let total: u64 = files.iter().map(|f| f.size).sum();
     let mut before = 0u64;
     let mut staged = Vec::new();
+    let folders: Vec<String> = files.iter().map(|f| f.folder.clone()).collect();
     for file in &files {
         let source = {
             let open = Arc::clone(&open);
@@ -1891,7 +2159,17 @@ async fn share_hold_local(
         let told = app.clone();
         let offer = id.clone();
         let from = before;
+        // About eight times a second, and the last: every piece redrew the
+        // Inbox (downloads and nearby sends were already held back so).
+        let last = std::sync::Mutex::new(None::<std::time::Instant>);
         let progress: basalt_client::client::ProgressFn = Arc::new(move |p| {
+            let complete = p.total > 0 && p.transferred >= p.total;
+            let mut at = last.lock().expect("progress lock");
+            if !complete && at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(120))
+            {
+                return;
+            }
+            *at = Some(std::time::Instant::now());
             let _ = told.emit(
                 "basalt://share-sending",
                 serde_json::json!({ "offer": offer, "done": from + p.transferred, "total": total }),
@@ -1916,6 +2194,7 @@ async fn share_hold_local(
             keep,
             paths: Vec::new(),
             staged,
+            folders,
         })
         .await?)
 }
@@ -1959,7 +2238,7 @@ async fn share_manage(
 }
 
 /// Takes one file of a share the host kept for this device into its
-/// received folder.
+/// received folder (inside `within`, for a shared folder).
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn receive_held(
@@ -1971,90 +2250,24 @@ async fn receive_held(
     size: u64,
     id: String,
     folder: Option<String>,
+    within: Option<String>,
 ) -> Answer<Received> {
-    let cancel = Cancel::new();
-    state
-        .transfers
-        .lock()
-        .expect("transfers lock")
-        .insert(id.clone(), cancel.clone());
-    let report = progress_reporter(app.clone(), id.clone(), name.clone(), "download");
-    let safe = safe_local_name(&name);
-    #[cfg(target_os = "android")]
-    let outcome = {
-        let _ = folder;
-        use tauri_plugin_basalt_android::BasaltAndroidExt;
-        let handle = app.clone();
-        let wanted = safe.clone();
-        let created = tokio::task::spawn_blocking(move || {
-            handle.basalt_android().create_download(&wanted, "")
-        })
-        .await
-        .map_err(|e| UiError {
-            kind: "error".into(),
-            message: e.to_string(),
-        })?
-        .map_err(|e| UiError {
-            kind: "error".into(),
-            message: format!("couldn’t save to Downloads: {e}"),
-        })?;
-        let result = state
-            .client
-            .download_held(
-                &share,
-                file,
-                size,
-                &name,
-                owned_file(created.fd),
-                Some(report),
-                Some(cancel),
-            )
-            .await;
-        let ok = result.is_ok();
-        let handle = app.clone();
-        let uri = created.uri.clone();
-        let _ =
-            tokio::task::spawn_blocking(move || handle.basalt_android().finish_download(&uri, ok))
-                .await;
-        result.map(|_| Received {
-            shown_as: created.shown_as,
-            path: None,
-            uri: Some(created.uri),
-        })
-    };
-    #[cfg(not(target_os = "android"))]
-    let outcome = {
-        let dir = match folder.filter(|f| !f.trim().is_empty()) {
-            Some(folder) => PathBuf::from(folder),
-            None => received_folder(&app)?,
-        };
-        std::fs::create_dir_all(&dir).map_err(|e| UiError {
-            kind: "error".into(),
-            message: format!("couldn’t make the folder {}: {e}", dir.display()),
-        })?;
-        let local = free_name(&dir, &safe);
-        let out = std::fs::File::create(&local).map_err(|e| UiError {
-            kind: "error".into(),
-            message: format!("couldn’t write {}: {e}", local.display()),
-        })?;
-        let result = state
-            .client
-            .download_held(&share, file, size, &name, out, Some(report), Some(cancel))
-            .await;
-        if result.is_err() {
-            let _ = std::fs::remove_file(&local);
-        } else {
-            mark_downloaded(&local);
-        }
-        let shown = local.display().to_string();
-        result.map(|_| Received {
-            shown_as: shown.clone(),
-            path: Some(shown),
-            uri: None,
-        })
-    };
-    state.transfers.lock().expect("transfers lock").remove(&id);
-    Ok(outcome?)
+    let client = Arc::clone(&state.client);
+    let shown = name.clone();
+    receive_into(
+        app,
+        &state,
+        name,
+        id,
+        folder,
+        within,
+        move |out, report, cancel| async move {
+            client
+                .download_held(&share, file, size, &shown, out, Some(report), Some(cancel))
+                .await
+        },
+    )
+    .await
 }
 
 /// The host's devices, and who of them is online now.
@@ -2264,9 +2477,27 @@ fn safe_local_name(remote: &str) -> String {
     let cleaned = cleaned.trim_end_matches(['.', ' ']).trim_start();
     if cleaned.is_empty() || cleaned.chars().all(|c| c == '.') {
         "file".to_string()
+    } else if reserved_on_windows(cleaned) {
+        // "CON.txt" can't be made on Windows: kept, with a mark.
+        format!("_{cleaned}")
     } else {
         cleaned.to_string()
     }
+}
+
+/// A name Windows keeps for its devices, whatever comes after its dot.
+fn reserved_on_windows(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end()
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0')
 }
 
 /// Kinds of file Windows runs when it opens them. Basalt never opens one of
@@ -2567,10 +2798,11 @@ async fn download_to_phone(
     state: State<'_, AppState>,
     remote: String,
     id: String,
+    within: String,
 ) -> Answer<SavedOnPhone> {
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (app, state, remote, id);
+        let _ = (app, state, remote, id, within);
         Err(UiError {
             kind: "error".into(),
             message: "only on Android".into(),
@@ -2584,7 +2816,9 @@ async fn download_to_phone(
         let handle = app.clone();
         let wanted = name.clone();
         let created = tokio::task::spawn_blocking(move || {
-            handle.basalt_android().create_download(&wanted, "")
+            handle
+                .basalt_android()
+                .create_download_in(&wanted, "", &within)
         })
         .await
         .map_err(|e| UiError {
@@ -2846,6 +3080,21 @@ async fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Whether closing the window leaves Basalt in a tray here: not on a phone,
+/// nor on a Linux desktop that shows no tray icons (What's new leaves its
+/// card about the tray out there).
+#[tauri::command]
+fn tray_shown() -> bool {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        tray::installed()
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        false
+    }
+}
+
 /// Whether a newer release exists. `None` means this is the newest.
 ///
 /// A failure to reach GitHub is an error rather than "no update": the two
@@ -3028,9 +3277,9 @@ pub fn run() {
         builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             use tauri::Emitter;
             tray::show(app, None);
-            let files = shared_in(&argv);
-            if !files.is_empty() {
-                let _ = app.emit("basalt://share-files", files);
+            let chosen = shared_in(&argv);
+            if !chosen.files.is_empty() || chosen.problem.is_some() {
+                let _ = app.emit("basalt://share-files", chosen);
             }
         }))
     };
@@ -3054,6 +3303,8 @@ pub fn run() {
                 Some(folder) => folder.join("client.json"),
                 None => basalt_client::store::default_path(),
             };
+            #[cfg(desktop)]
+            let _ = NEARBY_LOG.set(store_path.with_file_name("nearby.log"));
             // With the device's lasting id, so a reinstall is the same device
             // on the host rather than another of the same name. On Android the
             // id comes from the Java side; on Windows the client asks itself.
@@ -3076,6 +3327,12 @@ pub fn run() {
             {
                 use tauri_plugin_basalt_android::BasaltAndroidExt;
                 let _ = app.basalt_android().notices_at(&notices.to_string_lossy());
+                // Beside it: touched when a device on the Wi-Fi looks for this
+                // phone, read by Android's side before it opens a Wi-Fi of its
+                // own for someone sharing nearby (NearbyBle.heardSharing).
+                basalt_client::nearby::note_looked_for_in(
+                    store_path.with_file_name("nearby-looked-for"),
+                );
             }
             // The device's key goes in the phone's hardware key store there;
             // on Windows the client finds the TPM by itself.
@@ -3138,7 +3395,9 @@ pub fn run() {
                 direct: tokio::sync::OnceCell::new(),
                 nearby_ready: Mutex::new(None),
                 nearby_wifi: nearby_wifi::State::default(),
+                nearby_ble: nearby_ble::State::default(),
                 nearby_asking: Mutex::new(std::collections::HashMap::new()),
+                nearby_sending: Mutex::new(std::collections::HashMap::new()),
                 nearby_offers: Mutex::new(std::collections::HashMap::new()),
             });
 
@@ -3261,6 +3520,7 @@ pub fn run() {
             media_controls::media_controls_show,
             media_controls::media_controls_clear,
             app_version,
+            tray_shown,
             check_update,
             release_notes,
             set_device_form,
@@ -3305,12 +3565,15 @@ pub fn run() {
             music_timing::music_cancel,
             music_timing::music_set_rate,
             presence,
+            forget_profile_device,
+            nearby_log_show,
             channel_send,
             channel_take,
             receive_file,
             share_local,
             withdraw_local,
             local_files,
+            share_folder_root,
             receive_direct,
             share_hold,
             share_hold_local,
@@ -3326,6 +3589,12 @@ pub fn run() {
             nearby_firewall_allow,
             nearby_wifi_passphrase,
             nearby_wifi_host,
+            nearby_reach,
+            bluetooth_turn_on,
+            ble_ready,
+            ble_look,
+            ble_seen,
+            ble_wake,
             nearby_wifi_scan,
             nearby_wifi_join,
             nearby_wifi_leave,
@@ -3379,6 +3648,8 @@ pub fn run() {
                 {
                     api.prevent_close();
                     let _ = window.hide();
+                    use tauri::Emitter;
+                    let _ = window.emit("basalt://window-shown", false);
                 }
             }
             #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -3419,7 +3690,15 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_program, link_allowed, safe_local_name};
+    use super::{is_program, link_allowed, safe_local_name, within_dir};
+
+    #[test]
+    fn the_nearby_log_says_when_in_utc() {
+        assert_eq!(super::utc_at(0), "1970-01-01 00:00:00 UTC");
+        // A leap day, and the morning these were written.
+        assert_eq!(super::utc_at(951_782_400), "2000-02-29 00:00:00 UTC");
+        assert_eq!(super::utc_at(1_794_553_411), "2026-11-13 07:03:31 UTC");
+    }
 
     #[test]
     fn links_are_only_the_ones_the_capability_file_allows() {
@@ -3473,6 +3752,15 @@ mod tests {
             "Sintel (2010).mkv"
         );
         assert_eq!(safe_local_name("notes.txt. "), "notes.txt");
+        // A shared folder's files go under the received folder, never out.
+        let base = std::path::Path::new("received");
+        assert_eq!(within_dir(base, ""), base);
+        assert_eq!(within_dir(base, "Holiday/Day 1"), base.join("Holiday").join("Day 1"));
+        // Names Windows keeps for itself can't be made: kept, with a mark.
+        assert_eq!(safe_local_name("CON.txt"), "_CON.txt");
+        assert_eq!(safe_local_name("com1"), "_com1");
+        assert_eq!(safe_local_name("Console.txt"), "Console.txt");
+        assert_eq!(safe_local_name("COM0.log"), "COM0.log");
     }
 
     #[test]

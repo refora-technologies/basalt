@@ -9,9 +9,11 @@ export interface Presence {
   you: string
   /** False on a host from before 1.6.4, which can't say who is online. */
   supported: boolean
+  /** The host signs a profile out of one of its devices when asked. */
+  forget: boolean
 }
 
-const NONE: Presence = { devices: [], you: '', supported: true }
+const NONE: Presence = { devices: [], you: '', supported: true, forget: false }
 
 /**
  * Who of the host's devices is online, kept up to date: asked when a device
@@ -24,7 +26,7 @@ export function usePresence(who: string | null): Presence {
   const ask = useCallback(async () => {
     try {
       const answer = await api.presence()
-      setPresence({ devices: answer.devices, you: answer.you, supported: true })
+      setPresence({ devices: answer.devices, you: answer.you, supported: true, forget: answer.forget === true })
     } catch (e) {
       if (e instanceof ApiError && (e.kind === 'unsupported' || e.kind === 'incompatible')) {
         setPresence({ ...NONE, supported: false })
@@ -46,7 +48,9 @@ export function usePresence(who: string | null): Presence {
       if (document.visibilityState === 'visible') void ask()
     }
     document.addEventListener('visibilitychange', shown)
-    const timer = setInterval(() => void ask(), REFRESH_MS)
+    const timer = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void ask()
+    }, REFRESH_MS)
     return () => {
       gone = true
       stop?.()

@@ -289,6 +289,16 @@ impl Line {
     }
 
     /// A device that no longer belongs to the host: nothing more waits for it.
+    /// `device`, online, was signed out of `profile` from elsewhere: it is
+    /// no longer that profile's on the line (nor given its messages).
+    pub fn signed_out(&mut self, device: &str, profile: &str) {
+        if let Some(online) = self.online.get_mut(device)
+            && online.profile.as_deref() == Some(profile)
+        {
+            online.profile = None;
+        }
+    }
+
     pub fn forget_device(&mut self, device: &str) {
         self.for_device.remove(device);
         self.seen.remove(device);

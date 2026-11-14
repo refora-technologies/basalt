@@ -186,6 +186,17 @@ function ProfileDetail({
     if (ok) await m.act({ do: 'resetProfilePin', id: profile.id })
   }
 
+  /** One device lost, sold or lent: signed out of this profile there. */
+  const signOutOf = async (device: string, name: string): Promise<void> => {
+    const ok = await confirm({
+      title: `Remove ${name} from ${profile.name}?`,
+      message: `It’s signed out of ${profile.name} at once, and asks for the PIN to be ${profile.name}’s again. It stays in this home for the other profiles.`,
+      confirmLabel: 'Remove',
+      danger: true,
+    })
+    if (ok) await m.act({ do: 'signOutProfileDevice', id: profile.id, device })
+  }
+
   const remove = async (): Promise<void> => {
     // Files it keeps on the host for someone away: moved onto the drive, or deleted (D14).
     const held = tools.view.status.sharing?.profiles.find((p) => p.id === profile.id)?.used ?? 0
@@ -273,8 +284,23 @@ function ProfileDetail({
           <Rows>
             {profile.devices.map((device, i) => (
               <Row
-                key={`${device.name}-${i}`}
+                key={`${device.device ?? device.name}-${i}`}
                 title={device.name}
+                end={
+                  device.device ? (
+                    <button
+                      type="button"
+                      onClick={() => void signOutOf(device.device!, device.name)}
+                      aria-label={`Remove ${device.name} from ${profile.name}`}
+                      className={cn(
+                        'shrink-0 rounded-full border border-white/[0.12] text-textDim transition-colors hover:bg-white/[0.06] hover:text-text',
+                        phone ? 'px-3.5 py-1.5 text-[12.5px]' : 'px-2.5 py-1 text-[11.5px]',
+                      )}
+                    >
+                      Remove
+                    </button>
+                  ) : undefined
+                }
                 sub={`${
                   profile.home
                     ? device.remembered

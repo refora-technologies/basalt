@@ -7,6 +7,8 @@ export interface PromptRequest {
   /** Prefilled value. */
   value: string
   confirmLabel: string
+  /** What happens, said under the title when it isn't plain from it. */
+  note?: string
   /**
    * Characters to select on open. `stem` selects everything before the last
    * dot, which is what every file manager does on rename — nobody wants to
@@ -109,6 +111,7 @@ function Card({
       className="w-[360px] rounded-lg border border-white/10 bg-panel2 p-4 shadow-lift"
     >
       <h2 className="text-[13px] font-semibold text-text">{request.title}</h2>
+      {request.note && <p className="mt-1.5 text-[11.5px] leading-snug text-textDim">{request.note}</p>}
 
       <input
         ref={focusInput}

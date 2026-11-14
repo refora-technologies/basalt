@@ -45,6 +45,9 @@ mod imp {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const WIFI_OFF: &str =
         "this computer's Wi-Fi is off: turn it on (and flight mode off), then try again";
+    /// Said on the Nearby page after "Devices with no Wi-Fi in common can't
+    /// find this one: ". The page asks again a minute later.
+    pub const WIFI_DIRECT_TAKEN: &str = "another app is using this computer's Wi-Fi Direct (a cast to a TV, or Mobile hotspot). Devices on your Wi-Fi still find it";
 
     /// The Wi-Fi this computer hosts while it is ready, and the one it
     /// joined to share, with the one it was on before.
@@ -109,9 +112,25 @@ mod imp {
     }
 
     pub fn host(state: &State, ssid: &str, passphrase: &str) -> Result<(), String> {
-        stop_host(state);
+        let had = stop_host(state);
         if !wifi_on() {
             return Err(WIFI_OFF.into());
+        }
+        // Windows' Wi-Fi Direct holds one Wi-Fi of its own at a time. Started
+        // while another app holds it (a cast to a TV, Mobile hotspot, another
+        // Basalt), Windows asked the person whether to close that app's
+        // connection, for something they never asked for. So: not while it's
+        // taken. Our own, just stopped, takes a moment to go.
+        let mut taken = wifi_direct_taken();
+        for _ in 0..if had { 20 } else { 0 } {
+            if !taken {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            taken = wifi_direct_taken();
+        }
+        if taken {
+            return Err(WIFI_DIRECT_TAKEN.into());
         }
         let started = (|| -> windows::core::Result<WiFiDirectAdvertisementPublisher> {
             let publisher = WiFiDirectAdvertisementPublisher::new()?;
@@ -146,10 +165,61 @@ mod imp {
         Ok(())
     }
 
-    pub fn stop_host(state: &State) {
-        if let Some(publisher) = state.publisher.lock().expect("publisher lock").take() {
-            let _ = publisher.Stop();
+    /// Says whether there was one to stop.
+    pub fn stop_host(state: &State) -> bool {
+        match state.publisher.lock().expect("publisher lock").take() {
+            Some(publisher) => {
+                let _ = publisher.Stop();
+                true
+            }
+            None => false,
         }
+    }
+
+    /// One of Windows' Wi-Fi Direct adapters is up: a Wi-Fi Direct group is
+    /// open on this computer (someone's own Wi-Fi, a cast, Mobile hotspot).
+    /// Told by the adapter's name, which Windows gives every one of them.
+    fn wifi_direct_taken() -> bool {
+        use windows::Win32::NetworkManagement::IpHelper::{
+            GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
+            GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
+        };
+        use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+        use windows::Win32::Networking::WinSock::AF_UNSPEC;
+        const BUFFER_OVERFLOW: u32 = 111;
+        let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+        let mut size: u32 = 16 * 1024;
+        for _ in 0..4 {
+            // u64s, so the list Windows writes is aligned for its pointers.
+            let mut buffer = vec![0u64; (size as usize).div_ceil(8)];
+            let first = buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+            // SAFETY: a buffer of `size` bytes, as the call is told; on
+            // success it holds a linked list inside that buffer.
+            let code = unsafe {
+                GetAdaptersAddresses(AF_UNSPEC.0 as u32, flags, None, Some(first), &mut size)
+            };
+            if code == BUFFER_OVERFLOW {
+                continue;
+            }
+            if code != 0 {
+                return false;
+            }
+            let mut next = first as *const IP_ADAPTER_ADDRESSES_LH;
+            while !next.is_null() {
+                // SAFETY: an entry of the list just written, inside `buffer`.
+                let adapter = unsafe { &*next };
+                // SAFETY: Windows' own string for the adapter, or none.
+                let name = unsafe { adapter.Description.to_string() }.unwrap_or_default();
+                if adapter.OperStatus == IfOperStatusUp
+                    && name.to_ascii_lowercase().contains("wi-fi direct")
+                {
+                    return true;
+                }
+                next = adapter.Next;
+            }
+            return false;
+        }
+        false
     }
 
     /// The Basalt Wi-Fis around, after a fresh look.
@@ -292,13 +362,32 @@ mod imp {
         let _ = std::fs::remove_file(&file);
         added.map_err(|e| format!("couldn't add that Wi-Fi ({e})"))?;
         *state.joined.lock().expect("joined lock") = Some((ssid.to_string(), before));
-        netsh(&[
-            "wlan",
-            "connect",
-            &format!("name={ssid}"),
-            &format!("ssid={ssid}"),
-        ])
-        .map_err(|e| format!("couldn't join that device's Wi-Fi ({e})"))?;
+        // A Wi-Fi just opened for this (asked over Bluetooth) isn't in
+        // Windows' list yet, and it won't connect to one it hasn't seen:
+        // looked for until it is, a few times, then connected to.
+        let prefix = ssid.get(..14).unwrap_or(ssid);
+        for _ in 0..5 {
+            if scan(prefix).map(|found| found.iter().any(|f| f.ssid == ssid)).unwrap_or(false) {
+                break;
+            }
+        }
+        let mut connected = Err(String::new());
+        for _ in 0..3 {
+            connected = netsh(&[
+                "wlan",
+                "connect",
+                &format!("name={ssid}"),
+                &format!("ssid={ssid}"),
+            ]);
+            if connected.is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        if let Err(e) = connected {
+            leave(state);
+            return Err(format!("couldn't join that device's Wi-Fi ({e})"));
+        }
         // Joined, and given an address, within about twenty seconds.
         for _ in 0..40 {
             if connected_to(ssid) {
@@ -372,7 +461,7 @@ pub fn host(state: &State, me: &basalt_client::nearby::Me) -> Result<(), String>
 }
 
 pub fn stop_host(state: &State) {
-    imp::stop_host(state)
+    imp::stop_host(state);
 }
 
 pub fn scan() -> Result<Vec<Found>, String> {

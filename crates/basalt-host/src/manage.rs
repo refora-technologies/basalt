@@ -76,6 +76,9 @@ impl Host {
             ManageAction::ResetProfilePin { id } => {
                 self.reset_profile_pin(&id)?;
             }
+            ManageAction::SignOutProfileDevice { id, device } => {
+                self.sign_profile_out_of(&id, &device)?;
+            }
             ManageAction::SetRequireProfile { require } => self.set_require_profile(require)?,
             ManageAction::SetOwnerAddsProfiles { owner_only } => {
                 self.set_owner_adds_profiles(owner_only)?

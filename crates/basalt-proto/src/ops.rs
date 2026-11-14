@@ -191,6 +191,9 @@ pub enum Op {
     /// Devices playing together: start, join, change or leave a group whose
     /// state the host keeps; see [`crate::msg::MusicGroupRequest`]. From 1.6.4.
     MusicGroup = 55,
+    /// Signs the asker's profile out of another of its devices: see
+    /// [`crate::msg::ProfileForgetDeviceRequest`]. From 1.6.4.
+    ProfileForgetDevice = 56,
 }
 
 impl Op {
@@ -199,7 +202,7 @@ impl Op {
     /// Adding a variant means bumping this, and the tests below fail loudly if
     /// it is forgotten — `from_u8(LAST + 1)` would start succeeding, which is
     /// exactly the signal that the table and the enum have drifted apart.
-    pub const LAST: u8 = Op::MusicGroup as u8;
+    pub const LAST: u8 = Op::ProfileForgetDevice as u8;
 
     pub fn from_u8(v: u8) -> Result<Self> {
         Ok(match v {
@@ -258,6 +261,7 @@ impl Op {
             53 => Op::ShareManage,
             54 => Op::ShareStage,
             55 => Op::MusicGroup,
+            56 => Op::ProfileForgetDevice,
             other => return Err(ProtoError::UnknownOp(other)),
         })
     }
@@ -455,6 +459,7 @@ mod tests {
             Op::ShareManage,
             Op::ShareStage,
             Op::MusicGroup,
+            Op::ProfileForgetDevice,
         ] {
             assert!(
                 !op.allowed_unauthenticated(),

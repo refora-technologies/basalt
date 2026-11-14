@@ -309,6 +309,8 @@ export interface WhoProps {
   /** This profile's devices, with who is online; empty on an older host. */
   devices: PresentDevice[]
   you: string
+  /** The host can remove one of the profile's devices from it. */
+  canRemove?: boolean
 }
 
 /**
@@ -318,7 +320,7 @@ export interface WhoProps {
  * avatar and name, or the device on its own. The menu opens upwards, the only
  * way there is room for it.
  */
-function WhoChip({ profile, onSignIn, onSwitch, onSignOut, devices, you }: WhoProps): React.JSX.Element {
+function WhoChip({ profile, onSignIn, onSwitch, onSignOut, devices, you, canRemove }: WhoProps): React.JSX.Element {
   const online = devices.filter((d) => d.online && d.device !== you).length
   const [open, setOpen] = useState(false)
   const choose = (action: () => void) => () => {
@@ -373,7 +375,7 @@ function WhoChip({ profile, onSignIn, onSwitch, onSignOut, devices, you }: WhoPr
                   <div className="px-2.5 pb-0.5 pt-1.5 font-mono text-[9.5px] uppercase tracking-[0.16em] text-textFaint">
                     Your devices
                   </div>
-                  <YourDevices devices={devices} you={you} compact />
+                  <YourDevices devices={devices} you={you} compact profileName={canRemove ? profile.name : undefined} />
                 </div>
               )}
               {profile ? (

@@ -1982,3 +1982,68 @@ async fn a_profiles_devices_see_and_steer_each_others_music() {
     let _ = std::fs::remove_file(phone_store);
     let _ = std::fs::remove_file(other_store);
 }
+
+// ---------------------------------------------------------------------------
+// A profile's own devices
+// ---------------------------------------------------------------------------
+
+/// A phone of Maya's is lost: from her laptop she removes it from her
+/// profile. The phone is signed out at once, stays paired, and needs the PIN
+/// to be Maya's again; the laptop can't remove itself this way.
+#[tokio::test]
+async fn a_profile_removes_one_of_its_devices_and_the_pin_is_asked_there() {
+    let fixture = start_host().await;
+    let laptop = fixture.paired_client().await;
+    let maya = laptop
+        .create_profile("Maya", "2468", 0, true)
+        .await
+        .expect("a profile");
+    let phone_store = unique("lost-phone-store").with_extension("json");
+    let phone = Arc::new(Basalt::open(phone_store.clone()).unwrap());
+    fixture.pair(&phone).await.expect("the phone pairs");
+    phone
+        .sign_in_profile(&maya.id, "2468", true)
+        .await
+        .expect("the phone signs in as Maya");
+
+    let seen = laptop.presence().await.unwrap();
+    assert!(seen.forget, "this host can remove a profile's devices");
+    let lost = seen
+        .devices
+        .iter()
+        .find(|d| d.device != seen.you && d.profile.as_deref() == Some(maya.id.as_str()))
+        .expect("the phone is listed as Maya's")
+        .device
+        .clone();
+
+    assert!(
+        laptop.forget_profile_device(&seen.you).await.is_err(),
+        "not itself"
+    );
+    assert!(laptop.forget_profile_device(&lost).await.unwrap());
+    assert!(
+        !laptop.forget_profile_device(&lost).await.unwrap(),
+        "once is enough"
+    );
+
+    // The phone carries on as itself, and its app is told to ask who it is.
+    let _ = phone.presence().await;
+    let now = phone.identity().await;
+    assert!(
+        now.ended && now.profile.is_none(),
+        "the phone's sign-in ended"
+    );
+    let after = laptop.presence().await.unwrap();
+    assert!(
+        after
+            .devices
+            .iter()
+            .any(|d| d.device == lost && d.profile.is_none()),
+        "still the home's, no longer Maya's"
+    );
+    phone
+        .sign_in_profile(&maya.id, "2468", true)
+        .await
+        .expect("with the PIN, Maya's again");
+    let _ = std::fs::remove_file(phone_store);
+}

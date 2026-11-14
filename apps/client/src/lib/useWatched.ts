@@ -79,10 +79,24 @@ export function useWatched(host: string | null, who = ''): WatchedLibrary {
     setAll([])
     if (!host) return
     void sync()
-    const timer = setInterval(() => {
-      void sync()
-    }, playing.current ? WHILE_PLAYING_MS : IDLE_MS)
-    return () => clearInterval(timer)
+    // Each time, as things are then: the rate was chosen once, at the start.
+    let timer: ReturnType<typeof setTimeout>
+    const next = (): void => {
+      timer = setTimeout(() => {
+        // Hidden, with nothing playing here: asked again once it's shown.
+        if (playing.current || document.visibilityState !== 'hidden') void sync()
+        next()
+      }, playing.current ? WHILE_PLAYING_MS : IDLE_MS)
+    }
+    next()
+    const shown = (): void => {
+      if (document.visibilityState !== 'hidden') void sync()
+    }
+    document.addEventListener('visibilitychange', shown)
+    return () => {
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', shown)
+    }
   }, [host, sync, who])
 
   const report = useCallback(

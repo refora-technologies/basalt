@@ -19,17 +19,17 @@ const household = [
 
 describe('your devices', () => {
   it('are the profile’s, this one first, then online, then by name', () => {
-    const mine = ownDevices({ devices: household, you: 'phone', supported: true })
+    const mine = ownDevices({ devices: household, you: 'phone', supported: true, forget: false })
     expect(mine.map((d) => d.device)).toEqual(['phone', 'laptop', 'tablet'])
   })
 
   it('are only this one when it is signed in to no profile', () => {
-    const mine = ownDevices({ devices: household, you: 'loner', supported: true })
+    const mine = ownDevices({ devices: household, you: 'loner', supported: true, forget: false })
     expect(mine.map((d) => d.device)).toEqual(['loner'])
   })
 
   it('are none before the host has answered', () => {
-    expect(ownDevices({ devices: [], you: '', supported: true })).toEqual([])
+    expect(ownDevices({ devices: [], you: '', supported: true, forget: false })).toEqual([])
   })
 })
 

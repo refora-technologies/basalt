@@ -1,3 +1,4 @@
+import { sharedFolder } from './shareFolders'
 import type { ChannelMessage, PresentDevice } from './api'
 
 /**
@@ -20,6 +21,12 @@ export interface ShareFile {
    * sent straight across rather than from the drive. Only the sender knows it.
    */
   source?: string
+  /**
+   * In a shared folder: its own folder there, from the folder's name down
+   * ("Holiday/Day 1"). The device taking it makes the same folders. Absent
+   * for a file shared on its own, and from devices before 1.6.4.
+   */
+  folder?: string
 }
 
 /** Where to take an offer's files from when they are on the sending device. */
@@ -160,10 +167,78 @@ export const OFFER_TTL_MS = 10 * 60_000
 export function unanswered(items: ShareItem[], now: number): ShareItem[] {
   return items.filter(
     (i) =>
-      i.state === 'waiting' &&
-      now - i.at > OFFER_TTL_MS &&
-      (i.direction === 'out' ? !i.reason : !!i.offer && !i.offer.held),
+      (i.state === 'waiting' &&
+        now - i.at > OFFER_TTL_MS &&
+        (i.direction === 'out' ? !i.reason : !!i.offer && !i.offer.held)) ||
+      (i.direction === 'in' && i.state === 'moving' && i.reason === COMING_THROUGH_HOST && now - (i.since ?? i.at) > THROUGH_HOST_TTL_MS),
   )
+}
+
+/** Said on a share received here that couldn't come straight across, while it comes through the host. */
+export const COMING_THROUGH_HOST = 'Couldn’t reach it directly: coming through the host'
+
+/**
+ * Said out loud, on whichever screen is open, when a share switches to the
+ * host: the line on its row alone went unseen, and the sender looked as if
+ * nothing had happened while the other device showed nothing coming.
+ */
+export function throughHostSaid(direction: 'in' | 'out', peer: string): string {
+  return direction === 'out'
+    ? `Couldn’t reach ${peer} directly: sending it through your host instead`
+    : `Couldn’t reach ${peer} directly: it’s coming through your host instead`
+}
+
+/**
+ * How long a share received here waits to come through the host, from when
+ * it couldn't come straight across: the sender sends it up to the host first,
+ * which for a big file over Wi-Fi takes a while. A sender that never does (one
+ * from before this worked, or gone) leaves it waiting otherwise, at 0%, until
+ * the app starts again.
+ */
+export const THROUGH_HOST_TTL_MS = 30 * 60_000
+
+/**
+ * How long a share sent from here may go without a word from the device
+ * taking it (it says how far it has come about once a second) before this
+ * side stops saying "sending". Long, as a phone taking it with Basalt in
+ * the background goes quiet while the file still comes.
+ */
+export const SILENT_TTL_MS = 10 * 60_000
+
+/** Said on a share sent through the host, once it is all there. */
+export const ON_THE_HOST = 'On the host until it’s taken'
+
+/**
+ * The shares sent from here that have gone silent at `now`: moving, and no
+ * word of them since `heardAt` says (or since `since`, when this app
+ * started, for one it has heard nothing of yet). The device taking it was
+ * switched off, or left the Wi-Fi for good: before, its row said "sending"
+ * at the same figure for ever, through every restart. One that goes by the
+ * host (it has a reason) waits as the host says.
+ */
+export function goneSilent(items: ShareItem[], heardAt: (id: string) => number | undefined, since: number, now: number): ShareItem[] {
+  return items.filter(
+    (i) => i.direction === 'out' && i.state === 'moving' && !i.reason && now - Math.max(heardAt(i.id) ?? 0, i.at, since) > SILENT_TTL_MS,
+  )
+}
+
+/** What a share that went silent says: not that it failed, as this side can't know. */
+export function endedSilent(item: ShareItem): ShareItem {
+  return { ...item, state: 'failed', reason: `Lost touch with ${item.peer.name} before it finished. Check there whether it arrived.` }
+}
+
+/**
+ * Whether a share sent from here can be stopped from here: its files are on
+ * this device and go straight across. One read from the drive, or gone up to
+ * the host (it has a reason), is no longer this device's to stop.
+ */
+export function canTakeBack(item: ShareItem): boolean {
+  return item.direction === 'out' && (item.state === 'waiting' || item.state === 'moving') && !item.reason && item.files.some((f) => !!f.source)
+}
+
+/** A share stopped by the person who sent it. */
+export function takenBack(item: ShareItem): ShareItem {
+  return { ...item, state: 'failed', reason: item.state === 'moving' ? 'You stopped it.' : 'You took it back.' }
 }
 
 /** What an unanswered share says once it has ended. */
@@ -172,7 +247,12 @@ export function endedUnanswered(item: ShareItem): ShareItem {
     ...item,
     state: 'failed',
     offer: undefined,
-    reason: item.direction === 'out' ? 'No answer in 10 minutes.' : 'Not answered in 10 minutes: ask them to send it again.',
+    reason:
+      item.state === 'moving'
+        ? 'It didn’t come through the host: ask them to send it again.'
+        : item.direction === 'out'
+          ? 'No answer in 10 minutes.'
+          : 'Not answered in 10 minutes: ask them to send it again.',
   }
 }
 
@@ -201,10 +281,40 @@ export interface ShareItem {
   savedAs?: string
   /** Each file as it landed here: to open, show in its folder, or share on. */
   saved?: SavedFile[]
-  /** Why it failed, or was declined. */
+  /** A shared folder received here: where it is, to show it. */
+  folderPath?: string
+  /** Why it failed, or was declined; or, while moving, what is happening. */
   reason?: string
+  /** When it began coming through the host instead, Unix ms. */
+  since?: number
   /** The offer itself, kept while it waits for an answer here. */
   offer?: OfferBody
+}
+
+/**
+ * The files as they go in an offer: where each is on this device stays here
+ * (only the sender knows it, and it is nobody else's business).
+ */
+export function toldOf(files: ShareFile[]): ShareFile[] {
+  return files.map(({ source: _, ...rest }) => rest)
+}
+
+/**
+ * A share sent from here, as this device keeps it: its files with where they
+ * are here, so that if the receiver can't reach this device straight across,
+ * the same files can go through the host. Kept without them (as in the
+ * offer), every share sent straight across that couldn't reach the receiver
+ * just failed: the Sony on 2026-11-12, behind a sender it couldn't reach.
+ */
+export function sentItem(offer: OfferBody, files: ShareFile[], at: number): ShareItem {
+  return { id: offer.offer, direction: 'out', files, peer: offer.to, state: 'waiting', at }
+}
+
+/** The files of a share sent from here that can go through the host instead: all on this device. */
+export function throughHostFiles(sent: ShareItem): { source: string; name: string; size: number; folder?: string }[] | null {
+  if (sent.direction !== 'out' || sent.files.length === 0) return null
+  if (!sent.files.every((f) => f.source)) return null
+  return sent.files.map((f) => ({ source: f.source!, name: f.name, size: f.size, ...(f.folder ? { folder: f.folder } : {}) }))
 }
 
 /** A file received here, and where it is. */
@@ -225,8 +335,17 @@ export function totalOf(files: ShareFile[]): number {
 /** "Holiday 2026.mkv", or "Trip photos and 22 more". */
 export function titleOf(files: ShareFile[]): string {
   if (files.length === 0) return 'Nothing'
+  // A shared folder is called by its name, and how many files it holds.
+  const folder = sharedFolder(files)
+  if (folder) return `${folder} (${files.length} ${files.length === 1 ? 'file' : 'files'})`
   if (files.length === 1) return files[0]!.name
   return `${files[0]!.name} and ${files.length - 1} more`
+}
+
+/** What an offer is, as said in "… wants to send you a folder". */
+export function whatIsSent(files: { folder?: string }[]): string {
+  if (sharedFolder(files)) return 'a folder'
+  return files.length === 1 ? 'a file' : `${files.length} files`
 }
 
 /** Files a device should never open by itself: programs and scripts. */
@@ -234,6 +353,21 @@ const PROGRAM = /\.(exe|msi|bat|cmd|com|scr|ps1|vbs|js|jar|apk|aab|sh|app|dmg|de
 
 export function isProgram(name: string): boolean {
   return PROGRAM.test(name.trim())
+}
+
+/**
+ * An offer with its sender as the host stamped the message: the device and
+ * profile it came from. A message the host made itself (a share it kept)
+ * carries the sender's own. What the offer says of its sender is kept only
+ * for its names.
+ */
+export function trustedOffer(offer: OfferBody, message: { fromDevice: string; fromProfile?: string }): OfferBody {
+  return { ...offer, from: { ...offer.from, device: message.fromDevice, profile: message.fromProfile } }
+}
+
+/** Whether the host says a message came from a device of `myProfile`. */
+export function fromMyProfile(message: { fromProfile?: string }, myProfile: string | undefined): boolean {
+  return myProfile !== undefined && message.fromProfile === myProfile
 }
 
 /**
@@ -278,6 +412,38 @@ export function targetsOf(devices: PresentDevice[], you: string): Targets {
   return { mine, home, loose }
 }
 
+/**
+ * The list as it was, brought up to date without moving anything: each row
+ * keeps its place and takes the device's news (online, name); a device new to
+ * the list joins the end of its part; one gone from it keeps its row as it was
+ * last seen. The share sheet shows this while it is open: rebuilt each time
+ * "who is online" came back, a device going on or off line jumped rows and a
+ * refresh that came back empty for a moment dropped whole parts, so a tap
+ * landed on the row that had moved under the finger.
+ */
+export function steadyTargets(before: Targets | null, now: Targets): Targets {
+  if (!before) return now
+  const shown = (t: Targets): PresentDevice[] => [...t.mine, ...t.home.flatMap((g) => g.devices), ...t.loose]
+  const fresh = new Map(shown(now).map((d) => [d.device, d]))
+  const had = new Set(shown(before).map((d) => d.device))
+  const keep = (old: PresentDevice[], joining: PresentDevice[]): PresentDevice[] => [
+    ...old.map((d) => fresh.get(d.device) ?? d),
+    ...joining.filter((d) => !had.has(d.device)),
+  ]
+  const groups = new Map(now.home.map((g) => [g.profile, g]))
+  const home = before.home.map((g) => {
+    const latest = groups.get(g.profile)
+    return { ...g, ...(latest ? { name: latest.name, color: latest.color } : {}), devices: keep(g.devices, latest?.devices ?? []) }
+  })
+  const kept = new Set(before.home.map((g) => g.profile))
+  for (const g of now.home) {
+    if (kept.has(g.profile)) continue
+    const devices = g.devices.filter((d) => !had.has(d.device))
+    if (devices.length > 0) home.push({ ...g, devices })
+  }
+  return { mine: keep(before.mine, now.mine), home, loose: keep(before.loose, now.loose) }
+}
+
 /** A device as a party to a share. */
 export function partyOf(device: PresentDevice): Party {
   return {
@@ -311,6 +477,9 @@ export function apply(items: ShareItem[], message: ChannelMessage): ShareItem[] 
         body.answer === 'accepted' ? 'moving' : body.answer === 'done' ? 'done' : body.answer === 'declined' ? 'declined' : 'failed'
       // An answer never takes a share backwards: a late "accepted" after "done" stays done.
       if (rank(state) < rank(item.state)) return item
+      // And one that has ended stays as it ended (stopped here, say), unless
+      // it turns out to have arrived after all.
+      if (rank(item.state) === 2 && state !== 'done') return item
       // The host removed it before it was taken ("Clear share files"): no device took it.
       const takenOn = body.answer === 'removed' ? item.takenOn : body.by.device !== item.peer.device ? body.by.name : item.takenOn
       // An answer always moves it on, so why it waited ("On the host until

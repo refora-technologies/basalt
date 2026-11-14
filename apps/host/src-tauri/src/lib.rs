@@ -412,6 +412,18 @@ async fn set_sections(
     status(state).await
 }
 
+/// Signs a profile out of one device (lost, sold or lent): the device stays
+/// the home's, and asks for the PIN to use the profile again.
+#[tauri::command]
+async fn sign_out_profile_device(
+    state: State<'_, AppState>,
+    id: String,
+    device: String,
+) -> Answer<HostStatus> {
+    state.host.sign_profile_out_of(&id, &device)?;
+    status(state).await
+}
+
 #[tauri::command]
 async fn reset_profile_pin(state: State<'_, AppState>, id: String) -> Answer<HostStatus> {
     state.host.reset_profile_pin(&id)?;
@@ -505,11 +517,18 @@ async fn open_vault_folder(state: State<'_, AppState>, app: tauri::AppHandle) ->
 /// nobody is looking. The drive is shared by this process either way.
 const FREE_WHEN_CLOSED: bool = cfg!(target_os = "linux");
 
+/// Tells the page whether its window is on screen: hiding a window doesn't,
+/// and its polling went on in the tray all day (see windowShown.ts).
+fn say_shown<R: tauri::Runtime>(window: &impl tauri::Emitter<R>, shown: bool) {
+    let _ = window.emit("basalt://window-shown", shown);
+}
+
 fn show_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        say_shown(&window, true);
         return;
     }
     // Freed when it was closed: made again, as it was configured.
@@ -1121,6 +1140,7 @@ pub fn run() {
                 if !FREE_WHEN_CLOSED {
                     api.prevent_close();
                     let _ = window.hide();
+                    say_shown(window, false);
                 }
             }
         })
@@ -1166,6 +1186,7 @@ pub fn run() {
             set_tmdb_key,
             set_fanart_key,
             reset_profile_pin,
+            sign_out_profile_device,
             remove_profile,
             add_profile,
             set_require_profile,

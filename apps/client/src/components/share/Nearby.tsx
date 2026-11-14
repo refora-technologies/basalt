@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDown, Check, Laptop, Lock, Monitor, Radio, Send, ShieldAlert, Smartphone, Tablet, Wifi, X } from 'lucide-react'
+import { ArrowDown, Bluetooth, Check, FolderOpen, Laptop, Lock, Monitor, Radio, Send, ShieldAlert, Smartphone, Tablet, Wifi, X } from 'lucide-react'
 
 import type { NearbyDevice, NearbyMe } from '@/lib/api'
 import type { Incoming, Nearby, Outgoing } from '@/lib/useNearby'
 import { useNearbyDevices } from '@/lib/useNearby'
-import { isProgram, percentOf, progressLine, titleOf, totalOf, type ShareFile, type ShareItem } from '@/lib/share'
+import { isProgram, percentOf, progressLine, titleOf, totalOf, whatIsSent, type ShareFile, type ShareItem } from '@/lib/share'
 import { cn, formatBytes } from '@/lib/utils'
 import { HandoffMark, JoiningMark, LookingDots, markForm } from './WaitingMarks'
 import { Switch } from '@/components/Switch'
+import { Tip } from './Tip'
 import { openSaved, ShareStatus } from './Share'
 import { isLinuxDesktop } from '@/lib/platform'
 
@@ -75,7 +76,11 @@ export function NearbyDeviceRow({
       <span className="min-w-0 flex-1">
         <NearbyName device={device} className="text-[14.5px] text-text" />
         <span className="flex items-center gap-1 text-[12px] text-textFaint">
-          {device.ssid ? (
+          {device.ble || (device.ssid && device.form) ? (
+            <>
+              <Bluetooth size={11} /> By Bluetooth · code needed
+            </>
+          ) : device.ssid ? (
             <>
               <Wifi size={11} /> Direct connection · code needed
             </>
@@ -204,6 +209,11 @@ export function NearbySending({
           <JoiningMark className="mx-auto text-text" />
           <p className="mt-3 text-[14px] text-text">Connecting to</p>
           <NearbyName device={device} className="mt-1 justify-center text-[16px] font-semibold text-text" />
+          {sending.waitingForThem && (
+            <p className="mt-2 text-[13px] leading-snug text-text [text-wrap:pretty]">
+              Waiting for them to open Basalt. Their phone shows a notification to tap.
+            </p>
+          )}
           <p className="mt-2 text-[12.5px] leading-snug text-textFaint">
             You’re not on the same Wi-Fi, so this {phone ? 'phone' : 'computer'} connects to it directly for a moment.
             {phone ? ' If Android asks, choose Connect.' : ' Your Wi-Fi comes back when it’s done.'}
@@ -309,6 +319,7 @@ export function NearbyChooser({
         to={chosen ? `${chosen.name} · ${chosen.id}` : 'the other device'}
         progress={item ? nearby.progressOf(item) : null}
         onDone={onDone}
+        onCancel={item?.state === 'moving' ? () => nearby.cancel(offer) : undefined}
       />
     )
   }
@@ -498,7 +509,7 @@ export function NearbyPrompt({
         </span>
         <span className="min-w-0">
           <span className={cn('block font-semibold text-text', compact ? 'text-[13.5px]' : 'text-[15px]')}>
-            A device nearby wants to send you {offer.files.length === 1 ? 'a file' : `${offer.files.length} files`}
+            A device nearby wants to send you {whatIsSent(offer.files)}
           </span>
           <NearbyName device={offer.from} className="text-[12.5px] text-textDim" />
         </span>
@@ -556,6 +567,9 @@ export function NearbySwitches({ nearby, className }: { nearby: Nearby; classNam
         onChange={nearby.setReady}
         className={className}
       />
+      {nearby.ready && !nearby.alwaysCode && (
+        <Tip id="nearby-code" art="code" title="Busy place? Ask for a code" line="They type the code on your screen." className="mx-4 mb-3 mt-1" />
+      )}
       <Switch
         label="Always ask for a code"
         description="Before a file is sent, the receiver sees a 6-digit code and the sender enters it. Good for busy places. Applies if either device has it on."
@@ -563,6 +577,7 @@ export function NearbySwitches({ nearby, className }: { nearby: Nearby; classNam
         onChange={nearby.setAlwaysCode}
         className={className}
       />
+      {nearby.ready && (nearby.readyNote || nearby.wifiNote) && <ReachNote nearby={nearby} />}
       {nearby.ready && nearby.firewall === 'blocked' && (
         <div className="mx-4 my-2 flex items-start gap-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] px-3.5 py-3">
           <ShieldAlert size={16} className="mt-0.5 shrink-0 text-amber-300" />
@@ -605,13 +620,23 @@ export function NearbyScreen({
   nearby,
   phone,
   pickFiles,
+  pickFolder,
 }: {
   nearby: Nearby
   phone?: boolean
   /** Files on this device, chosen: none if the person changed their mind. */
   pickFiles: () => Promise<ShareFile[]>
+  /** A folder on this device, as its files (a computer's; a phone picks files). */
+  pickFolder?: () => Promise<ShareFile[]>
 }): React.JSX.Element {
   const [files, setFiles] = useState<ShareFile[] | null>(null)
+  const [problem, setProblem] = useState<string | null>(null)
+  const chose = (picking: Promise<ShareFile[]>): void => {
+    setProblem(null)
+    void picking
+      .then((chosen) => chosen.length > 0 && setFiles(chosen))
+      .catch((e: unknown) => setProblem(e instanceof Error ? e.message : String(e)))
+  }
   return (
     <div className="flex min-h-0 flex-col">
       {nearby.me && (
@@ -621,9 +646,6 @@ export function NearbyScreen({
         </div>
       )}
       <NearbySwitches nearby={nearby} className="px-5" />
-      {nearby.ready && nearby.wifiNote && (
-        <p className="mx-5 mt-1 rounded-xl bg-white/[0.04] px-3 py-2 text-[12px] leading-snug text-textDim">{nearby.wifiNote}</p>
-      )}
       <div className="px-5 pb-1 pt-4 font-mono text-[10px] uppercase tracking-[0.16em] text-textFaint">Send</div>
       {files ? (
         <div className="flex min-h-0 flex-col">
@@ -635,7 +657,7 @@ export function NearbyScreen({
       ) : (
         <div className="px-5">
           <button
-            onClick={() => void pickFiles().then((chosen) => chosen.length > 0 && setFiles(chosen))}
+            onClick={() => chose(pickFiles())}
             className="flex w-full items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 py-3 text-left hover:bg-white/[0.05] active:bg-white/[0.06]"
           >
             <Send size={17} className="shrink-0 text-textDim" />
@@ -644,7 +666,58 @@ export function NearbyScreen({
               <span className="block text-[12px] text-textFaint">Any file on this {phone ? 'phone' : 'computer'}. No drive or shared Wi-Fi needed.</span>
             </span>
           </button>
+          {pickFolder && (
+            <button
+              onClick={() => chose(pickFolder())}
+              className="mt-2 flex w-full items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 py-3 text-left hover:bg-white/[0.05] active:bg-white/[0.06]"
+            >
+              <FolderOpen size={17} className="shrink-0 text-textDim" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-[14px] text-text">Send a folder to a device nearby</span>
+                <span className="block text-[12px] text-textFaint">Everything in it arrives in a folder of the same name.</span>
+              </span>
+            </button>
+          )}
+          {problem && <p className="mt-2 text-[12.5px] text-danger">{problem}</p>}
         </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * What keeps devices that aren't on this Wi-Fi from reaching this one, and
+ * the one button that puts it right where there is one: Bluetooth or Wi-Fi
+ * off, the "nearby devices" permission not given.
+ */
+function ReachNote({ nearby }: { nearby: Nearby }): React.JSX.Element {
+  const action = nearby.readyNote
+    ? null
+    : nearby.reach === 'bluetooth'
+      ? 'Turn on'
+      : nearby.reach === 'wifi'
+        ? 'Turn on'
+        : nearby.reach === 'ask'
+          ? 'Allow'
+          : nearby.reach === 'denied'
+            ? 'Settings'
+            : null
+  return (
+    <div className="mx-4 my-2 flex items-center gap-3 rounded-xl border border-white/[0.1] bg-white/[0.04] px-3.5 py-3">
+      {nearby.reach === 'bluetooth' ? (
+        <Bluetooth size={16} className="shrink-0 text-textDim" />
+      ) : (
+        <Radio size={16} className="shrink-0 text-textDim" />
+      )}
+      <p className="min-w-0 flex-1 text-[12.5px] leading-snug text-textDim [text-wrap:pretty]">{nearby.readyNote ?? nearby.wifiNote}</p>
+      {action && (
+        <button
+          type="button"
+          onClick={nearby.fixReach}
+          className="shrink-0 rounded-full bg-white px-3.5 py-1.5 text-[12.5px] font-semibold text-black active:scale-[0.98]"
+        >
+          {action}
+        </button>
       )}
     </div>
   )

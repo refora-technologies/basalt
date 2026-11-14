@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-bluetooth-turn-on"
+description = "Enables the bluetooth_turn_on command without any pre-configured scope."
+commands.allow = ["bluetooth_turn_on"]
+
+[[permission]]
+identifier = "deny-bluetooth-turn-on"
+description = "Denies the bluetooth_turn_on command without any pre-configured scope."
+commands.deny = ["bluetooth_turn_on"]

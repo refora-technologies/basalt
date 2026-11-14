@@ -82,6 +82,8 @@ class OpenFdArgs {
 class CreateDownloadArgs {
   lateinit var name: String
   var mime: String? = null
+  /** A shared folder's own folder for it, made safe by the app ("Holiday/Day 1"). */
+  var folder: String? = null
 }
 
 @InvokeArg
@@ -186,6 +188,21 @@ class CancelShareArgs {
 }
 
 @InvokeArg
+class BleReadyArgs {
+  var info: String = ""
+  var ssid: String = ""
+  var passphrase: String = ""
+}
+
+class BleLookArgs {
+  var on: Boolean = false
+}
+
+class BleWakeArgs {
+  var address: String = ""
+  var from: String = ""
+}
+
 class NearbyWifiArgs {
   var ssid: String = ""
   var passphrase: String = ""
@@ -266,6 +283,28 @@ class MpvPropertyArgs {
       alias = "nearbyWifi",
     ),
     Permission(strings = [Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION], alias = "location"),
+    // Nearby by Bluetooth (see NearbyBle): one "nearby devices" question on
+    // Android 13+ (Bluetooth and its own Wi-Fi); on 12, Bluetooth and location,
+    // which its own Wi-Fi still needs there; before 12, location alone.
+    Permission(
+      strings = [
+        Manifest.permission.BLUETOOTH_SCAN,
+        Manifest.permission.BLUETOOTH_ADVERTISE,
+        Manifest.permission.BLUETOOTH_CONNECT,
+        Manifest.permission.NEARBY_WIFI_DEVICES,
+      ],
+      alias = "nearby33",
+    ),
+    Permission(
+      strings = [
+        Manifest.permission.BLUETOOTH_SCAN,
+        Manifest.permission.BLUETOOTH_ADVERTISE,
+        Manifest.permission.BLUETOOTH_CONNECT,
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION,
+      ],
+      alias = "nearby31",
+    ),
     Permission(strings = [LocalNetwork.PERMISSION], alias = LocalNetwork.ALIAS),
   ]
 )
@@ -763,6 +802,9 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
       }
       else -> return false
     }
+    // Never Basalt's own files: another app handing in an address inside
+    // Basalt's private folders (its pairing keys) would have them sent on.
+    uris.removeAll { ownPrivate(it) }
     if (uris.isEmpty()) return false
     for (uri in uris) shared.add(describe(uri))
     // Handled: a second resume must not offer the same files again.
@@ -792,12 +834,15 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   fun createDownload(invoke: Invoke) {
     val args = invoke.parseArgs(CreateDownloadArgs::class.java)
     val mime = args.mime?.takeIf { it.isNotEmpty() } ?: mimeOf(args.name)
+    // Its folder inside Download/Basalt: the app made it safe; looked at again.
+    val within = (args.folder ?: "").split('/').filter { it.isNotBlank() && it != "." && it != ".." }.joinToString("/")
+    val under = if (within.isEmpty()) "Basalt" else "Basalt/$within"
     try {
       if (Build.VERSION.SDK_INT >= 29) {
         val values = ContentValues().apply {
           put(MediaStore.Downloads.DISPLAY_NAME, args.name)
           put(MediaStore.Downloads.MIME_TYPE, mime)
-          put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Basalt")
+          put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/" + under)
           put(MediaStore.Downloads.IS_PENDING, 1)
         }
         val uri = activity.contentResolver.insert(
@@ -809,11 +854,11 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
           JSObject()
             .put("uri", uri.toString())
             .put("fd", pfd.detachFd())
-            .put("shownAs", "Download/Basalt/${args.name}")
+            .put("shownAs", "Download/$under/${args.name}")
         )
       } else {
         @Suppress("DEPRECATION")
-        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Basalt")
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), under)
         dir.mkdirs()
         var file = File(dir, args.name)
         var n = 1
@@ -833,7 +878,7 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
           JSObject()
             .put("uri", Uri.fromFile(file).toString())
             .put("fd", pfd.detachFd())
-            .put("shownAs", "Download/Basalt/${file.name}")
+            .put("shownAs", "Download/$under/${file.name}")
         )
       }
     } catch (e: Exception) {
@@ -884,6 +929,23 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     }
     start(invoke, Intent.createChooser(intent, null))
   }
+
+  /** Whether `uri` points into Basalt's own private files. */
+  private fun ownPrivate(uri: Uri): Boolean = runCatching {
+    when (uri.scheme) {
+      "file" -> {
+        val path = File(uri.path ?: return@runCatching true).canonicalPath
+        val mine = listOfNotNull(
+          activity.applicationInfo.dataDir,
+          activity.filesDir.parent,
+          activity.getExternalFilesDir(null)?.parentFile?.canonicalPath,
+        ).map { File(it).canonicalPath }
+        mine.any { path == it || path.startsWith(it + File.separator) }
+      }
+      "content" -> uri.authority == activity.packageName + ".fileprovider"
+      else -> true
+    }
+  }.getOrDefault(true)
 
   /** A file:// address becomes one another app is allowed to open. */
   private fun shareable(uri: Uri): Uri =
@@ -1223,7 +1285,7 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   // A nearby device's own Wi-Fi: see NearbyWifi
   // ---------------------------------------------------------------------------
 
-  private val nearbyWifi: NearbyWifi by lazy { NearbyWifi(activity.applicationContext) }
+  private val nearbyWifi: NearbyWifi by lazy { NearbyWifi.shared(activity.applicationContext) }
 
   private fun nearbyAlias(): String = if (Build.VERSION.SDK_INT >= 33) "nearbyWifi" else "location"
 
@@ -1296,6 +1358,111 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun nearbyLeave(invoke: Invoke) {
     nearbyWifi.leave { invoke.resolve() }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Devices nearby found by Bluetooth: see NearbyBle
+  // ---------------------------------------------------------------------------
+
+  private fun bleAlias(): String = when {
+    Build.VERSION.SDK_INT >= 33 -> "nearby33"
+    Build.VERSION.SDK_INT >= 31 -> "nearby31"
+    else -> "location"
+  }
+
+  /**
+   * Whether this phone can reach devices that aren't on its Wi-Fi now:
+   * `ready`, or the first thing in the way, in the order to put it right
+   * (`unsupported`, `ask`, `bluetooth`, `wifi`, `location`).
+   */
+  private fun bleState(): String {
+    NearbyBle.init(activity)
+    val granted = getPermissionState(bleAlias()).toString() == "granted"
+    return when {
+      Build.VERSION.SDK_INT < 29 -> "unsupported"
+      NearbyBle.state() == "unsupported" -> "unsupported"
+      !granted -> "ask"
+      NearbyBle.state() == "off" -> "bluetooth"
+      !nearbyWifi.wifiOn() -> "wifi"
+      // Looking over Bluetooth needs Location on, before Android 12.
+      Build.VERSION.SDK_INT <= 30 && !nearbyWifi.locationOn() -> "location"
+      else -> "ready"
+    }
+  }
+
+  @Command
+  fun nearbyState(invoke: Invoke) {
+    invoke.resolve(JSObject().put("state", bleState()))
+  }
+
+  @Command
+  fun requestNearby(invoke: Invoke) {
+    requestPermissionForAlias(bleAlias(), invoke, "nearbyAnswered")
+  }
+
+  @PermissionCallback
+  fun nearbyAnswered(invoke: Invoke) {
+    val granted = getPermissionState(bleAlias()).toString() == "granted"
+    invoke.resolve(JSObject().put("state", if (!granted) "denied" else bleState()))
+  }
+
+  /** Bluetooth off: Android's own "turn on Bluetooth?" over the app. */
+  @Command
+  fun bluetoothTurnOn(invoke: Invoke) {
+    activity.runOnUiThread {
+      runCatching { activity.startActivity(Intent(android.bluetooth.BluetoothAdapter.ACTION_REQUEST_ENABLE)) }
+      invoke.resolve()
+    }
+  }
+
+  /** Ready: says it's here over Bluetooth, and opens its own Wi-Fi when asked. */
+  @Command
+  fun bleReady(invoke: Invoke) {
+    val args = invoke.parseArgs(BleReadyArgs::class.java)
+    NearbyBle.init(activity)
+    NearbyBle.ready(args.info, args.ssid, args.passphrase) { why ->
+      if (why == null) invoke.resolve() else invoke.reject(why)
+    }
+  }
+
+  @Command
+  fun bleStop(invoke: Invoke) {
+    NearbyBle.init(activity)
+    NearbyBle.stopReady()
+    invoke.resolve()
+  }
+
+  @Command
+  fun bleLook(invoke: Invoke) {
+    val args = invoke.parseArgs(BleLookArgs::class.java)
+    NearbyBle.init(activity)
+    activity.runOnUiThread {
+      val why = NearbyBle.look(args.on)
+      if (why == null) invoke.resolve() else invoke.reject(why)
+    }
+  }
+
+  /** The devices found by Bluetooth lately: each one's address, what it said about itself, and its signal. */
+  @Command
+  fun bleSeen(invoke: Invoke) {
+    NearbyBle.init(activity)
+    activity.runOnUiThread {
+      val list = JSArray()
+      for (f in NearbyBle.seen()) {
+        list.put(JSObject().put("address", f[0]).put("info", f[1]).put("rssi", f[2]).put("open", f[3]))
+      }
+      invoke.resolve(JSObject().put("found", list))
+    }
+  }
+
+  /** Asks a device found by Bluetooth to open its Wi-Fi; resolves once it has. */
+  @Command
+  fun bleWake(invoke: Invoke) {
+    val args = invoke.parseArgs(BleWakeArgs::class.java)
+    NearbyBle.init(activity)
+    NearbyBle.wake(args.address, args.from) { why ->
+      if (why == null) invoke.resolve() else invoke.reject(why)
+    }
   }
 
   /** A share's notification taken away: answered here, or nothing more to say. */
