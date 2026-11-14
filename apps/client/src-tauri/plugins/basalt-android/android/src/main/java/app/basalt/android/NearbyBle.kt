@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
@@ -20,7 +21,10 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -76,6 +80,8 @@ object NearbyBle {
   private const val NOBODY_CAME_MS = 2 * 60_000L
   /** And once everyone has left it, after this. */
   private const val ALL_LEFT_MS = 45_000L
+  /** The longest it stays open with nobody on it, however often it's asked. */
+  private const val MOST_OPEN_MS = 10 * 60_000L
   /** Listening, our own Wi-Fi stays open this long after the last "sharing nearby". */
   private const val SHARING_GONE_MS = 60_000L
   /** A device sharing is told we're here again after this long. */
@@ -109,6 +115,54 @@ object NearbyBle {
       override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
       override fun onActivityDestroyed(activity: Activity) {}
     })
+    // Bluetooth switched off and on again (flight mode, the quick settings):
+    // Android drops everything said and answered over it, and tells nobody.
+    // Basalt went on believing it was saying it's here, so the phone could
+    // not be found by Bluetooth again until Basalt was started afresh.
+    val changed = object : BroadcastReceiver() {
+      override fun onReceive(context: Context, intent: Intent) {
+        when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+          BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> main.post { bluetoothWentOff() }
+          BluetoothAdapter.STATE_ON -> main.post { bluetoothCameOn() }
+        }
+      }
+    }
+    val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+    runCatching {
+      if (Build.VERSION.SDK_INT >= 33) this.context.registerReceiver(changed, filter, Context.RECEIVER_NOT_EXPORTED)
+      else this.context.registerReceiver(changed, filter)
+    }
+  }
+
+  /** What was asked for last, to say again once Bluetooth is back. */
+  private var readyWanted: Triple<String, String, String>? = null
+  private var lookWanted = false
+
+  /** Bluetooth is off: nothing is said, answered or heard any more, whatever this believed. */
+  private fun bluetoothWentOff() {
+    if (!readyOn && scanning == null && server == null) return
+    log("Bluetooth went off: everything said over it is gone")
+    readyOn = false
+    advertising = null
+    listening = null
+    scanning = null
+    beaconing = null
+    runCatching { server?.close() }
+    server = null
+    services.clear()
+    added.clear()
+    pieces.clear()
+    found.clear()
+    here.clear()
+  }
+
+  /** Bluetooth is back: said again, as it was asked for. */
+  private fun bluetoothCameOn() {
+    readyWanted?.let { (info, ssid, passphrase) ->
+      log("Bluetooth is back: saying it's here again")
+      ready(info, ssid, passphrase) { why -> if (why != null) log("couldn't say it's here again: $why") }
+    }
+    if (lookWanted) look(true)?.let { log("couldn't look again: $it") }
   }
 
   /** How long the asking device keeps trying (see useNearby's send). */
@@ -301,7 +355,9 @@ object NearbyBle {
       override fun onStartFailure(errorCode: Int) = done("Bluetooth couldn't say so ($errorCode).")
     }
     val settings = AdvertiseSettings.Builder()
-      .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
+      // Ready all day, so the gentlest: a device looking scans hard, and still
+      // finds this within a second or two.
+      .setAdvertiseMode(if (uuid == SERVICE) AdvertiseSettings.ADVERTISE_MODE_LOW_POWER else AdvertiseSettings.ADVERTISE_MODE_BALANCED)
       .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
       .setConnectable(true)
       .setTimeout(0)
@@ -332,6 +388,8 @@ object NearbyBle {
   private var passphrase = ""
   /** Our own Wi-Fi is open for someone, since when. */
   private var openedAt = 0L
+  /** When it opened first, this time: asks keep `openedAt` fresh, not this. */
+  private var firstOpenedAt = 0L
   private var lastSomeoneOn = 0L
   private var watching = false
   /** Ready but can't be found: listening for devices sharing nearby. */
@@ -353,6 +411,7 @@ object NearbyBle {
       info = infoJson.toByteArray()
       this.ssid = ssid
       this.passphrase = passphrase
+      readyWanted = Triple(infoJson, ssid, passphrase)
       if (readyOn) {
         openIfAsked()
         return@post done(null)
@@ -394,6 +453,7 @@ object NearbyBle {
   /** Not ready any more: says nothing, answers nothing, and closes a Wi-Fi it opened. */
   fun stopReady() {
     main.post {
+      readyWanted = null
       readyOn = false
       stopAdvertising(advertising)
       advertising = null
@@ -485,6 +545,7 @@ object NearbyBle {
     wifi.host(ssid, passphrase) { why ->
       if (why == null) {
         openedAt = SystemClock.elapsedRealtime()
+        firstOpenedAt = openedAt
         lastSomeoneOn = 0L
         watchOwnWifi()
       }
@@ -513,6 +574,7 @@ object NearbyBle {
         if (count != null && count > 0) lastSomeoneOn = now
         val sharingNearby = listening != null && now - sharingHeard < SHARING_GONE_MS
         when {
+          (count ?: 0) == 0 && now - firstOpenedAt > MOST_OPEN_MS -> closeOwnWifi("open long enough")
           sharingNearby -> {}
           lastSomeoneOn == 0L && now - openedAt > NOBODY_CAME_MS -> closeOwnWifi("nobody came")
           lastSomeoneOn > 0L && (count ?: 0) == 0 && now - lastSomeoneOn > ALL_LEFT_MS -> closeOwnWifi("everyone left")
@@ -541,6 +603,7 @@ object NearbyBle {
   /** Looks for devices that are ready while `on`, and says "sharing nearby". */
   fun look(on: Boolean): String? {
     val adapter = manager()?.adapter
+    lookWanted = on
     if (!on) {
       scanning?.let { cb -> runCatching { adapter?.bluetoothLeScanner?.stopScan(cb) } }
       scanning = null

@@ -800,6 +800,9 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
       }
       else -> return false
     }
+    // Never Basalt's own files: another app handing in an address inside
+    // Basalt's private folders (its pairing keys) would have them sent on.
+    uris.removeAll { ownPrivate(it) }
     if (uris.isEmpty()) return false
     for (uri in uris) shared.add(describe(uri))
     // Handled: a second resume must not offer the same files again.
@@ -921,6 +924,23 @@ class BasaltPlugin(private val activity: Activity) : Plugin(activity) {
     }
     start(invoke, Intent.createChooser(intent, null))
   }
+
+  /** Whether `uri` points into Basalt's own private files. */
+  private fun ownPrivate(uri: Uri): Boolean = runCatching {
+    when (uri.scheme) {
+      "file" -> {
+        val path = File(uri.path ?: return@runCatching true).canonicalPath
+        val mine = listOfNotNull(
+          activity.applicationInfo.dataDir,
+          activity.filesDir.parent,
+          activity.getExternalFilesDir(null)?.parentFile?.canonicalPath,
+        ).map { File(it).canonicalPath }
+        mine.any { path == it || path.startsWith(it + File.separator) }
+      }
+      "content" -> uri.authority == activity.packageName + ".fileprovider"
+      else -> true
+    }
+  }.getOrDefault(true)
 
   /** A file:// address becomes one another app is allowed to open. */
   private fun shareable(uri: Uri): Uri =

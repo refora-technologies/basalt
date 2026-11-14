@@ -98,6 +98,8 @@ mod imp {
     const NOBODY_CAME: Duration = Duration::from_secs(2 * 60);
     /// And once the last offer over it has ended, after this.
     const ALL_DONE: Duration = Duration::from_secs(45);
+    /// The longest it stays open with nothing coming over it.
+    const MOST_OPEN: Duration = Duration::from_secs(10 * 60);
 
     struct Heard {
         address: u64,
@@ -430,8 +432,13 @@ mod imp {
                 let request = args.GetRequestAsync()?.get()?;
                 let from = String::from_utf8_lossy(&bytes(&request.Value()?)?).to_string();
                 basalt_client::nearby::note(&format!("bluetooth: {from} asks this computer to open its Wi-Fi"));
-                let result = open(true);
+                // Open already: left as it is. Opened again, it closed and
+                // reopened under a device on it, and anyone in Bluetooth
+                // range could do that over and over.
+                let already = opened.lock().expect("opened").is_some();
+                let result = if already { Ok(()) } else { open(true) };
                 match &result {
+                    Ok(()) if already => basalt_client::nearby::note("bluetooth: its Wi-Fi is open already"),
                     Ok(()) => {
                         let first = opened.lock().expect("opened").replace(Instant::now()).is_none();
                         if first {
@@ -466,6 +473,7 @@ mod imp {
     /// opened because someone nearby was sharing (`sharing`), not while they
     /// still are.
     fn close_when_done(opened: Arc<Mutex<Option<Instant>>>, open: Opener, sharing: Option<Arc<Mutex<Option<Instant>>>>) {
+        let first = Instant::now();
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(10));
             let Some(since) = *opened.lock().expect("opened") else {
@@ -474,6 +482,14 @@ mod imp {
             let (now, quiet) = basalt_client::nearby::receiving();
             if now > 0 {
                 continue;
+            }
+            // Never open longer than MOST_OPEN with nothing coming over it,
+            // however often someone nearby says they're sharing.
+            if first.elapsed() > MOST_OPEN && quiet.is_none_or(|q| q.elapsed() > ALL_DONE) {
+                *opened.lock().expect("opened") = None;
+                basalt_client::nearby::note("bluetooth: closing its Wi-Fi, open long enough");
+                let _ = open(false);
+                return;
             }
             let still_sharing = sharing
                 .as_ref()
