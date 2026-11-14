@@ -103,6 +103,8 @@ import { useMusicMine } from '@/lib/useMusicMine'
 import { ownDevices, usePresence } from '@/lib/usePresence'
 import { useInbox } from '@/lib/useInbox'
 import type { ShareFile } from '@/lib/share'
+import { filesToShare, localToShare } from '@/lib/shareFolders'
+import type { ChosenFiles } from '@/lib/api'
 import { InboxPage, NearbyDialog, NearbyOfferCard, OfferCard, ShareDialog, ShareSaid } from '@/components/share/DesktopShare'
 import { useNearby } from '@/lib/useNearby'
 import { useNearbyNotifications } from '@/components/share/nearbyNotifications'
@@ -167,9 +169,16 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
   // opens for them. Several chosen at once come one by one: gathered.
   useEffect(() => {
     if (!inTauri() || isAndroid()) return undefined
-    const open = (files: { source: string; name: string; size: number }[]): void => {
-      if (files.length === 0) return
-      const more: ShareFile[] = files.map((f) => ({ name: f.name, size: f.size, path: '', source: f.source }))
+    const open = (chosen: ChosenFiles): void => {
+      let more: ShareFile[]
+      try {
+        more = localToShare(chosen)
+      } catch (e) {
+        // A folder with nothing to send, or too much: said, not ignored.
+        setNotice(e instanceof Error ? e.message : String(e))
+        return
+      }
+      if (more.length === 0) return
       setSharing((was) => {
         const all = [...(was ?? []).filter((f) => f.source), ...more]
         return all.filter((f, n) => all.findIndex((g) => g.source === f.source) === n)
@@ -633,6 +642,26 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     [downloadToPhone, mobile, transfers],
   )
 
+  /**
+   * Opens the Share window for what is chosen in Files: files as they are,
+   * a folder as everything in it, each in its own folder there. A folder's
+   * files are gathered from the host first; what can't go is said.
+   */
+  const shareEntries = useCallback(async (chosen: Entry[]) => {
+    if (chosen.every((e) => e.kind === 'file')) {
+      setSharing(chosen.map((e) => ({ name: e.name, size: e.size, path: e.id })))
+      return
+    }
+    setNotice('Gathering the folder’s files…')
+    try {
+      const files = await filesToShare(chosen, (path) => api.list(path))
+      setNotice(null)
+      setSharing(files)
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
   const downloadMany = useCallback(
     async (chosen: Entry[]) => {
       const files = chosen.filter((e) => e.kind === 'file')
@@ -1063,14 +1092,12 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
       })
 
       // To another of the host's devices: one of this person's, or someone
-      // else's in the home. Files for now; a folder is a later build.
-      const shareable = chosen.filter((e) => e.kind === 'file')
+      // else's in the home. A folder goes as everything in it.
       if (!tv && presence.supported && presence.you !== '') items.push({
         id: 'share',
-        label: many ? `Share ${shareable.length} files…` : 'Share…',
+        label: many ? (chosen.every((e) => e.kind === 'file') ? `Share ${chosen.length} files…` : `Share ${chosen.length} items…`) : 'Share…',
         icon: Send,
-        disabled: shareable.length === 0,
-        run: () => setSharing(shareable.map((e) => ({ name: e.name, size: e.size, path: e.id }))),
+        run: () => void shareEntries(chosen),
       })
 
       if (writable && !tv) {
@@ -1156,6 +1183,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
       openEntry,
       openExternally,
       downloadMany,
+      shareEntries,
       actions,
       askRename,
       stars,
@@ -1456,6 +1484,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     confirm,
     confirmDialog,
     actions,
+    shareEntries,
     identity,
     profileId,
     signingIn,
@@ -2015,12 +2044,14 @@ function DesktopApp({ model }: { model: AppModel }): React.JSX.Element {
                 presence={presence}
                 inbox={inbox}
                 nearby={model.nearby}
-                onSendLocal={() =>
-                  void pickFiles()
-                    .then((paths) => (paths.length > 0 ? api.localFiles(paths) : []))
-                    .then((files) => {
-                      if (files.length > 0) setSharing(files.map((f) => ({ name: f.name, size: f.size, path: '', source: f.source })))
+                onSendLocal={(what) =>
+                  void (what === 'folder' ? pickFolder().then((p) => (p ? [p] : [])) : pickFiles())
+                    .then((paths) => (paths.length > 0 ? api.localFiles(paths) : { files: [] }))
+                    .then((chosen) => {
+                      const files = localToShare(chosen)
+                      if (files.length > 0) setSharing(files)
                     })
+                    .catch((e: unknown) => setNotice(e instanceof Error ? e.message : String(e)))
                 }
               />
             ) : nav === 'settings' ? (

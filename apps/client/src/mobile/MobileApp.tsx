@@ -512,11 +512,10 @@ function Shell({ model, onChangeDrive }: { model: AppModel; onChangeDrive: () =>
             onSelectAll={() => setSelected(new Set(entries.map((e) => e.id)))}
             onDownload={() => void model.downloadMany(chosen)}
             onShare={
-              sharingHere && chosen.some((e) => e.kind === 'file')
+              sharingHere && chosen.length > 0
                 ? () => {
-                    model.setSharing(
-                      chosen.filter((e) => e.kind === 'file').map((e) => ({ name: e.name, size: e.size, path: e.id })),
-                    )
+                    // A folder goes as everything in it.
+                    void model.shareEntries(chosen)
                     setSelected(new Set())
                   }
                 : undefined

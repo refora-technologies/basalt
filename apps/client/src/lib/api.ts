@@ -517,7 +517,7 @@ export interface NearbyDevice extends NearbyMe {
 
 /** What happens on this device while it is ready for nearby shares. */
 export type NearbyReadyEvent =
-  | { kind: 'offer'; ask: string; from: NearbyMe; files: { name: string; size: number }[]; code: boolean }
+  | { kind: 'offer'; ask: string; from: NearbyMe; files: { name: string; size: number; folder?: string }[]; code: boolean }
   | { kind: 'code'; ask: string; code: string }
   | { kind: 'wrongCode'; ask: string; left: number }
   /** Agreed: each file is taken with `nearbyTakeFile`, down the line the offer came up. */
@@ -534,7 +534,7 @@ export interface HeldShare {
   id: string
   to: string
   toName: string
-  files: { name: string; size: number }[]
+  files: { name: string; size: number; folder?: string }[]
   created: number
   keep: boolean
   state: 'waiting' | 'accepted' | 'declined'
@@ -891,8 +891,8 @@ export const api = {
    * Takes a file shared with this device from the drive into its received
    * folder (`folder`, or the usual one), never over a file already there.
    */
-  receiveFile: (remote: string, id: string, folder?: string) =>
-    call<{ shownAs: string; path?: string; uri?: string }>('receive_file', { remote, id, folder: folder ?? null }),
+  receiveFile: (remote: string, id: string, folder?: string, within?: string) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('receive_file', { remote, id, folder: folder ?? null, within: within ?? null }),
   /**
    * A notification from the system, with up to two buttons (label, action).
    * What is pressed comes back by `onNotification`, with `tag`. On a computer;
@@ -907,7 +907,12 @@ export const api = {
     call<{ endpoint: { addresses: string[]; port: number; key: string }; token: string }>('share_local', { offer, sources }),
   withdrawLocal: (offer: string) => call<void>('withdraw_local', { offer }),
   /** Files picked on this computer, with their sizes. */
-  localFiles: (paths: string[]) => call<{ source: string; name: string; size: number }[]>('local_files', { paths }),
+  localFiles: (paths: string[]) => call<ChosenFiles>('local_files', { paths }),
+  /**
+   * The name a shared folder takes in the received folder (`folder`, or the
+   * usual one): its own, or "Holiday (1)" when one of that name is there.
+   */
+  shareFolderRoot: (top: string, folder?: string) => call<string>('share_folder_root', { top, folder: folder ?? null }),
   /** Takes one file of an offer straight from the device that offers it. */
   receiveDirect: (
     endpoint: { addresses: string[]; port: number; key: string },
@@ -919,6 +924,8 @@ export const api = {
     folder?: string,
     /** Its size as offered: a sender that sends more is refused. */
     size?: number,
+    /** For a shared folder: its own folder, under the received folder. */
+    within?: string,
   ) =>
     call<{ shownAs: string; path?: string; uri?: string }>('receive_direct', {
       endpoint,
@@ -929,6 +936,7 @@ export const api = {
       id,
       folder: folder ?? null,
       size: size ?? null,
+      within: within ?? null,
     }),
   /** This device's name and short id, as devices nearby see them. */
   nearbyWhoami: () => call<NearbyMe>('nearby_whoami'),
@@ -960,29 +968,29 @@ export const api = {
   /** Leaves it: back to the Wi-Fi before. */
   nearbyWifiLeave: () => call<void>('nearby_wifi_leave'),
   /** How far taking the files from a device nearby has come, for its sender. */
-  nearbyTakeFile: (ask: string, file: number, name: string, id: string, folder?: string) =>
-    call<{ shownAs: string; path?: string; uri?: string }>('nearby_take_file', { ask, file, name, id, folder: folder ?? null }),
+  nearbyTakeFile: (ask: string, file: number, name: string, id: string, folder?: string, within?: string) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('nearby_take_file', { ask, file, name, id, folder: folder ?? null, within: within ?? null }),
   /** How taking the files from a device nearby went. */
   nearbyFinish: (ask: string, answer: 'done' | 'failed') => call<void>('nearby_finish', { ask, answer }),
   /** The devices nearby ready to receive, on this Wi-Fi. */
   nearbyFind: () => call<NearbyDevice[]>('nearby_find'),
   /** Files Basalt was opened to share ("Share with Basalt" in Explorer), once. */
-  sharedAtStart: () => call<{ source: string; name: string; size: number }[]>('shared_at_start'),
+  sharedAtStart: () => call<ChosenFiles>('shared_at_start'),
   /** A step of sharing nearby, into the device's own log (Android's logcat). */
   nearbyNote: (line: string) => call<void>('nearby_note', { line }),
   /** Offers files on this device to one nearby, and waits for the answer there. */
-  nearbyOffer: (device: NearbyDevice, offer: string, files: { source: string; name: string; size: number }[], alwaysCode: boolean) =>
+  nearbyOffer: (device: NearbyDevice, offer: string, files: LocalShareFile[], alwaysCode: boolean) =>
     call<NearbySaid>('nearby_offer', { device, offer, files, alwaysCode }),
   /** The code shown on the device nearby, typed here. */
   nearbyCode: (offer: string, code: string) => call<NearbyCodeSaid>('nearby_code', { offer, code }),
   /** Stops an offer to a device nearby. */
   nearbyCancel: (offer: string) => call<void>('nearby_cancel', { offer }),
   /** Files on this device, uploaded to the host and kept for `to`; `onShareSending` says how far. */
-  shareHoldLocal: (id: string, to: string, keep: boolean, files: { source: string; name: string; size: number }[]) =>
+  shareHoldLocal: (id: string, to: string, keep: boolean, files: LocalShareFile[]) =>
     call<HeldShare>('share_hold_local', { id, to, keep, files }),
-  /** Keeps files on the drive on the host, locked, for a device that's away. */
-  shareHold: (id: string, to: string, keep: boolean, paths: string[]) =>
-    call<HeldShare>('share_hold', { id, to, keep, paths }),
+  /** Keeps files on the drive on the host, locked, for a device that's away; `folders`, each one's in a shared folder. */
+  shareHold: (id: string, to: string, keep: boolean, paths: string[], folders?: string[]) =>
+    call<HeldShare>('share_hold', { id, to, keep, paths, folders: folders ?? null }),
   /** This device's answer to a share the host kept for it. */
   shareAnswer: (id: string, accepted: boolean) => call<void>('share_answer', { id, accepted }),
   /** What this profile has kept on the host, and the space kept files take. */
@@ -993,8 +1001,8 @@ export const api = {
   shareManage: (action: 'delete' | 'move' | 'again', id: string, folder = '', again?: { to: string; id: string; keep: boolean }) =>
     call<void>('share_manage', { action, id, folder, to: again?.to ?? null, again: again?.id ?? null, keep: again?.keep ?? null }),
   /** Takes one file of a share the host kept for this device. */
-  receiveHeld: (share: string, file: number, name: string, size: number, id: string, folder?: string) =>
-    call<{ shownAs: string; path?: string; uri?: string }>('receive_held', { share, file, name, size, id, folder: folder ?? null }),
+  receiveHeld: (share: string, file: number, name: string, size: number, id: string, folder?: string, within?: string) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('receive_held', { share, file, name, size, id, folder: folder ?? null, within: within ?? null }),
   /** Where shared files land unless another folder is chosen. */
   defaultReceivedFolder: () => call<string>('default_received_folder'),
   /** The host's devices and who of them is online. Throws on a host before 1.6.4. */
@@ -1214,10 +1222,25 @@ export async function onNearbySent(handler: (said: { offer: string; answer: stri
 }
 
 /** Files to share, from Explorer while Basalt runs ("Share with Basalt", Send to). */
-export async function onShareFiles(handler: (files: { source: string; name: string; size: number }[]) => void): Promise<() => void> {
+export async function onShareFiles(handler: (chosen: ChosenFiles) => void): Promise<() => void> {
   if (!inTauri()) return () => {}
   const { listen } = await import('@tauri-apps/api/event')
-  return listen<{ source: string; name: string; size: number }[]>('basalt://share-files', (e) => handler(e.payload))
+  return listen<ChosenFiles>('basalt://share-files', (e) => handler(e.payload))
+}
+
+/** A file on this device to share: where it is here, its name and size, and its folder inside a folder chosen. */
+export interface LocalShareFile {
+  source: string
+  name: string
+  size: number
+  /** Inside a shared folder: its own folder there ("Holiday/Day 1"). */
+  folder?: string
+}
+
+/** Files chosen on this device (a folder's included), or why they can't go. */
+export interface ChosenFiles {
+  files: LocalShareFile[]
+  problem?: string
 }
 
 /** How far files on this device have gone up to the host, for a share kept there. */
@@ -1911,7 +1934,9 @@ async function mock<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     case 'share_local':
       return { endpoint: { addresses: ['127.0.0.1'], port: 1, key: '' }, token: '' } as T
     case 'local_files':
-      return [] as T
+      return { files: [] } as T
+    case 'share_folder_root':
+      return String(args?.top ?? 'Shared') as T
     case 'receive_direct':
       return { shownAs: 'Downloads\Basalt\file' } as T
     case 'receive_file':

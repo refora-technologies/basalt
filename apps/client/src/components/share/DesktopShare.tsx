@@ -10,7 +10,8 @@ import type { ShareFile, ShareItem } from '@/lib/share'
 import { InboxList, ReceivePrompt, ShareChooser, shareKey } from './Share'
 import { NearbyPrompt, NearbyReceiving, NearbyScreen, useNearbyFollow } from './Nearby'
 import { api } from '@/lib/api'
-import { pickFiles } from '@/lib/dialogs'
+import { pickFiles, pickFolder } from '@/lib/dialogs'
+import { localToShare } from '@/lib/shareFolders'
 import { inTauri } from '@/lib/api'
 import type { Nearby } from '@/lib/useNearby'
 
@@ -138,8 +139,13 @@ export function NearbyDialog({ nearby }: { nearby: Nearby }): React.JSX.Element 
                   if (!inTauri()) return [{ name: 'Holiday 2026.mp4', size: 88_700_000, path: '', source: 'Holiday 2026.mp4' }]
                   const paths = await pickFiles()
                   if (paths.length === 0) return []
-                  const files = await api.localFiles(paths)
-                  return files.map((f) => ({ name: f.name, size: f.size, path: '', source: f.source }))
+                  return localToShare(await api.localFiles(paths))
+                }}
+                pickFolder={async () => {
+                  if (!inTauri()) return []
+                  const path = await pickFolder()
+                  if (!path) return []
+                  return localToShare(await api.localFiles([path]))
                 }}
               />
             </div>
@@ -218,8 +224,8 @@ export function InboxPage({
   presence: Presence
   inbox: Inbox
   nearby: Nearby
-  /** Picks files on this computer and opens the Share window for them. */
-  onSendLocal: () => void
+  /** Picks files, or a folder, on this computer and opens the Share window for them. */
+  onSendLocal: (what: 'files' | 'folder') => void
 }): React.JSX.Element {
   const [page, setPage] = useState<'in' | 'out'>('in')
   const [answering, setAnswering] = useState<ShareItem | null>(null)
@@ -263,16 +269,25 @@ export function InboxPage({
               </button>
             )}
             {page === 'out' && (
-              <button
-                onClick={onSendLocal}
-                className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 py-3 text-left hover:bg-white/[0.05]"
-              >
+              <div className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 py-3">
                 <Send size={17} className="shrink-0 text-textDim" />
                 <span className="min-w-0 flex-1">
                   <span className="block text-[14px] text-text">Send from this computer</span>
-                  <span className="block text-[12px] text-textFaint">Any file on this computer, straight to another device</span>
+                  <span className="block text-[12px] text-textFaint">Files or a whole folder, straight to another device</span>
                 </span>
-              </button>
+                <button
+                  onClick={() => onSendLocal('files')}
+                  className="shrink-0 rounded-full border border-white/[0.12] px-3.5 py-1.5 text-[12.5px] text-text hover:bg-white/[0.06]"
+                >
+                  Files…
+                </button>
+                <button
+                  onClick={() => onSendLocal('folder')}
+                  className="shrink-0 rounded-full border border-white/[0.12] px-3.5 py-1.5 text-[12.5px] text-text hover:bg-white/[0.06]"
+                >
+                  A folder…
+                </button>
+              </div>
             )}
             <p className="mt-3 text-[12.5px] text-textFaint">
               {page === 'in'

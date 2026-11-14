@@ -41,10 +41,10 @@ export function cardsFor(where: 'phone' | 'computer', tray: boolean, linux: bool
       title: 'Send files to your other devices',
       lead: 'Share',
       line: phone
-        ? 'on any file, and it’s on your other device.'
+        ? 'on any file or folder, and it’s on your other device.'
         : linux
-          ? 'on any file, or from your file manager, and it’s on your other device.'
-          : 'on any file, or Share with Basalt in File Explorer.',
+          ? 'on any file or folder, or from your file manager, and it’s on your other device.'
+          : 'on any file or folder, or Share with Basalt in File Explorer.',
     },
     {
       art: 'nearby',

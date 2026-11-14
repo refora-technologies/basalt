@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDown, Bluetooth, Check, Laptop, Lock, Monitor, Radio, Send, ShieldAlert, Smartphone, Tablet, Wifi, X } from 'lucide-react'
+import { ArrowDown, Bluetooth, Check, FolderOpen, Laptop, Lock, Monitor, Radio, Send, ShieldAlert, Smartphone, Tablet, Wifi, X } from 'lucide-react'
 
 import type { NearbyDevice, NearbyMe } from '@/lib/api'
 import type { Incoming, Nearby, Outgoing } from '@/lib/useNearby'
 import { useNearbyDevices } from '@/lib/useNearby'
-import { isProgram, percentOf, progressLine, titleOf, totalOf, type ShareFile, type ShareItem } from '@/lib/share'
+import { isProgram, percentOf, progressLine, titleOf, totalOf, whatIsSent, type ShareFile, type ShareItem } from '@/lib/share'
 import { cn, formatBytes } from '@/lib/utils'
 import { HandoffMark, JoiningMark, LookingDots, markForm } from './WaitingMarks'
 import { Switch } from '@/components/Switch'
@@ -509,7 +509,7 @@ export function NearbyPrompt({
         </span>
         <span className="min-w-0">
           <span className={cn('block font-semibold text-text', compact ? 'text-[13.5px]' : 'text-[15px]')}>
-            A device nearby wants to send you {offer.files.length === 1 ? 'a file' : `${offer.files.length} files`}
+            A device nearby wants to send you {whatIsSent(offer.files)}
           </span>
           <NearbyName device={offer.from} className="text-[12.5px] text-textDim" />
         </span>
@@ -620,13 +620,23 @@ export function NearbyScreen({
   nearby,
   phone,
   pickFiles,
+  pickFolder,
 }: {
   nearby: Nearby
   phone?: boolean
   /** Files on this device, chosen: none if the person changed their mind. */
   pickFiles: () => Promise<ShareFile[]>
+  /** A folder on this device, as its files (a computer's; a phone picks files). */
+  pickFolder?: () => Promise<ShareFile[]>
 }): React.JSX.Element {
   const [files, setFiles] = useState<ShareFile[] | null>(null)
+  const [problem, setProblem] = useState<string | null>(null)
+  const chose = (picking: Promise<ShareFile[]>): void => {
+    setProblem(null)
+    void picking
+      .then((chosen) => chosen.length > 0 && setFiles(chosen))
+      .catch((e: unknown) => setProblem(e instanceof Error ? e.message : String(e)))
+  }
   return (
     <div className="flex min-h-0 flex-col">
       {nearby.me && (
@@ -647,7 +657,7 @@ export function NearbyScreen({
       ) : (
         <div className="px-5">
           <button
-            onClick={() => void pickFiles().then((chosen) => chosen.length > 0 && setFiles(chosen))}
+            onClick={() => chose(pickFiles())}
             className="flex w-full items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 py-3 text-left hover:bg-white/[0.05] active:bg-white/[0.06]"
           >
             <Send size={17} className="shrink-0 text-textDim" />
@@ -656,6 +666,19 @@ export function NearbyScreen({
               <span className="block text-[12px] text-textFaint">Any file on this {phone ? 'phone' : 'computer'}. No drive or shared Wi-Fi needed.</span>
             </span>
           </button>
+          {pickFolder && (
+            <button
+              onClick={() => chose(pickFolder())}
+              className="mt-2 flex w-full items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] px-4 py-3 text-left hover:bg-white/[0.05] active:bg-white/[0.06]"
+            >
+              <FolderOpen size={17} className="shrink-0 text-textDim" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-[14px] text-text">Send a folder to a device nearby</span>
+                <span className="block text-[12px] text-textFaint">Everything in it arrives in a folder of the same name.</span>
+              </span>
+            </button>
+          )}
+          {problem && <p className="mt-2 text-[12.5px] text-danger">{problem}</p>}
         </div>
       )}
     </div>

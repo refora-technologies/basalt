@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, onChannel, onShareSending, type ChannelMessage, type HeldShare, type PresentDevice } from './api'
 import type { Presence } from './usePresence'
 import type { Transfers } from './useTransfers'
+import { receivedFolderPath, rootsFor, withinFor } from './shareFolders'
 import {
   KIND,
   OFFER_TTL_MS,
@@ -195,18 +196,22 @@ export function useInbox(
       void answer(offer, 'accepted')
       let last = ''
       const saved: SavedFile[] = []
+      const folder = settings.current.folder || undefined
       try {
+        // A shared folder: its name here, once ("Holiday (1)" beside an
+        // earlier "Holiday"), then each file into its own folder in it.
+        const roots = await rootsFor(offer.files, (top) => api.shareFolderRoot(top, folder))
         for (const [n, file] of offer.files.entries()) {
           const id = `share-${offer.offer}-${n}`
           transfersRef.current.start({ id, kind: 'download', name: file.name, path: file.path || file.name, total: file.size })
           try {
-            const folder = settings.current.folder || undefined
+            const within = withinFor(file, roots)
             // On the sending device: straight from it. On the drive: from the host.
             const landed = offer.held
-              ? await api.receiveHeld(offer.offer, n, file.name, file.size, id, folder)
+              ? await api.receiveHeld(offer.offer, n, file.name, file.size, id, folder, within)
               : offer.direct
-                ? await api.receiveDirect(offer.direct.endpoint, offer.offer, offer.direct.token, n, file.name, id, folder, file.size)
-                : await api.receiveFile(file.path, id, folder)
+                ? await api.receiveDirect(offer.direct.endpoint, offer.offer, offer.direct.token, n, file.name, id, folder, file.size, within)
+                : await api.receiveFile(file.path, id, folder, within)
             transfersRef.current.finish(id)
             last = landed.shownAs
             saved.push({ name: file.name, shownAs: landed.shownAs, path: landed.path, uri: landed.uri })
@@ -215,7 +220,8 @@ export function useInbox(
             throw e
           }
         }
-        update(item.id, (i) => ({ ...i, state: 'done', savedAs: last, saved, offer: undefined }))
+        const folderPath = receivedFolderPath(offer.files, saved, roots)
+        update(item.id, (i) => ({ ...i, state: 'done', savedAs: folderPath ?? last, saved, folderPath, offer: undefined }))
         void answer(offer, 'done')
         // Kept on the host for this device: told it arrived, so it can go.
         if (offer.held) void api.shareAnswer(offer.offer, true).catch(() => {})
@@ -254,9 +260,11 @@ export function useInbox(
         const item = received(body, Date.now())
         const before = itemsRef.current.find((i) => i.id === item.id && i.direction === 'in')
         // Coming again through the host, after it couldn't come straight
-        // across: taken at once, as the first was.
+        // across: taken at once, as the first was. A host before 1.6.4
+        // keeps no folders: they come from the first offer.
         if (before && body.held && before.state === 'moving' && before.offer?.direct) {
-          const again = { ...item, at: before.at }
+          const files = item.files.map((f, n) => (f.folder || !before.files[n]?.folder ? f : { ...f, folder: before.files[n]!.folder }))
+          const again = { ...item, files, offer: item.offer ? { ...item.offer, files } : item.offer, at: before.at }
           itemsRef.current = kept([again, ...itemsRef.current.filter((i) => i !== before)])
           setItems((list) => kept([again, ...list.filter((i) => !(i.id === item.id && i.direction === 'in'))]))
           void take(again)
@@ -288,6 +296,7 @@ export function useInbox(
         const sent = itemsRef.current.find((i) => i.id === said.offer && i.direction === 'out')
         const local = sent && said.unreachable ? throughHostFiles(sent) : null
         if (sent && local) {
+          // Its folders go with it, as they went straight across.
           setItems((list) =>
             list.map((i) => (i === sent ? { ...i, state: 'moving', reason: 'Couldn’t reach it directly: going through the host' } : i)),
           )
@@ -365,7 +374,7 @@ export function useInbox(
         offer,
         to.device,
         keep,
-        files.map((f) => ({ source: f.source!, name: f.name, size: f.size })),
+        files.map((f) => ({ source: f.source!, name: f.name, size: f.size, ...(f.folder ? { folder: f.folder } : {}) })),
       )
     } else if (files.every((f) => !f.source)) {
       await api.shareHold(
@@ -373,6 +382,7 @@ export function useInbox(
         to.device,
         keep,
         files.map((f) => f.path),
+        files.some((f) => f.folder) ? files.map((f) => f.folder ?? '') : undefined,
       )
     } else {
       throw new Error('Send files from the drive and from this device apart.')

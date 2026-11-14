@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ExternalLink,
   FileText,
+  Folder,
   FolderOpen,
   Share2,
   Upload,
@@ -32,6 +33,7 @@ import type { Inbox } from '@/lib/useInbox'
 import {
   calledOf,
   canTakeBack,
+  whatIsSent,
   isProgram,
   percentOf,
   progressLine,
@@ -44,6 +46,7 @@ import {
   type ShareFile,
   type ShareItem,
 } from '@/lib/share'
+import { sharedFolder } from '@/lib/shareFolders'
 import { cn, formatBytes } from '@/lib/utils'
 import { android } from '@/lib/android'
 import { isAndroid } from '@/lib/platform'
@@ -406,7 +409,7 @@ function ShareRow({
     <div className="group px-5 py-2.5">
       <div className="flex items-center gap-3">
         <span className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/[0.06] text-textDim">
-          <FileIcon name={item.files[0]?.name ?? ''} size={17} />
+          <ShareIcon files={item.files} size={17} />
           <span
             className={cn(
               'surface-ring absolute -bottom-1 -right-1 flex h-[18px] w-[18px] items-center justify-center rounded-full',
@@ -469,7 +472,7 @@ function ShareRow({
         <div className="ml-[52px] mt-1.5">
           <div className="flex flex-wrap gap-2">
             {!isAndroid() && saved[0]?.path && (
-              <ActionButton icon={FolderOpen} onClick={() => tried(api.receivedShow(saved[0]!.path!))}>
+              <ActionButton icon={FolderOpen} onClick={() => tried(api.receivedShow(item.folderPath ?? saved[0]!.path!))}>
                 Show in folder
               </ActionButton>
             )}
@@ -728,6 +731,12 @@ export function deviceIcon(form: PresentDevice['form']): typeof Laptop {
   }
 }
 
+/** A share's mark: a folder for a shared folder, else its first file's kind. */
+export function ShareIcon({ files, size = 18 }: { files: ShareFile[]; size?: number }): React.JSX.Element {
+  if (sharedFolder(files)) return <Folder size={size} />
+  return <FileIcon name={files[0]?.name ?? ''} size={size} />
+}
+
 function FileIcon({ name, size = 18 }: { name: string; size?: number }): React.JSX.Element {
   if (/\.(mkv|mp4|mov|avi|webm|m4v)$/i.test(name)) return <Film size={size} />
   if (/\.(mp3|flac|m4a|wav|ogg|opus|aac)$/i.test(name)) return <Music size={size} />
@@ -774,14 +783,14 @@ export function ReceivePrompt({
         </span>
         <span className="min-w-0">
           <span className={cn('block font-semibold text-text', compact ? 'text-[13.5px]' : 'text-[15px]')}>
-            {from} wants to send you {item.files.length === 1 ? 'a file' : `${item.files.length} files`}
+            {from} wants to send you {whatIsSent(item.files)}
           </span>
           <span className="block text-[12px] text-textFaint">From {item.peer.name}</span>
         </span>
       </div>
       <div className="mt-3.5 flex items-center gap-3 rounded-2xl border border-white/[0.07] bg-white/[0.03] p-3">
         <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-textDim">
-          <FileIcon name={item.files[0]?.name ?? ''} />
+          <ShareIcon files={item.files} />
         </span>
         <span className="min-w-0">
           <span className="block truncate text-[14px] text-text">{titleOf(item.files)}</span>

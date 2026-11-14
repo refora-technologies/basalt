@@ -1,3 +1,4 @@
+import { sharedFolder } from './shareFolders'
 import type { ChannelMessage, PresentDevice } from './api'
 
 /**
@@ -20,6 +21,12 @@ export interface ShareFile {
    * sent straight across rather than from the drive. Only the sender knows it.
    */
   source?: string
+  /**
+   * In a shared folder: its own folder there, from the folder's name down
+   * ("Holiday/Day 1"). The device taking it makes the same folders. Absent
+   * for a file shared on its own, and from devices before 1.6.4.
+   */
+  folder?: string
 }
 
 /** Where to take an offer's files from when they are on the sending device. */
@@ -274,6 +281,8 @@ export interface ShareItem {
   savedAs?: string
   /** Each file as it landed here: to open, show in its folder, or share on. */
   saved?: SavedFile[]
+  /** A shared folder received here: where it is, to show it. */
+  folderPath?: string
   /** Why it failed, or was declined; or, while moving, what is happening. */
   reason?: string
   /** When it began coming through the host instead, Unix ms. */
@@ -302,10 +311,10 @@ export function sentItem(offer: OfferBody, files: ShareFile[], at: number): Shar
 }
 
 /** The files of a share sent from here that can go through the host instead: all on this device. */
-export function throughHostFiles(sent: ShareItem): { source: string; name: string; size: number }[] | null {
+export function throughHostFiles(sent: ShareItem): { source: string; name: string; size: number; folder?: string }[] | null {
   if (sent.direction !== 'out' || sent.files.length === 0) return null
   if (!sent.files.every((f) => f.source)) return null
-  return sent.files.map((f) => ({ source: f.source!, name: f.name, size: f.size }))
+  return sent.files.map((f) => ({ source: f.source!, name: f.name, size: f.size, ...(f.folder ? { folder: f.folder } : {}) }))
 }
 
 /** A file received here, and where it is. */
@@ -326,8 +335,17 @@ export function totalOf(files: ShareFile[]): number {
 /** "Holiday 2026.mkv", or "Trip photos and 22 more". */
 export function titleOf(files: ShareFile[]): string {
   if (files.length === 0) return 'Nothing'
+  // A shared folder is called by its name, and how many files it holds.
+  const folder = sharedFolder(files)
+  if (folder) return `${folder} (${files.length} ${files.length === 1 ? 'file' : 'files'})`
   if (files.length === 1) return files[0]!.name
   return `${files[0]!.name} and ${files.length - 1} more`
+}
+
+/** What an offer is, as said in "… wants to send you a folder". */
+export function whatIsSent(files: { folder?: string }[]): string {
+  if (sharedFolder(files)) return 'a folder'
+  return files.length === 1 ? 'a file' : `${files.length} files`
 }
 
 /** Files a device should never open by itself: programs and scripts. */

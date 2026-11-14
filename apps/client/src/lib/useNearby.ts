@@ -17,6 +17,7 @@ import { isAndroid, isLinuxDesktop } from './platform'
 import { bleLook, bleReady, bleSeen, bleWake, nearbyReach, reachNote, turnBluetoothOn, type FoundBle, type NearbyReach } from './nearbyBle'
 import { android } from './android'
 import { stillNear, type Seen } from './nearbyList'
+import { receivedFolderPath, rootsFor, withinFor } from './shareFolders'
 import { hostWifi, joinWifi, leaveWifi, scanWifi, turnWifiOn, wifiReady, type FoundWifi, type WifiState } from './nearbyWifi'
 import { pluginReason } from './android'
 import { usePageShown } from './pageShown'
@@ -82,7 +83,7 @@ export interface Nearby {
 export interface Incoming {
   ask: string
   from: NearbyMe
-  files: { name: string; size: number }[]
+  files: { name: string; size: number; folder?: string }[]
   /** A code will be shown here once accepted. */
   code: boolean
   /** Accepted here; waiting for the code to be typed, or for the files. */
@@ -381,17 +382,19 @@ export function useNearby(transfers: Transfers): Nearby {
     async (ask: string, offer: Incoming) => {
       const id = `nb-${ask}`
       const peer = { device: `nearby-${offer.from.id}`, name: `${offer.from.name} · ${offer.from.id}`, form: offer.from.form }
-      const files: ShareFile[] = offer.files.map((f) => ({ name: f.name, size: f.size, path: '' }))
+      const files: ShareFile[] = offer.files.map((f) => ({ name: f.name, size: f.size, path: '', ...(f.folder ? { folder: f.folder } : {}) }))
       setItems((list) => kept([{ id, direction: 'in', files, peer, state: 'moving', at: Date.now() }, ...list.filter((i) => i.id !== id)]))
       const saved: SavedFile[] = []
+      const folder = localStorage.getItem(FOLDER_KEY) || undefined
       try {
+        // A shared folder: its name here, once, then each file into its place.
+        const roots = await rootsFor(files, (top) => api.shareFolderRoot(top, folder))
         for (const [n, file] of offer.files.entries()) {
           const transfer = `share-${id}-${n}`
           transfersRef.current.start({ id: transfer, kind: 'download', name: file.name, path: file.name, total: file.size })
           try {
-            const folder = localStorage.getItem(FOLDER_KEY) || undefined
             // Down the line the offer came up: this device never has to reach the sender.
-            const landed = await api.nearbyTakeFile(ask, n, file.name, transfer, folder)
+            const landed = await api.nearbyTakeFile(ask, n, file.name, transfer, folder, withinFor(file, roots))
             transfersRef.current.finish(transfer)
             saved.push({ name: file.name, shownAs: landed.shownAs, path: landed.path, uri: landed.uri })
           } catch (e) {
@@ -399,7 +402,8 @@ export function useNearby(transfers: Transfers): Nearby {
             throw e
           }
         }
-        update(id, 'in', (i) => ({ ...i, state: 'done', saved, savedAs: saved[saved.length - 1]?.shownAs }))
+        const folderPath = receivedFolderPath(files, saved, roots)
+        update(id, 'in', (i) => ({ ...i, state: 'done', saved, folderPath, savedAs: folderPath ?? saved[saved.length - 1]?.shownAs }))
         void api.nearbyFinish(ask, 'done').catch(() => {})
       } catch (e) {
         update(id, 'in', (i) => ({ ...i, state: 'failed', reason: plainReason(pluginReason(e)) }))
@@ -658,7 +662,7 @@ export function useNearby(transfers: Transfers): Nearby {
           there,
           offer,
           // A file on the drive: passed on from the host by this device as it comes.
-          files.map((f) => ({ source: f.source ?? `drive:${f.path}`, name: f.name, size: f.size })),
+          files.map((f) => ({ source: f.source ?? `drive:${f.path}`, name: f.name, size: f.size, ...(f.folder ? { folder: f.folder } : {}) })),
           // Over its own Wi-Fi anyone nearby could join, or with another
           // device showing the same letters: a code, always.
           alwaysCode || !!device.ssid || device.code,
