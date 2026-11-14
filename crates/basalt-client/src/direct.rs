@@ -557,7 +557,13 @@ async fn fetch_from(
         let n = loop {
             match tokio::time::timeout(Duration::from_secs(1), read.read(&mut buffer[..want])).await
             {
-                Ok(read) => break read?,
+                Ok(read) => {
+                    // The line dropped (the other device stopped, or left):
+                    // said as that, not as the drive's connection.
+                    break read.map_err(|_| {
+                        ClientError::Protocol("the device that sent it stopped part-way".into())
+                    })?;
+                }
                 Err(_) if cancel.as_ref().is_some_and(Cancel::is_cancelled) => {
                     return Err(ClientError::Protocol("cancelled".into()));
                 }
