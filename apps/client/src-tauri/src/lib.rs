@@ -155,6 +155,8 @@ struct AppState {
     /// Offers to devices nearby still waiting for their answer: a word here
     /// drops the line, and the other side's question goes with it.
     nearby_asking: Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+    /// Offers to devices nearby whose files are going now: each one's Stop.
+    nearby_sending: Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
     /// Offers to devices nearby waiting for the code shown there.
     nearby_offers: Mutex<std::collections::HashMap<String, WaitingOffer>>,
 }
@@ -1706,6 +1708,14 @@ fn nearby_serve(
     total: u64,
 ) {
     use tauri::Emitter;
+    // Stopped from here while its files go (the wrong film, 20 GB of it):
+    // the line drops, and the other device says it stopped part-way.
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    app.state::<AppState>()
+        .nearby_sending
+        .lock()
+        .expect("nearby lock")
+        .insert(offer.clone(), stop);
     tauri::async_runtime::spawn(async move {
         let opener = open_local(&app);
         let client = Arc::clone(&app.state::<AppState>().client);
@@ -1736,7 +1746,7 @@ fn nearby_serve(
         let told = app.clone();
         let progress_offer = offer.clone();
         let last = std::sync::Mutex::new(std::time::Instant::now());
-        let answer = offering
+        let serving = offering
             .serve(open, move |sent| {
                 // About four times a second is plenty for a bar.
                 let mut at = last.lock().expect("progress lock");
@@ -1748,8 +1758,16 @@ fn nearby_serve(
                     "basalt://nearby-progress",
                     serde_json::json!({ "offer": progress_offer, "done": sent, "total": total.max(sent) }),
                 );
-            })
-            .await;
+            });
+        let answer = tokio::select! {
+            answer = serving => answer,
+            Ok(()) = stopped => "stopped".to_string(),
+        };
+        app.state::<AppState>()
+            .nearby_sending
+            .lock()
+            .expect("nearby lock")
+            .remove(&offer);
         let _ = app.emit(
             "basalt://nearby-sent",
             serde_json::json!({ "offer": offer, "answer": answer }),
@@ -1809,6 +1827,14 @@ fn nearby_cancel(state: State<'_, AppState>, offer: String) {
         .lock()
         .expect("nearby lock")
         .remove(&offer);
+    if let Some(stop) = state
+        .nearby_sending
+        .lock()
+        .expect("nearby lock")
+        .remove(&offer)
+    {
+        let _ = stop.send(());
+    }
 }
 
 /// Takes an offer back: nobody can take its files any more.
@@ -1849,6 +1875,7 @@ async fn receive_direct(
     name: String,
     id: String,
     folder: Option<String>,
+    size: Option<u64>,
 ) -> Answer<Received> {
     let shown = name.clone();
     receive_into(
@@ -1867,6 +1894,8 @@ async fn receive_direct(
                 out,
                 Some(report),
                 Some(cancel),
+                // The size it was offered at: no more is taken.
+                size.unwrap_or(u64::MAX),
             )
             .await
         },
@@ -1972,14 +2001,35 @@ where
             kind: "error".into(),
             message: format!("couldn’t make the folder {}: {e}", dir.display()),
         })?;
-        let local = free_name(&dir, &safe);
-        let out = std::fs::File::create(&local).map_err(|e| UiError {
+        // Written under another name, and given its own once it is whole (as
+        // a download is): a crash or a power cut part-way left half a film
+        // under the film's name, looking finished.
+        let tag: String = id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        let part = dir.join(format!(".{safe}.{tag}.part"));
+        let made = std::fs::File::create(&part).map_err(|e| UiError {
             kind: "error".into(),
-            message: format!("couldn’t write {}: {e}", local.display()),
-        })?;
-        let result = take(out, report, cancel).await;
+            message: format!("couldn’t write into {}: {e}", dir.display()),
+        });
+        let out = match made {
+            Ok(out) => out,
+            Err(e) => {
+                state.transfers.lock().expect("transfers lock").remove(&id);
+                return Err(e);
+            }
+        };
+        let taken = take(out, report, cancel).await;
+        let local = free_name(&dir, &safe);
+        let result = match taken {
+            Ok(bytes) => std::fs::rename(&part, &local)
+                .map(|_| bytes)
+                .map_err(basalt_client::ClientError::from),
+            Err(e) => Err(e),
+        };
         if result.is_err() {
-            let _ = std::fs::remove_file(&local);
+            let _ = std::fs::remove_file(&part);
         } else {
             mark_downloaded(&local);
         }
@@ -2058,7 +2108,17 @@ async fn share_hold_local(
         let told = app.clone();
         let offer = id.clone();
         let from = before;
+        // About eight times a second, and the last: every piece redrew the
+        // Inbox (downloads and nearby sends were already held back so).
+        let last = std::sync::Mutex::new(None::<std::time::Instant>);
         let progress: basalt_client::client::ProgressFn = Arc::new(move |p| {
+            let complete = p.total > 0 && p.transferred >= p.total;
+            let mut at = last.lock().expect("progress lock");
+            if !complete && at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(120))
+            {
+                return;
+            }
+            *at = Some(std::time::Instant::now());
             let _ = told.emit(
                 "basalt://share-sending",
                 serde_json::json!({ "offer": offer, "done": from + p.transferred, "total": total }),
@@ -2431,9 +2491,27 @@ fn safe_local_name(remote: &str) -> String {
     let cleaned = cleaned.trim_end_matches(['.', ' ']).trim_start();
     if cleaned.is_empty() || cleaned.chars().all(|c| c == '.') {
         "file".to_string()
+    } else if reserved_on_windows(cleaned) {
+        // "CON.txt" can't be made on Windows: kept, with a mark.
+        format!("_{cleaned}")
     } else {
         cleaned.to_string()
     }
+}
+
+/// A name Windows keeps for its devices, whatever comes after its dot.
+fn reserved_on_windows(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end()
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0')
 }
 
 /// Kinds of file Windows runs when it opens them. Basalt never opens one of
@@ -3330,6 +3408,7 @@ pub fn run() {
                 nearby_wifi: nearby_wifi::State::default(),
                 nearby_ble: nearby_ble::State::default(),
                 nearby_asking: Mutex::new(std::collections::HashMap::new()),
+                nearby_sending: Mutex::new(std::collections::HashMap::new()),
                 nearby_offers: Mutex::new(std::collections::HashMap::new()),
             });
 
@@ -3579,6 +3658,8 @@ pub fn run() {
                 {
                     api.prevent_close();
                     let _ = window.hide();
+                    use tauri::Emitter;
+                    let _ = window.emit("basalt://window-shown", false);
                 }
             }
             #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -3681,6 +3762,11 @@ mod tests {
             "Sintel (2010).mkv"
         );
         assert_eq!(safe_local_name("notes.txt. "), "notes.txt");
+        // Names Windows keeps for itself can't be made: kept, with a mark.
+        assert_eq!(safe_local_name("CON.txt"), "_CON.txt");
+        assert_eq!(safe_local_name("com1"), "_com1");
+        assert_eq!(safe_local_name("Console.txt"), "Console.txt");
+        assert_eq!(safe_local_name("COM0.log"), "COM0.log");
     }
 
     #[test]

@@ -266,6 +266,9 @@ type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
 /// comes, down it.
 pub struct NearbyLink {
     io: tokio::sync::Mutex<LinkIo>,
+    /// Each file's size as offered: what the person accepted. A sender that
+    /// then says a file is longer is refused, rather than let fill the disk.
+    sizes: Vec<u64>,
 }
 
 struct LinkIo {
@@ -292,6 +295,11 @@ impl NearbyLink {
                 said["no"].as_str().unwrap_or("no")
             )));
         };
+        if self.sizes.get(file).is_none_or(|&offered| length > offered) {
+            return Err(ClientError::Protocol(
+                "the device that sent it sent more than it offered".into(),
+            ));
+        }
         let reader = io.lines.get_mut();
         let mut out = tokio::fs::File::from_std(out);
         let mut buffer = vec![0u8; 256 * 1024];
@@ -339,6 +347,45 @@ impl NearbyLink {
         out.flush().await?;
         out.sync_all().await?;
         Ok(done)
+    }
+}
+
+/// Offers open now, by the address they came from.
+type OpenFrom = Arc<Mutex<HashMap<IpAddr, usize>>>;
+
+/// The most offers open at once from one address.
+const MOST_OPEN_FROM_ONE: usize = 3;
+
+/// One offer's place among those from its address, given back when it ends.
+struct OpenSlot {
+    open: OpenFrom,
+    from: IpAddr,
+}
+
+impl OpenSlot {
+    fn take(open: &OpenFrom, from: IpAddr) -> Option<Self> {
+        let mut all = open.lock().expect("open lock");
+        let now = all.entry(from).or_insert(0);
+        if *now >= MOST_OPEN_FROM_ONE {
+            return None;
+        }
+        *now += 1;
+        Some(Self {
+            open: Arc::clone(open),
+            from,
+        })
+    }
+}
+
+impl Drop for OpenSlot {
+    fn drop(&mut self) {
+        let mut all = self.open.lock().expect("open lock");
+        if let Some(now) = all.get_mut(&self.from) {
+            *now -= 1;
+            if *now == 0 {
+                all.remove(&self.from);
+            }
+        }
     }
 }
 
@@ -435,6 +482,7 @@ impl Ready {
                 };
                 let serving = async {
                     let mut asks = 0u64;
+                    let open_from: OpenFrom = Arc::default();
                     loop {
                         let (stream, from) = match listener.accept().await {
                             Ok(accepted) => accepted,
@@ -444,6 +492,14 @@ impl Ready {
                             }
                         };
                         trace(|| format!("ready: an offer's line from {from}"));
+                        // A few at a time from any one address: one device
+                        // opening line after line filled the screen with
+                        // offers and the device with half-open lines.
+                        let Some(slot) = OpenSlot::take(&open_from, from.ip()) else {
+                            trace(|| format!("ready: too many offers open from {}", from.ip()));
+                            drop(stream);
+                            continue;
+                        };
                         asks += 1;
                         let ask = format!("n{asks}-{}", new_code());
                         let acceptor = acceptor.clone();
@@ -454,6 +510,7 @@ impl Ready {
                         let counted = Receiving::start();
                         tokio::spawn(async move {
                             let _counted = counted;
+                            let _slot = slot;
                             let tls =
                                 match tokio::time::timeout(STEP, acceptor.accept(stream)).await {
                                     Ok(Ok(tls)) => tls,
@@ -545,6 +602,7 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     let files: Vec<NearbyFile> = serde_json::from_value(hello["files"].clone())
         .map_err(|_| ClientError::Protocol("not an offer".into()))?;
     let code_needed = always_code || hello["code"].as_bool().unwrap_or(false);
+    let sizes: Vec<u64> = files.iter().map(|f| f.size).collect();
 
     let (tx, rx) = oneshot::channel();
     answers
@@ -560,7 +618,7 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     // The sender hanging up meanwhile ends it too.
     let accepted = tokio::select! {
         said = tokio::time::timeout(ANSWER_WAIT, rx) => matches!(said, Ok(Ok(true))),
-        _ = lines.next_line() => {
+        _ = bounded_line(lines.get_mut()) => {
             return Err(ClientError::Protocol("the sender took it back".into()));
         }
     };
@@ -618,6 +676,7 @@ async fn receive<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
     // Agreed: the files come down this line, as each is asked for.
     let link = Arc::new(NearbyLink {
+        sizes,
         io: tokio::sync::Mutex::new(LinkIo { lines, write }),
     });
     let (tx, rx) = oneshot::channel();
@@ -1232,14 +1291,51 @@ async fn next_json<R: AsyncRead + Unpin>(
     lines: &mut tokio::io::Lines<BufReader<R>>,
     wait: Duration,
 ) -> Result<serde_json::Value> {
-    let line = tokio::time::timeout(wait, lines.next_line())
+    let line = tokio::time::timeout(wait, bounded_line(lines.get_mut()))
         .await
         .map_err(|_| ClientError::Protocol("the other device stopped answering".into()))??
         .ok_or_else(|| ClientError::Protocol("the other device hung up".into()))?;
-    if line.len() > 64 * 1024 {
-        return Err(ClientError::Protocol("too long a message".into()));
-    }
     serde_json::from_str(&line).map_err(|e| ClientError::Protocol(format!("not a message: {e}")))
+}
+
+/// The longest message line either side takes.
+const MOST_LINE: usize = 64 * 1024;
+
+/// One line, refused once longer than [`MOST_LINE`] as it comes: read whole
+/// first, a device on the Wi-Fi sending one with no end filled memory until
+/// Basalt was stopped, before anyone had accepted anything.
+async fn bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
+    read: &mut R,
+) -> std::io::Result<Option<String>> {
+    let mut line = Vec::new();
+    loop {
+        let available = read.fill_buf().await?;
+        if available.is_empty() {
+            return if line.is_empty() {
+                Ok(None)
+            } else {
+                Err(std::io::ErrorKind::UnexpectedEof.into())
+            };
+        }
+        let end = available.iter().position(|&b| b == b'\n');
+        let take = end.map_or(available.len(), |at| at + 1);
+        line.extend_from_slice(&available[..end.unwrap_or(take)]);
+        read.consume(take);
+        if line.len() > MOST_LINE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "too long a message",
+            ));
+        }
+        if end.is_some() {
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            return String::from_utf8(line)
+                .map(Some)
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "not text"));
+        }
+    }
 }
 
 async fn send_json<W: AsyncWrite + Unpin>(write: &mut W, value: &serde_json::Value) -> Result<()> {
@@ -1253,6 +1349,38 @@ async fn send_json<W: AsyncWrite + Unpin>(write: &mut W, value: &serde_json::Val
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_line_with_no_end_is_refused_before_it_fills_memory() {
+        let endless = vec![b'x'; 200 * 1024];
+        let mut read = BufReader::new(&endless[..]);
+        let got = bounded_line(&mut read).await;
+        assert!(got.is_err(), "refused: {got:?}");
+        let mut read = BufReader::new(&b"{\"a\":1}\r\nnext\n"[..]);
+        assert_eq!(bounded_line(&mut read).await.unwrap().unwrap(), "{\"a\":1}");
+        assert_eq!(bounded_line(&mut read).await.unwrap().unwrap(), "next");
+        assert_eq!(bounded_line(&mut read).await.unwrap(), None);
+    }
+
+    #[test]
+    fn only_a_few_offers_are_open_at_once_from_one_address() {
+        let open: OpenFrom = Arc::default();
+        let one: IpAddr = "192.168.1.20".parse().unwrap();
+        let other: IpAddr = "192.168.1.21".parse().unwrap();
+        let held: Vec<OpenSlot> = (0..MOST_OPEN_FROM_ONE)
+            .map(|_| OpenSlot::take(&open, one).unwrap())
+            .collect();
+        assert!(OpenSlot::take(&open, one).is_none(), "one too many");
+        assert!(
+            OpenSlot::take(&open, other).is_some(),
+            "another address is its own"
+        );
+        drop(held);
+        assert!(
+            OpenSlot::take(&open, one).is_some(),
+            "given back as they end"
+        );
+    }
 
     fn me(id: &str, name: &str) -> Me {
         Me {

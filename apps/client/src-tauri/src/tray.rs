@@ -86,6 +86,8 @@ pub fn show<R: Runtime>(app: &AppHandle<R>, page: Option<&str>) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        // Told to the page: hiding and showing a window doesn't (windowShown.ts).
+        let _ = window.emit("basalt://window-shown", true);
         if let Some(page) = page {
             let _ = window.emit("basalt://open", page);
         }

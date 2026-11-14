@@ -917,7 +917,19 @@ export const api = {
     name: string,
     id: string,
     folder?: string,
-  ) => call<{ shownAs: string; path?: string; uri?: string }>('receive_direct', { endpoint, offer, token, file, name, id, folder: folder ?? null }),
+    /** Its size as offered: a sender that sends more is refused. */
+    size?: number,
+  ) =>
+    call<{ shownAs: string; path?: string; uri?: string }>('receive_direct', {
+      endpoint,
+      offer,
+      token,
+      file,
+      name,
+      id,
+      folder: folder ?? null,
+      size: size ?? null,
+    }),
   /** This device's name and short id, as devices nearby see them. */
   nearbyWhoami: () => call<NearbyMe>('nearby_whoami'),
   /** Ready to receive from devices nearby, or not; `onNearbyReady` says what comes. */

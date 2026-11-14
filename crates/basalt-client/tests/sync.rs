@@ -2638,10 +2638,19 @@ async fn a_drive_file_is_passed_on_to_a_device_nearby() {
     // The device nearby: no host, only the offer.
     let into = fixture.dir.join("taken.mkv");
     let out = std::fs::File::create(&into).unwrap();
-    let bytes =
-        basalt_client::direct::fetch(&endpoint, "o1", &token, 0, "trip.mkv", out, None, None)
-            .await
-            .unwrap();
+    let bytes = basalt_client::direct::fetch(
+        &endpoint,
+        "o1",
+        &token,
+        0,
+        "trip.mkv",
+        out,
+        None,
+        None,
+        u64::MAX,
+    )
+    .await
+    .unwrap();
     assert_eq!(bytes, body.len() as u64);
     assert_eq!(std::fs::read(&into).unwrap(), body, "the same bytes");
 }
