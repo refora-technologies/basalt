@@ -16,6 +16,7 @@ import { plainReason } from './useInbox'
 import { isAndroid, isLinuxDesktop } from './platform'
 import { bleLook, bleReady, bleSeen, bleWake, nearbyReach, reachNote, turnBluetoothOn, type FoundBle, type NearbyReach } from './nearbyBle'
 import { android } from './android'
+import { stillNear, type Seen } from './nearbyList'
 import { hostWifi, joinWifi, leaveWifi, scanWifi, turnWifiOn, wifiReady, type FoundWifi, type WifiState } from './nearbyWifi'
 import { pluginReason } from './android'
 import { usePageShown } from './pageShown'
@@ -501,11 +502,13 @@ export function useNearby(transfers: Transfers): Nearby {
     }
   }, [])
 
+  // Kept between looks: a device a look missed stays listed a little while.
+  const seenNear = useRef(new Map<string, Seen<NearbyDevice>>())
   const look = useCallback(() => {
     setLooking(true)
     void api
       .nearbyFind()
-      .then(setDevices)
+      .then((found) => setDevices(stillNear(seenNear.current, found, Date.now())))
       .catch(() => {})
       .finally(() => setLooking(false))
   }, [])
