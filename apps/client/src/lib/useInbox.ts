@@ -17,11 +17,15 @@ import {
   COMING_THROUGH_HOST,
   sentItem,
   takesWithoutAsking,
+  canTakeBack,
   endedSilent,
   goneSilent,
+  takenBack,
   ON_THE_HOST,
   throughHostFiles,
   throughHostSaid,
+  fromMyProfile,
+  trustedOffer,
   toldOf,
   type AnswerBody,
   type HandoffBody,
@@ -51,6 +55,8 @@ export interface Inbox {
   decline: (item: ShareItem) => void
   /** "Accept on another device": that one of mine takes it instead. */
   acceptOn: (item: ShareItem, device: PresentDevice) => Promise<void>
+  /** Stops one sent from here, waiting or on its way (see `canTakeBack`). */
+  takeBack: (item: ShareItem) => void
   /** Forgets one from the list; nothing else changes. */
   forget: (item: ShareItem) => void
   acceptFromHome: boolean
@@ -199,7 +205,7 @@ export function useInbox(
             const landed = offer.held
               ? await api.receiveHeld(offer.offer, n, file.name, file.size, id, folder)
               : offer.direct
-                ? await api.receiveDirect(offer.direct.endpoint, offer.offer, offer.direct.token, n, file.name, id, folder)
+                ? await api.receiveDirect(offer.direct.endpoint, offer.offer, offer.direct.token, n, file.name, id, folder, file.size)
                 : await api.receiveFile(file.path, id, folder)
             transfersRef.current.finish(id)
             last = landed.shownAs
@@ -236,8 +242,15 @@ export function useInbox(
       if (seen.current.has(message.id)) return
       seen.current.add(message.id)
       if (message.kind === KIND.offer || message.kind === KIND.handoff) {
-        const body = message.kind === KIND.offer ? (message.body as OfferBody) : (message.body as HandoffBody).offer
-        if (!body?.offer || !Array.isArray(body.files)) return
+        const said = message.kind === KIND.offer ? (message.body as OfferBody) : (message.body as HandoffBody).offer
+        if (!said?.offer || !Array.isArray(said.files)) return
+        // Who sent it is what the host says, not what the offer says of
+        // itself: an offer naming one of my own devices as its sender was
+        // taken without asking, from any device on the host.
+        const body = trustedOffer(said, message)
+        const myProfile = profileRef.current
+        // Only one of my own devices can ask this one to take a share.
+        if (message.kind === KIND.handoff && !fromMyProfile(message, myProfile)) return
         const item = received(body, Date.now())
         const before = itemsRef.current.find((i) => i.id === item.id && i.direction === 'in')
         // Coming again through the host, after it couldn't come straight
@@ -254,7 +267,6 @@ export function useInbox(
         setItems((list) => (list.some((i) => i.id === item.id && i.direction === 'in') ? list : kept([item, ...list])))
         // Asked by one of my own devices to take it here, or a send this
         // person said needs no asking: taken at once.
-        const myProfile = profileRef.current
         const handoff = message.kind === KIND.handoff
         if (handoff || takesWithoutAsking(body, myProfile, settings.current.acceptFromHome)) void take(item)
         return
@@ -434,6 +446,13 @@ export function useInbox(
     setItems((list) => list.filter((i) => i !== item))
   }, [])
 
+  const takeBack = useCallback((item: ShareItem) => {
+    if (!canTakeBack(item)) return
+    // Nobody can take it any more, and what is on its way stops.
+    void api.withdrawLocal(item.id).catch(() => {})
+    setItems((list) => list.map((i) => (i.id === item.id && i.direction === 'out' && canTakeBack(i) ? takenBack(i) : i)))
+  }, [])
+
   const setAcceptFromHome = useCallback((on: boolean) => {
     setAcceptFromHomeState(on)
     localStorage.setItem(ACCEPT_KEY, on ? '1' : '0')
@@ -460,6 +479,7 @@ export function useInbox(
     accept,
     decline,
     acceptOn,
+    takeBack,
     forget,
     acceptFromHome,
     setAcceptFromHome,

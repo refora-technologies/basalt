@@ -31,6 +31,7 @@ import { seenLine } from '@/lib/usePresence'
 import type { Inbox } from '@/lib/useInbox'
 import {
   calledOf,
+  canTakeBack,
   isProgram,
   percentOf,
   progressLine,
@@ -214,7 +215,13 @@ export function ShareChooser({
       </div>
 
       {sent ? (
-        <ShareStatus item={sentItem} to={sent.to} progress={sentItem ? inbox.progressOf(sentItem) : null} onDone={() => onDone('')} />
+        <ShareStatus
+          item={sentItem}
+          to={sent.to}
+          progress={sentItem ? inbox.progressOf(sentItem) : null}
+          onDone={() => onDone('')}
+          onCancel={sentItem && canTakeBack(sentItem) ? () => inbox.takeBack(sentItem) : undefined}
+        />
       ) : nearbyPick && nearby ? (
         <div className="flex min-h-0 flex-1 flex-col pb-1 pt-2">
           <NearbyChooser nearby={nearby} files={files} phone={sheet} initial={nearbyPick} onDone={() => onDone('')} />
@@ -364,12 +371,15 @@ function ShareRow({
   who,
   progress,
   onAnswer,
+  onStop,
   onForget,
 }: {
   item: ShareItem
   who: string
   progress: Progress | null
   onAnswer: () => void
+  /** One sent from here that can still be stopped: takes it back, or stops it part-way. */
+  onStop?: () => void
   onForget: () => void
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
@@ -419,6 +429,11 @@ function ShareRow({
         {item.direction === 'in' && item.state === 'waiting' && item.offer && (
           <button onClick={onAnswer} className="rounded-full bg-white px-3.5 py-1.5 text-[12.5px] font-semibold text-black">
             Answer
+          </button>
+        )}
+        {onStop && !finished && (
+          <button onClick={onStop} className="rounded-full border border-white/[0.14] px-3.5 py-1.5 text-[12.5px] text-text hover:bg-white/[0.06]">
+            {item.state === 'moving' ? 'Stop' : 'Take back'}
           </button>
         )}
         {finished && (
@@ -559,7 +574,7 @@ export function ShareStatus({
   to: string
   progress: Progress | null
   onDone: () => void
-  /** While it waits for an answer: take it back. */
+  /** While it waits for an answer, or is on its way: take it back, or stop it. */
   onCancel?: () => void
 }): React.JSX.Element {
   const state = item?.state ?? 'waiting'
@@ -628,9 +643,9 @@ export function ShareStatus({
         </div>
       )}
       <div className="mt-5 flex gap-2.5">
-        {state === 'waiting' && onCancel && (
+        {(state === 'waiting' || state === 'moving') && onCancel && (
           <button onClick={onCancel} className="flex-1 rounded-full border border-white/[0.12] py-2.5 text-[13.5px] text-text">
-            Take it back
+            {state === 'moving' ? 'Stop sending' : 'Take it back'}
           </button>
         )}
         <button
@@ -893,6 +908,15 @@ export function InboxList({
       who={fromNearby.has(item) ? item.peer.name : calledOf(item.peer, myProfile)}
       progress={fromNearby.has(item) ? (nearby?.progressOf(item) ?? null) : inbox.progressOf(item)}
       onAnswer={() => onAnswer(item)}
+      onStop={
+        item.direction !== 'out' || (item.state !== 'waiting' && item.state !== 'moving')
+          ? undefined
+          : fromNearby.has(item)
+            ? () => nearby?.cancel(item.id)
+            : canTakeBack(item)
+              ? () => inbox.takeBack(item)
+              : undefined
+      }
       onForget={() => (fromNearby.has(item) ? nearby?.forget(item) : inbox.forget(item))}
     />
   )

@@ -19,8 +19,12 @@ import {
   sentItem,
   steadyTargets,
   targetsOf,
+  canTakeBack,
+  fromMyProfile,
+  trustedOffer,
   endedSilent,
   goneSilent,
+  takenBack,
   SILENT_TTL_MS,
   throughHostFiles,
   throughHostSaid,
@@ -139,6 +143,37 @@ describe('a share sent straight across that can\'t reach the receiver', () => {
     // other phone showed nothing coming; the line on the row went unseen.
     expect(throughHostSaid('out', 'Maya’s phone')).toBe('Couldn’t reach Maya’s phone directly: sending it through your host instead')
     expect(throughHostSaid('in', 'Living room PC')).toBe('Couldn’t reach Living room PC directly: it’s coming through your host instead')
+  })
+
+  it('takes who sent it from the host, not from the offer itself', () => {
+    // Another profile's device naming one of mine as the sender: asked, not taken.
+    const forged: OfferBody = { ...body, from: { ...body.from, device: 'my-laptop', profile: 'me' } }
+    const trusted = trustedOffer(forged, { fromDevice: 'their-phone', fromProfile: 'them' })
+    expect(trusted.from.device).toBe('their-phone')
+    expect(trusted.from.profile).toBe('them')
+    expect(trusted.from.name).toBe(forged.from.name)
+    expect(takesWithoutAsking(trusted, 'me', false)).toBe(false)
+    expect(fromMyProfile({ fromProfile: 'them' }, 'me')).toBe(false)
+    expect(fromMyProfile({ fromProfile: 'me' }, 'me')).toBe(true)
+    expect(fromMyProfile({}, undefined)).toBe(false)
+  })
+
+  it('can be stopped from here while it waits or goes, and stays stopped', () => {
+    const waiting = sentItem(body, files, 5)
+    const moving: ShareItem = { ...waiting, state: 'moving' }
+    expect(canTakeBack(waiting)).toBe(true)
+    expect(canTakeBack(moving)).toBe(true)
+    expect(takenBack(waiting).reason).toBe('You took it back.')
+    expect(takenBack(moving).reason).toBe('You stopped it.')
+    // Not one read from the drive, gone up to the host, ended, or coming here.
+    expect(canTakeBack({ ...moving, files: [{ name: 'Trip.mp4', size: 5, path: 'Videos/Trip.mp4' }] })).toBe(false)
+    expect(canTakeBack({ ...moving, reason: 'On the host until it’s taken' })).toBe(false)
+    expect(canTakeBack({ ...moving, state: 'done' })).toBe(false)
+    expect(canTakeBack({ ...moving, direction: 'in' })).toBe(false)
+    // The other device, cut off, says it failed: this side still says why.
+    const stopped = takenBack(moving)
+    const after = apply([stopped], answer({ offer: moving.id, answer: 'failed', by: body.to, reason: 'It stopped part-way.' }))
+    expect(after[0]?.reason).toBe('You stopped it.')
   })
 
   it('stops saying "sending" once the other device has long gone silent', () => {

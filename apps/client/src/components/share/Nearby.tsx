@@ -319,6 +319,7 @@ export function NearbyChooser({
         to={chosen ? `${chosen.name} · ${chosen.id}` : 'the other device'}
         progress={item ? nearby.progressOf(item) : null}
         onDone={onDone}
+        onCancel={item?.state === 'moving' ? () => nearby.cancel(offer) : undefined}
       />
     )
   }

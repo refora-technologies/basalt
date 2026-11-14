@@ -220,6 +220,20 @@ export function endedSilent(item: ShareItem): ShareItem {
   return { ...item, state: 'failed', reason: `Lost touch with ${item.peer.name} before it finished. Check there whether it arrived.` }
 }
 
+/**
+ * Whether a share sent from here can be stopped from here: its files are on
+ * this device and go straight across. One read from the drive, or gone up to
+ * the host (it has a reason), is no longer this device's to stop.
+ */
+export function canTakeBack(item: ShareItem): boolean {
+  return item.direction === 'out' && (item.state === 'waiting' || item.state === 'moving') && !item.reason && item.files.some((f) => !!f.source)
+}
+
+/** A share stopped by the person who sent it. */
+export function takenBack(item: ShareItem): ShareItem {
+  return { ...item, state: 'failed', reason: item.state === 'moving' ? 'You stopped it.' : 'You took it back.' }
+}
+
 /** What an unanswered share says once it has ended. */
 export function endedUnanswered(item: ShareItem): ShareItem {
   return {
@@ -321,6 +335,21 @@ const PROGRAM = /\.(exe|msi|bat|cmd|com|scr|ps1|vbs|js|jar|apk|aab|sh|app|dmg|de
 
 export function isProgram(name: string): boolean {
   return PROGRAM.test(name.trim())
+}
+
+/**
+ * An offer with its sender as the host stamped the message: the device and
+ * profile it came from. A message the host made itself (a share it kept)
+ * carries the sender's own. What the offer says of its sender is kept only
+ * for its names.
+ */
+export function trustedOffer(offer: OfferBody, message: { fromDevice: string; fromProfile?: string }): OfferBody {
+  return { ...offer, from: { ...offer.from, device: message.fromDevice, profile: message.fromProfile } }
+}
+
+/** Whether the host says a message came from a device of `myProfile`. */
+export function fromMyProfile(message: { fromProfile?: string }, myProfile: string | undefined): boolean {
+  return myProfile !== undefined && message.fromProfile === myProfile
 }
 
 /**
@@ -430,6 +459,9 @@ export function apply(items: ShareItem[], message: ChannelMessage): ShareItem[] 
         body.answer === 'accepted' ? 'moving' : body.answer === 'done' ? 'done' : body.answer === 'declined' ? 'declined' : 'failed'
       // An answer never takes a share backwards: a late "accepted" after "done" stays done.
       if (rank(state) < rank(item.state)) return item
+      // And one that has ended stays as it ended (stopped here, say), unless
+      // it turns out to have arrived after all.
+      if (rank(item.state) === 2 && state !== 'done') return item
       // The host removed it before it was taken ("Clear share files"): no device took it.
       const takenOn = body.answer === 'removed' ? item.takenOn : body.by.device !== item.peer.device ? body.by.name : item.takenOn
       // An answer always moves it on, so why it waited ("On the host until
