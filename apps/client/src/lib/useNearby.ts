@@ -203,9 +203,13 @@ export function useNearby(transfers: Transfers): Nearby {
         .nearbyFirewall()
         .then((state) => live && setFirewall(state))
         .catch(() => live && setFirewall('unknown'))
+    // At once, a moment later (Windows' own question closed unanswered leaves
+    // a rule), and then rarely: each look starts PowerShell or firewall-cmd,
+    // a second of a laptop's processor, and it ran every 30 s all day.
+    // Showing the window again looks again (this effect runs again).
     check()
     const soon = setTimeout(check, 5_000)
-    const timer = setInterval(check, 30_000)
+    const timer = setInterval(check, 10 * 60_000)
     return () => {
       live = false
       clearTimeout(soon)
@@ -324,7 +328,8 @@ export function useNearby(transfers: Transfers): Nearby {
         await bleReady(true, { v: 1, id: me.id, name: me.name, form: me.form, ssid: '', code: alwaysCode })
         if (!live) return
         setWifiNote(null)
-        again = setTimeout(() => void check(false), 15_000)
+        // Looked at again often while on screen, rarely in the tray.
+        again = setTimeout(() => void check(false), document.visibilityState === 'hidden' ? 2 * 60_000 : 15_000)
       } catch (e) {
         note(`bluetooth ready failed: ${pluginReason(e)}`)
         if (!live) return
@@ -472,7 +477,12 @@ export function useNearby(transfers: Transfers): Nearby {
       update(offer, 'out', (i) => ({
         ...i,
         state: answer === 'done' ? 'done' : 'failed',
-        reason: answer === 'done' ? undefined : 'The other device couldn’t take it.',
+        reason:
+          answer === 'done'
+            ? undefined
+            : answer === 'stopped'
+              ? 'You stopped it.'
+              : 'It didn’t finish: the other device stopped taking it, or the connection dropped.',
       }))
     }).then((unlisten) => {
       if (gone) unlisten()
@@ -584,7 +594,7 @@ export function useNearby(transfers: Transfers): Nearby {
       .filter((f) => !here.has(f.id) && f.id !== me?.id)
       // One that told us it's here has its Wi-Fi open already: only to join.
       .map((f) => ({ id: f.id, name: f.name, form: f.form, address: '', port: 0, key: '', code: true, ssid: f.ssid, ble: f.open ? undefined : f.address }))
-    const both = [...devices, ...byBluetooth, ...farAway.filter((f) => !bleFar.some((b) => b.id === f.id))]
+    const both = sameLettersNeedACode([...devices, ...byBluetooth, ...farAway.filter((f) => !bleFar.some((b) => b.id === f.id))])
     const seen = firstSeen.current
     for (const d of both) if (!seen.has(d.id)) seen.set(d.id, seen.size)
     return both.sort((a, b) => (seen.get(a.id) ?? 0) - (seen.get(b.id) ?? 0))
@@ -649,8 +659,9 @@ export function useNearby(transfers: Transfers): Nearby {
           offer,
           // A file on the drive: passed on from the host by this device as it comes.
           files.map((f) => ({ source: f.source ?? `drive:${f.path}`, name: f.name, size: f.size })),
-          // Over its own Wi-Fi anyone nearby could join: a code, always.
-          alwaysCode || !!device.ssid,
+          // Over its own Wi-Fi anyone nearby could join, or with another
+          // device showing the same letters: a code, always.
+          alwaysCode || !!device.ssid || device.code,
         )
         if (said.kind === 'declined') {
           leaveFor(offer)
@@ -698,7 +709,9 @@ export function useNearby(transfers: Transfers): Nearby {
     (offer: string) => {
       leaveFor(offer)
       setOutgoing((list) => list.filter((o) => o.offer !== offer))
-      update(offer, 'out', (i) => (i.state === 'waiting' ? { ...i, state: 'failed', reason: 'Cancelled.' } : i))
+      update(offer, 'out', (i) =>
+        i.state === 'waiting' ? { ...i, state: 'failed', reason: 'Cancelled.' } : i.state === 'moving' ? { ...i, state: 'failed', reason: 'You stopped it.' } : i,
+      )
       void api.nearbyCancel(offer).catch(() => {})
     },
     [update, leaveFor],
@@ -749,6 +762,17 @@ export function useNearby(transfers: Transfers): Nearby {
     }),
     [me, ready, setReady, alwaysCode, setAlwaysCode, wifiNote, readyNote, reach, fixReach, firewall, allowFirewall, all, looking, look, watch, incoming, accept, decline, outgoing, send, typeCode, cancel, items, progressOf, forget, screenOpen],
   )
+}
+
+/**
+ * Devices nearby with the same name and letters as another in the list,
+ * each marked as needing a code. A device's letters are what it says of
+ * itself: another on the Wi-Fi could show the same ones, and a file sent to
+ * the wrong one can't be taken back. With the code, only the device that
+ * shows it gets the file.
+ */
+export function sameLettersNeedACode<T extends { id: string; key: string; code: boolean }>(devices: T[]): T[] {
+  return devices.map((d) => (devices.some((o) => o !== d && o.id === d.id && o.key !== d.key) ? { ...d, code: true } : d))
 }
 
 /** Keeps looking for devices nearby while `on` (a Share sheet open). */

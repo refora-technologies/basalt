@@ -278,7 +278,9 @@ function NearbyLog(): React.JSX.Element {
           void api.nearbyLogShow().catch((e: unknown) => setNote(e instanceof Error ? e.message : String(e)))
         }}
       />
-      {note && <p className="-mt-1 px-4 pb-2.5 text-[11.5px] text-textFaint">{note}</p>}
+      <p className="-mt-1 px-4 pb-2.5 text-[11.5px] leading-snug text-textFaint">
+        {note ?? 'Kept on this computer only. It has the names and network addresses of devices nearby: look at it before you send it to anyone.'}
+      </p>
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { NEAR_FOR_MS, stillNear, type Seen } from './nearbyList'
+import { sameLettersNeedACode } from './useNearby'
 
 interface Device {
   id: string
@@ -32,6 +33,16 @@ describe('the devices nearby, between looks', () => {
     stillNear(seen, [pixel], 0)
     const moved = { ...pixel, address: '192.168.49.1' }
     expect(stillNear(seen, [moved], 4_000)).toEqual([moved])
+  })
+
+  it('asks a code of two devices showing the same letters', () => {
+    // A copy pretending to be the Pixel: a file sent to it is gone, so
+    // only the device showing the code can take it.
+    const real = { id: 'K7HM', key: 'a1', code: false }
+    const copy = { id: 'K7HM', key: 'zz', code: false }
+    const other = { id: 'W3RT', key: 'b2', code: false }
+    const marked = sameLettersNeedACode([real, copy, other])
+    expect(marked.map((d) => d.code)).toEqual([true, true, false])
   })
 
   it('tells two devices with the same letters apart by their keys', () => {
