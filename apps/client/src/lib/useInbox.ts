@@ -17,6 +17,9 @@ import {
   COMING_THROUGH_HOST,
   sentItem,
   takesWithoutAsking,
+  endedSilent,
+  goneSilent,
+  ON_THE_HOST,
   throughHostFiles,
   throughHostSaid,
   toldOf,
@@ -106,6 +109,9 @@ export function useInbox(
   // How far shares sent from here have come: told by the device taking
   // them, or, going up to the host first, by this app.
   const [sentProgress, setSentProgress] = useState<Map<string, Progress>>(() => new Map())
+  const sentProgressRef = useRef(sentProgress)
+  sentProgressRef.current = sentProgress
+  const startedAt = useRef(Date.now())
   useEffect(() => {
     let gone = false
     let stop: (() => void) | null = null
@@ -276,6 +282,18 @@ export function useInbox(
           sayRef.current?.(throughHostSaid('out', sent.peer.name))
           void api
             .shareHoldLocal(sent.id, sent.peer.device, false, local)
+            // All on the host now: it waits there as any sent through it
+            // does (the host says when it is taken, or cleared), instead
+            // of "going through the host" for good if it never is.
+            .then(() =>
+              setItems((list) =>
+                list.map((i) =>
+                  i.id === sent.id && i.direction === 'out' && i.state === 'moving' && i.reason?.startsWith('Couldn’t reach')
+                    ? { ...i, state: 'waiting', reason: ON_THE_HOST }
+                    : i,
+                ),
+              ),
+            )
             .catch((e: unknown) =>
               setItems((list) =>
                 list.map((i) => (i.id === sent.id && i.direction === 'out' ? { ...i, state: 'failed', reason: e instanceof Error ? e.message : String(e) } : i)),
@@ -393,13 +411,19 @@ export function useInbox(
   // withdrawn). One kept on the host waits there as the host says (24 h).
   useEffect(() => {
     const sweep = (): void => {
-      const ending = unanswered(itemsRef.current, Date.now())
-      if (ending.length === 0) return
-      for (const i of ending) {
+      const now = Date.now()
+      const ending = unanswered(itemsRef.current, now)
+      // And one being taken that nothing has been heard of for a long while.
+      const silent = goneSilent(itemsRef.current, (id) => sentProgressRef.current.get(id)?.at, startedAt.current, now)
+      if (ending.length === 0 && silent.length === 0) return
+      for (const i of [...ending, ...silent]) {
         if (i.direction === 'out') void api.withdrawLocal(i.id).catch(() => {})
       }
       const gone = new Set(ending.map((i) => `${i.direction}:${i.id}`))
-      setItems((list) => list.map((i) => (gone.has(`${i.direction}:${i.id}`) ? endedUnanswered(i) : i)))
+      const quiet = new Set(silent.map((i) => i.id))
+      setItems((list) =>
+        list.map((i) => (gone.has(`${i.direction}:${i.id}`) ? endedUnanswered(i) : i.direction === 'out' && quiet.has(i.id) ? endedSilent(i) : i)),
+      )
     }
     sweep()
     const timer = setInterval(sweep, 30_000)

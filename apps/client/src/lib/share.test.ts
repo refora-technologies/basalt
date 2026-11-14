@@ -19,6 +19,9 @@ import {
   sentItem,
   steadyTargets,
   targetsOf,
+  endedSilent,
+  goneSilent,
+  SILENT_TTL_MS,
   throughHostFiles,
   throughHostSaid,
   toldOf,
@@ -136,6 +139,27 @@ describe('a share sent straight across that can\'t reach the receiver', () => {
     // other phone showed nothing coming; the line on the row went unseen.
     expect(throughHostSaid('out', 'Maya’s phone')).toBe('Couldn’t reach Maya’s phone directly: sending it through your host instead')
     expect(throughHostSaid('in', 'Living room PC')).toBe('Couldn’t reach Living room PC directly: it’s coming through your host instead')
+  })
+
+  it('stops saying "sending" once the other device has long gone silent', () => {
+    // The phone taking it was switched off: the row said "sending" at 40%
+    // for ever, through every restart.
+    const moving: ShareItem = { ...sentItem(body, files, 1_000), state: 'moving' }
+    const heard = (at: number | undefined) => (): number | undefined => at
+    const later = 1_000 + SILENT_TTL_MS + 1
+    expect(goneSilent([moving], heard(undefined), 0, later)).toEqual([moving])
+    // Heard from since, or this app only just started: still given time.
+    expect(goneSilent([moving], heard(later - 5_000), 0, later)).toEqual([])
+    expect(goneSilent([moving], heard(undefined), later - 5_000, later)).toEqual([])
+    // One going by the host waits as the host says; one coming here is not this side's to end.
+    expect(goneSilent([{ ...moving, reason: 'On the host until it’s taken' }], heard(undefined), 0, later)).toEqual([])
+    expect(goneSilent([{ ...moving, direction: 'in' }], heard(undefined), 0, later)).toEqual([])
+    const ended = endedSilent(moving)
+    expect(ended.state).toBe('failed')
+    expect(ended.reason).toMatch(/Lost touch with .* Check there whether it arrived/)
+    // And if it did arrive after all, its "done" still counts.
+    const done = apply([ended], answer({ offer: moving.id, answer: 'done', by: body.to }))
+    expect(done[0]?.state).toBe('done')
   })
 
   it('ends on the receiver if it never comes through the host', () => {

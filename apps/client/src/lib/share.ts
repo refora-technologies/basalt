@@ -190,6 +190,36 @@ export function throughHostSaid(direction: 'in' | 'out', peer: string): string {
  */
 export const THROUGH_HOST_TTL_MS = 30 * 60_000
 
+/**
+ * How long a share sent from here may go without a word from the device
+ * taking it (it says how far it has come about once a second) before this
+ * side stops saying "sending". Long, as a phone taking it with Basalt in
+ * the background goes quiet while the file still comes.
+ */
+export const SILENT_TTL_MS = 10 * 60_000
+
+/** Said on a share sent through the host, once it is all there. */
+export const ON_THE_HOST = 'On the host until it’s taken'
+
+/**
+ * The shares sent from here that have gone silent at `now`: moving, and no
+ * word of them since `heardAt` says (or since `since`, when this app
+ * started, for one it has heard nothing of yet). The device taking it was
+ * switched off, or left the Wi-Fi for good: before, its row said "sending"
+ * at the same figure for ever, through every restart. One that goes by the
+ * host (it has a reason) waits as the host says.
+ */
+export function goneSilent(items: ShareItem[], heardAt: (id: string) => number | undefined, since: number, now: number): ShareItem[] {
+  return items.filter(
+    (i) => i.direction === 'out' && i.state === 'moving' && !i.reason && now - Math.max(heardAt(i.id) ?? 0, i.at, since) > SILENT_TTL_MS,
+  )
+}
+
+/** What a share that went silent says: not that it failed, as this side can't know. */
+export function endedSilent(item: ShareItem): ShareItem {
+  return { ...item, state: 'failed', reason: `Lost touch with ${item.peer.name} before it finished. Check there whether it arrived.` }
+}
+
 /** What an unanswered share says once it has ended. */
 export function endedUnanswered(item: ShareItem): ShareItem {
   return {
