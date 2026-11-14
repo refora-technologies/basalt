@@ -68,8 +68,12 @@ object NearbyBle {
   private const val SEEN_FOR_MS = 20_000L
   /** Its INFO read again after this long (a name changed, a device restarted). */
   private const val INFO_AGAIN_MS = 60_000L
-  /** Our own Wi-Fi, opened for someone, closes if nobody joins it within this. */
-  private const val NOBODY_CAME_MS = 3 * 60_000L
+  /**
+   * Our own Wi-Fi, opened for someone, closes if nobody joins it within this:
+   * time for Android's "Connect to device?" on theirs, and no longer, as the
+   * phone's Wi-Fi is slower while it hosts one.
+   */
+  private const val NOBODY_CAME_MS = 2 * 60_000L
   /** And once everyone has left it, after this. */
   private const val ALL_LEFT_MS = 45_000L
   /** Listening, our own Wi-Fi stays open this long after the last "sharing nearby". */

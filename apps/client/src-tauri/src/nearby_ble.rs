@@ -91,8 +91,11 @@ mod imp {
     const SEEN_FOR: Duration = Duration::from_secs(20);
     /// Its INFO read again after this long.
     const INFO_AGAIN: Duration = Duration::from_secs(60);
-    /// Our own Wi-Fi, opened for someone, closes if no offer comes within this.
-    const NOBODY_CAME: Duration = Duration::from_secs(3 * 60);
+    /// Our own Wi-Fi, opened for someone, closes if no offer comes within
+    /// this: time for them to join it (Windows looks for it up to ~40 s;
+    /// Android asks its person first) and offer, and no longer, as a radio
+    /// hosting a Wi-Fi of its own slows the one it is on.
+    const NOBODY_CAME: Duration = Duration::from_secs(2 * 60);
     /// And once the last offer over it has ended, after this.
     const ALL_DONE: Duration = Duration::from_secs(45);
 
