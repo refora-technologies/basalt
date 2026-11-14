@@ -18,6 +18,7 @@ import {
   sentItem,
   takesWithoutAsking,
   throughHostFiles,
+  throughHostSaid,
   toldOf,
   type AnswerBody,
   type HandoffBody,
@@ -69,6 +70,8 @@ export function useInbox(
   transfers: Transfers,
   /** The profile this device is signed in to: known before the device list is. */
   profile?: string,
+  /** Says something out loud, over whatever screen is open. */
+  say?: (text: string) => void,
 ): Inbox {
   const key = who ? `basalt.inbox.${who}` : null
   const [items, setItems] = useState<ShareItem[]>(() => load(key))
@@ -97,6 +100,8 @@ export function useInbox(
   transfersRef.current = transfers
   const profileRef = useRef(profile)
   profileRef.current = profile
+  const sayRef = useRef(say)
+  sayRef.current = say
 
   // How far shares sent from here have come: told by the device taking
   // them, or, going up to the host first, by this app.
@@ -213,6 +218,7 @@ export function useInbox(
           reason: through ? COMING_THROUGH_HOST : reason,
           ...(through ? { since: Date.now() } : {}),
         }))
+        if (through) sayRef.current?.(throughHostSaid('in', item.peer.name))
         void answer(offer, 'failed', reason, through)
       }
     },
@@ -267,6 +273,7 @@ export function useInbox(
           setItems((list) =>
             list.map((i) => (i === sent ? { ...i, state: 'moving', reason: 'Couldn’t reach it directly: going through the host' } : i)),
           )
+          sayRef.current?.(throughHostSaid('out', sent.peer.name))
           void api
             .shareHoldLocal(sent.id, sent.peer.device, false, local)
             .catch((e: unknown) =>

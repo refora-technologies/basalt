@@ -255,6 +255,7 @@ export function useAppModel({ mobile }: { mobile: boolean }) {
     presence,
     transfers,
     profileId ?? undefined,
+    setNotice,
   )
   // Sharing with devices nearby, no host needed: before a drive too.
   const nearby = useNearby(transfers)

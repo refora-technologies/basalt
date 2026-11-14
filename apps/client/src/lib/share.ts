@@ -171,6 +171,17 @@ export function unanswered(items: ShareItem[], now: number): ShareItem[] {
 export const COMING_THROUGH_HOST = 'Couldn’t reach it directly: coming through the host'
 
 /**
+ * Said out loud, on whichever screen is open, when a share switches to the
+ * host: the line on its row alone went unseen, and the sender looked as if
+ * nothing had happened while the other device showed nothing coming.
+ */
+export function throughHostSaid(direction: 'in' | 'out', peer: string): string {
+  return direction === 'out'
+    ? `Couldn’t reach ${peer} directly: sending it through your host instead`
+    : `Couldn’t reach ${peer} directly: it’s coming through your host instead`
+}
+
+/**
  * How long a share received here waits to come through the host, from when
  * it couldn't come straight across: the sender sends it up to the host first,
  * which for a big file over Wi-Fi takes a while. A sender that never does (one

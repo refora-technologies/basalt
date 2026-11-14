@@ -20,6 +20,7 @@ import {
   steadyTargets,
   targetsOf,
   throughHostFiles,
+  throughHostSaid,
   toldOf,
   titleOf,
   totalOf,
@@ -128,6 +129,13 @@ describe('a share sent straight across that can\'t reach the receiver', () => {
   it('keeps, here, where its files are, so they can go through the host', () => {
     const sent = sentItem(body, files, 5)
     expect(throughHostFiles(sent)).toEqual([{ source: 'C:/Users/You/Videos/Trip.mp4', name: 'Trip.mp4', size: 5_000_000 }])
+  })
+
+  it('says out loud, on both sides, that it switched to the host', () => {
+    // Seen in testing: the sender carried on as if nothing happened, and the
+    // other phone showed nothing coming; the line on the row went unseen.
+    expect(throughHostSaid('out', 'Maya’s phone')).toBe('Couldn’t reach Maya’s phone directly: sending it through your host instead')
+    expect(throughHostSaid('in', 'Living room PC')).toBe('Couldn’t reach Living room PC directly: it’s coming through your host instead')
   })
 
   it('ends on the receiver if it never comes through the host', () => {
