@@ -23,9 +23,17 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <!-- Not required: a TV or a phone without it still installs, and shares on the same Wi-Fi. -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <!-- The Bluetooth permissions above would otherwise make Play require Bluetooth (TV boxes and
+         tablets without it dropped, 1.6.4 review); Basalt says "unsupported" and uses Wi-Fi. -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <!-- Looking at the Wi-Fis around (a nearby device's own) needs location on every Android, 13+ too. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Nor location hardware: the permission is only Android's gate for looking at Wi-Fis and
+         Bluetooth around; a device without GPS or network location still shares. -->
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <uses-feature android:name="android.hardware.location.network" android:required="false" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
