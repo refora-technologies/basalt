@@ -919,8 +919,11 @@ fn finish_update(app: &tauri::AppHandle, finish: basalt_host::updates::Finish) {
             let program = std::env::var_os("APPIMAGE")
                 .map(std::path::PathBuf::from)
                 .or_else(|| std::env::current_exe().ok());
+            // Outside the AppImage's own libraries: with them the system's `sleep`
+            // stops at once (Ubuntu 26.04, "LIBSYSTEMD_254 not found") and the
+            // updated host never came back.
             if let Some(program) = program {
-                let _ = std::process::Command::new("sh")
+                let _ = basalt_net::outside::command("sh")
                     .arg("-c")
                     .arg("sleep 2; exec \"$0\"")
                     .arg(program)
