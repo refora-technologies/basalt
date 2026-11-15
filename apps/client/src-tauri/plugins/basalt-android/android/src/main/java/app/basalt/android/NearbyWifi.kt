@@ -53,8 +53,9 @@ class NearbyWifi(private val context: Context) {
 
   /** Whether Android will let this phone look at the Wi-Fis around: Location must be on, on every version. */
   fun locationOn(): Boolean {
-    val location = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    return if (Build.VERSION.SDK_INT >= 28) location.isLocationEnabled else true
+    // A TV box or tablet with no location at all: nothing to switch on, so nothing in the way.
+    val location = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return true
+    return if (Build.VERSION.SDK_INT >= 28) runCatching { location.isLocationEnabled }.getOrDefault(true) else true
   }
 
   /** Whether Wi-Fi is on: hosting, looking and joining all need it. */

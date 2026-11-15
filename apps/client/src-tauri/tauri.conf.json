@@ -49,6 +49,9 @@
         "installerIcon": "icons/icon.ico"
       }
     },
+    "android": {
+      "versionCode": 10060041
+    },
     "resources": [
       "lib/**/*"
     ],
